@@ -155,14 +155,70 @@ idle | pan | move | resize | dragbox | rotate | drawshape
 ## Interaction Event Flow
 
 ```
-Path mousedown     → handlePathMouseDown  → mode = 'move'  (or 'drawshape' if shape tool active)
+Path mousedown     → handlePathMouseDown  → mode = 'move'  (or 'drawshape'/'pendraw' if tool active)
 Handle mousedown   → handleResizeHandleDown / handleRotateHandleDown → mode = 'resize' | 'rotate'
-Stage mousedown    → handleStageMouseDown → mode = 'pan' | 'dragbox' | 'drawshape'
-Stage mousemove    → handleMouseMove      → update liveTransform or liveShapeD
-Stage mouseup      → handleMouseUp        → bake transform, commit selection, or commit shape
+Stage mousedown    → handleStageMouseDown → mode = 'pan' | 'dragbox' | 'drawshape' | 'pendraw'
+Stage mousemove    → handleMouseMove      → update liveTransform, liveShapeD, livePen, editNodes
+Stage mouseup      → handleMouseUp        → bake transform, commit selection, commit shape/pen/node edit
 ```
 
 Children stop bubbling by setting `e.cancelBubble = true` in their mousedown handlers. When a shape tool is active, `handlePathMouseDown` intercepts path clicks and starts `drawshape` instead of selecting.
+
+**Canvas modes added in Phase 11:**
+- `pendraw` — active from pen-tool mousedown to mouseup; `closing: boolean` indicates click was near first node
+- `nodedit-drag` — dragging a node anchor or Bezier handle in point-edit mode
+
+---
+
+## Pen Tool (`activeTool === 'pen'`)
+
+`PenNode = { x, y, outHandle?, inHandle? }` — stored in `uiStore.penNodes[]`.
+
+- Click → corner point; click+drag → smooth point with symmetric Bezier handles
+- Live dashed preview from last node to cursor; first-node circle highlights cyan when hoverable-to-close
+- Closing (click near first node) commits a **closed** `M…C…Z` path; Escape commits **open** path (≥ 2 nodes)
+- `penNodesToPathD(nodes, closed?)` in `PenLayer.tsx` — converts PenNode[] → SVG d string
+- `PenLayer` renders in Y-flipped Konva layer; uses `useCanvasStore(s => s.cursorMM)` for live preview
+
+---
+
+## Point Edit Tool (`uiStore.nodeEditPathId`)
+
+Not a separate `activeTool` — controlled by `nodeEditPathId: string | null` in uiStore.
+
+**Activation:** double-click any path (DesignLayer `onDblClick`) or "Edit Points" button in PropertiesPanel.
+
+**`PathNode = { x, y, handleIn?, handleOut? }`** — absolute CNC coords. Differs from `PenNode` (same data, different field names).
+
+Key utilities in `src/canvas/nodeUtils.ts`:
+```ts
+parseDToNodes(d)                          → { nodes: PathNode[], closed: boolean }
+nodesToD(nodes, closed)                   → string
+removeNode(nodes, idx)                    → PathNode[]
+insertNodeOnSegment(nodes, segIdx, x, y, closed) → PathNode[]  // De Casteljau split
+nearestSegmentOnPath(nodes, closed, cx, cy)      → { segIdx, distSq } | null
+```
+
+**`NodeEditLayer`** renders on top of DesignLayer (which hides the edited path via `excludePathId`):
+- Wide invisible `Path` for segment hit detection → calls `onSegmentMouseDown(segIdx, cncX, cncY)`
+- Handle lines + circles call `onNodeMouseDown(idx, 'handle-in'|'handle-out', e)`
+- Anchor circles: first node has white stroke; hovered node turns red (deletable)
+
+**State in CanvasStage:**
+- `editNodes: PathNode[]` + `editNodesRef` — live copy updated on every drag frame
+- `editClosedRef` — whether the path is closed
+- `editDragInitRef` — snapshot of all nodes at drag start; displacement applied as total delta from start
+- `hoveredEditNodeRef` — which anchor the cursor is over (for Delete key)
+- `commitEditNodes(nodes)` — writes nodes → d → `batchUpdatePaths` + `regenerateAffected`
+- `exitNodeEdit()` — commits + clears `nodeEditPathId`
+
+**Interactions:**
+- Drag anchor → moves point + both its handles
+- Drag handle → reshapes curve (independent of anchor)
+- Click segment (8 px hit area) → insert node via De Casteljau split
+- Hover anchor + Delete/Backspace → removes node; `stopImmediatePropagation` prevents path delete
+- Escape / click empty canvas / click other path → commits and exits
+- Selection handles (`SelectionLayer`, `SelectionHandleLayer`) suppressed while `nodeEditPathId !== null`
 
 ---
 
@@ -184,7 +240,12 @@ ImportedPath.d  →  flattenPath()  →  offsetPolygon()  →  MotionSegment[]  
 - **Phase 4** — Tool library, profile toolpath, Grbl G-code export
 - **Phase 5** — Selection tool, bounding box handles, move/scale/rotate, drag-box multi-select, PropertiesPanel, Ctrl+D duplicate
 - **Phase 6** — Shape palette (rectangle, rounded rect, circle, ellipse, polygon, star); click-to-place and drag-to-size; ShapePanel with per-type defaults; editable ShapeParams in PropertiesPanel; shapeParams kept in sync through translate/scale, cleared on rotate
+- **Phase 7** — Pocket toolpath (raster zigzag, island support) + drill toolpath (peck drilling, helical option for end mills)
+- **Phase 8** — Project save/load (JSON), post-processor profiles panel, Ctrl+S/O shortcuts
+- **Phase 9** — Surfacing toolpath, toolpath display polish (rapid vs cut colours, hover tooltips)
+- **Phase 10** — 2D G-code simulation (parser, play/pause/seek, speed control, line highlight, SimulationLayer)
+- **Phase 11 (partial)** — Pen tool (click/drag Bezier path creation, close detection, Escape to finish); Point edit tool (drag anchors/handles, click-to-insert node, hover+Delete to remove, double-click to enter, Escape/click-away to exit)
 
 ## Next Phase
 
-**Phase 7** — Pocket & drill toolpaths.
+**Phase 11 (remaining)** — Text tool (opentype.js → bezier paths, font selector, re-editable text params).

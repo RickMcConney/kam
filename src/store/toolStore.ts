@@ -35,6 +35,7 @@ interface ToolState {
   updateTool: (id: string, updates: Partial<Omit<Tool, 'id'>>) => void
   deleteTool: (id: string) => void
   selectTool: (id: string | null) => void
+  setTools: (tools: Tool[]) => void
 }
 
 export const useToolStore = create<ToolState>()(
@@ -60,6 +61,9 @@ export const useToolStore = create<ToolState>()(
         }),
 
       selectTool: (id) => set({ selectedToolId: id }),
+
+      setTools: (tools) =>
+        set({ tools, selectedToolId: tools[0]?.id ?? null }),
     }),
     { name: 'freazykam-tools' }
   )

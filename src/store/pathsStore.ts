@@ -24,6 +24,7 @@ interface PathsState {
   duplicateSelected: (offsetMM?: number) => void
   undo: () => void
   redo: () => void
+  replacePaths: (paths: ImportedPath[]) => void
   canUndo: () => boolean
   canRedo: () => boolean
 }
@@ -151,6 +152,8 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       selectedIds: [],
     }
   }),
+
+  replacePaths: (paths) => set({ paths, selectedIds: [], past: [], future: [] }),
 
   canUndo: () => get().past.length > 0,
   canRedo: () => get().future.length > 0,

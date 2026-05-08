@@ -5,7 +5,7 @@ import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { usePathsStore } from '../store/pathsStore'
-import { useToolpathStore } from '../store/toolpathStore'
+import { regenerateAffected } from '../cam/regenerate'
 import { useUIStore } from '../store/uiStore'
 import { importSvg, nextPathColor } from '../importers/svgImporter'
 import { GridLayer } from './layers/GridLayer'
@@ -16,6 +16,10 @@ import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
+import { PenLayer, penNodesToPathD } from './layers/PenLayer'
+import { SimulationLayer } from './layers/SimulationLayer'
+import SimulationPlayer from '../sim/SimulationPlayer'
+import { useSimStore } from '../store/simStore'
 import type { HandleType, LiveTransform } from './types'
 import { getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD } from './selectionUtils'
 import type { BBox } from './selectionUtils'
@@ -28,6 +32,10 @@ import {
   scaleShapeParams,
   type ShapeType,
 } from '../shapes/shapeGenerators'
+import type { PenNode } from '../store/uiStore'
+import { NodeEditLayer } from './layers/NodeEditLayer'
+import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment } from './nodeUtils'
+import type { PathNode } from './nodeUtils'
 
 export interface Viewport {
   x: number
@@ -58,6 +66,8 @@ type CanvasMode =
   | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
   | { type: 'dragbox'; startScreen: { x: number; y: number } }
   | { type: 'drawshape'; startCNC: { x: number; y: number }; currentCNC: { x: number; y: number } }
+  | { type: 'pendraw'; anchorCNC: { x: number; y: number }; closing: boolean }
+  | { type: 'nodedit-drag'; nodeIdx: number; kind: 'anchor' | 'handle-in' | 'handle-out' }
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 
@@ -74,6 +84,10 @@ export default function CanvasStage() {
   const [liveTransform, setLiveTransform] = useState<LiveTransform | null>(null)
   const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
   const [liveShapeD, setLiveShapeD] = useState<string | null>(null)
+  const [livePen, setLivePen] = useState<{ anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null>(null)
+  const penClosingRef = useRef(false)
+  const [penClosing, setPenClosing] = useState(false)
+  const [toolpathTooltip, setToolpathTooltip] = useState<{ name: string; depth: string; x: number; y: number } | null>(null)
   const didDragRef = useRef(false)
 
   const { widthMM, heightMM } = useWorkpieceStore()
@@ -82,14 +96,34 @@ export default function CanvasStage() {
   const setZoomPct = useCanvasStore((s) => s.setZoomPct)
   const setLiveRotationAngle = useCanvasStore((s) => s.setLiveRotationAngle)
   const { paths, selectedIds, selectPath, setSelectedIds } = usePathsStore()
-  const markNeedsUpdate = useToolpathStore((s) => s.markNeedsUpdate)
   const addPaths = usePathsStore((s) => s.addPaths)
   const setSidebarTab = useUIStore((s) => s.setSidebarTab)
   const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
+  const penNodes = useUIStore((s) => s.penNodes)
+  const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+
+  // Node edit state — live editable copy of the path's nodes
+  const [editNodes, setEditNodes] = useState<PathNode[]>([])
+  const [editClosed, setEditClosed] = useState(false)
+  const editNodesRef = useRef<PathNode[]>([])
+  const editClosedRef = useRef(false)
+  useEffect(() => { editNodesRef.current = editNodes }, [editNodes])
+  useEffect(() => { editClosedRef.current = editClosed }, [editClosed])
+
+  const editDragInitRef = useRef<{ initialNodes: PathNode[]; startCNC: { x: number; y: number } } | null>(null)
+  const hoveredEditNodeRef = useRef<number | null>(null)
+  const [hoveredEditNode, setHoveredEditNode] = useState<number | null>(null)
 
   const setMode2 = useCallback((m: CanvasMode) => {
     modeRef.current = m
   }, [])
+
+  const handleToolpathHover = useCallback(
+    (info: { name: string; depth: string } | null, stageX: number, stageY: number) => {
+      setToolpathTooltip(info ? { ...info, x: stageX, y: stageY } : null)
+    },
+    []
+  )
 
   const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -139,15 +173,70 @@ export default function CanvasStage() {
     setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
   }, [size, widthMM, heightMM, setViewport])
 
+  const commitEditNodes = useCallback((nodes: PathNode[]) => {
+    const { nodeEditPathId: pid } = useUIStore.getState()
+    if (!pid || nodes.length < 2) return
+    const d = nodesToD(nodes, editClosedRef.current)
+    usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
+    regenerateAffected(pid)
+  }, [])
+
+  const exitNodeEdit = useCallback(() => {
+    const { nodeEditPathId: pid, setNodeEditPathId } = useUIStore.getState()
+    if (!pid) return
+    commitEditNodes(editNodesRef.current)
+    setNodeEditPathId(null)
+    setEditNodes([])
+    setEditClosed(false)
+  }, [commitEditNodes])
+
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return
-      if (e.code === 'Space') { e.preventDefault(); spaceHeldRef.current = true }
+      if (e.code === 'Space' && !useSimStore.getState().gcode) { e.preventDefault(); spaceHeldRef.current = true }
       if (e.shiftKey) shiftHeldRef.current = true
+      if ((e.key === 'Delete' || e.key === 'Backspace') && hoveredEditNodeRef.current !== null) {
+        const { nodeEditPathId: pid } = useUIStore.getState()
+        if (pid) {
+          e.stopImmediatePropagation()
+          e.preventDefault()
+          const idx = hoveredEditNodeRef.current
+          setEditNodes((prev) => {
+            const next = removeNode(prev, idx)
+            const d = nodesToD(next, editClosedRef.current)
+            usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
+            regenerateAffected(pid)
+            return next
+          })
+          hoveredEditNodeRef.current = null
+          setHoveredEditNode(null)
+        }
+      }
+
       if (e.code === 'Escape') {
-        const { activeTool, setActiveTool, clearDrillPoints } = useUIStore.getState()
-        if (activeTool !== 'select') {
+        const { nodeEditPathId: neid } = useUIStore.getState()
+        if (neid) {
+          exitNodeEdit()
+          return
+        }
+        const { activeTool, setActiveTool, clearDrillPoints, penNodes: nodes, clearPenNodes } = useUIStore.getState()
+        if (activeTool === 'pen') {
+          if (nodes.length >= 2) {
+            const d = penNodesToPathD(nodes, false)
+            if (d) {
+              const id = `pen-${Date.now()}`
+              usePathsStore.getState().addPaths([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
+              usePathsStore.getState().selectPath(id)
+            }
+          }
+          clearPenNodes()
+          setActiveTool('select')
+          setLivePen(null)
+          setPenClosing(false)
+          penClosingRef.current = false
+          setMode2({ type: 'idle' })
+        } else if (activeTool !== 'select') {
           if (activeTool === 'drill') clearDrillPoints()
           setActiveTool('select')
           setLiveShapeD(null)
@@ -162,7 +251,7 @@ export default function CanvasStage() {
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
     return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
-  }, [setMode2])
+  }, [setMode2, exitNodeEdit])
 
   useEffect(() => {
     const el = containerRef.current
@@ -195,11 +284,90 @@ export default function CanvasStage() {
     setMode2({ type: 'drawshape', startCNC: cnc, currentCNC: cnc })
   }, [setMode2])
 
+  // Start placing a pen node from the given screen pointer position
+  const startPenDraw = useCallback((pointer: { x: number; y: number }) => {
+    const vp = viewportRef.current
+    const cnc = screenToCNC(pointer.x, pointer.y, vp)
+    const { penNodes: nodes } = useUIStore.getState()
+
+    if (nodes.length >= 2) {
+      const first = nodes[0]
+      const fsx = vp.x + first.x * vp.scale
+      const fsy = vp.y - first.y * vp.scale
+      if (Math.hypot(pointer.x - fsx, pointer.y - fsy) < 10) {
+        didDragRef.current = false
+        setMode2({ type: 'pendraw', anchorCNC: cnc, closing: true })
+        return
+      }
+    }
+
+    didDragRef.current = false
+    setMode2({ type: 'pendraw', anchorCNC: cnc, closing: false })
+    setLivePen({ anchor: cnc, handle: null })
+  }, [setMode2])
+
+  // Parse path nodes when entering node edit mode
+  useEffect(() => {
+    if (!nodeEditPathId) { setEditNodes([]); setEditClosed(false); return }
+    const path = usePathsStore.getState().paths.find((p) => p.id === nodeEditPathId)
+    if (!path) { setEditNodes([]); return }
+    const { nodes, closed } = parseDToNodes(path.d)
+    setEditNodes(nodes)
+    setEditClosed(closed)
+  }, [nodeEditPathId])
+
+  const handleNodeMouseDown = useCallback((nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => {
+    const vp = viewportRef.current
+    const pointer = e.target.getStage()?.getPointerPosition()
+    if (!pointer) return
+    const cnc = { x: (pointer.x - vp.x) / vp.scale, y: (vp.y - pointer.y) / vp.scale }
+
+    editDragInitRef.current = {
+      initialNodes: editNodesRef.current.map((n) => ({
+        ...n,
+        handleIn: n.handleIn ? { ...n.handleIn } : undefined,
+        handleOut: n.handleOut ? { ...n.handleOut } : undefined,
+      })),
+      startCNC: cnc,
+    }
+    didDragRef.current = false
+    setMode2({ type: 'nodedit-drag', nodeIdx, kind })
+  }, [setMode2])
+
+  const handleSegmentMouseDown = useCallback((segIdx: number, cncX: number, cncY: number) => {
+    const { nodeEditPathId: pid } = useUIStore.getState()
+    if (!pid) return
+    const next = insertNodeOnSegment(editNodesRef.current, segIdx, cncX, cncY, editClosedRef.current)
+    setEditNodes(next)
+    commitEditNodes(next)
+  }, [commitEditNodes])
+
+  const handlePathDblClick = useCallback((id: string) => {
+    const { setNodeEditPathId } = useUIStore.getState()
+    usePathsStore.getState().selectPath(id)
+    setNodeEditPathId(id)
+  }, [])
+
+  const handleHoveredNodeChange = useCallback((idx: number | null) => {
+    hoveredEditNodeRef.current = idx
+    setHoveredEditNode(idx)
+  }, [])
+
   // Called by DesignLayer when a path is clicked/mousedown
   const handlePathMouseDown = useCallback((id: string, shift: boolean, e: Konva.KonvaEventObject<MouseEvent>) => {
     if (spaceHeldRef.current || e.evt.button !== 0) return
 
-    const { activeTool } = useUIStore.getState()
+    const { activeTool, nodeEditPathId: neid } = useUIStore.getState()
+
+    // If node edit is active and user clicked a different path, exit node edit first
+    if (neid && neid !== id) exitNodeEdit()
+
+    // Pen tool — start placing a node at click position
+    if (activeTool === 'pen') {
+      const pointer = e.target.getStage()?.getPointerPosition()
+      if (pointer) startPenDraw(pointer)
+      return
+    }
 
     // Drill tool: don't start move mode, placement handled in mouseup
     if (activeTool === 'drill') {
@@ -229,7 +397,7 @@ export default function CanvasStage() {
 
     didDragRef.current = false
     setMode2({ type: 'move', pathIds: usePathsStore.getState().selectedIds, startCNC: cnc })
-  }, [setMode2, startDrawShape])
+  }, [setMode2, startDrawShape, startPenDraw, exitNodeEdit])
 
   // Called by SelectionLayer resize handles
   const handleResizeHandleDown = useCallback((handle: HandleType, e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -300,7 +468,17 @@ export default function CanvasStage() {
     }
     if (e.evt.button !== 0) return
 
-    const { activeTool } = useUIStore.getState()
+    const { activeTool, nodeEditPathId: neid } = useUIStore.getState()
+
+    // Exit node edit when clicking empty canvas
+    if (neid) { exitNodeEdit(); return }
+
+    // Pen tool — start placing a node
+    if (activeTool === 'pen') {
+      const stagePointer = stageRef.current?.getPointerPosition()
+      if (stagePointer) startPenDraw(stagePointer)
+      return
+    }
 
     // Drill tool: capture click for placement in mouseup, don't deselect or start dragbox
     if (activeTool === 'drill') {
@@ -323,7 +501,7 @@ export default function CanvasStage() {
     didDragRef.current = false
     setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
     setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
-  }, [selectPath, setMode2, startDrawShape])
+  }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit])
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current
@@ -427,6 +605,58 @@ export default function CanvasStage() {
         }
       }
     }
+
+    // Update pen close-hover indicator (highlight first node when hovering near it)
+    if (m.type !== 'pendraw') {
+      const { activeTool: at, penNodes: nodes } = useUIStore.getState()
+      if (at === 'pen' && nodes.length >= 2) {
+        const first = nodes[0]
+        const fsx = vp.x + first.x * vp.scale
+        const fsy = vp.y - first.y * vp.scale
+        const close = Math.hypot(pointer.x - fsx, pointer.y - fsy) < 10
+        if (close !== penClosingRef.current) {
+          penClosingRef.current = close
+          setPenClosing(close)
+        }
+      } else if (penClosingRef.current) {
+        penClosingRef.current = false
+        setPenClosing(false)
+      }
+    }
+
+    if (m.type === 'pendraw') {
+      const asx = vp.x + m.anchorCNC.x * vp.scale
+      const asy = vp.y - m.anchorCNC.y * vp.scale
+      if (Math.hypot(pointer.x - asx, pointer.y - asy) > MOVE_THRESHOLD_PX) {
+        didDragRef.current = true
+      }
+      if (didDragRef.current && !m.closing) {
+        setLivePen({ anchor: m.anchorCNC, handle: cncMouse })
+      }
+    }
+
+    if (m.type === 'nodedit-drag' && editDragInitRef.current) {
+      didDragRef.current = true
+      const init = editDragInitRef.current
+      const dx = cncMouse.x - init.startCNC.x
+      const dy = cncMouse.y - init.startCNC.y
+      setEditNodes(init.initialNodes.map((n, i) => {
+        if (i !== m.nodeIdx) return n
+        if (m.kind === 'anchor') {
+          return {
+            ...n,
+            x: n.x + dx,
+            y: n.y + dy,
+            handleIn: n.handleIn ? { x: n.handleIn.x + dx, y: n.handleIn.y + dy } : undefined,
+            handleOut: n.handleOut ? { x: n.handleOut.x + dx, y: n.handleOut.y + dy } : undefined,
+          }
+        }
+        if (m.kind === 'handle-in') {
+          return { ...n, handleIn: { x: (n.handleIn?.x ?? n.x) + dx, y: (n.handleIn?.y ?? n.y) + dy } }
+        }
+        return { ...n, handleOut: { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy } }
+      }))
+    }
   }, [setCursorMM, setViewport, setLiveRotationAngle])
 
   const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -452,7 +682,7 @@ export default function CanvasStage() {
           }
           return [{ id, d: newD }]
         })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
       setLiveTransform(null)
       setMode2({ type: 'idle' })
@@ -474,7 +704,7 @@ export default function CanvasStage() {
           // null means computed but not representable → clear shapeParams
           return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams }]
         })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
       setLiveTransform(null)
       setMode2({ type: 'idle' })
@@ -491,7 +721,7 @@ export default function CanvasStage() {
           if (!path) return []
           return [{ id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null as null }]
         })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
       setLiveTransform(null)
       setLiveRotationAngle(null)
@@ -552,6 +782,48 @@ export default function CanvasStage() {
       return
     }
 
+    if (m.type === 'nodedit-drag') {
+      setMode2({ type: 'idle' })
+      editDragInitRef.current = null
+      commitEditNodes(editNodesRef.current)
+      return
+    }
+
+    if (m.type === 'pendraw') {
+      setMode2({ type: 'idle' })
+
+      if (m.closing) {
+        const { penNodes: nodes, clearPenNodes } = useUIStore.getState()
+        if (nodes.length >= 2) {
+          const d = penNodesToPathD(nodes, true)
+          if (d) {
+            const id = `pen-${Date.now()}`
+            const { addPaths: add, selectPath: sel } = usePathsStore.getState()
+            add([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
+            sel(id)
+          }
+        }
+        clearPenNodes()
+        useUIStore.getState().setActiveTool('select')
+        setLivePen(null)
+        penClosingRef.current = false
+        setPenClosing(false)
+        return
+      }
+
+      const { addPenNode } = useUIStore.getState()
+      const newNode: PenNode = { x: m.anchorCNC.x, y: m.anchorCNC.y }
+      if (didDragRef.current && livePen?.handle) {
+        const dx = livePen.handle.x - m.anchorCNC.x
+        const dy = livePen.handle.y - m.anchorCNC.y
+        newNode.outHandle = livePen.handle
+        newNode.inHandle = { x: m.anchorCNC.x - dx, y: m.anchorCNC.y - dy }
+      }
+      addPenNode(newNode)
+      setLivePen(null)
+      return
+    }
+
     // Drill tool: place a point on any non-drag click
     {
       const { activeTool: curTool } = useUIStore.getState()
@@ -565,12 +837,14 @@ export default function CanvasStage() {
     }
 
     setMode2({ type: 'idle' })
-  }, [liveTransform, dragBox, markNeedsUpdate, setMode2, setSelectedIds, setLiveRotationAngle])
+  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, commitEditNodes])
 
   const activeTool = useUIStore((s) => s.activeTool)
 
   const getCursor = () => {
+    if (nodeEditPathId) return 'default'
     if (activeTool === 'drill') return 'crosshair'
+    if (activeTool === 'pen') return 'crosshair'
     if (activeTool !== 'select') return 'crosshair'
     switch (modeRef.current.type) {
       case 'pan': return 'grabbing'
@@ -612,9 +886,27 @@ export default function CanvasStage() {
       >
         <WorkpieceLayer viewport={viewport} />
         <GridLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
-        <DesignLayer viewport={viewport} liveTransform={liveTransform} onPathMouseDown={handlePathMouseDown} />
-        <ToolpathLayer viewport={viewport} />
-        {selectedPaths.length > 0 && (
+        <DesignLayer
+          viewport={viewport}
+          liveTransform={liveTransform}
+          excludePathId={nodeEditPathId}
+          onPathMouseDown={handlePathMouseDown}
+          onPathDblClick={handlePathDblClick}
+        />
+        {nodeEditPathId && (
+          <NodeEditLayer
+            viewport={viewport}
+            nodes={editNodes}
+            closed={editClosed}
+            hoveredNodeIdx={hoveredEditNode}
+            onNodeMouseDown={handleNodeMouseDown}
+            onSegmentMouseDown={handleSegmentMouseDown}
+            onHoveredNodeChange={handleHoveredNodeChange}
+          />
+        )}
+        <ToolpathLayer viewport={viewport} onHover={handleToolpathHover} />
+        <SimulationLayer viewport={viewport} />
+        {!nodeEditPathId && selectedPaths.length > 0 && (
           <SelectionLayer
             viewport={viewport}
             selectedPaths={selectedPaths}
@@ -622,8 +914,8 @@ export default function CanvasStage() {
           />
         )}
         <OriginLayer viewport={viewport} />
-        <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
-        {selectedPaths.length > 0 && (
+        {/* <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} /> */}
+        {!nodeEditPathId && selectedPaths.length > 0 && (
           <SelectionHandleLayer
             viewport={viewport}
             selectedPaths={selectedPaths}
@@ -633,6 +925,9 @@ export default function CanvasStage() {
           />
         )}
         <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
+        {activeTool === 'pen' && (
+          <PenLayer viewport={viewport} penNodes={penNodes} livePen={livePen} penClosing={penClosing} />
+        )}
         {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
           <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={-viewport.scale}>
             {pendingDrillPoints.map((pt, i) => (
@@ -651,6 +946,17 @@ export default function CanvasStage() {
         )}
       </Stage>
 
+      {/* Toolpath hover tooltip */}
+      {toolpathTooltip && (
+        <div
+          className="absolute pointer-events-none z-10 bg-neutral-800/90 border border-neutral-600 text-neutral-200 text-xs rounded px-2 py-1 shadow-lg whitespace-nowrap"
+          style={{ left: toolpathTooltip.x + 12, top: toolpathTooltip.y - 8 }}
+        >
+          <div className="font-medium">{toolpathTooltip.name}</div>
+          {toolpathTooltip.depth && <div className="text-neutral-400">{toolpathTooltip.depth}</div>}
+        </div>
+      )}
+
       {/* Drag-box selection overlay */}
       {dragBox && dragBoxStyle && (
         <div
@@ -659,17 +965,37 @@ export default function CanvasStage() {
         />
       )}
 
+      {/* Node edit indicator */}
+      {nodeEditPathId && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-700/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+          {hoveredEditNode !== null
+            ? 'Delete key to remove point'
+            : 'Drag points or handles · Click segment to insert · Esc to finish'}
+        </div>
+      )}
+
       {/* Tool active indicator */}
       {activeTool === 'drill' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
           Drill Point Mode — click to place points, Esc to exit
         </div>
       )}
-      {activeTool !== 'select' && activeTool !== 'drill' && (
+      {activeTool === 'pen' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-violet-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+          {penClosing
+            ? 'Click to close path'
+            : penNodes.length === 0
+              ? 'Pen Tool — click to start, drag to curve'
+              : 'Click to add point, drag to curve, click first point to close, Esc to finish'}
+        </div>
+      )}
+      {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
           Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
         </div>
       )}
+
+      <SimulationPlayer />
 
       <button
         onClick={fitToWorkpiece}

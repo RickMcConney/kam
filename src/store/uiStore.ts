@@ -2,8 +2,15 @@ import { create } from 'zustand'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
 
 export type SidebarTab = 'draw' | 'machine' | 'paths'
-export type WorkspaceTab = '2d' | '3d' | 'tools'
-export type ActiveTool = 'select' | 'drill' | ShapeType
+export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
+export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
+
+export type PenNode = {
+  x: number
+  y: number
+  outHandle?: { x: number; y: number }
+  inHandle?: { x: number; y: number }
+}
 
 interface UIState {
   sidebarTab: SidebarTab
@@ -12,6 +19,8 @@ interface UIState {
   activeTool: ActiveTool
   shapeToolConfig: ShapeToolConfig
   pendingDrillPoints: { x: number; y: number }[]
+  penNodes: PenNode[]
+  nodeEditPathId: string | null
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
   toggleSnap: () => void
@@ -20,6 +29,9 @@ interface UIState {
   setShapeToolConfig: (config: ShapeToolConfig) => void
   addDrillPoint: (pt: { x: number; y: number }) => void
   clearDrillPoints: () => void
+  addPenNode: (node: PenNode) => void
+  clearPenNodes: () => void
+  setNodeEditPathId: (id: string | null) => void
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -29,6 +41,8 @@ export const useUIStore = create<UIState>()((set) => ({
   activeTool: 'select',
   shapeToolConfig: DEFAULT_SHAPE_CONFIG,
   pendingDrillPoints: [],
+  penNodes: [],
+  nodeEditPathId: null,
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
@@ -37,4 +51,7 @@ export const useUIStore = create<UIState>()((set) => ({
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   clearDrillPoints: () => set({ pendingDrillPoints: [] }),
+  addPenNode: (node) => set((s) => ({ penNodes: [...s.penNodes, node] })),
+  clearPenNodes: () => set({ penNodes: [] }),
+  setNodeEditPathId: (id) => set({ nodeEditPathId: id }),
 }))

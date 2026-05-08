@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import {
   Plus, Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
-  Crosshair, X,
+  Crosshair, X, ChevronUp, ChevronDown,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
+import { useWorkpieceStore } from '../store/workpieceStore'
 import { useUIStore } from '../store/uiStore'
 import { generateProfile } from '../cam/profile'
 import { generatePocket } from '../cam/pocket'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
+import { generateSurface } from '../cam/surfacing'
+import { regenerateOperation } from '../cam/regenerate'
 import { getBBox } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
 
@@ -572,9 +575,124 @@ function GenerateBtn({ disabled, generating, onClick }: { disabled: boolean; gen
   )
 }
 
+// ─── Surface form ─────────────────────────────────────────────────────────────
+
+interface SurfaceFormState {
+  toolId: string
+  depthMM: number
+  stepDownMM: number
+  stepoverPercent: number
+  passAngleDeg: number
+}
+
+function SurfaceForm({ onClose }: { onClose: () => void }) {
+  const { tools } = useToolStore()
+  const { widthMM, heightMM, origin } = useWorkpieceStore()
+  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+
+  const endMills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
+  const defaultTool = endMills[0] ?? tools[0]
+  const [form, setForm] = useState<SurfaceFormState>({
+    toolId: defaultTool?.id ?? '',
+    depthMM: defaultTool?.stepDownMM ?? 1,
+    stepDownMM: defaultTool?.stepDownMM ?? 1,
+    stepoverPercent: 40,
+    passAngleDeg: 0,
+  })
+  const [generating, setGenerating] = useState(false)
+  const selectedTool = tools.find((t) => t.id === form.toolId)
+
+  function handleToolChange(toolId: string) {
+    const t = tools.find((x) => x.id === toolId)
+    if (t) setForm((f) => ({ ...f, toolId, depthMM: t.stepDownMM, stepDownMM: t.stepDownMM }))
+  }
+
+  function up<K extends keyof SurfaceFormState>(k: K, v: SurfaceFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleGenerate() {
+    if (!selectedTool) return
+    setGenerating(true)
+    const opId = addOperation({
+      name: `Surface (${selectedTool.name})`,
+      type: 'surface',
+      toolId: form.toolId,
+      depthMM: form.depthMM,
+      stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent,
+      passAngleDeg: form.passAngleDeg,
+    })
+    updateOperation(opId, { status: 'generating' })
+    setTimeout(() => {
+      try {
+        setSegments(opId, generateSurface(selectedTool, {
+          widthMM, heightMM, origin,
+          depthMM: form.depthMM,
+          stepDownMM: form.stepDownMM,
+          stepoverPercent: form.stepoverPercent,
+          passAngleDeg: form.passAngleDeg,
+        }))
+      } catch (err) {
+        setError(opId, err instanceof Error ? err.message : 'Generation failed')
+      }
+      setGenerating(false)
+      onClose()
+    }, 0)
+  }
+
+  return (
+    <FormShell title="New Surface Operation" onClose={onClose}>
+      <div className="text-[10px] text-neutral-500 bg-neutral-700/30 rounded px-2 py-1.5">
+        Covers workpiece: {widthMM} × {heightMM} mm
+      </div>
+      <ToolSelector
+        tools={endMills.length > 0 ? endMills : tools}
+        value={form.toolId}
+        onChange={handleToolChange}
+      />
+      {/* Stepover */}
+      <div>
+        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">
+          Stepover <span className="text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+        </label>
+        <input
+          type="range" min={10} max={90} step={5}
+          value={form.stepoverPercent}
+          onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+      </div>
+      {/* Pass angle */}
+      <div>
+        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">
+          Pass Angle <span className="text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+        </label>
+        <input
+          type="range" min={0} max={180} step={5}
+          value={form.passAngleDeg}
+          onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+      </div>
+      <DepthRow
+        depthMM={form.depthMM}
+        stepDownMM={form.stepDownMM}
+        onDepth={(v) => up('depthMM', v)}
+        onStep={(v) => up('stepDownMM', v)}
+      />
+      <GenerateBtn
+        disabled={!selectedTool || generating || form.depthMM <= 0}
+        generating={generating}
+        onClick={handleGenerate}
+      />
+    </FormShell>
+  )
+}
+
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'pocket' | 'drill'
+type OpType = 'profile' | 'pocket' | 'drill' | 'surface'
 type FormState = null | 'menu' | OpType
 
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
@@ -588,6 +706,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['profile', 'Profile', 'Cut along path edge'],
           ['pocket', 'Pocket', 'Clear inside boundary'],
           ['drill', 'Drill', 'Peck or helical drill'],
+          ['surface', 'Surface', 'Flatten workpiece top'],
         ] as [OpType, string, string][]).map(([type, name, desc]) => (
           <button key={type} onClick={() => onSelect(type)}
             className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-neutral-600 bg-neutral-700/40 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors">
@@ -603,52 +722,12 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export default function MachinePanel() {
-  const { operations, deleteOperation, toggleVisibility, updateOperation, setSegments, setError } = useToolpathStore()
-  const { paths } = usePathsStore()
+  const { operations, deleteOperation, toggleVisibility, moveOperation } = useToolpathStore()
   const { tools } = useToolStore()
   const [activeForm, setActiveForm] = useState<FormState>(null)
 
   function handleRegenerate(opId: string) {
-    const op = operations.find((o) => o.id === opId)
-    if (!op) return
-    const tool = tools.find((t) => t.id === op.toolId)
-    if (!tool) return
-    updateOperation(opId, { status: 'generating' })
-    setTimeout(() => {
-      try {
-        if (op.type === 'profile') {
-          const path = paths.find((p) => p.id === op.pathId)
-          if (!path) throw new Error('Source path not found')
-          setSegments(opId, generateProfile(path.d, tool, {
-            side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM, direction: op.direction,
-          }))
-        } else if (op.type === 'pocket') {
-          const boundary = paths.find((p) => p.id === op.pathId)
-          if (!boundary) throw new Error('Boundary path not found')
-          const islandDs = op.islandIds.flatMap((id) => {
-            const p = paths.find((x) => x.id === id)
-            return p ? [p.d] : []
-          })
-          setSegments(opId, generatePocket(boundary.d, tool, {
-            depthMM: op.depthMM, stepDownMM: op.stepDownMM,
-            stepoverPercent: op.stepoverPercent, direction: op.direction,
-            islandDs,
-          }))
-        } else if (op.type === 'drill') {
-          if (op.drillMode === 'helical' && op.helicalCenterX !== undefined && op.helicalCenterY !== undefined && op.helicalRadius !== undefined) {
-            setSegments(opId, generateHelicalDrill(op.helicalCenterX, op.helicalCenterY, op.helicalRadius, tool, {
-              depthMM: op.depthMM, stepDownMM: op.stepDownMM,
-            }))
-          } else {
-            setSegments(opId, generatePeckDrill(op.points, tool, {
-              depthMM: op.depthMM, stepDownMM: op.stepDownMM,
-            }))
-          }
-        }
-      } catch (err) {
-        setError(opId, err instanceof Error ? err.message : 'Generation failed')
-      }
-    }, 0)
+    regenerateOperation(opId)
   }
 
   function opDescription(op: typeof operations[0]): string {
@@ -657,6 +736,7 @@ export default function MachinePanel() {
     if (op.type === 'profile') return `${toolName} · ${op.side} · ${op.depthMM}mm`
     if (op.type === 'pocket') return `${toolName} · ${op.stepoverPercent}% stepover · ${op.depthMM}mm`
     if (op.type === 'drill') return `${toolName} · ${op.drillMode} · ${op.depthMM}mm`
+    if (op.type === 'surface') return `${toolName} · ${op.stepoverPercent}% · ${op.passAngleDeg}° · ${op.depthMM}mm`
     return toolName
   }
 
@@ -688,6 +768,8 @@ export default function MachinePanel() {
         <PocketForm onClose={closeForm} />
       ) : activeForm === 'drill' ? (
         <DrillForm onClose={closeForm} />
+      ) : activeForm === 'surface' ? (
+        <SurfaceForm onClose={closeForm} />
       ) : null}
 
       {/* Operations list */}
@@ -705,6 +787,14 @@ export default function MachinePanel() {
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: op.color }} />
                   {STATUS_ICON[op.status]}
                   <span className="flex-1 text-xs text-neutral-200 truncate min-w-0" title={op.name}>{op.name}</span>
+                  <button title="Move up" onClick={() => moveOperation(op.id, 'up')}
+                    className="p-0.5 rounded hover:bg-neutral-600 text-neutral-600 hover:text-neutral-300">
+                    <ChevronUp size={12} />
+                  </button>
+                  <button title="Move down" onClick={() => moveOperation(op.id, 'down')}
+                    className="p-0.5 rounded hover:bg-neutral-600 text-neutral-600 hover:text-neutral-300">
+                    <ChevronDown size={12} />
+                  </button>
                   <button title={op.visible ? 'Hide' : 'Show'} onClick={() => toggleVisibility(op.id)}
                     className="p-0.5 rounded hover:bg-neutral-600 text-neutral-500 hover:text-neutral-300">
                     {op.visible ? <Eye size={12} /> : <EyeOff size={12} />}

@@ -1,28 +1,47 @@
-import { memo } from 'react'
-import { Layer, Line } from 'react-konva'
+import { memo, Fragment } from 'react'
+import { Layer, Line, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
-import { useToolpathStore, type MotionSegment } from '../../store/toolpathStore'
+import { useToolpathStore, type MotionSegment, type AnyOperation } from '../../store/toolpathStore'
 
 interface Props {
   viewport: Viewport
+  onHover?: (info: { name: string; depth: string } | null, stageX: number, stageY: number) => void
 }
 
-function cuttingPaths(segments: MotionSegment[]): number[][] {
-  const paths: number[][] = []
-  let current: number[] = []
+interface SegmentGroups {
+  cutting: number[][]
+  rapid: number[][]
+  firstCut: [number, number] | null
+}
+
+function groupSegments(segments: MotionSegment[]): SegmentGroups {
+  const cutting: number[][] = []
+  const rapid: number[][] = []
+  let cur: number[] = []
+  let isRapid = segments[0]?.rapid ?? true
+  let firstCut: [number, number] | null = null
+
   for (const seg of segments) {
-    if (seg.rapid) {
-      if (current.length >= 4) paths.push(current)
-      current = []
+    if (seg.rapid !== isRapid) {
+      if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
+      cur = cur.length >= 2 ? [cur[cur.length - 2], cur[cur.length - 1], seg.x, seg.y] : [seg.x, seg.y]
+      isRapid = seg.rapid
     } else {
-      current.push(seg.x, seg.y)
+      cur.push(seg.x, seg.y)
     }
+    if (!seg.rapid && firstCut === null) firstCut = [seg.x, seg.y]
   }
-  if (current.length >= 4) paths.push(current)
-  return paths
+  if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
+
+  return { cutting, rapid, firstCut }
 }
 
-export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
+function opDepthLabel(op: AnyOperation): string {
+  const d = (op as { depthMM?: number }).depthMM
+  return d !== undefined ? `${d} mm deep` : ''
+}
+
+export const ToolpathLayer = memo(function ToolpathLayer({ viewport, onHover }: Props) {
   const { operations } = useToolpathStore()
   const { scale } = viewport
 
@@ -30,22 +49,54 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
 
   return (
     <Layer x={viewport.x} y={viewport.y} scaleX={scale} scaleY={-scale}>
-      {visible.map((op) =>
-        cuttingPaths(op.segments).map((pts, i) => (
-          <Line
-            key={`${op.id}-${i}`}
-            points={pts}
-            stroke={op.color}
-            strokeWidth={1.5 / scale}
-            lineJoin="round"
-            lineCap="round"
-            dash={[6 / scale, 3 / scale]}
-            opacity={0.85}
-            listening={false}
-          />
-        ))
-      )}
+      {visible.map((op) => {
+        const { cutting, firstCut } = groupSegments(op.segments)
+        const depth = opDepthLabel(op)
+
+        return (
+          <Fragment key={op.id}>
+            {/* Cutting moves — solid, colored, hoverable */}
+            {cutting.map((pts, i) => (
+              <Line
+                key={`${op.id}-c-${i}`}
+                points={pts}
+                stroke={op.color}
+                strokeWidth={1.5 / scale}
+                hitStrokeWidth={16 / scale}
+                lineJoin="round"
+                lineCap="round"
+                opacity={0.9}
+                onMouseEnter={(e) => {
+                  if (!onHover) return
+                  const pos = e.target.getStage()?.getPointerPosition()
+                  if (pos) onHover({ name: op.name, depth }, pos.x, pos.y)
+                }}
+                onMouseMove={(e) => {
+                  if (!onHover) return
+                  const pos = e.target.getStage()?.getPointerPosition()
+                  if (pos) onHover({ name: op.name, depth }, pos.x, pos.y)
+                }}
+                onMouseLeave={() => onHover?.(null, 0, 0)}
+              />
+            ))}
+
+            {/* Start marker */}
+            {firstCut && (
+              <Circle
+                key={`${op.id}-start`}
+                x={firstCut[0]}
+                y={firstCut[1]}
+                radius={3.5 / scale}
+                fill={op.color}
+                stroke="#ffffff"
+                strokeWidth={1 / scale}
+                opacity={0.95}
+                listening={false}
+              />
+            )}
+          </Fragment>
+        )
+      })}
     </Layer>
   )
-}
-)
+})

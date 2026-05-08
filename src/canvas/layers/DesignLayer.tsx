@@ -7,16 +7,18 @@ import type { LiveTransform } from '../types'
 interface Props {
   viewport: Viewport
   liveTransform: LiveTransform | null
+  excludePathId?: string | null
   onPathMouseDown: (id: string, shift: boolean, e: Konva.KonvaEventObject<MouseEvent>) => void
+  onPathDblClick?: (id: string, e: Konva.KonvaEventObject<MouseEvent>) => void
 }
 
-export function DesignLayer({ viewport, liveTransform, onPathMouseDown }: Props) {
+export function DesignLayer({ viewport, liveTransform, excludePathId, onPathMouseDown, onPathDblClick }: Props) {
   const { paths, selectedIds } = usePathsStore()
   const { x, y, scale } = viewport
 
   return (
     <Layer x={x} y={y} scaleX={scale} scaleY={-scale}>
-      {paths.filter((p) => p.visible).map((p) => {
+      {paths.filter((p) => p.visible && p.id !== excludePathId).map((p) => {
         const isSelected = selectedIds.includes(p.id)
         const lt = liveTransform && liveTransform.pathIds.has(p.id) ? liveTransform : null
 
@@ -65,6 +67,10 @@ export function DesignLayer({ viewport, liveTransform, onPathMouseDown }: Props)
             onMouseDown={(e) => {
               e.cancelBubble = true
               onPathMouseDown(p.id, e.evt.shiftKey, e)
+            }}
+            onDblClick={(e) => {
+              e.cancelBubble = true
+              onPathDblClick?.(p.id, e)
             }}
             hitStrokeWidth={8 / scale}
           />

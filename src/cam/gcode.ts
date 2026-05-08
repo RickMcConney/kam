@@ -1,34 +1,53 @@
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
+import type { PostProcessorProfile } from '../store/postProcessorStore'
+
+const MM_PER_IN = 25.4
 
 function f(n: number) { return n.toFixed(3) }
 
-function opComment(op: AnyOperation): string {
+function sub(template: string, vals: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k) => String(vals[k] ?? ''))
+}
+
+function cmt(text: string, style: PostProcessorProfile['commentStyle']): string {
+  if (style === 'semicolon') return `; ${text}`
+  if (style === 'parenthesis') return `(${text})`
+  return ''
+}
+
+function opDesc(op: AnyOperation): string {
   if (op.type === 'profile') return `${op.side} · ${op.depthMM}mm`
   if (op.type === 'pocket') return `pocket · ${op.stepoverPercent}% stepover · ${op.depthMM}mm`
   if (op.type === 'drill') return `${op.drillMode} drill · ${op.depthMM}mm`
+  if (op.type === 'surface') return `surface · ${op.stepoverPercent}% stepover · ${op.passAngleDeg}° · ${op.depthMM}mm`
   return ''
+}
+
+function toOut(mm: number, profile: PostProcessorProfile): number {
+  return profile.unitMode === 'in' ? mm / MM_PER_IN : mm
 }
 
 export function generateGcode(
   operations: AnyOperation[],
   toolsById: Record<string, Tool>,
-  projectName: string
+  projectName: string,
+  profile: PostProcessorProfile,
 ): string {
   const lines: string[] = []
   const date = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const c = (text: string) => { const l = cmt(text, profile.commentStyle); if (l) lines.push(l) }
 
-  lines.push(`; FreazyKam - ${projectName}`)
-  lines.push(`; Generated: ${date}`)
-  lines.push(`G21   ; mm`)
-  lines.push(`G90   ; absolute`)
-  lines.push(`G17   ; XY plane`)
-  lines.push(``)
+  c(`FreazyKam - ${projectName}`)
+  c(`Generated: ${date}`)
+  c(`Post-processor: ${profile.name}`)
+  if (profile.startGcode.trim()) lines.push(...profile.startGcode.split('\n'))
+  lines.push('')
 
   const doneOps = operations.filter((o) => o.visible && o.status === 'done' && o.segments.length > 0)
   if (doneOps.length === 0) {
-    lines.push(`; No toolpaths to export.`)
-    lines.push(`M30`)
+    c('No toolpaths to export.')
+    lines.push('M30')
     return lines.join('\n')
   }
 
@@ -38,12 +57,16 @@ export function generateGcode(
     const tool = toolsById[op.toolId]
     if (!tool) continue
 
-    lines.push(`; === ${op.name} ===`)
-    lines.push(`; Tool: ${tool.name}  dia ${f(tool.diameterMM)}mm  ${opComment(op)}`)
+    c(`=== ${op.name} ===`)
+    c(`Tool: ${tool.name}  dia ${f(tool.diameterMM)}mm  ${opDesc(op)}`)
 
     if (lastToolId !== op.toolId) {
-      if (lastToolId) lines.push(`M5   ; spindle off (tool change)`)
-      lines.push(`M3 S${tool.rpm}   ; spindle on`)
+      if (lastToolId && profile.toolChangeGcode.trim()) {
+        lines.push(...profile.toolChangeGcode.split('\n'))
+      }
+      if (profile.spindleOnTemplate.trim()) {
+        lines.push(sub(profile.spindleOnTemplate, { s: tool.rpm }))
+      }
       lastToolId = op.toolId
     }
 
@@ -52,32 +75,30 @@ export function generateGcode(
     for (let i = 0; i < op.segments.length; i++) {
       const seg = op.segments[i]
       const prevSeg = i > 0 ? op.segments[i - 1] : null
+      const posChanged = seg.x !== prevX || seg.y !== prevY || seg.z !== prevZ
+      if (!posChanged) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
+
+      const x = f(toOut(seg.x, profile))
+      const y = f(toOut(seg.y, profile))
+      const z = f(toOut(seg.z, profile))
 
       if (seg.rapid) {
-        const parts: string[] = ['G0']
-        if (seg.x !== prevX || seg.y !== prevY) parts.push(`X${f(seg.x)} Y${f(seg.y)}`)
-        if (seg.z !== prevZ) parts.push(`Z${f(seg.z)}`)
-        if (parts.length > 1) lines.push(parts.join(' '))
+        lines.push(sub(profile.rapidTemplate, { x, y, z }))
       } else {
         const zChanged = seg.z !== prevZ
         const xyChanged = seg.x !== prevX || seg.y !== prevY
         const isPlunge = zChanged && prevSeg && !prevSeg.rapid && !xyChanged
-        const feed = isPlunge ? tool.zFeedMmMin : tool.xyFeedMmMin
-        const parts: string[] = ['G1']
-        if (xyChanged) parts.push(`X${f(seg.x)} Y${f(seg.y)}`)
-        if (zChanged) parts.push(`Z${f(seg.z)}`)
-        parts.push(`F${feed}`)
-        if (parts.length > 2) lines.push(parts.join(' '))
+        const feedMm = isPlunge ? tool.zFeedMmMin : tool.xyFeedMmMin
+        const feed = Math.round(toOut(feedMm, profile))
+        lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
       }
 
       prevX = seg.x; prevY = seg.y; prevZ = seg.z
     }
-    lines.push(``)
+    lines.push('')
   }
 
-  lines.push(`M5     ; spindle off`)
-  lines.push(`G0 Z10.000   ; safe retract`)
-  lines.push(`M30    ; end`)
+  if (profile.endGcode.trim()) lines.push(...profile.endGcode.split('\n'))
 
   return lines.join('\n')
 }

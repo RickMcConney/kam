@@ -1,5 +1,7 @@
 import { usePathsStore } from '../store/pathsStore'
+import { regenerateAffected } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
+import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox } from '../canvas/selectionUtils'
 import type { ShapeParams } from '../shapes/shapeGenerators'
@@ -63,7 +65,7 @@ function ShapeParamsEditor({
 }) {
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
 
-  const update = (newParams: ShapeParams) => updateShapeParams(id, newParams)
+  const update = (newParams: ShapeParams) => { updateShapeParams(id, newParams); regenerateAffected(id) }
   const u = units
 
   switch (params.type) {
@@ -129,6 +131,8 @@ export default function PropertiesPanel() {
   const { paths, selectedIds } = usePathsStore()
   const liveRotationAngle = useCanvasStore((s) => s.liveRotationAngle)
   const { units } = useWorkpieceStore()
+  const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+  const setNodeEditPathId = useUIStore((s) => s.setNodeEditPathId)
   const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
 
   if (selectedPaths.length === 0) return null
@@ -168,6 +172,23 @@ export default function PropertiesPanel() {
           value={liveRotationAngle !== null ? fmtAngle(liveRotationAngle) : '0.0°'}
         />
       </div>
+
+      {selectedPaths.length === 1 && (
+        <button
+          onClick={() => {
+            const id = selectedPaths[0].id
+            setNodeEditPathId(nodeEditPathId === id ? null : id)
+          }}
+          className={[
+            'mt-2 w-full text-[10px] py-1 rounded border transition-colors',
+            nodeEditPathId === selectedPaths[0].id
+              ? 'border-emerald-500 bg-emerald-500/20 text-emerald-400'
+              : 'border-neutral-600 text-neutral-400 hover:border-neutral-500 hover:text-neutral-300',
+          ].join(' ')}
+        >
+          {nodeEditPathId === selectedPaths[0].id ? 'Exit Point Edit' : 'Edit Points'}
+        </button>
+      )}
     </div>
   )
 }

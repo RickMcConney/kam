@@ -1,4 +1,4 @@
-import { Square, Circle, Hexagon, Star as StarIcon } from 'lucide-react'
+import { Square, Circle, Hexagon, Star as StarIcon, PenTool } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
@@ -130,6 +130,25 @@ export default function ShapePanel() {
   const { units } = useWorkpieceStore()
 
   return (
+    <>
+    <div className="px-3 py-2 space-y-2 border-b border-neutral-700">
+      <p className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Draw</p>
+      <div className="grid grid-cols-3 gap-1">
+        <button
+          onClick={() => setActiveTool(activeTool === 'pen' ? 'select' : 'pen')}
+          title="Pen Tool — click to add points, drag for curves"
+          className={[
+            'flex flex-col items-center gap-0.5 py-1.5 rounded text-xs transition-colors border',
+            activeTool === 'pen'
+              ? 'border-violet-500 bg-violet-500/20 text-violet-400'
+              : 'border-neutral-600 text-neutral-400 hover:border-neutral-500 hover:text-neutral-300',
+          ].join(' ')}
+        >
+          <PenTool size={14} />
+          <span className="text-[10px]">Pen</span>
+        </button>
+      </div>
+    </div>
     <div className="px-3 py-2 space-y-2 border-b border-neutral-700">
       <p className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Shapes</p>
       <div className="grid grid-cols-3 gap-1">
@@ -153,7 +172,7 @@ export default function ShapePanel() {
         ))}
       </div>
 
-      {activeTool !== 'select' && (
+      {activeTool !== 'select' && activeTool !== 'pen' && (
         <div className="space-y-1.5 pt-0.5">
           <p className="text-[10px] text-neutral-500 font-medium capitalize">
             {activeTool} defaults
@@ -167,5 +186,6 @@ export default function ShapePanel() {
         </div>
       )}
     </div>
+    </>
   )
 }

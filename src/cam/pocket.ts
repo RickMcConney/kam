@@ -38,15 +38,19 @@ function ensureCCW(pts: Pt2[]): Pt2[] {
 }
 
 // Shrink polygon inward by delta — works for both CCW and CW input.
-// offsetPolygon with -delta shrinks regardless of winding direction.
-// Returns [] when polygon collapses or inverts.
+// Returns [] when the polygon collapses, inverts, or fails to get smaller.
+// The "fails to get smaller" guard is essential for concave/star shapes:
+// concave vertices move outward during an inward offset, which can make
+// the signed area grow instead of shrink, causing an infinite loop.
 function shrink(pts: Pt2[], delta: number): Pt2[] {
+  const origArea = signedArea(pts)
   const result = offsetPolygon(pts, -delta)
   if (result.length < 3) return []
-  const origSign = Math.sign(signedArea(pts))
-  const resultSign = Math.sign(signedArea(result))
-  // Stop when winding flips (polygon inverted) or area collapsed to zero
-  if (resultSign === 0 || resultSign !== origSign) return []
+  const resultArea = signedArea(result)
+  // Winding flipped or area zero → collapsed or inverted
+  if (Math.sign(resultArea) !== Math.sign(origArea)) return []
+  // Area didn't decrease → pathological (concave/self-intersecting case)
+  if (Math.abs(resultArea) >= Math.abs(origArea)) return []
   return result
 }
 
@@ -104,11 +108,15 @@ export function generatePocket(
 
   const boundaryArea = Math.abs(signedArea(boundary))
 
+  // Estimate a generous upper bound on passes: diameter / stepover + 10 buffer.
+  // This is a hard safety cap — well-formed shapes terminate via shrink() long before this.
+  const maxPasses = Math.ceil((Math.sqrt(boundaryArea) / stepoverMM) * 2) + 50
+
   // Generate boundary-inward contours.
-  // Use raw polygon winding — offsetPolygon with -delta shrinks regardless of CCW/CW.
   const boundaryContours: Pt2[][] = []
   let ring = shrink(boundary, tool.diameterMM / 2)
-  while (ring.length >= 3) {
+  let passCount = 0
+  while (ring.length >= 3 && passCount++ < maxPasses) {
     const [cx, cy] = centroid(ring)
     const blocked = islandObstacles.some((obs) => pointInPolygon(cx, cy, obs))
     if (!blocked) boundaryContours.push(ring)
@@ -119,7 +127,8 @@ export function generatePocket(
   const islandContours: Pt2[][] = []
   for (const island of islands) {
     let ir = grow(island, tool.diameterMM / 2)
-    while (ir.length >= 3) {
+    let islandPass = 0
+    while (ir.length >= 3 && islandPass++ < maxPasses) {
       if (Math.abs(signedArea(ir)) >= boundaryArea * 0.98) break
       const [cx, cy] = centroid(ir)
       if (!pointInPolygon(cx, cy, boundary)) break

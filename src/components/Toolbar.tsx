@@ -1,13 +1,20 @@
+import { useRef, useState } from 'react'
 import {
   FilePlus, FolderOpen, Save, Upload, Download,
-  Undo2, Redo2, Magnet, Settings, HelpCircle,
+  Undo2, Redo2, Magnet, Settings, HelpCircle, Play,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { useUIStore } from '../store/uiStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
+import { usePostProcessorStore } from '../store/postProcessorStore'
+import { useWorkpieceStore } from '../store/workpieceStore'
+import { useSimStore } from '../store/simStore'
 import { generateGcode, downloadGcode } from '../cam/gcode'
+import { importSvg } from '../importers/svgImporter'
+import { saveProject } from '../io/projectSave'
+import { openProjectFile, newProject } from '../io/projectLoad'
 
 function ToolbarButton({
   icon,
@@ -44,17 +51,105 @@ function Sep() {
   return <div className="w-px h-5 bg-neutral-600 mx-1" />
 }
 
+function ProjectNameEditor() {
+  const { name, setName } = useProjectStore()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(name)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function startEdit() {
+    setDraft(name)
+    setEditing(true)
+    setTimeout(() => inputRef.current?.select(), 0)
+  }
+
+  function commit() {
+    const trimmed = draft.trim()
+    setName(trimmed || 'Untitled Project')
+    setEditing(false)
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') commit()
+    if (e.key === 'Escape') setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={onKeyDown}
+        className="ml-3 text-sm bg-neutral-700 text-neutral-100 rounded px-2 py-0.5 w-52 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        autoFocus
+      />
+    )
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      title="Click to rename project"
+      className="ml-3 text-neutral-300 text-sm truncate max-w-52 hover:text-neutral-100 hover:underline text-left"
+    >
+      {name}
+    </button>
+  )
+}
+
 export default function Toolbar() {
-  const { name } = useProjectStore()
-  const { snapEnabled, toggleSnap } = useUIStore()
+  const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab } = useUIStore()
   const { undo, redo, canUndo, canRedo } = usePathsStore()
   const { operations } = useToolpathStore()
   const { tools } = useToolStore()
+  const { name } = useProjectStore()
+  const getActiveProfile = usePostProcessorStore((s) => s.getActiveProfile)
+  const importRef = useRef<HTMLInputElement>(null)
 
   function handleExportGcode() {
     const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
-    const gcode = generateGcode(operations, toolsById, name)
+    const profile = getActiveProfile()
+    const gcode = generateGcode(operations, toolsById, name, profile)
     downloadGcode(gcode, name)
+  }
+
+  function handleSimulate() {
+    const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
+    const profile = getActiveProfile()
+    const gcode = generateGcode(operations, toolsById, name, profile)
+    useSimStore.getState().loadGcode(gcode)
+    setWorkspaceTab('2d')
+  }
+
+  function handleImportFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+
+    if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
+      file.text().then((text) => {
+        useSimStore.getState().loadGcode(text)
+        setWorkspaceTab('2d')
+      })
+      return
+    }
+
+    if (file.name.toLowerCase().endsWith('.svg') || file.type === 'image/svg+xml') {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        try {
+          const { widthMM, heightMM } = useWorkpieceStore.getState()
+          const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } })
+          if (result.paths.length > 0) {
+            usePathsStore.getState().addPaths(result.paths)
+            setSidebarTab('paths')
+          }
+        } catch { /* ignore */ }
+      }
+      reader.readAsText(file)
+    }
   }
 
   const hasToolpaths = operations.some((o) => o.status === 'done' && o.visible)
@@ -68,17 +163,45 @@ export default function Toolbar() {
       <Sep />
 
       {/* File */}
-      <ToolbarButton icon={<FilePlus size={16} />} label="New Project" />
-      <ToolbarButton icon={<FolderOpen size={16} />} label="Open Project (Ctrl+O)" />
-      <ToolbarButton icon={<Save size={16} />} label="Save Project (Ctrl+S)" />
+      <ToolbarButton
+        icon={<FilePlus size={16} />}
+        label="New Project (Ctrl+N)"
+        onClick={newProject}
+      />
+      <ToolbarButton
+        icon={<FolderOpen size={16} />}
+        label="Open Project (Ctrl+O)"
+        onClick={() => openProjectFile().catch(() => {})}
+      />
+      <ToolbarButton
+        icon={<Save size={16} />}
+        label="Save Project (Ctrl+S)"
+        onClick={saveProject}
+      />
       <Sep />
 
       {/* Import / Export */}
-      <ToolbarButton icon={<Upload size={16} />} label="Import File" />
+      <input
+        ref={importRef}
+        type="file"
+        accept=".svg,.gcode,.nc,.ngc,.tap"
+        className="hidden"
+        onChange={handleImportFileChange}
+      />
+      <ToolbarButton
+        icon={<Upload size={16} />}
+        label="Import File (SVG or G-code)"
+        onClick={() => importRef.current?.click()}
+      />
       <ToolbarButton
         icon={<Download size={16} />}
         label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
         onClick={handleExportGcode}
+      />
+      <ToolbarButton
+        icon={<Play size={16} />}
+        label={hasToolpaths ? 'Simulate G-code' : 'Simulate G-code (no toolpaths)'}
+        onClick={handleSimulate}
       />
       <Sep />
 
@@ -95,10 +218,8 @@ export default function Toolbar() {
         active={snapEnabled}
       />
 
-      {/* Project name */}
-      <span className="ml-3 text-neutral-300 text-sm truncate max-w-52 select-text">
-        {name}
-      </span>
+      {/* Editable project name */}
+      <ProjectNameEditor />
 
       {/* Right side */}
       <div className="ml-auto flex items-center gap-0.5">

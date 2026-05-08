@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { CuttingDirection } from './toolStore'
+import type { OriginPosition } from './workpieceStore'
 
 export type CutSide = 'inside' | 'outside' | 'centerline'
 export type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
@@ -50,7 +51,6 @@ export interface DrillOperation extends BaseOperation {
   type: 'drill'
   drillMode: 'peck' | 'helical'
   points: DrillPoint[]
-  // helical only:
   pathId?: string
   helicalCenterX?: number
   helicalCenterY?: number
@@ -59,12 +59,21 @@ export interface DrillOperation extends BaseOperation {
   stepDownMM: number
 }
 
-export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation
+export interface SurfaceOperation extends BaseOperation {
+  type: 'surface'
+  depthMM: number
+  stepDownMM: number
+  stepoverPercent: number
+  passAngleDeg: number
+}
+
+export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation
 
 type AddPayload =
   | Omit<ProfileOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<PocketOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<DrillOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<SurfaceOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
 
 const OP_COLORS = ['#f97316', '#06b6d4', '#10b981', '#8b5cf6', '#ec4899', '#eab308']
 let _colorIdx = 0
@@ -78,6 +87,8 @@ interface ToolpathState {
   setSegments: (id: string, segments: MotionSegment[]) => void
   setError: (id: string, error: string) => void
   toggleVisibility: (id: string) => void
+  moveOperation: (id: string, dir: 'up' | 'down') => void
+  replaceOperations: (operations: AnyOperation[]) => void
   markNeedsUpdate: (pathId: string) => void
 }
 
@@ -123,6 +134,20 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
   toggleVisibility: (id) =>
     set((s) => ({ operations: s.operations.map((o) => o.id === id ? { ...o, visible: !o.visible } as AnyOperation : o) })),
 
+  moveOperation: (id, dir) =>
+    set((s) => {
+      const idx = s.operations.findIndex((o) => o.id === id)
+      if (idx < 0) return s
+      const newIdx = dir === 'up' ? idx - 1 : idx + 1
+      if (newIdx < 0 || newIdx >= s.operations.length) return s
+      const ops = [...s.operations]
+      const [removed] = ops.splice(idx, 1)
+      ops.splice(newIdx, 0, removed)
+      return { operations: ops }
+    }),
+
+  replaceOperations: (operations) => set({ operations }),
+
   markNeedsUpdate: (pathId) =>
     set((s) => ({
       operations: s.operations.map((o) =>
@@ -130,3 +155,6 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
       ),
     })),
 }))
+
+// Re-export OriginPosition so callers can get it from one place
+export type { OriginPosition }
