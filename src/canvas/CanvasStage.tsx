@@ -914,7 +914,7 @@ export default function CanvasStage() {
           />
         )}
         <OriginLayer viewport={viewport} />
-        {/* <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} /> */}
+        <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
         {!nodeEditPathId && selectedPaths.length > 0 && (
           <SelectionHandleLayer
             viewport={viewport}
