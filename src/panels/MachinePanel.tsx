@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ICON } from '../theme'
 import {
   Plus, Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
   Crosshair, X, ChevronUp, ChevronDown,
@@ -43,11 +44,11 @@ function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: 
 // ─── Status icon ─────────────────────────────────────────────────────────────
 
 const STATUS_ICON = {
-  pending: <span className="w-1.5 h-1.5 rounded-full bg-neutral-500 flex-shrink-0" />,
-  generating: <Loader2 size={10} className="animate-spin text-blue-400 flex-shrink-0" />,
-  done: <CheckCircle2 size={11} className="text-green-400 flex-shrink-0" />,
-  'needs-update': <AlertCircle size={11} className="text-amber-400 flex-shrink-0" />,
-  error: <AlertCircle size={11} className="text-red-400 flex-shrink-0" />,
+  pending: <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-neutral-600 flex-shrink-0" />,
+  generating: <Loader2 size={ICON.xs} className="animate-spin text-blue-400 flex-shrink-0" />,
+  done: <CheckCircle2 size={ICON.xs} className="text-green-400 flex-shrink-0" />,
+  'needs-update': <AlertCircle size={ICON.xs} className="text-amber-400 flex-shrink-0" />,
+  error: <AlertCircle size={ICON.xs} className="text-red-400 flex-shrink-0" />,
 }
 
 // ─── Profile form ─────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ interface ProfileFormState {
 
 function ProfileForm({ onClose }: { onClose: () => void }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const selectedId = selectedIds[0] ?? null
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
 
@@ -90,6 +91,7 @@ function ProfileForm({ onClose }: { onClose: () => void }) {
 
   function handleGenerate() {
     if (!selectedPath || !selectedTool) return
+    pushHistoryBoth()
     setGenerating(true)
     const opId = addOperation({
       name: `Profile: ${selectedPath.name} (${selectedTool.name})`,
@@ -144,7 +146,7 @@ interface PocketFormState {
 
 function PocketForm({ onClose }: { onClose: () => void }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
 
   const defaultTool = tools[0]
@@ -172,6 +174,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
 
   function handleGenerate() {
     if (!boundaryPath || !selectedTool) return
+    pushHistoryBoth()
     setGenerating(true)
     const opId = addOperation({
       name: `Pocket: ${boundaryPath.name} (${selectedTool.name})`,
@@ -206,28 +209,28 @@ function PocketForm({ onClose }: { onClose: () => void }) {
     <FormShell title="New Pocket Operation" onClose={onClose}>
       {/* Boundary */}
       <div>
-        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Boundary</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Boundary</label>
         {boundaryPath ? (
           <PathChip path={boundaryPath} label="boundary" />
         ) : (
-          <p className="text-xs text-amber-400 flex items-center gap-1"><AlertCircle size={12} /> Select a closed path first</p>
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
         )}
       </div>
       {/* Islands */}
       {islandPaths.length > 0 && (
         <div>
-          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Islands</label>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Islands</label>
           <div className="space-y-0.5">
             {islandPaths.map((p) => <PathChip key={p.id} path={p} label="island" />)}
           </div>
-          <p className="text-[10px] text-neutral-500 mt-1">Additional selected paths treated as islands.</p>
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">Additional selected paths treated as islands.</p>
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
       {/* Stepover */}
       <div>
-        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">
-          Stepover <span className="text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
           type="range" min={10} max={90} step={5}
@@ -259,7 +262,7 @@ interface DrillFormState {
 
 function DrillForm({ onClose }: { onClose: () => void }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
 
@@ -306,6 +309,7 @@ function DrillForm({ onClose }: { onClose: () => void }) {
     if (form.drillMode === 'peck' && pendingDrillPoints.length === 0) return
     if (form.drillMode === 'helical' && !circleInfo) return
 
+    pushHistoryBoth()
     setGenerating(true)
 
     const opName = form.drillMode === 'helical' && circleInfo
@@ -360,15 +364,15 @@ function DrillForm({ onClose }: { onClose: () => void }) {
     <FormShell title="New Drill Operation" onClose={handleClose}>
       {/* Mode toggle */}
       <div>
-        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Mode</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Mode</label>
         <div className="flex gap-1">
           {(['peck', 'helical'] as const).map((m) => (
             <button key={m} onClick={() => { if (m !== form.drillMode) toggleDrillMode() }}
               className={[
-                'flex-1 py-1 text-xs rounded border transition-colors capitalize',
+                'flex-1 py-1 text-body rounded border transition-colors capitalize',
                 form.drillMode === m
                   ? 'bg-blue-600 border-blue-500 text-white'
-                  : 'bg-neutral-700 border-neutral-600 text-neutral-400 hover:text-neutral-200',
+                  : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
               ].join(' ')}>
               {m === 'peck' ? 'Peck at Points' : 'Helical (Circle)'}
             </button>
@@ -379,7 +383,7 @@ function DrillForm({ onClose }: { onClose: () => void }) {
       {/* Peck: place points */}
       {form.drillMode === 'peck' && (
         <div>
-          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Drill Points</label>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Drill Points</label>
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
@@ -387,32 +391,32 @@ function DrillForm({ onClose }: { onClose: () => void }) {
                 else { setActiveTool('drill') }
               }}
               className={[
-                'flex items-center gap-1.5 px-2 py-1 rounded text-xs border transition-colors',
+                'flex items-center gap-1.5 px-2 py-1 rounded text-body border transition-colors',
                 activeTool === 'drill'
                   ? 'bg-blue-600 border-blue-500 text-white'
-                  : 'bg-neutral-700 border-neutral-600 text-neutral-300 hover:bg-neutral-600',
+                  : 'bg-gray-100 dark:bg-neutral-800 border-gray-300 dark:border-neutral-700 text-gray-700 dark:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700',
               ].join(' ')}
             >
-              <Crosshair size={11} />
+              <Crosshair size={ICON.xs} />
               {activeTool === 'drill' ? 'Placing…' : 'Place Points'}
             </button>
             {pendingDrillPoints.length > 0 && (
-              <span className="text-xs text-neutral-300">
+              <span className="text-body text-gray-700 dark:text-neutral-300">
                 {pendingDrillPoints.length} point{pendingDrillPoints.length !== 1 ? 's' : ''}
               </span>
             )}
             {pendingDrillPoints.length > 0 && (
-              <button onClick={clearDrillPoints} className="p-0.5 rounded hover:bg-neutral-600 text-neutral-500 hover:text-neutral-300">
-                <X size={11} />
+              <button onClick={clearDrillPoints} className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">
+                <X size={ICON.xs} />
               </button>
             )}
           </div>
           {pendingDrillPoints.length === 0 && (
-            <p className="text-[10px] text-neutral-500 mt-1">Click on canvas to place drill points.</p>
+            <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">Click on canvas to place drill points.</p>
           )}
           {isDrillToolSelected && (
-            <p className="text-[10px] text-amber-400 mt-1 flex items-center gap-1">
-              <AlertCircle size={10} /> Peck drilling with an end mill — ensure the tool is suitable.
+            <p className="text-label text-amber-400 mt-1 flex items-center gap-1">
+              <AlertCircle size={ICON.xs} /> Peck drilling with an end mill — ensure the tool is suitable.
             </p>
           )}
         </div>
@@ -421,26 +425,26 @@ function DrillForm({ onClose }: { onClose: () => void }) {
       {/* Helical: show circle info */}
       {form.drillMode === 'helical' && (
         <div>
-          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Source Circle</label>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Source Circle</label>
           {circleInfo ? (
-            <div className="text-xs text-neutral-200 bg-neutral-700/40 rounded px-2 py-1 space-y-0.5">
+            <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 space-y-0.5">
               <div>Center: ({circleInfo.cx.toFixed(1)}, {circleInfo.cy.toFixed(1)}) mm</div>
               <div>Hole Ø: {(circleInfo.radiusMM * 2).toFixed(2)} mm</div>
               {helicalRadius !== null && helicalRadius > 0 && (
-                <div className="text-neutral-400">Tool path Ø: {(helicalRadius * 2).toFixed(2)} mm</div>
+                <div className="text-gray-500 dark:text-neutral-400">Tool path Ø: {(helicalRadius * 2).toFixed(2)} mm</div>
               )}
               {helicalRadius !== null && helicalRadius <= 0 && (
                 <div className="text-amber-400">Tool is wider than hole — will center-drill instead.</div>
               )}
             </div>
           ) : (
-            <p className="text-xs text-amber-400 flex items-center gap-1">
-              <AlertCircle size={12} /> Select a circular path first
+            <p className="text-body text-amber-400 flex items-center gap-1">
+              <AlertCircle size={ICON.sm} /> Select a circular path first
             </p>
           )}
           {isDrillToolSelected && (
-            <p className="text-[10px] text-amber-400 mt-1 flex items-center gap-1">
-              <AlertCircle size={10} /> Drill bits cannot do helical drilling — use an end mill.
+            <p className="text-label text-amber-400 mt-1 flex items-center gap-1">
+              <AlertCircle size={ICON.xs} /> Drill bits cannot do helical drilling — use an end mill.
             </p>
           )}
         </div>
@@ -458,10 +462,10 @@ function DrillForm({ onClose }: { onClose: () => void }) {
 
 function FormShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="border border-neutral-600 rounded-lg mx-3 mt-3 mb-2 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 bg-neutral-700/50 border-b border-neutral-600">
-        <span className="text-xs font-semibold text-neutral-300">{title}</span>
-        <button onClick={onClose} className="text-neutral-500 hover:text-neutral-300 text-sm leading-none">✕</button>
+    <div className="border border-gray-200 dark:border-neutral-600 rounded-lg mx-3 mt-3 mb-2 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-gray-100 dark:bg-neutral-800 border-b border-gray-200 dark:border-neutral-600">
+        <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{title}</span>
+        <button onClick={onClose} className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none">✕</button>
       </div>
       <div className="p-3 space-y-2.5">{children}</div>
     </div>
@@ -470,10 +474,10 @@ function FormShell({ title, onClose, children }: { title: string; onClose: () =>
 
 function PathChip({ path, label }: { path: ImportedPath; label: string }) {
   return (
-    <div className="text-xs text-neutral-200 bg-neutral-700/40 rounded px-2 py-1 flex items-center gap-1.5">
+    <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
       {path.name}
-      <span className="text-neutral-500">({label})</span>
+      <span className="text-gray-400 dark:text-neutral-500">({label})</span>
     </div>
   )
 }
@@ -481,12 +485,12 @@ function PathChip({ path, label }: { path: ImportedPath; label: string }) {
 function PathSelector({ selectedPath }: { selectedPath: ImportedPath | undefined }) {
   return (
     <div>
-      <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
       {selectedPath ? (
         <PathChip path={selectedPath} label="selected" />
       ) : (
-        <p className="text-xs text-amber-400 flex items-center gap-1">
-          <AlertCircle size={12} /> Select a path on the canvas first
+        <p className="text-body text-amber-400 flex items-center gap-1">
+          <AlertCircle size={ICON.sm} /> Select a path on the canvas first
         </p>
       )}
     </div>
@@ -500,11 +504,11 @@ function ToolSelector({ tools, value, onChange }: {
 }) {
   return (
     <div>
-      <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Tool</label>
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Tool</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+        className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
       >
         {tools.map((t) => (
           <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
@@ -522,15 +526,15 @@ function ToggleRow<T extends string>({ label, options, value, onChange }: {
 }) {
   return (
     <div>
-      <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">{label}</label>
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{label}</label>
       <div className="flex gap-1">
         {options.map((o) => (
           <button key={o} onClick={() => onChange(o)}
             className={[
-              'flex-1 py-1 text-xs rounded border transition-colors capitalize',
+              'flex-1 py-1 text-body rounded border transition-colors capitalize',
               value === o
                 ? 'bg-blue-600 border-blue-500 text-white'
-                : 'bg-neutral-700 border-neutral-600 text-neutral-400 hover:text-neutral-200',
+                : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
             ].join(' ')}>
             {o}
           </button>
@@ -551,13 +555,13 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
         ['Step Down', stepDownMM, onStep],
       ] as [string, number, (v: number) => void][]).map(([lbl, val, fn]) => (
         <div key={lbl}>
-          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
           <div className="flex items-center gap-1">
             <input type="number" value={val} min={0.01} step={0.5}
               onChange={(e) => fn(parseFloat(e.target.value) || 0)}
-              className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
-            <span className="text-[10px] text-neutral-500">mm</span>
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
           </div>
         </div>
       ))}
@@ -568,8 +572,8 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
 function GenerateBtn({ disabled, generating, onClick }: { disabled: boolean; generating: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} disabled={disabled}
-      className="w-full py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5">
-      {generating && <Loader2 size={12} className="animate-spin" />}
+      className="w-full py-1.5 rounded text-body font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5">
+      {generating && <Loader2 size={ICON.sm} className="animate-spin" />}
       {generating ? 'Generating…' : 'Generate Toolpath'}
     </button>
   )
@@ -588,6 +592,7 @@ interface SurfaceFormState {
 function SurfaceForm({ onClose }: { onClose: () => void }) {
   const { tools } = useToolStore()
   const { widthMM, heightMM, origin } = useWorkpieceStore()
+  const { pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
 
   const endMills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
@@ -613,6 +618,7 @@ function SurfaceForm({ onClose }: { onClose: () => void }) {
 
   function handleGenerate() {
     if (!selectedTool) return
+    pushHistoryBoth()
     setGenerating(true)
     const opId = addOperation({
       name: `Surface (${selectedTool.name})`,
@@ -643,7 +649,7 @@ function SurfaceForm({ onClose }: { onClose: () => void }) {
 
   return (
     <FormShell title="New Surface Operation" onClose={onClose}>
-      <div className="text-[10px] text-neutral-500 bg-neutral-700/30 rounded px-2 py-1.5">
+      <div className="text-label text-gray-400 dark:text-neutral-500 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1.5">
         Covers workpiece: {widthMM} × {heightMM} mm
       </div>
       <ToolSelector
@@ -653,8 +659,8 @@ function SurfaceForm({ onClose }: { onClose: () => void }) {
       />
       {/* Stepover */}
       <div>
-        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">
-          Stepover <span className="text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
           type="range" min={10} max={90} step={5}
@@ -665,8 +671,8 @@ function SurfaceForm({ onClose }: { onClose: () => void }) {
       </div>
       {/* Pass angle */}
       <div>
-        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">
-          Pass Angle <span className="text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
         </label>
         <input
           type="range" min={0} max={180} step={5}
@@ -697,8 +703,8 @@ type FormState = null | 'menu' | OpType
 
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
   return (
-    <div className="mx-3 mt-3 mb-2 border border-neutral-600 rounded-lg overflow-hidden">
-      <div className="px-3 py-2 bg-neutral-700/50 border-b border-neutral-600 text-xs font-semibold text-neutral-300">
+    <div className="mx-3 mt-3 mb-2 border border-gray-200 dark:border-neutral-600 rounded-lg overflow-hidden">
+      <div className="px-3 py-2 bg-gray-100 dark:bg-neutral-800 border-b border-gray-200 dark:border-neutral-600 text-body font-semibold text-gray-700 dark:text-neutral-300">
         Add Operation
       </div>
       <div className="p-2 grid grid-cols-3 gap-1.5">
@@ -709,9 +715,9 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['surface', 'Surface', 'Flatten workpiece top'],
         ] as [OpType, string, string][]).map(([type, name, desc]) => (
           <button key={type} onClick={() => onSelect(type)}
-            className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-neutral-600 bg-neutral-700/40 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors">
-            <span className="text-xs font-medium">{name}</span>
-            <span className="text-[9px] text-neutral-500 text-center leading-tight">{desc}</span>
+            className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-gray-200 dark:border-neutral-600 bg-gray-50 dark:bg-neutral-900 hover:bg-gray-100 dark:hover:bg-neutral-800 text-gray-700 dark:text-neutral-300 hover:text-white transition-colors">
+            <span className="text-body font-medium">{name}</span>
+            <span className="text-label text-gray-400 dark:text-neutral-500 text-center leading-tight">{desc}</span>
           </button>
         ))}
       </div>
@@ -723,6 +729,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
 
 export default function MachinePanel() {
   const { operations, deleteOperation, toggleVisibility, moveOperation } = useToolpathStore()
+  const { pushHistoryBoth } = usePathsStore()
   const { tools } = useToolStore()
   const [activeForm, setActiveForm] = useState<FormState>(null)
 
@@ -749,9 +756,9 @@ export default function MachinePanel() {
         <div className="mx-3 mt-3 mb-2">
           <button
             onClick={() => setActiveForm('menu')}
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded text-xs bg-neutral-700 hover:bg-neutral-600 border border-neutral-600 text-neutral-300 transition-colors"
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded text-body bg-gray-100 dark:bg-neutral-800 hover:bg-gray-200 dark:hover:bg-neutral-700 border border-gray-200 dark:border-neutral-600 text-gray-700 dark:text-neutral-300 transition-colors"
           >
-            <Plus size={13} />
+            <Plus size={ICON.sm} />
             Add Operation
           </button>
         </div>
@@ -759,7 +766,7 @@ export default function MachinePanel() {
         <div>
           <AddOperationMenu onSelect={(t) => setActiveForm(t)} />
           <div className="mx-3">
-            <button onClick={closeForm} className="w-full py-1 text-xs text-neutral-500 hover:text-neutral-300">Cancel</button>
+            <button onClick={closeForm} className="w-full py-1 text-body text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">Cancel</button>
           </div>
         </div>
       ) : activeForm === 'profile' ? (
@@ -775,45 +782,45 @@ export default function MachinePanel() {
       {/* Operations list */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {operations.length === 0 ? (
-          <div className="px-3 py-6 text-xs text-neutral-500 text-center">
-            <Cpu size={28} className="mx-auto mb-2 opacity-30" />
+          <div className="px-3 py-6 text-body text-gray-400 dark:text-neutral-500 text-center">
+            <Cpu size={ICON.lg} className="mx-auto mb-2 opacity-30" />
             No operations yet.
           </div>
         ) : (
           <ul className="space-y-1">
             {operations.map((op) => (
-              <li key={op.id} className="rounded border border-neutral-700 bg-neutral-800/50 overflow-hidden">
+              <li key={op.id} className="rounded border border-gray-200 dark:border-neutral-700 bg-gray-50/50 dark:bg-neutral-900/50 overflow-hidden">
                 <div className="flex items-center gap-1.5 px-2 py-2">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: op.color }} />
                   {STATUS_ICON[op.status]}
-                  <span className="flex-1 text-xs text-neutral-200 truncate min-w-0" title={op.name}>{op.name}</span>
+                  <span className="flex-1 text-body text-gray-800 dark:text-neutral-200 truncate min-w-0" title={op.name}>{op.name}</span>
                   <button title="Move up" onClick={() => moveOperation(op.id, 'up')}
-                    className="p-0.5 rounded hover:bg-neutral-600 text-neutral-600 hover:text-neutral-300">
-                    <ChevronUp size={12} />
+                    className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">
+                    <ChevronUp size={ICON.sm} />
                   </button>
                   <button title="Move down" onClick={() => moveOperation(op.id, 'down')}
-                    className="p-0.5 rounded hover:bg-neutral-600 text-neutral-600 hover:text-neutral-300">
-                    <ChevronDown size={12} />
+                    className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">
+                    <ChevronDown size={ICON.sm} />
                   </button>
                   <button title={op.visible ? 'Hide' : 'Show'} onClick={() => toggleVisibility(op.id)}
-                    className="p-0.5 rounded hover:bg-neutral-600 text-neutral-500 hover:text-neutral-300">
-                    {op.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                    className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">
+                    {op.visible ? <Eye size={ICON.sm} /> : <EyeOff size={ICON.sm} />}
                   </button>
-                  <button title="Delete" onClick={() => deleteOperation(op.id)}
-                    className="p-0.5 rounded hover:bg-red-900/30 text-neutral-500 hover:text-red-400">
-                    <Trash2 size={12} />
+                  <button title="Delete" onClick={() => { pushHistoryBoth(); deleteOperation(op.id) }}
+                    className="p-0.5 rounded hover:bg-red-900/30 text-gray-400 dark:text-neutral-500 hover:text-red-400">
+                    <Trash2 size={ICON.sm} />
                   </button>
                 </div>
                 <div className="px-2 pb-1.5 flex items-center gap-2">
-                  <span className="text-[10px] text-neutral-500 flex-1 capitalize">{op.type} · {opDescription(op)}</span>
+                  <span className="text-label text-gray-400 dark:text-neutral-500 flex-1 capitalize">{op.type} · {opDescription(op)}</span>
                   {(op.status === 'needs-update' || op.status === 'error') && (
-                    <button onClick={() => handleRegenerate(op.id)} className="text-[10px] text-blue-400 hover:text-blue-300">
+                    <button onClick={() => handleRegenerate(op.id)} className="text-label text-blue-400 hover:text-blue-300">
                       Regenerate
                     </button>
                   )}
                 </div>
                 {op.status === 'error' && op.errorMessage && (
-                  <p className="px-2 pb-1.5 text-[10px] text-red-400">{op.errorMessage}</p>
+                  <p className="px-2 pb-1.5 text-label text-red-400">{op.errorMessage}</p>
                 )}
               </li>
             ))}

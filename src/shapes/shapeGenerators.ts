@@ -1,4 +1,6 @@
-export type ShapeType = 'rectangle' | 'roundrect' | 'circle' | 'ellipse' | 'polygon' | 'star'
+import { generateTextD } from './textGenerator'
+
+export type ShapeType = 'rectangle' | 'roundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -7,6 +9,7 @@ export type ShapeParams =
   | { type: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
   | { type: 'polygon'; cx: number; cy: number; radius: number; sides: number }
   | { type: 'star'; cx: number; cy: number; outerRadius: number; innerRadius: number; points: number }
+  | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
   rectangle: { w: number; h: number }
@@ -15,6 +18,7 @@ export interface ShapeToolConfig {
   ellipse: { rx: number; ry: number }
   polygon: { radius: number; sides: number }
   star: { outerRadius: number; innerRadius: number; points: number }
+  text: { text: string; fontSize: number; fontFamily: string }
 }
 
 export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
@@ -24,6 +28,7 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   ellipse: { rx: 25, ry: 15 },
   polygon: { radius: 20, sides: 6 },
   star: { outerRadius: 20, innerRadius: 8, points: 5 },
+  text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
 function f(n: number): string { return String(+n.toFixed(4)) }
@@ -79,6 +84,7 @@ export function generateShapeD(p: ShapeParams): string {
       }
       return pts.join(' ') + ' Z'
     }
+    case 'text': return generateTextD(p)
   }
 }
 
@@ -90,6 +96,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'ellipse': return 'Ellipse'
     case 'polygon': return 'Polygon'
     case 'star': return 'Star'
+    case 'text': return 'Text'
   }
 }
 
@@ -121,6 +128,12 @@ export function shapeParamsFromDrag(
       const ratio = config.star.innerRadius / Math.max(config.star.outerRadius, 0.001)
       return { type: 'star', cx, cy, outerRadius: radius, innerRadius: radius * ratio, points: config.star.points }
     }
+    case 'text': {
+      // drag height → font size; left edge and lower y as baseline position
+      const h = Math.abs(end.y - start.y)
+      const fontSize = h > 1 ? h : config.text.fontSize
+      return { type: 'text', x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), text: config.text.text, fontSize, fontFamily: config.text.fontFamily }
+    }
   }
 }
 
@@ -144,6 +157,7 @@ export function shapeParamsFromConfig(
     case 'ellipse': return { type: 'ellipse', cx, cy, rx: config.ellipse.rx, ry: config.ellipse.ry }
     case 'polygon': return { type: 'polygon', cx, cy, radius: config.polygon.radius, sides: config.polygon.sides }
     case 'star': return { type: 'star', cx, cy, outerRadius: config.star.outerRadius, innerRadius: config.star.innerRadius, points: config.star.points }
+    case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
 
@@ -156,6 +170,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'ellipse': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'polygon': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'star': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
 
@@ -197,6 +212,11 @@ export function scaleShapeParams(
       if (Math.abs(asx - asy) > 0.001) return null
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
       return { ...p, cx: ncx, cy: ncy, outerRadius: p.outerRadius * asx, innerRadius: p.innerRadius * asx }
+    }
+    case 'text': {
+      if (Math.abs(asx - asy) > 0.001) return null
+      const nx = ax + sx * (p.x - ax), ny = ay + sy * (p.y - ay)
+      return { ...p, x: nx, y: ny, fontSize: p.fontSize * asx }
     }
   }
 }

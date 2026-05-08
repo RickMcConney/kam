@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ICON } from '../theme'
 import { Stage, Layer, Circle } from 'react-konva'
 import type Konva from 'konva'
 import { Maximize2 } from 'lucide-react'
@@ -34,7 +35,7 @@ import {
 } from '../shapes/shapeGenerators'
 import type { PenNode } from '../store/uiStore'
 import { NodeEditLayer } from './layers/NodeEditLayer'
-import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment } from './nodeUtils'
+import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath } from './nodeUtils'
 import type { PathNode } from './nodeUtils'
 
 export interface Viewport {
@@ -343,6 +344,13 @@ export default function CanvasStage() {
   }, [commitEditNodes])
 
   const handlePathDblClick = useCallback((id: string) => {
+    const path = usePathsStore.getState().paths.find((p) => p.id === id)
+    if (!path) return
+    const subDs = splitCompoundPath(path.d)
+    if (subDs.length > 1) {
+      usePathsStore.getState().splitPath(id, subDs)
+      return
+    }
     const { setNodeEditPathId } = useUIStore.getState()
     usePathsStore.getState().selectPath(id)
     setNodeEditPathId(id)
@@ -772,12 +780,22 @@ export default function CanvasStage() {
           ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig)
           : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
 
-        const d = generateShapeD(params)
         const id = `shape-${Date.now()}`
         const { addPaths: add, selectPath: sel } = usePathsStore.getState()
+        const d = generateShapeD(params)
         add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }])
         sel(id)
         setActiveTool('select')
+
+        // If text font wasn't loaded yet, update d once it loads
+        if (params.type === 'text' && !d) {
+          import('../shapes/textGenerator').then(({ loadFont }) => {
+            loadFont(params.fontFamily).then(() => {
+              const newD = generateShapeD(params)
+              if (newD) usePathsStore.getState().batchUpdatePaths([{ id, d: newD }])
+            })
+          })
+        }
       }
       return
     }
@@ -949,11 +967,11 @@ export default function CanvasStage() {
       {/* Toolpath hover tooltip */}
       {toolpathTooltip && (
         <div
-          className="absolute pointer-events-none z-10 bg-neutral-800/90 border border-neutral-600 text-neutral-200 text-xs rounded px-2 py-1 shadow-lg whitespace-nowrap"
+          className="absolute pointer-events-none z-10 bg-panel/90 border border-ridge text-bright text-body rounded px-2 py-1 shadow-lg whitespace-nowrap"
           style={{ left: toolpathTooltip.x + 12, top: toolpathTooltip.y - 8 }}
         >
           <div className="font-medium">{toolpathTooltip.name}</div>
-          {toolpathTooltip.depth && <div className="text-neutral-400">{toolpathTooltip.depth}</div>}
+          {toolpathTooltip.depth && <div className="text-dim">{toolpathTooltip.depth}</div>}
         </div>
       )}
 
@@ -967,7 +985,7 @@ export default function CanvasStage() {
 
       {/* Node edit indicator */}
       {nodeEditPathId && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-700/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-700/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           {hoveredEditNode !== null
             ? 'Delete key to remove point'
             : 'Drag points or handles · Click segment to insert · Esc to finish'}
@@ -976,12 +994,12 @@ export default function CanvasStage() {
 
       {/* Tool active indicator */}
       {activeTool === 'drill' && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           Drill Point Mode — click to place points, Esc to exit
         </div>
       )}
       {activeTool === 'pen' && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-violet-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-violet-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           {penClosing
             ? 'Click to close path'
             : penNodes.length === 0
@@ -990,7 +1008,7 @@ export default function CanvasStage() {
         </div>
       )}
       {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
         </div>
       )}
@@ -1000,9 +1018,9 @@ export default function CanvasStage() {
       <button
         onClick={fitToWorkpiece}
         title="Zoom to fit workpiece"
-        className="absolute bottom-3 right-3 bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 rounded p-1.5 text-neutral-300 transition-colors"
+        className="absolute bottom-3 right-3 bg-panel hover:bg-raised border border-ridge rounded p-1.5 text-norm transition-colors"
       >
-        <Maximize2 size={14} />
+        <Maximize2 size={ICON.md} />
       </button>
     </div>
   )

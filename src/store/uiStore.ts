@@ -21,6 +21,7 @@ interface UIState {
   pendingDrillPoints: { x: number; y: number }[]
   penNodes: PenNode[]
   nodeEditPathId: string | null
+  darkMode: boolean
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
   toggleSnap: () => void
@@ -32,6 +33,7 @@ interface UIState {
   addPenNode: (node: PenNode) => void
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
+  toggleDarkMode: () => void
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -43,6 +45,7 @@ export const useUIStore = create<UIState>()((set) => ({
   pendingDrillPoints: [],
   penNodes: [],
   nodeEditPathId: null,
+  darkMode: false,
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
@@ -54,4 +57,5 @@ export const useUIStore = create<UIState>()((set) => ({
   addPenNode: (node) => set((s) => ({ penNodes: [...s.penNodes, node] })),
   clearPenNodes: () => set({ penNodes: [] }),
   setNodeEditPathId: (id) => set({ nodeEditPathId: id }),
+  toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
 }))

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ICON } from '../theme'
 import { X } from 'lucide-react'
 import { useSimStore } from '../store/simStore'
 import { getCurrentSegIdx } from '../sim/gcodeParser'
 
-const ROW_H = 20  // px per line — matches text-xs + leading-5 + py-px
+const ROW_H = 20  // px per line — matches text-body + leading-5 + py-px
 
 export default function GcodeViewer() {
   const gcodeLines = useSimStore((s) => s.gcodeLines)
@@ -49,17 +50,17 @@ export default function GcodeViewer() {
   const totalH = gcodeLines.length * ROW_H
 
   return (
-    <div className="h-40 flex flex-col border-t border-neutral-700 bg-neutral-950 flex-shrink-0">
+    <div className="h-40 flex flex-col border-t border-gray-300 dark:border-neutral-700 bg-gray-50 dark:bg-neutral-900 flex-shrink-0">
       {/* Header */}
-      <div className="flex items-center px-3 py-1 border-b border-neutral-700 flex-shrink-0 bg-neutral-900">
-        <span className="text-xs text-neutral-400 font-medium">G-code Viewer</span>
-        <span className="ml-2 text-xs text-neutral-600">{gcodeLines.length} lines</span>
+      <div className="flex items-center px-3 py-1 border-b border-gray-300 dark:border-neutral-700 flex-shrink-0 bg-gray-50 dark:bg-neutral-900">
+        <span className="text-body text-gray-500 dark:text-neutral-400 font-medium">G-code Viewer</span>
+        <span className="ml-2 text-body text-gray-400 dark:text-neutral-500">{gcodeLines.length} lines</span>
         <button
           onClick={toggleGcodeViewer}
-          className="ml-auto text-neutral-500 hover:text-neutral-300 transition-colors"
+          className="ml-auto text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
           title="Close"
         >
-          <X size={12} />
+          <X size={ICON.sm} />
         </button>
       </div>
 
@@ -82,14 +83,14 @@ export default function GcodeViewer() {
                   style={{ height: ROW_H }}
                   onClick={() => seekToLine(lineIdx)}
                   className={[
-                    'flex items-center px-3 text-xs font-mono cursor-pointer select-none',
-                    isActive ? 'bg-yellow-500/20' : 'hover:bg-neutral-800',
+                    'flex items-center px-3 text-body font-mono cursor-pointer select-none',
+                    isActive ? 'bg-yellow-500/20' : 'hover:bg-gray-100 dark:hover:bg-neutral-800',
                   ].join(' ')}
                 >
-                  <span className="text-neutral-700 shrink-0 w-8 text-right select-none mr-3">
+                  <span className="text-gray-400 dark:text-neutral-500 shrink-0 w-8 text-right select-none mr-3">
                     {lineIdx + 1}
                   </span>
-                  <span className={isActive ? 'text-yellow-100' : 'text-neutral-500'}>
+                  <span className={isActive ? 'text-yellow-100' : 'text-gray-400 dark:text-neutral-500'}>
                     {line}
                   </span>
                 </div>

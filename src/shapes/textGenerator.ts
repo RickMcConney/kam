@@ -1,0 +1,116 @@
+import * as opentype from 'opentype.js'
+
+export interface TextParams {
+  type: 'text'
+  x: number
+  y: number
+  text: string
+  fontSize: number
+  fontFamily: string
+}
+
+export const AVAILABLE_FONTS: { label: string; family: string; url: string }[] = [
+  {
+    label: 'Roboto',
+    family: 'Roboto',
+    url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto@4.5.8/files/roboto-latin-400-normal.woff',
+  },
+  {
+    label: 'Roboto Mono',
+    family: 'Roboto Mono',
+    url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@4.5.10/files/roboto-mono-latin-400-normal.woff',
+  },
+  {
+    label: 'Open Sans',
+    family: 'Open Sans',
+    url: 'https://cdn.jsdelivr.net/npm/@fontsource/open-sans@4.5.14/files/open-sans-latin-400-normal.woff',
+  },
+]
+
+export const DEFAULT_FONT_FAMILY = 'Roboto'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fontCache = new Map<string, any>()
+const fontPromises = new Map<string, Promise<void>>()
+const onLoadCallbacks: Array<() => void> = []
+
+export function onFontLoaded(cb: () => void): () => void {
+  onLoadCallbacks.push(cb)
+  return () => {
+    const idx = onLoadCallbacks.indexOf(cb)
+    if (idx !== -1) onLoadCallbacks.splice(idx, 1)
+  }
+}
+
+export async function loadFont(family: string): Promise<void> {
+  if (fontCache.has(family)) return
+  const existing = fontPromises.get(family)
+  if (existing) return existing
+
+  const def = AVAILABLE_FONTS.find((f) => f.family === family)
+  if (!def) return
+
+  const p = (async () => {
+    try {
+      const res = await fetch(def.url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const buf = await res.arrayBuffer()
+      const font = opentype.parse(buf)
+      fontCache.set(family, font)
+      onLoadCallbacks.forEach((cb) => cb())
+    } catch (err) {
+      console.warn(`[textGenerator] Failed to load font "${family}":`, err)
+    }
+  })()
+
+  fontPromises.set(family, p)
+  return p
+}
+
+export function isFontLoaded(family: string): boolean {
+  return fontCache.has(family)
+}
+
+export function preloadFonts(): void {
+  for (const { family } of AVAILABLE_FONTS) {
+    loadFont(family)
+  }
+}
+
+function f(n: number): string {
+  return String(+n.toFixed(4))
+}
+
+/** Generate SVG d string from TextParams in CNC Y-up space. Returns '' if font not loaded yet. */
+export function generateTextD(params: TextParams): string {
+  const font = fontCache.get(params.fontFamily) ?? fontCache.get(DEFAULT_FONT_FAMILY)
+  if (!font || !params.text.trim()) return ''
+
+  // getPath returns path in screen Y-down coords; we flip Y for CNC Y-up
+  const path = font.getPath(params.text, 0, 0, params.fontSize)
+  const { x: bx, y: by } = params
+
+  const cmds: string[] = []
+  for (const cmd of path.commands) {
+    switch (cmd.type) {
+      case 'M':
+        cmds.push(`M${f(bx + cmd.x)},${f(by - cmd.y)}`)
+        break
+      case 'L':
+        cmds.push(`L${f(bx + cmd.x)},${f(by - cmd.y)}`)
+        break
+      case 'C':
+        cmds.push(
+          `C${f(bx + cmd.x1)},${f(by - cmd.y1)},${f(bx + cmd.x2)},${f(by - cmd.y2)},${f(bx + cmd.x)},${f(by - cmd.y)}`
+        )
+        break
+      case 'Q':
+        cmds.push(`Q${f(bx + cmd.x1)},${f(by - cmd.y1)},${f(bx + cmd.x)},${f(by - cmd.y)}`)
+        break
+      case 'Z':
+        cmds.push('Z')
+        break
+    }
+  }
+  return cmds.join(' ')
+}

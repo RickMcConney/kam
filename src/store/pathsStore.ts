@@ -2,15 +2,18 @@ import { create } from 'zustand'
 import type { ImportedPath } from '../importers/svgImporter'
 import { translateD } from '../canvas/selectionUtils'
 import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
+import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
 
 export type { ImportedPath }
+
+type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[] }
 
 interface PathsState {
   paths: ImportedPath[]
   selectedIds: string[]
 
-  past: ImportedPath[][]
-  future: ImportedPath[][]
+  past: HistoryEntry[]
+  future: HistoryEntry[]
 
   addPaths: (newPaths: ImportedPath[]) => void
   deletePath: (id: string) => void
@@ -22,15 +25,17 @@ interface PathsState {
   batchUpdatePaths: (updates: { id: string; d: string; shapeParams?: ShapeParams | null }[]) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
+  splitPath: (id: string, subDs: string[]) => void
   undo: () => void
   redo: () => void
   replacePaths: (paths: ImportedPath[]) => void
+  pushHistoryBoth: () => void
   canUndo: () => boolean
   canRedo: () => boolean
 }
 
-function pushHistory(past: ImportedPath[][], current: ImportedPath[]): ImportedPath[][] {
-  return [...past.slice(-49), current]
+function pushHistory(past: HistoryEntry[], paths: ImportedPath[]): HistoryEntry[] {
+  return [...past.slice(-49), { paths, operations: useToolpathStore.getState().operations }]
 }
 
 let _dupCounter = 0
@@ -47,12 +52,18 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     paths: [...s.paths, ...newPaths],
   })),
 
-  deletePath: (id) => set((s) => ({
-    past: pushHistory(s.past, s.paths),
-    future: [],
-    paths: s.paths.filter((p) => p.id !== id),
-    selectedIds: s.selectedIds.filter((sid) => sid !== id),
-  })),
+  deletePath: (id) => {
+    const s = get()
+    const ops = useToolpathStore.getState().operations
+    const newOps = ops.filter((op) => !refsPathId(op, id))
+    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
+    set({
+      past: pushHistory(s.past, s.paths),
+      future: [],
+      paths: s.paths.filter((p) => p.id !== id),
+      selectedIds: s.selectedIds.filter((sid) => sid !== id),
+    })
+  },
 
   toggleVisibility: (id) => set((s) => ({
     paths: s.paths.map((p) => p.id === id ? { ...p, visible: !p.visible } : p),
@@ -69,15 +80,19 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
 
   setSelectedIds: (ids) => set({ selectedIds: ids }),
 
-  deleteSelected: () => set((s) => {
-    if (s.selectedIds.length === 0) return s
-    return {
+  deleteSelected: () => {
+    const s = get()
+    if (s.selectedIds.length === 0) return
+    const ops = useToolpathStore.getState().operations
+    const newOps = ops.filter((op) => !s.selectedIds.some((id) => refsPathId(op, id)))
+    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
+    set({
       past: pushHistory(s.past, s.paths),
       future: [],
       paths: s.paths.filter((p) => !s.selectedIds.includes(p.id)),
       selectedIds: [],
-    }
-  }),
+    })
+  },
 
   updatePathD: (id, newD) => set((s) => ({
     past: pushHistory(s.past, s.paths),
@@ -95,7 +110,6 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         if (!upd) return p
         const newPath = { ...p, d: upd.d }
         if (upd.shapeParams !== undefined) {
-          // null means clear, object means set new value
           newPath.shapeParams = upd.shapeParams ?? undefined
         }
         return newPath
@@ -109,6 +123,26 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       past: pushHistory(s.past, s.paths),
       future: [],
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
+    }
+  }),
+
+  splitPath: (id, subDs) => set((s) => {
+    const idx = s.paths.findIndex((p) => p.id === id)
+    if (idx === -1) return s
+    const orig = s.paths[idx]
+    const newPaths: ImportedPath[] = subDs.map((subD, i) => ({
+      id: `path-split-${++_dupCounter}-${Date.now()}-${i}`,
+      name: `${orig.name} ${i + 1}`,
+      d: subD,
+      color: orig.color,
+      visible: orig.visible,
+    }))
+    const paths = [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)]
+    return {
+      past: pushHistory(s.past, s.paths),
+      future: [],
+      paths,
+      selectedIds: newPaths.map((p) => p.id),
     }
   }),
 
@@ -131,29 +165,43 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     }
   }),
 
-  undo: () => set((s) => {
-    if (s.past.length === 0) return s
+  undo: () => {
+    const s = get()
+    if (s.past.length === 0) return
     const prev = s.past[s.past.length - 1]
-    return {
+    const currentOps = useToolpathStore.getState().operations
+    useToolpathStore.getState().replaceOperations(prev.operations)
+    set({
       past: s.past.slice(0, -1),
-      future: [s.paths, ...s.future.slice(0, 49)],
-      paths: prev,
+      future: [{ paths: s.paths, operations: currentOps }, ...s.future.slice(0, 49)],
+      paths: prev.paths,
       selectedIds: [],
-    }
-  }),
+    })
+  },
 
-  redo: () => set((s) => {
-    if (s.future.length === 0) return s
+  redo: () => {
+    const s = get()
+    if (s.future.length === 0) return
     const next = s.future[0]
-    return {
-      past: pushHistory(s.past, s.paths),
+    const currentOps = useToolpathStore.getState().operations
+    useToolpathStore.getState().replaceOperations(next.operations)
+    set({
+      past: [...s.past.slice(-49), { paths: s.paths, operations: currentOps }],
       future: s.future.slice(1),
-      paths: next,
+      paths: next.paths,
       selectedIds: [],
-    }
-  }),
+    })
+  },
 
   replacePaths: (paths) => set({ paths, selectedIds: [], past: [], future: [] }),
+
+  pushHistoryBoth: () => {
+    const s = get()
+    set({
+      past: pushHistory(s.past, s.paths),
+      future: [],
+    })
+  },
 
   canUndo: () => get().past.length > 0,
   canRedo: () => get().future.length > 0,

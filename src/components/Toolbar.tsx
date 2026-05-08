@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
+import { ICON } from '../theme'
 import {
   FilePlus, FolderOpen, Save, Upload, Download,
-  Undo2, Redo2, Magnet, Settings, HelpCircle, Play,
+  Undo2, Redo2, Magnet, Settings, HelpCircle, Play, Sun, Moon,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { useUIStore } from '../store/uiStore'
@@ -39,7 +40,7 @@ function ToolbarButton({
         'disabled:opacity-40 disabled:cursor-not-allowed',
         active
           ? 'bg-blue-600 text-white hover:bg-blue-500'
-          : 'text-neutral-300 hover:text-neutral-100 hover:bg-neutral-600',
+          : 'text-gray-700 dark:text-neutral-300 hover:text-gray-900 dark:hover:text-neutral-100 hover:bg-gray-300 dark:hover:bg-neutral-600',
       ].join(' ')}
     >
       {icon}
@@ -48,7 +49,7 @@ function ToolbarButton({
 }
 
 function Sep() {
-  return <div className="w-px h-5 bg-neutral-600 mx-1" />
+  return <div className="w-px h-5 bg-gray-300 dark:bg-neutral-600 mx-1" />
 }
 
 function ProjectNameEditor() {
@@ -82,7 +83,7 @@ function ProjectNameEditor() {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={onKeyDown}
-        className="ml-3 text-sm bg-neutral-700 text-neutral-100 rounded px-2 py-0.5 w-52 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="ml-3 text-sm bg-gray-200 dark:bg-neutral-700 text-gray-900 dark:text-neutral-100 rounded px-2 py-0.5 w-52 focus:outline-none focus:ring-1 focus:ring-blue-500"
         autoFocus
       />
     )
@@ -92,7 +93,7 @@ function ProjectNameEditor() {
     <button
       onClick={startEdit}
       title="Click to rename project"
-      className="ml-3 text-neutral-300 text-sm truncate max-w-52 hover:text-neutral-100 hover:underline text-left"
+      className="ml-3 text-gray-700 dark:text-neutral-300 text-sm truncate max-w-52 hover:text-gray-900 dark:hover:text-neutral-100 hover:underline text-left"
     >
       {name}
     </button>
@@ -100,7 +101,7 @@ function ProjectNameEditor() {
 }
 
 export default function Toolbar() {
-  const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab } = useUIStore()
+  const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab, darkMode, toggleDarkMode } = useUIStore()
   const { undo, redo, canUndo, canRedo } = usePathsStore()
   const { operations } = useToolpathStore()
   const { tools } = useToolStore()
@@ -155,7 +156,7 @@ export default function Toolbar() {
   const hasToolpaths = operations.some((o) => o.status === 'done' && o.visible)
 
   return (
-    <div className="h-10 bg-neutral-800 border-b border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
+    <div className="h-10 bg-gray-100 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
       {/* Brand */}
       <span className="text-blue-400 font-bold text-sm px-2 mr-1 tracking-tight">
         FK
@@ -164,17 +165,17 @@ export default function Toolbar() {
 
       {/* File */}
       <ToolbarButton
-        icon={<FilePlus size={16} />}
+        icon={<FilePlus size={ICON.md} />}
         label="New Project (Ctrl+N)"
         onClick={newProject}
       />
       <ToolbarButton
-        icon={<FolderOpen size={16} />}
+        icon={<FolderOpen size={ICON.md} />}
         label="Open Project (Ctrl+O)"
         onClick={() => openProjectFile().catch(() => {})}
       />
       <ToolbarButton
-        icon={<Save size={16} />}
+        icon={<Save size={ICON.md} />}
         label="Save Project (Ctrl+S)"
         onClick={saveProject}
       />
@@ -189,30 +190,30 @@ export default function Toolbar() {
         onChange={handleImportFileChange}
       />
       <ToolbarButton
-        icon={<Upload size={16} />}
+        icon={<Upload size={ICON.md} />}
         label="Import File (SVG or G-code)"
         onClick={() => importRef.current?.click()}
       />
       <ToolbarButton
-        icon={<Download size={16} />}
+        icon={<Download size={ICON.md} />}
         label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
         onClick={handleExportGcode}
       />
       <ToolbarButton
-        icon={<Play size={16} />}
+        icon={<Play size={ICON.md} />}
         label={hasToolpaths ? 'Simulate G-code' : 'Simulate G-code (no toolpaths)'}
         onClick={handleSimulate}
       />
       <Sep />
 
       {/* History */}
-      <ToolbarButton icon={<Undo2 size={16} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo()} />
-      <ToolbarButton icon={<Redo2 size={16} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo()} />
+      <ToolbarButton icon={<Undo2 size={ICON.md} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo()} />
+      <ToolbarButton icon={<Redo2 size={ICON.md} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo()} />
       <Sep />
 
       {/* Snap */}
       <ToolbarButton
-        icon={<Magnet size={16} />}
+        icon={<Magnet size={ICON.md} />}
         label={`Snap to Grid (S) — ${snapEnabled ? 'On' : 'Off'}`}
         onClick={toggleSnap}
         active={snapEnabled}
@@ -223,8 +224,13 @@ export default function Toolbar() {
 
       {/* Right side */}
       <div className="ml-auto flex items-center gap-0.5">
-        <ToolbarButton icon={<Settings size={16} />} label="Options" />
-        <ToolbarButton icon={<HelpCircle size={16} />} label="Help" />
+        <ToolbarButton
+          icon={darkMode ? <Sun size={ICON.md} /> : <Moon size={ICON.md} />}
+          label={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+          onClick={toggleDarkMode}
+        />
+        <ToolbarButton icon={<Settings size={ICON.md} />} label="Options" />
+        <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" />
       </div>
     </div>
   )

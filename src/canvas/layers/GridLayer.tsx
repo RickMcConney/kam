@@ -2,6 +2,8 @@ import { memo } from 'react'
 import { Layer, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useUIStore } from '../../store/uiStore'
+import { canvasTheme } from '../../theme'
 
 interface Props {
   viewport: Viewport
@@ -11,6 +13,8 @@ interface Props {
 
 export const GridLayer = memo(function GridLayer({ viewport, stageWidth, stageHeight }: Props) {
   const { units, widthMM, heightMM } = useWorkpieceStore()
+  const darkMode = useUIStore((s) => s.darkMode)
+  const C = canvasTheme(darkMode)
 
 
   return (
@@ -43,7 +47,7 @@ export const GridLayer = memo(function GridLayer({ viewport, stageWidth, stageHe
           */
           // ── Vertical lines ───────────────────────────────────────────────
           
-          c.strokeStyle = '#505050'
+          c.strokeStyle = C.grid.axisNorm
           c.lineWidth = 0.5
           c.beginPath()
           const ey = panY - ymax * scale

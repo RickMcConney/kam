@@ -2,18 +2,13 @@ import { memo } from 'react'
 import { Layer, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useUIStore } from '../../store/uiStore'
 import { originWorldXY } from './WorkpieceLayer'
 import { majorStepMM, formatRulerLabel } from '../gridUtils'
+import { canvasTheme } from '../../theme'
 
 export const RULER_H = 20   // top ruler height (px)
 export const RULER_W = 40   // left ruler width (px)
-
-const BG      = '#1c1c1c'
-const BORDER  = '#2e2e2e'
-const TICK_MJ = '#505050'
-const TICK_MN = '#333333'
-const LABEL   = '#dcd9d9'
-const CORNER  = '#1a1a1a'
 
 interface Props {
   viewport: Viewport
@@ -23,7 +18,9 @@ interface Props {
 
 export const RulerLayer = memo(function RulerLayer({ viewport, stageWidth, stageHeight }: Props) {
   const { units, origin, widthMM, heightMM } = useWorkpieceStore()
+  const darkMode = useUIStore((s) => s.darkMode)
   const orgWorld = originWorldXY(origin, widthMM, heightMM)
+  const { bg: BG, border: BORDER, tickMj: TICK_MJ, tickMn: TICK_MN, label: LABEL, corner: CORNER } = canvasTheme(darkMode).ruler
 
   return (
     <Layer listening={false}>

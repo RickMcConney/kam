@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { ICON } from '../theme'
 import { Play, Pause, Square, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
 import { getCurrentSegIdx, interpolatePos, formatSimTime } from './gcodeParser'
@@ -47,26 +48,26 @@ export default function SimulationPlayer() {
   return (
     <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 select-none">
       {/* Stats bar */}
-      <div className="bg-neutral-900/95 border border-neutral-700 rounded-md px-3 py-1 text-xs font-mono text-neutral-300 flex gap-3 whitespace-nowrap pointer-events-none">
+      <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex gap-3 whitespace-nowrap pointer-events-none">
         <span>Line: {currentLineNum}</span>
         <span>Z: {pos ? pos.z.toFixed(3) : '—'}</span>
         {curSeg && (
-          <span className={curSeg.rapid ? 'text-neutral-500' : ''}>
+          <span className={curSeg.rapid ? 'text-gray-400 dark:text-neutral-500' : ''}>
             {curSeg.rapid ? 'RAPID' : `F: ${Math.round(curSeg.feedRateMmMin)}`}
           </span>
         )}
-        <span className="text-neutral-400">{formatSimTime(elapsedTimeS)} / {formatSimTime(totalTimeS)}</span>
+        <span className="text-gray-500 dark:text-neutral-400">{formatSimTime(elapsedTimeS)} / {formatSimTime(totalTimeS)}</span>
       </div>
 
       {/* Controls */}
-      <div className="bg-neutral-900/95 border border-neutral-700 rounded-xl px-3 py-1.5 flex items-center gap-2 shadow-xl">
+      <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-xl px-3 py-1.5 flex items-center gap-2 shadow-xl">
         {/* Stop */}
         <button
           title="Stop"
           onClick={stop}
-          className="text-neutral-400 hover:text-neutral-100 transition-colors p-0.5"
+          className="text-gray-500 dark:text-neutral-400 hover:text-gray-900 dark:hover:text-neutral-100 transition-colors p-0.5"
         >
-          <Square size={13} />
+          <Square size={ICON.sm} />
         </button>
 
         {/* Play / Pause */}
@@ -75,7 +76,7 @@ export default function SimulationPlayer() {
           onClick={() => (playing ? pause() : play())}
           className="w-7 h-7 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition-colors"
         >
-          {playing ? <Pause size={12} /> : <Play size={12} className="ml-0.5" />}
+          {playing ? <Pause size={ICON.sm} /> : <Play size={ICON.sm} className="ml-0.5" />}
         </button>
 
         {/* Seek slider */}
@@ -95,8 +96,8 @@ export default function SimulationPlayer() {
               key={s}
               onClick={() => setSpeed(s)}
               className={[
-                'text-xs px-1.5 py-0.5 rounded transition-colors',
-                speed === s ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200',
+                'text-body px-1.5 py-0.5 rounded transition-colors',
+                speed === s ? 'bg-blue-600 text-white' : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
               ].join(' ')}
             >
               {s}×
@@ -110,21 +111,21 @@ export default function SimulationPlayer() {
           onClick={toggleGcodeViewer}
           className={[
             'p-0.5 transition-colors',
-            gcodeViewerOpen ? 'text-blue-400' : 'text-neutral-400 hover:text-neutral-100',
+            gcodeViewerOpen ? 'text-blue-400' : 'text-gray-500 dark:text-neutral-400 hover:text-gray-900 dark:hover:text-neutral-100',
           ].join(' ')}
         >
-          <FileText size={14} />
+          <FileText size={ICON.md} />
         </button>
 
-        <div className="w-px h-4 bg-neutral-700 mx-0.5" />
+        <div className="w-px h-4 bg-gray-200 dark:bg-neutral-700 mx-0.5" />
 
         {/* Close simulation */}
         <button
           title="Close simulation"
           onClick={clearSim}
-          className="text-neutral-500 hover:text-neutral-200 transition-colors p-0.5"
+          className="text-gray-400 dark:text-neutral-500 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors p-0.5"
         >
-          <X size={13} />
+          <X size={ICON.sm} />
         </button>
       </div>
     </div>

@@ -26,7 +26,7 @@ export default function StatusBar() {
     : null
 
   return (
-    <div className="h-6 bg-neutral-900 border-t border-neutral-700 flex items-center px-3 text-xs text-neutral-400 select-none flex-shrink-0 gap-4">
+    <div className="h-6 bg-gray-50 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-body text-gray-500 dark:text-neutral-400 select-none flex-shrink-0 gap-4">
       <span>Mode: Select</span>
 
       {snapEnabled && <span className="text-blue-400 font-medium">SNAP</span>}

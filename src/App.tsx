@@ -1,4 +1,5 @@
-import { useEffect, lazy, Suspense } from 'react'
+import { useEffect, lazy, Suspense, useLayoutEffect } from 'react'
+import { preloadFonts } from './shapes/textGenerator'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
@@ -36,16 +37,16 @@ function MainWorkspace() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Tab bar */}
-      <div className="flex border-b border-neutral-700 flex-shrink-0" style={{ backgroundColor: '#1c1c1c' }}>
+      <div className="flex border-b border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0">
         {WORKSPACE_TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setWorkspaceTab(tab.id)}
             className={[
-              'px-4 py-1.5 text-xs border-r border-neutral-700 transition-colors',
+              'px-4 py-1.5 text-body border-r border-gray-300 dark:border-neutral-700 transition-colors',
               workspaceTab === tab.id
-                ? 'bg-neutral-900 text-neutral-100 border-b-2 border-b-blue-500 -mb-px'
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800',
+                ? 'bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 border-b-2 border-b-blue-500 -mb-px'
+                : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-100 dark:hover:bg-neutral-800',
             ].join(' ')}
           >
             {tab.label}
@@ -54,11 +55,11 @@ function MainWorkspace() {
       </div>
 
       {/* Content area (flex-col: canvas takes remaining space, viewer is fixed-height below) */}
-      <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: '#111111' }}>
+      <div className="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-neutral-900">
         {/* Canvas + overlays */}
         <div className="flex-1 relative overflow-hidden">
           {workspaceTab === '2d' && (
-            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-neutral-600 text-sm">Loading canvas…</div>}>
+            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 dark:text-neutral-500 text-sm">Loading canvas…</div>}>
               <CanvasStage />
             </Suspense>
           )}
@@ -68,7 +69,7 @@ function MainWorkspace() {
 
           {PLACEHOLDER[workspaceTab] && (
             <div
-              className="absolute inset-0 flex items-center justify-center text-neutral-700 select-none"
+              className="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-neutral-500 select-none"
               style={{
                 backgroundImage: [
                   'linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px)',
@@ -148,11 +149,20 @@ function useSurfaceWorkpieceSync() {
   }, [])
 }
 
+function useDarkMode() {
+  const darkMode = useUIStore((s) => s.darkMode)
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+  }, [darkMode])
+}
+
 export default function App() {
   useKeyboardShortcuts()
   useSurfaceWorkpieceSync()
+  useDarkMode()
+  useLayoutEffect(() => { preloadFonts() }, [])
   return (
-    <div className="h-screen w-screen flex flex-col bg-neutral-900 text-neutral-100 overflow-hidden">
+    <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 overflow-hidden">
       <Toolbar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />

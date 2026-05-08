@@ -24,8 +24,88 @@ function evalCubic(
   return lerp(r0, r1, t)
 }
 
+// Convert an SVG arc to one or more cubic bezier segments (SVG spec appendix F)
+function arcToCubics(
+  x1: number, y1: number,
+  rx: number, ry: number,
+  phiDeg: number,
+  largeArc: boolean,
+  sweep: boolean,
+  x2: number, y2: number,
+): Array<[number, number, number, number, number, number]> {
+  if (x1 === x2 && y1 === y2) return []
+  if (rx === 0 || ry === 0) return [[x2, y2, x2, y2, x2, y2]]
+
+  const phi = (phiDeg * Math.PI) / 180
+  const cosPhi = Math.cos(phi), sinPhi = Math.sin(phi)
+  const dx = (x1 - x2) / 2, dy = (y1 - y2) / 2
+  const x1p = cosPhi * dx + sinPhi * dy
+  const y1p = -sinPhi * dx + cosPhi * dy
+
+  rx = Math.abs(rx); ry = Math.abs(ry)
+  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
+  if (lambda > 1) { const s = Math.sqrt(lambda); rx *= s; ry *= s }
+
+  const rx2 = rx * rx, ry2 = ry * ry, x1p2 = x1p * x1p, y1p2 = y1p * y1p
+  const num = Math.max(0, rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2)
+  const den = rx2 * y1p2 + ry2 * x1p2
+  const k = (largeArc !== sweep ? 1 : -1) * Math.sqrt(den === 0 ? 0 : num / den)
+  const cxp = (k * rx * y1p) / ry
+  const cyp = (-k * ry * x1p) / rx
+  const cx = cosPhi * cxp - sinPhi * cyp + (x1 + x2) / 2
+  const cy = sinPhi * cxp + cosPhi * cyp + (y1 + y2) / 2
+
+  const ang = (ux: number, uy: number, vx: number, vy: number) => {
+    const dot = ux * vx + uy * vy
+    const len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+    const a = Math.acos(Math.max(-1, Math.min(1, dot / len)))
+    return ux * vy - uy * vx < 0 ? -a : a
+  }
+  const ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry
+  const vx = (-x1p - cxp) / rx, vy = (-y1p - cyp) / ry
+  let theta1 = ang(1, 0, ux, uy)
+  let dTheta = ang(ux, uy, vx, vy)
+  if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI
+  if (sweep && dTheta < 0) dTheta += 2 * Math.PI
+
+  const segs = Math.max(1, Math.ceil(Math.abs(dTheta) / (Math.PI / 2)))
+  const result: Array<[number, number, number, number, number, number]> = []
+  for (let i = 0; i < segs; i++) {
+    const a1 = theta1 + (i * dTheta) / segs
+    const a2 = theta1 + ((i + 1) * dTheta) / segs
+    const alpha = (4 / 3) * Math.tan((a2 - a1) / 4)
+    const cos1 = Math.cos(a1), sin1 = Math.sin(a1)
+    const cos2 = Math.cos(a2), sin2 = Math.sin(a2)
+    const toW = (ex: number, ey: number) => ({
+      x: cosPhi * ex - sinPhi * ey + cx,
+      y: sinPhi * ex + cosPhi * ey + cy,
+    })
+    const c1 = toW(rx * cos1 - alpha * rx * sin1, ry * sin1 + alpha * ry * cos1)
+    const c2 = toW(rx * cos2 + alpha * rx * sin2, ry * sin2 - alpha * ry * cos2)
+    const ep = toW(rx * cos2, ry * sin2)
+    result.push([c1.x, c1.y, c2.x, c2.y, ep.x, ep.y])
+  }
+  return result
+}
+
+export function splitCompoundPath(d: string): string[] {
+  const tokens = d.match(/[MmLlCcSsQqTtAaZz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
+  const subpaths: string[] = []
+  let current: string[] = []
+  for (const tok of tokens) {
+    if (tok === 'M' && current.length > 0) {
+      subpaths.push(current.join(' '))
+      current = []
+    }
+    current.push(tok)
+  }
+  if (current.length > 0) subpaths.push(current.join(' '))
+  return subpaths.filter((s) => s.trim().length > 1)
+}
+
 export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean } {
-  const tokens = d.trim().split(/[\s,]+/).filter(Boolean)
+  // Tokenize properly: split command letters from numbers (handles compact "M10,20" format)
+  const tokens = d.match(/[MmLlCcSsQqTtAaZz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
   const nodes: PathNode[] = []
   let closed = false
   let i = 0
@@ -42,8 +122,35 @@ export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean }
       const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
       if (nodes.length > 0) nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
       nodes.push({ x: ex, y: ey, handleIn: { x: c2x, y: c2y } })
+    } else if (cmd === 'A') {
+      const rx = parseFloat(tokens[i++]), ry = parseFloat(tokens[i++])
+      const xRot = parseFloat(tokens[i++])
+      const largeArc = tokens[i++] === '1'
+      const sweep = tokens[i++] === '1'
+      const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
+      if (nodes.length > 0) {
+        const prev = nodes[nodes.length - 1]
+        const cubics = arcToCubics(prev.x, prev.y, rx, ry, xRot, largeArc, sweep, ex, ey)
+        for (const [c1x, c1y, c2x, c2y, epx, epy] of cubics) {
+          nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
+          nodes.push({ x: epx, y: epy, handleIn: { x: c2x, y: c2y } })
+        }
+      } else {
+        nodes.push({ x: ex, y: ey })
+      }
     } else if (cmd === 'Z' || cmd === 'z') {
       closed = true
+    }
+  }
+
+  // Font paths often explicitly close back to the start (last node coincident with node[0]).
+  // Merge that duplicate: transfer its handleIn to node[0] so the closing bezier is preserved.
+  if (closed && nodes.length >= 2) {
+    const first = nodes[0]
+    const last = nodes[nodes.length - 1]
+    if (Math.abs(last.x - first.x) < 0.001 && Math.abs(last.y - first.y) < 0.001) {
+      if (last.handleIn) first.handleIn = last.handleIn
+      nodes.pop()
     }
   }
 

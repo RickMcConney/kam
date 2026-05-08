@@ -92,7 +92,7 @@ interface ToolpathState {
   markNeedsUpdate: (pathId: string) => void
 }
 
-function refsPathId(op: AnyOperation, pathId: string): boolean {
+export function refsPathId(op: AnyOperation, pathId: string): boolean {
   if (op.type === 'profile') return op.pathId === pathId
   if (op.type === 'pocket') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'drill') return op.pathId === pathId

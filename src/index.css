@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Base ──────────────────────────────────────────────────────────────── */
 * {
   box-sizing: border-box;
 }
@@ -11,21 +12,13 @@ body {
   overflow: hidden;
 }
 
-/* Thin scrollbars for sidebar panels */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #404040;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #525252;
-}
+/* Thin scrollbars */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #d1d5db; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+.dark ::-webkit-scrollbar-thumb { background: #525252; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #a3a3a3; }
 
 /* Remove number input arrows */
 input[type="number"]::-webkit-inner-spin-button,
