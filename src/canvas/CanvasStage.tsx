@@ -1,0 +1,683 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Stage, Layer, Circle } from 'react-konva'
+import type Konva from 'konva'
+import { Maximize2 } from 'lucide-react'
+import { useWorkpieceStore } from '../store/workpieceStore'
+import { useCanvasStore } from '../store/canvasStore'
+import { usePathsStore } from '../store/pathsStore'
+import { useToolpathStore } from '../store/toolpathStore'
+import { useUIStore } from '../store/uiStore'
+import { importSvg, nextPathColor } from '../importers/svgImporter'
+import { GridLayer } from './layers/GridLayer'
+import { WorkpieceLayer } from './layers/WorkpieceLayer'
+import { OriginLayer } from './layers/OriginLayer'
+import { RulerLayer, RULER_H, RULER_W } from './layers/RulerLayer'
+import { DesignLayer } from './layers/DesignLayer'
+import { ToolpathLayer } from './layers/ToolpathLayer'
+import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
+import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
+import type { HandleType, LiveTransform } from './types'
+import { getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD } from './selectionUtils'
+import type { BBox } from './selectionUtils'
+import {
+  generateShapeD,
+  shapeParamsFromDrag,
+  shapeParamsFromConfig,
+  shapeDisplayName,
+  translateShapeParams,
+  scaleShapeParams,
+  type ShapeType,
+} from '../shapes/shapeGenerators'
+
+export interface Viewport {
+  x: number
+  y: number
+  scale: number
+}
+
+function fitViewport(sw: number, sh: number, ww: number, wh: number): Viewport {
+  const uw = sw - RULER_W
+  const uh = sh - RULER_H
+  const scale = Math.min(uw / ww, uh / wh) * 0.85
+  return {
+    scale,
+    x: RULER_W + (uw - ww * scale) / 2,
+    y: RULER_H + uh - (uh - wh * scale) / 2,
+  }
+}
+
+function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: number } {
+  return { x: (sx - vp.x) / vp.scale, y: (vp.y - sy) / vp.scale }
+}
+
+type CanvasMode =
+  | { type: 'idle' }
+  | { type: 'pan' }
+  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number } }
+  | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean }
+  | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
+  | { type: 'dragbox'; startScreen: { x: number; y: number } }
+  | { type: 'drawshape'; startCNC: { x: number; y: number }; currentCNC: { x: number; y: number } }
+
+const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
+
+export default function CanvasStage() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<Konva.Stage>(null)
+  const [size, setSize] = useState({ width: 800, height: 600 })
+  const [viewport, setViewportState] = useState<Viewport>({ x: 0, y: 0, scale: 2 })
+  const viewportRef = useRef<Viewport>(viewport)
+  const spaceHeldRef = useRef(false)
+  const shiftHeldRef = useRef(false)
+
+  const modeRef = useRef<CanvasMode>({ type: 'idle' })
+  const [liveTransform, setLiveTransform] = useState<LiveTransform | null>(null)
+  const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
+  const [liveShapeD, setLiveShapeD] = useState<string | null>(null)
+  const didDragRef = useRef(false)
+
+  const { widthMM, heightMM } = useWorkpieceStore()
+  // Use individual selectors for actions — Zustand action refs are stable so these never trigger re-renders
+  const setCursorMM = useCanvasStore((s) => s.setCursorMM)
+  const setZoomPct = useCanvasStore((s) => s.setZoomPct)
+  const setLiveRotationAngle = useCanvasStore((s) => s.setLiveRotationAngle)
+  const { paths, selectedIds, selectPath, setSelectedIds } = usePathsStore()
+  const markNeedsUpdate = useToolpathStore((s) => s.markNeedsUpdate)
+  const addPaths = usePathsStore((s) => s.addPaths)
+  const setSidebarTab = useUIStore((s) => s.setSidebarTab)
+  const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
+
+  const setMode2 = useCallback((m: CanvasMode) => {
+    modeRef.current = m
+  }, [])
+
+  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    const file = e.dataTransfer.files[0]
+    if (!file) return
+    if (!file.name.endsWith('.svg') && file.type !== 'image/svg+xml') return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } })
+        if (result.paths.length > 0) {
+          addPaths(result.paths)
+          setSidebarTab('paths')
+        }
+      } catch { /* ignore */ }
+    }
+    reader.readAsText(file)
+  }, [addPaths, setSidebarTab, widthMM, heightMM])
+
+  const setViewport = useCallback((v: Viewport | ((p: Viewport) => Viewport)) => {
+    const next = typeof v === 'function' ? v(viewportRef.current) : v
+    viewportRef.current = next
+    setViewportState(next)
+    setZoomPct(next.scale)
+  }, [setZoomPct])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect
+      if (width > 0 && height > 0) setSize({ width, height })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const didFitRef = useRef(false)
+  useEffect(() => {
+    if (size.width > 100 && !didFitRef.current) {
+      didFitRef.current = true
+      setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
+    }
+  }, [size, widthMM, heightMM, setViewport])
+
+  const fitToWorkpiece = useCallback(() => {
+    setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
+  }, [size, widthMM, heightMM, setViewport])
+
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return
+      if (e.code === 'Space') { e.preventDefault(); spaceHeldRef.current = true }
+      if (e.shiftKey) shiftHeldRef.current = true
+      if (e.code === 'Escape') {
+        const { activeTool, setActiveTool, clearDrillPoints } = useUIStore.getState()
+        if (activeTool !== 'select') {
+          if (activeTool === 'drill') clearDrillPoints()
+          setActiveTool('select')
+          setLiveShapeD(null)
+          setMode2({ type: 'idle' })
+        }
+      }
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') spaceHeldRef.current = false
+      if (!e.shiftKey) shiftHeldRef.current = false
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [setMode2])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const prevent = (e: WheelEvent) => e.preventDefault()
+    el.addEventListener('wheel', prevent, { passive: false })
+    return () => el.removeEventListener('wheel', prevent)
+  }, [])
+
+  const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
+    const pointer = stageRef.current?.getPointerPosition()
+    if (!pointer) return
+    const factor = e.evt.deltaY < 0 ? 1.12 : 1 / 1.12
+    setViewport((vp) => {
+      const newScale = Math.min(Math.max(vp.scale * factor, 0.01), 500)
+      const ratio = newScale / vp.scale
+      return {
+        scale: newScale,
+        x: pointer.x - (pointer.x - vp.x) * ratio,
+        y: pointer.y + (vp.y - pointer.y) * ratio,
+      }
+    })
+  }, [setViewport])
+
+  // Start drawing a shape from the given CNC point (used by both stage and path mousedown when shape tool active)
+  const startDrawShape = useCallback((pointer: { x: number; y: number }) => {
+    const vp = viewportRef.current
+    const cnc = screenToCNC(pointer.x, pointer.y, vp)
+    didDragRef.current = false
+    setMode2({ type: 'drawshape', startCNC: cnc, currentCNC: cnc })
+  }, [setMode2])
+
+  // Called by DesignLayer when a path is clicked/mousedown
+  const handlePathMouseDown = useCallback((id: string, shift: boolean, e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (spaceHeldRef.current || e.evt.button !== 0) return
+
+    const { activeTool } = useUIStore.getState()
+
+    // Drill tool: don't start move mode, placement handled in mouseup
+    if (activeTool === 'drill') {
+      didDragRef.current = false
+      return
+    }
+
+    // Shape draw tool active — treat path click as canvas click for drawing
+    if (activeTool !== 'select') {
+      const pointer = e.target.getStage()?.getPointerPosition()
+      if (pointer) startDrawShape(pointer)
+      return
+    }
+
+    const vp = viewportRef.current
+    const pointer = e.target.getStage()?.getPointerPosition()
+    if (!pointer) return
+    const cnc = screenToCNC(pointer.x, pointer.y, vp)
+
+    // Update selection
+    const { selectedIds: currentIds } = usePathsStore.getState()
+    if (shift) {
+      usePathsStore.getState().selectPath(id, true)
+    } else if (!currentIds.includes(id)) {
+      usePathsStore.getState().selectPath(id, false)
+    }
+
+    didDragRef.current = false
+    setMode2({ type: 'move', pathIds: usePathsStore.getState().selectedIds, startCNC: cnc })
+  }, [setMode2, startDrawShape])
+
+  // Called by SelectionLayer resize handles
+  const handleResizeHandleDown = useCallback((handle: HandleType, e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button !== 0) return
+
+    const { paths: allPaths, selectedIds: ids } = usePathsStore.getState()
+    const selected = allPaths.filter((p) => ids.includes(p.id))
+    const bbox = getMultiBBox(selected.map((p) => p.d))
+    if (!bbox) return
+
+    const { minX, minY, maxX, maxY, cx, cy } = bbox
+    const midX = cx, midY = cy
+
+    // Anchor = opposite corner/edge in CNC space
+    const anchorMap: Record<HandleType, { x: number; y: number }> = {
+      tl: { x: maxX, y: minY }, tr: { x: minX, y: minY },
+      bl: { x: maxX, y: maxY }, br: { x: minX, y: maxY },
+      t:  { x: midX, y: minY }, b:  { x: midX, y: maxY },
+      l:  { x: maxX, y: midY }, r:  { x: minX, y: midY },
+    }
+    const handlePosMap: Record<HandleType, { x: number; y: number }> = {
+      tl: { x: minX, y: maxY }, tr: { x: maxX, y: maxY },
+      bl: { x: minX, y: minY }, br: { x: maxX, y: minY },
+      t:  { x: midX, y: maxY }, b:  { x: midX, y: minY },
+      l:  { x: minX, y: midY }, r:  { x: maxX, y: midY },
+    }
+
+    didDragRef.current = false
+    setMode2({
+      type: 'resize',
+      pathIds: ids,
+      handle,
+      anchor: anchorMap[handle],
+      initHandle: handlePosMap[handle],
+      initBbox: bbox,
+      shiftHeld: e.evt.shiftKey,
+    })
+  }, [setMode2])
+
+  // Called by SelectionLayer rotation handle
+  const handleRotateHandleDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button !== 0) return
+
+    const vp = viewportRef.current
+    const { paths: allPaths, selectedIds: ids } = usePathsStore.getState()
+    const selected = allPaths.filter((p) => ids.includes(p.id))
+    const bbox = getMultiBBox(selected.map((p) => p.d))
+    if (!bbox) return
+
+    const pointer = e.target.getStage()?.getPointerPosition()
+    if (!pointer) return
+    const cncMouse = screenToCNC(pointer.x, pointer.y, vp)
+    const initAngle = Math.atan2(cncMouse.y - bbox.cy, cncMouse.x - bbox.cx) * 180 / Math.PI
+
+    didDragRef.current = false
+    setMode2({ type: 'rotate', pathIds: ids, center: { x: bbox.cx, y: bbox.cy }, initAngle })
+  }, [setMode2])
+
+  const panStartRef = useRef({ mouseX: 0, mouseY: 0, vpX: 0, vpY: 0 })
+
+  const handleStageMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button === 1 || spaceHeldRef.current) {
+      e.evt.preventDefault()
+      const vp = viewportRef.current
+      panStartRef.current = { mouseX: e.evt.clientX, mouseY: e.evt.clientY, vpX: vp.x, vpY: vp.y }
+      setMode2({ type: 'pan' })
+      return
+    }
+    if (e.evt.button !== 0) return
+
+    const { activeTool } = useUIStore.getState()
+
+    // Drill tool: capture click for placement in mouseup, don't deselect or start dragbox
+    if (activeTool === 'drill') {
+      didDragRef.current = false
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    // Shape draw tool active
+    if (activeTool !== 'select') {
+      const stagePointer = stageRef.current?.getPointerPosition()
+      if (stagePointer) startDrawShape(stagePointer)
+      return
+    }
+
+    // Click on empty canvas — use stage pointer position (stage coords = container coords)
+    const stagePointer = stageRef.current?.getPointerPosition()
+    if (!stagePointer) return
+    selectPath(null)  // deselect all
+    didDragRef.current = false
+    setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
+    setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
+  }, [selectPath, setMode2, startDrawShape])
+
+  const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    const stage = stageRef.current
+    const vp = viewportRef.current
+
+    // Stage pointer position is in Konva stage coords (same as container coords)
+    const pointer = stage?.getPointerPosition()
+
+    if (pointer) {
+      setCursorMM({ x: (pointer.x - vp.x) / vp.scale, y: (vp.y - pointer.y) / vp.scale })
+    }
+
+    const m = modeRef.current
+
+    if (m.type === 'pan') {
+      // Pan uses clientX/Y deltas — both are in screen pixels so delta is correct
+      const { mouseX, mouseY, vpX, vpY } = panStartRef.current
+      setViewport((v) => ({ ...v, x: vpX + (e.evt.clientX - mouseX), y: vpY + (e.evt.clientY - mouseY) }))
+      return
+    }
+
+    if (!pointer) return
+    const cncMouse = screenToCNC(pointer.x, pointer.y, vp)
+
+    if (m.type === 'move') {
+      const dx = cncMouse.x - m.startCNC.x
+      const dy = cncMouse.y - m.startCNC.y
+      // Threshold check in stage pixels
+      const startScreenX = vp.x + m.startCNC.x * vp.scale
+      const startScreenY = vp.y - m.startCNC.y * vp.scale
+      if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
+        didDragRef.current = true
+      }
+      if (didDragRef.current) {
+        let finalDx = dx, finalDy = dy
+        if (shiftHeldRef.current) {
+          if (Math.abs(dx) > Math.abs(dy)) finalDy = 0
+          else finalDx = 0
+        }
+        setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
+      }
+      return
+    }
+
+    if (m.type === 'resize') {
+      didDragRef.current = true
+      const { anchor, initHandle, pathIds, handle, shiftHeld } = m
+      const dhx = initHandle.x - anchor.x
+      const dhy = initHandle.y - anchor.y
+      const newHx = cncMouse.x - anchor.x
+      const newHy = cncMouse.y - anchor.y
+
+      let sx = dhx !== 0 ? newHx / dhx : 1
+      let sy = dhy !== 0 ? newHy / dhy : 1
+
+      // Edge handles constrain one axis
+      if (handle === 't' || handle === 'b') sx = 1
+      if (handle === 'l' || handle === 'r') sy = 1
+
+      // Uniform scale for corners with Shift
+      if (shiftHeld && !['t','b','l','r'].includes(handle)) {
+        const s = Math.sign(sx) * Math.hypot(newHx, newHy) / Math.hypot(dhx, dhy)
+        sx = s; sy = Math.sign(sy) * Math.abs(s)
+      }
+
+      // Prevent degenerate scales
+      if (Math.abs(sx) < 0.001) sx = Math.sign(sx) * 0.001
+      if (Math.abs(sy) < 0.001) sy = Math.sign(sy) * 0.001
+
+      setLiveTransform({ kind: 'scale', pathIds: new Set(pathIds), sx, sy, ax: anchor.x, ay: anchor.y })
+      return
+    }
+
+    if (m.type === 'rotate') {
+      didDragRef.current = true
+      const currentAngle = Math.atan2(cncMouse.y - m.center.y, cncMouse.x - m.center.x) * 180 / Math.PI
+      const delta = currentAngle - m.initAngle
+      setLiveTransform({ kind: 'rotate', pathIds: new Set(m.pathIds), angle: delta, cx: m.center.x, cy: m.center.y })
+      setLiveRotationAngle(delta)
+      return
+    }
+
+    if (m.type === 'dragbox') {
+      setDragBox((db) => db ? { ...db, ex: pointer.x, ey: pointer.y } : null)
+    }
+
+    if (m.type === 'drawshape') {
+      const startScreenX = vp.x + m.startCNC.x * vp.scale
+      const startScreenY = vp.y - m.startCNC.y * vp.scale
+      if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
+        didDragRef.current = true
+      }
+      // Update currentCNC in the mode ref (no state re-render needed — liveShapeD handles rendering)
+      modeRef.current = { ...m, currentCNC: cncMouse }
+
+      if (didDragRef.current) {
+        const { activeTool, shapeToolConfig } = useUIStore.getState()
+        if (activeTool !== 'select') {
+          const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, cncMouse, shapeToolConfig)
+          setLiveShapeD(generateShapeD(params))
+        }
+      }
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle])
+
+  const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
+    const m = modeRef.current
+    const vp = viewportRef.current
+
+    if (m.type === 'pan') {
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'move' && didDragRef.current) {
+      const lt = liveTransform
+      if (lt && lt.kind === 'translate') {
+        const { dx, dy } = lt
+        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+        const updates = m.pathIds.flatMap((id) => {
+          const path = allPaths.find((p) => p.id === id)
+          if (!path) return []
+          const newD = translateD(path.d, dx, dy)
+          if (path.shapeParams) {
+            return [{ id, d: newD, shapeParams: translateShapeParams(path.shapeParams, dx, dy) }]
+          }
+          return [{ id, d: newD }]
+        })
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+      }
+      setLiveTransform(null)
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'resize' && didDragRef.current) {
+      const lt = liveTransform
+      if (lt && lt.kind === 'scale') {
+        const { sx, sy, ax, ay } = lt
+        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+        const updates = m.pathIds.flatMap((id) => {
+          const path = allPaths.find((p) => p.id === id)
+          if (!path) return []
+          const newD = scaleAroundD(path.d, ax, ay, sx, sy)
+          const newShapeParams = path.shapeParams
+            ? scaleShapeParams(path.shapeParams, ax, ay, sx, sy)
+            : undefined
+          // null means computed but not representable → clear shapeParams
+          return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams }]
+        })
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+      }
+      setLiveTransform(null)
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'rotate' && didDragRef.current) {
+      const lt = liveTransform
+      if (lt && lt.kind === 'rotate') {
+        const { angle, cx, cy } = lt
+        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+        const updates = m.pathIds.flatMap((id) => {
+          const path = allPaths.find((p) => p.id === id)
+          if (!path) return []
+          return [{ id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null as null }]
+        })
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) markNeedsUpdate(id) }
+      }
+      setLiveTransform(null)
+      setLiveRotationAngle(null)
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'move' && !didDragRef.current) {
+      // Pure click without drag — selection already updated on mousedown
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'dragbox') {
+      if (dragBox) {
+        const { sx, sy, ex, ey } = dragBox
+        const x1 = Math.min(sx, ex), x2 = Math.max(sx, ex)
+        const y1 = Math.min(sy, ey), y2 = Math.max(sy, ey)
+
+        if (Math.hypot(ex - sx, ey - sy) > MOVE_THRESHOLD_PX) {
+          // Convert drag box to CNC bounds
+          const cncMin = screenToCNC(x1, y2, vp)  // y2 is lower on screen = lower CNC y
+          const cncMax = screenToCNC(x2, y1, vp)  // y1 is higher on screen = higher CNC y
+
+          const { paths: allPaths } = usePathsStore.getState()
+          const intersecting = allPaths.filter((p) => {
+            if (!p.visible) return false
+            const bb = getBBox(p.d)
+            if (!bb) return false
+            return bb.minX <= cncMax.x && bb.maxX >= cncMin.x && bb.minY <= cncMax.y && bb.maxY >= cncMin.y
+          })
+          setSelectedIds(intersecting.map((p) => p.id))
+        }
+      }
+      setDragBox(null)
+      setMode2({ type: 'idle' })
+      return
+    }
+
+    if (m.type === 'drawshape') {
+      setLiveShapeD(null)
+      setMode2({ type: 'idle' })
+
+      const { activeTool, shapeToolConfig, setActiveTool } = useUIStore.getState()
+      if (activeTool !== 'select') {
+        const shapeType = activeTool as ShapeType
+        const params = didDragRef.current
+          ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig)
+          : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
+
+        const d = generateShapeD(params)
+        const id = `shape-${Date.now()}`
+        const { addPaths: add, selectPath: sel } = usePathsStore.getState()
+        add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }])
+        sel(id)
+        setActiveTool('select')
+      }
+      return
+    }
+
+    // Drill tool: place a point on any non-drag click
+    {
+      const { activeTool: curTool } = useUIStore.getState()
+      if (curTool === 'drill' && !didDragRef.current) {
+        const pointer = stageRef.current?.getPointerPosition()
+        if (pointer) {
+          const cnc = screenToCNC(pointer.x, pointer.y, viewportRef.current)
+          useUIStore.getState().addDrillPoint(cnc)
+        }
+      }
+    }
+
+    setMode2({ type: 'idle' })
+  }, [liveTransform, dragBox, markNeedsUpdate, setMode2, setSelectedIds, setLiveRotationAngle])
+
+  const activeTool = useUIStore((s) => s.activeTool)
+
+  const getCursor = () => {
+    if (activeTool === 'drill') return 'crosshair'
+    if (activeTool !== 'select') return 'crosshair'
+    switch (modeRef.current.type) {
+      case 'pan': return 'grabbing'
+      case 'move': return 'move'
+      case 'resize': return 'crosshair'
+      case 'rotate': return 'crosshair'
+      case 'dragbox': return 'crosshair'
+      default: return spaceHeldRef.current ? 'grab' : 'default'
+    }
+  }
+
+  // dragBox coords are in Konva stage space = container-relative pixels, no offset needed
+  const dragBoxStyle = dragBox ? {
+    left: Math.min(dragBox.sx, dragBox.ex),
+    top: Math.min(dragBox.sy, dragBox.ey),
+    width: Math.abs(dragBox.ex - dragBox.sx),
+    height: Math.abs(dragBox.ey - dragBox.sy),
+  } : null
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full h-full relative overflow-hidden select-none"
+      style={{ cursor: getCursor() }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleCanvasDrop}
+    >
+      <Stage
+        ref={stageRef}
+        width={size.width}
+        height={size.height}
+        onWheel={handleWheel}
+        onMouseDown={handleStageMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => setCursorMM(null)}
+      >
+        <WorkpieceLayer viewport={viewport} />
+        <GridLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
+        <DesignLayer viewport={viewport} liveTransform={liveTransform} onPathMouseDown={handlePathMouseDown} />
+        <ToolpathLayer viewport={viewport} />
+        {selectedPaths.length > 0 && (
+          <SelectionLayer
+            viewport={viewport}
+            selectedPaths={selectedPaths}
+            liveTransform={liveTransform}
+          />
+        )}
+        <OriginLayer viewport={viewport} />
+        <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
+        {selectedPaths.length > 0 && (
+          <SelectionHandleLayer
+            viewport={viewport}
+            selectedPaths={selectedPaths}
+            liveTransform={liveTransform}
+            onResizeHandleDown={handleResizeHandleDown}
+            onRotateHandleDown={handleRotateHandleDown}
+          />
+        )}
+        <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
+        {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
+          <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={-viewport.scale}>
+            {pendingDrillPoints.map((pt, i) => (
+              <Circle
+                key={i}
+                x={pt.x}
+                y={pt.y}
+                radius={3 / viewport.scale}
+                fill="#f97316"
+                stroke="#ffffff"
+                strokeWidth={1 / viewport.scale}
+                listening={false}
+              />
+            ))}
+          </Layer>
+        )}
+      </Stage>
+
+      {/* Drag-box selection overlay */}
+      {dragBox && dragBoxStyle && (
+        <div
+          className="absolute border border-blue-400 bg-blue-400/10 pointer-events-none"
+          style={dragBoxStyle}
+        />
+      )}
+
+      {/* Tool active indicator */}
+      {activeTool === 'drill' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+          Drill Point Mode — click to place points, Esc to exit
+        </div>
+      )}
+      {activeTool !== 'select' && activeTool !== 'drill' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+          Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
+        </div>
+      )}
+
+      <button
+        onClick={fitToWorkpiece}
+        title="Zoom to fit workpiece"
+        className="absolute bottom-3 right-3 bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 rounded p-1.5 text-neutral-300 transition-colors"
+      >
+        <Maximize2 size={14} />
+      </button>
+    </div>
+  )
+}
