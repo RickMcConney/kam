@@ -2,7 +2,6 @@ import { Pencil, Cpu, Layers } from 'lucide-react'
 import { ICON } from '../theme'
 import { useUIStore, type SidebarTab } from '../store/uiStore'
 import { usePathsStore } from '../store/pathsStore'
-import WorkpiecePanel from '../panels/WorkpiecePanel'
 import PathsPanel from '../panels/PathsPanel'
 import MachinePanel from '../panels/MachinePanel'
 import PropertiesPanel from '../panels/PropertiesPanel'
@@ -15,7 +14,7 @@ const TABS: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
 ]
 
 function TabContent({ tab }: { tab: SidebarTab }) {
-  if (tab === 'draw') return <><ShapePanel /><WorkpiecePanel /></>
+  if (tab === 'draw') return <ShapePanel />
   if (tab === 'machine') return <MachinePanel />
   return <PathsPanel />
 }

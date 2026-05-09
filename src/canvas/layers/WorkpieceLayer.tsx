@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Layer, Rect } from 'react-konva'
+import { Group, Rect } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore, type OriginPosition } from '../../store/workpieceStore'
 import { useUIStore } from '../../store/uiStore'
@@ -32,13 +32,12 @@ interface Props {
 
 export const WorkpieceLayer = memo(function WorkpieceLayer({ viewport }: Props) {
   const { widthMM, heightMM } = useWorkpieceStore()
-  const { x, y, scale } = viewport
+  const { scale } = viewport
   const darkMode = useUIStore((s) => s.darkMode)
   const C = canvasTheme(darkMode)
 
   return (
-    // scaleY is negative to flip Y so world-Y increases upward on screen
-    <Layer x={x} y={y} scaleX={scale} scaleY={-scale} listening={false}>
+    <Group listening={false}>
       <Rect x={0} y={0} width={widthMM} height={heightMM} fill={C.workpiece.fill} />
       <Rect
         x={0} y={0}
@@ -47,7 +46,7 @@ export const WorkpieceLayer = memo(function WorkpieceLayer({ viewport }: Props) 
         strokeWidth={1.5 / scale}
         fill="transparent"
       />
-    </Layer>
+    </Group>
   )
 }
 )

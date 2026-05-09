@@ -1,5 +1,4 @@
-import { Layer, Path } from 'react-konva'
-import type Konva from 'konva'
+import { Group, Path } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { usePathsStore } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
@@ -10,23 +9,20 @@ interface Props {
   viewport: Viewport
   liveTransform: LiveTransform | null
   excludePathId?: string | null
-  onPathMouseDown: (id: string, shift: boolean, e: Konva.KonvaEventObject<MouseEvent>) => void
-  onPathDblClick?: (id: string, e: Konva.KonvaEventObject<MouseEvent>) => void
 }
 
-export function DesignLayer({ viewport, liveTransform, excludePathId, onPathMouseDown, onPathDblClick }: Props) {
+export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
   const { paths, selectedIds } = usePathsStore()
   const darkMode = useUIStore((s) => s.darkMode)
   const C = canvasTheme(darkMode)
-  const { x, y, scale } = viewport
+  const { scale } = viewport
 
   return (
-    <Layer x={x} y={y} scaleX={scale} scaleY={-scale}>
+    <Group listening={false}>
       {paths.filter((p) => p.visible && p.id !== excludePathId).map((p) => {
         const isSelected = selectedIds.includes(p.id)
         const lt = liveTransform && liveTransform.pathIds.has(p.id) ? liveTransform : null
 
-        // Compute Konva node transform attributes for live preview
         let nodeX = 0, nodeY = 0
         let nodeScaleX = 1, nodeScaleY = 1
         let nodeOffsetX = 0, nodeOffsetY = 0
@@ -48,7 +44,6 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, onPathMous
             nodeOffsetY = lt.cy
             nodeX = lt.cx
             nodeY = lt.cy
-            // rotation=angle: in Y-flipped layer, positive angle = CCW on screen (correct for CNC)
             nodeRotation = lt.angle
           }
         }
@@ -59,8 +54,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, onPathMous
             data={p.d}
             stroke={isSelected ? C.path.selected : p.color}
             strokeWidth={(isSelected ? 2 : 1.5) / scale}
-            fill="transparent"
-            listening
+            listening={false}
             x={nodeX}
             y={nodeY}
             scaleX={nodeScaleX}
@@ -68,18 +62,9 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, onPathMous
             offsetX={nodeOffsetX}
             offsetY={nodeOffsetY}
             rotation={nodeRotation}
-            onMouseDown={(e) => {
-              e.cancelBubble = true
-              onPathMouseDown(p.id, e.evt.shiftKey, e)
-            }}
-            onDblClick={(e) => {
-              e.cancelBubble = true
-              onPathDblClick?.(p.id, e)
-            }}
-            hitStrokeWidth={8 / scale}
           />
         )
       })}
-    </Layer>
+    </Group>
   )
 }

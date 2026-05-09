@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
 
 export type SidebarTab = 'draw' | 'machine' | 'paths'
-export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
+export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor' | 'setup'
 export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
 
 export type PenNode = {

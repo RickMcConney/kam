@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ICON } from '../theme'
-import { Stage, Layer, Circle } from 'react-konva'
+import { Stage, Layer, Group, Circle } from 'react-konva'
 import type Konva from 'konva'
 import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { usePathsStore } from '../store/pathsStore'
 import { regenerateAffected } from '../cam/regenerate'
+import { flattenPath } from '../cam/pathFlattener'
+import type { ImportedPath } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { importSvg, nextPathColor } from '../importers/svgImporter'
 import { GridLayer } from './layers/GridLayer'
@@ -43,6 +45,47 @@ export interface Viewport {
   y: number
   scale: number
 }
+
+// ── Path proximity helpers ────────────────────────────────────────────────────
+
+function ptSegDistSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const abx = bx - ax, aby = by - ay
+  const len2 = abx * abx + aby * aby
+  if (len2 === 0) return (px - ax) ** 2 + (py - ay) ** 2
+  const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / len2))
+  return (px - ax - t * abx) ** 2 + (py - ay - t * aby) ** 2
+}
+
+function distToPolylines(px: number, py: number, polys: [number, number][][]): number {
+  let minSq = Infinity
+  for (const poly of polys) {
+    for (let i = 1; i < poly.length; i++) {
+      const [ax, ay] = poly[i - 1], [bx, by] = poly[i]
+      const d = ptSegDistSq(px, py, ax, ay, bx, by)
+      if (d < minSq) minSq = d
+    }
+  }
+  return Math.sqrt(minSq)
+}
+
+function closestVisiblePath(
+  px: number, py: number,
+  paths: ImportedPath[],
+  thresholdMM: number,
+  cache: Map<string, [number, number][][]>,
+): ImportedPath | null {
+  let best: ImportedPath | null = null
+  let bestDist = thresholdMM
+  for (const p of paths) {
+    let polys = cache.get(p.d)
+    if (!polys) { polys = flattenPath(p.d, 0.5); cache.set(p.d, polys) }
+    const dist = distToPolylines(px, py, polys)
+    if (dist < bestDist) { bestDist = dist; best = p }
+  }
+  return best
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function fitViewport(sw: number, sh: number, ww: number, wh: number): Viewport {
   const uw = sw - RULER_W
@@ -90,6 +133,7 @@ export default function CanvasStage() {
   const [penClosing, setPenClosing] = useState(false)
   const [toolpathTooltip, setToolpathTooltip] = useState<{ name: string; depth: string; x: number; y: number } | null>(null)
   const didDragRef = useRef(false)
+  const flatCache = useRef(new Map<string, [number, number][][]>())
 
   const { widthMM, heightMM } = useWorkpieceStore()
   // Use individual selectors for actions — Zustand action refs are stable so these never trigger re-renders
@@ -361,51 +405,19 @@ export default function CanvasStage() {
     setHoveredEditNode(idx)
   }, [])
 
-  // Called by DesignLayer when a path is clicked/mousedown
-  const handlePathMouseDown = useCallback((id: string, shift: boolean, e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (spaceHeldRef.current || e.evt.button !== 0) return
-
+  const handleStageDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button !== 0) return
     const { activeTool, nodeEditPathId: neid } = useUIStore.getState()
-
-    // If node edit is active and user clicked a different path, exit node edit first
-    if (neid && neid !== id) exitNodeEdit()
-
-    // Pen tool — start placing a node at click position
-    if (activeTool === 'pen') {
-      const pointer = e.target.getStage()?.getPointerPosition()
-      if (pointer) startPenDraw(pointer)
-      return
-    }
-
-    // Drill tool: don't start move mode, placement handled in mouseup
-    if (activeTool === 'drill') {
-      didDragRef.current = false
-      return
-    }
-
-    // Shape draw tool active — treat path click as canvas click for drawing
-    if (activeTool !== 'select') {
-      const pointer = e.target.getStage()?.getPointerPosition()
-      if (pointer) startDrawShape(pointer)
-      return
-    }
-
-    const vp = viewportRef.current
-    const pointer = e.target.getStage()?.getPointerPosition()
+    if (activeTool !== 'select') return
+    const pointer = stageRef.current?.getPointerPosition()
     if (!pointer) return
+    const vp = viewportRef.current
     const cnc = screenToCNC(pointer.x, pointer.y, vp)
-
-    // Update selection
-    const { selectedIds: currentIds } = usePathsStore.getState()
-    if (shift) {
-      usePathsStore.getState().selectPath(id, true)
-    } else if (!currentIds.includes(id)) {
-      usePathsStore.getState().selectPath(id, false)
-    }
-
-    didDragRef.current = false
-    setMode2({ type: 'move', pathIds: usePathsStore.getState().selectedIds, startCNC: cnc })
-  }, [setMode2, startDrawShape, startPenDraw, exitNodeEdit])
+    const { paths } = usePathsStore.getState()
+    const candidates = paths.filter((p) => p.visible && p.id !== neid)
+    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, flatCache.current)
+    if (hit) handlePathDblClick(hit.id)
+  }, [handlePathDblClick])
 
   // Called by SelectionLayer resize handles
   const handleResizeHandleDown = useCallback((handle: HandleType, e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -478,9 +490,6 @@ export default function CanvasStage() {
 
     const { activeTool, nodeEditPathId: neid } = useUIStore.getState()
 
-    // Exit node edit when clicking empty canvas
-    if (neid) { exitNodeEdit(); return }
-
     // Pen tool — start placing a node
     if (activeTool === 'pen') {
       const stagePointer = stageRef.current?.getPointerPosition()
@@ -502,13 +511,33 @@ export default function CanvasStage() {
       return
     }
 
-    // Click on empty canvas — use stage pointer position (stage coords = container coords)
     const stagePointer = stageRef.current?.getPointerPosition()
     if (!stagePointer) return
-    selectPath(null)  // deselect all
-    didDragRef.current = false
-    setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
-    setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
+    const vp = viewportRef.current
+    const cnc = screenToCNC(stagePointer.x, stagePointer.y, vp)
+
+    // Find the closest visible path within 8 screen pixels
+    const { paths } = usePathsStore.getState()
+    const candidates = paths.filter((p) => p.visible && p.id !== neid)
+    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, flatCache.current)
+
+    if (hit) {
+      if (neid && neid !== hit.id) exitNodeEdit()
+      const { selectedIds: currentIds } = usePathsStore.getState()
+      if (e.evt.shiftKey) {
+        usePathsStore.getState().selectPath(hit.id, true)
+      } else if (!currentIds.includes(hit.id)) {
+        usePathsStore.getState().selectPath(hit.id, false)
+      }
+      didDragRef.current = false
+      setMode2({ type: 'move', pathIds: usePathsStore.getState().selectedIds, startCNC: cnc })
+    } else {
+      if (neid) { exitNodeEdit(); return }
+      selectPath(null)
+      didDragRef.current = false
+      setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
+      setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
+    }
   }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit])
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -901,67 +930,77 @@ export default function CanvasStage() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={() => setCursorMM(null)}
+        onDblClick={handleStageDblClick}
       >
-        <WorkpieceLayer viewport={viewport} />
-        <GridLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
-        <DesignLayer
-          viewport={viewport}
-          liveTransform={liveTransform}
-          excludePathId={nodeEditPathId}
-          onPathMouseDown={handlePathMouseDown}
-          onPathDblClick={handlePathDblClick}
-        />
-        {nodeEditPathId && (
-          <NodeEditLayer
+        {/* Layer 1: All CNC-space content (Y-flipped). Groups render in z-order within this single canvas. */}
+        <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={-viewport.scale}>
+          <WorkpieceLayer viewport={viewport} />
+          <GridLayer viewport={viewport} />
+          <DesignLayer
             viewport={viewport}
-            nodes={editNodes}
-            closed={editClosed}
-            hoveredNodeIdx={hoveredEditNode}
-            onNodeMouseDown={handleNodeMouseDown}
-            onSegmentMouseDown={handleSegmentMouseDown}
-            onHoveredNodeChange={handleHoveredNodeChange}
-          />
-        )}
-        <ToolpathLayer viewport={viewport} onHover={handleToolpathHover} />
-        <SimulationLayer viewport={viewport} />
-        {!nodeEditPathId && selectedPaths.length > 0 && (
-          <SelectionLayer
-            viewport={viewport}
-            selectedPaths={selectedPaths}
             liveTransform={liveTransform}
+            excludePathId={nodeEditPathId}
           />
-        )}
-        <OriginLayer viewport={viewport} />
-        <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
-        {!nodeEditPathId && selectedPaths.length > 0 && (
-          <SelectionHandleLayer
-            viewport={viewport}
-            selectedPaths={selectedPaths}
-            liveTransform={liveTransform}
-            onResizeHandleDown={handleResizeHandleDown}
-            onRotateHandleDown={handleRotateHandleDown}
-          />
-        )}
-        <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
-        {activeTool === 'pen' && (
-          <PenLayer viewport={viewport} penNodes={penNodes} livePen={livePen} penClosing={penClosing} />
-        )}
-        {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
-          <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={-viewport.scale}>
-            {pendingDrillPoints.map((pt, i) => (
-              <Circle
-                key={i}
-                x={pt.x}
-                y={pt.y}
-                radius={3 / viewport.scale}
-                fill="#f97316"
-                stroke="#ffffff"
-                strokeWidth={1 / viewport.scale}
-                listening={false}
-              />
-            ))}
-          </Layer>
-        )}
+          {nodeEditPathId && (
+            <NodeEditLayer
+              viewport={viewport}
+              nodes={editNodes}
+              closed={editClosed}
+              hoveredNodeIdx={hoveredEditNode}
+              onNodeMouseDown={handleNodeMouseDown}
+              onSegmentMouseDown={handleSegmentMouseDown}
+              onHoveredNodeChange={handleHoveredNodeChange}
+            />
+          )}
+          <ToolpathLayer viewport={viewport} onHover={handleToolpathHover} />
+          <SimulationLayer viewport={viewport} />
+          <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
+          {activeTool === 'pen' && (
+            <PenLayer viewport={viewport} penNodes={penNodes} livePen={livePen} penClosing={penClosing} />
+          )}
+          {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
+            <Group listening={false}>
+              {pendingDrillPoints.map((pt, i) => (
+                <Circle
+                  key={i}
+                  x={pt.x}
+                  y={pt.y}
+                  radius={3 / viewport.scale}
+                  fill="#f97316"
+                  stroke="#ffffff"
+                  strokeWidth={1 / viewport.scale}
+                  listening={false}
+                />
+              ))}
+            </Group>
+          )}
+        </Layer>
+
+        {/* Layer 2: Screen-space overlay — origin indicator, selection outline, rulers. */}
+        <Layer listening={false}>
+          <OriginLayer viewport={viewport} />
+          {!nodeEditPathId && selectedPaths.length > 0 && (
+            <SelectionLayer
+              viewport={viewport}
+              selectedPaths={selectedPaths}
+              liveTransform={liveTransform}
+            />
+          )}
+          <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
+        </Layer>
+
+        {/* Layer 3: Interactive handles — selection resize/rotate circles. */}
+        <Layer>
+          {!nodeEditPathId && selectedPaths.length > 0 && (
+            <SelectionHandleLayer
+              viewport={viewport}
+              selectedPaths={selectedPaths}
+              liveTransform={liveTransform}
+              onResizeHandleDown={handleResizeHandleDown}
+              onRotateHandleDown={handleRotateHandleDown}
+            />
+          )}
+        </Layer>
       </Stage>
 
       {/* Toolpath hover tooltip */}

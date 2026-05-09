@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Layer, Shape } from 'react-konva'
+import { Group, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { useUIStore } from '../../store/uiStore'
@@ -23,7 +23,7 @@ export const RulerLayer = memo(function RulerLayer({ viewport, stageWidth, stage
   const { bg: BG, border: BORDER, tickMj: TICK_MJ, tickMn: TICK_MN, label: LABEL, corner: CORNER } = canvasTheme(darkMode).ruler
 
   return (
-    <Layer listening={false}>
+    <Group listening={false}>
       <Shape
         width={stageWidth}
         height={stageHeight}
@@ -156,7 +156,7 @@ export const RulerLayer = memo(function RulerLayer({ viewport, stageWidth, stage
           c.restore()
         }}
       />
-    </Layer>
+    </Group>
   )
 }
 )

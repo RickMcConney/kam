@@ -44,6 +44,7 @@ export interface PocketOperation extends BaseOperation {
   depthMM: number
   stepDownMM: number
   stepoverPercent: number
+  passAngleDeg: number
   direction: CuttingDirection
 }
 

@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
 import ToolLibraryPanel from './panels/ToolLibraryPanel'
 import PostProcessorPanel from './panels/PostProcessorPanel'
+import WorkpiecePanel from './panels/WorkpiecePanel'
 import GcodeViewer from './panels/GcodeViewer'
 import { useUIStore, type WorkspaceTab } from './store/uiStore'
 import { usePathsStore } from './store/pathsStore'
@@ -21,6 +22,7 @@ const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
   { id: '2d', label: '2D View' },
   { id: '3d', label: '3D View' },
+  { id: 'setup', label: 'Setup' },
   { id: 'tools', label: 'Tool Library' },
   { id: 'postprocessor', label: 'Post-Processor' },
 ]
@@ -64,6 +66,7 @@ function MainWorkspace() {
             </Suspense>
           )}
 
+          {workspaceTab === 'setup' && <WorkpiecePanel />}
           {workspaceTab === 'tools' && <ToolLibraryPanel />}
           {workspaceTab === 'postprocessor' && <PostProcessorPanel />}
 

@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Layer, Arrow, Circle, Text } from 'react-konva'
+import { Group, Arrow, Circle, Text } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { originWorldXY } from './WorkpieceLayer'
@@ -26,7 +26,7 @@ export const OriginLayer = memo(function OriginLayer({ viewport }: Props) {
   const sy = viewport.y - org.y * viewport.scale
 
   return (
-    <Layer listening={false}>
+    <Group listening={false}>
       {/* X axis – red, points right */}
       <Arrow
         x={sx} y={sy}
@@ -49,7 +49,7 @@ export const OriginLayer = memo(function OriginLayer({ viewport }: Props) {
 
       {/* Origin dot */}
       <Circle x={sx} y={sy} radius={3} fill="white" />
-    </Layer>
+    </Group>
   )
 }
 )

@@ -1,4 +1,4 @@
-import { Layer, Line, Circle } from 'react-konva'
+import { Group, Line, Circle } from 'react-konva'
 import type Konva from 'konva'
 import type { Viewport } from '../CanvasStage'
 import type { HandleType, LiveTransform } from '../types'
@@ -54,10 +54,10 @@ export function SelectionLayer({ viewport, selectedPaths, liveTransform }: Share
   const outline = [c.tl.x, c.tl.y, c.tr.x, c.tr.y, c.br.x, c.br.y, c.bl.x, c.bl.y, c.tl.x, c.tl.y]
 
   return (
-    <Layer listening={false}>
+    <Group listening={false}>
       <Line points={outline} stroke="#60a5fa" strokeWidth={1} dash={[4, 3]} />
       <Line points={[rotBase.x, rotBase.y, rotHandle.x, rotHandle.y]} stroke="#60a5fa" strokeWidth={1} />
-    </Layer>
+    </Group>
   )
 }
 
@@ -80,7 +80,7 @@ export function SelectionHandleLayer({ viewport, selectedPaths, liveTransform, o
   ]
 
   return (
-    <Layer>
+    <Group>
       {handles.map(({ id, pos: p }) => (
         <Circle
           key={id}
@@ -96,6 +96,6 @@ export function SelectionHandleLayer({ viewport, selectedPaths, liveTransform, o
         fill="#1e293b" stroke="#a78bfa" strokeWidth={1.5}
         onMouseDown={(e) => { e.cancelBubble = true; onRotateHandleDown(e) }}
       />
-    </Layer>
+    </Group>
   )
 }

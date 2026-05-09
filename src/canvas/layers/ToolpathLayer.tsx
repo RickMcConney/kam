@@ -1,5 +1,5 @@
 import { memo, Fragment } from 'react'
-import { Layer, Line, Circle } from 'react-konva'
+import { Group, Line, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useToolpathStore, type MotionSegment, type AnyOperation } from '../../store/toolpathStore'
 
@@ -48,7 +48,7 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport, onHover }: 
   const visible = operations.filter((o) => o.visible && o.status === 'done' && o.segments.length > 0)
 
   return (
-    <Layer x={viewport.x} y={viewport.y} scaleX={scale} scaleY={-scale}>
+    <Group>
       {visible.map((op) => {
         const { cutting, firstCut } = groupSegments(op.segments)
         const depth = opDepthLabel(op)
@@ -97,6 +97,6 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport, onHover }: 
           </Fragment>
         )
       })}
-    </Layer>
+    </Group>
   )
 })

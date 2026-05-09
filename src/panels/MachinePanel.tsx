@@ -141,8 +141,8 @@ interface PocketFormState {
   depthMM: number
   stepDownMM: number
   stepoverPercent: number
+  passAngleDeg: number
   direction: CuttingDirection
-  angle: number
 }
 
 function PocketForm({ onClose }: { onClose: () => void }) {
@@ -156,8 +156,8 @@ function PocketForm({ onClose }: { onClose: () => void }) {
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
+    passAngleDeg: 0,
     direction: defaultTool?.direction ?? 'climb',
-    angle: 45,
   })
   const [generating, setGenerating] = useState(false)
 
@@ -187,6 +187,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
       depthMM: form.depthMM,
       stepDownMM: form.stepDownMM,
       stepoverPercent: form.stepoverPercent,
+      passAngleDeg: form.passAngleDeg,
       direction: form.direction,
     })
     updateOperation(opId, { status: 'generating' })
@@ -198,7 +199,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
           stepoverPercent: form.stepoverPercent,
           direction: form.direction,
           islandDs: islandPaths.map((p) => p.d),
-          angle: 45
+          angle: form.passAngleDeg,
         }))
       } catch (err) {
         setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -239,6 +240,18 @@ function PocketForm({ onClose }: { onClose: () => void }) {
           type="range" min={10} max={90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+      </div>
+      {/* Pass angle */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+        </label>
+        <input
+          type="range" min={0} max={180} step={5}
+          value={form.passAngleDeg}
+          onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
           className="w-full accent-blue-500"
         />
       </div>

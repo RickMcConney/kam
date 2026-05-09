@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { Layer, Circle, Line } from 'react-konva'
+import { Group, Circle, Line } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
 import { getCurrentSegIdx, interpolatePos, type SimSegment } from '../../sim/gcodeParser'
@@ -80,7 +80,7 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const toolRadius = curSeg ? Math.max(curSeg.toolDiameterMM / 2, 1.5 / scale) : 3 / scale
 
   return (
-    <Layer x={viewport.x} y={viewport.y} scaleX={scale} scaleY={-scale} listening={false}>
+    <Group listening={false}>
       {/* Completed trail sections — memoized, only updates at segment boundaries */}
       <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} />
 
@@ -114,6 +114,6 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
         fill={isCutting ? '#ef4444' : '#9ca3af'}
         opacity={0.95}
       />
-    </Layer>
+    </Group>
   )
 })

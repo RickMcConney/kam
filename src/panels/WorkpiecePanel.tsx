@@ -193,7 +193,7 @@ export default function WorkpiecePanel() {
         </select>
       </Section>
 
-      <Section title="Machine Travel Limits" defaultOpen={false}>
+      <Section title="Machine Travel Limits">
         <p className="text-body text-gray-400 dark:text-neutral-500 mb-2">
           Maximum travel for pre-export validation.
         </p>

@@ -1,4 +1,4 @@
-import { Layer, Path, Line, Circle } from 'react-konva'
+import { Group, Path, Line, Circle } from 'react-konva'
 import type Konva from 'konva'
 import type { Viewport } from '../CanvasStage'
 import type { PathNode } from '../nodeUtils'
@@ -29,7 +29,7 @@ export function NodeEditLayer({
   onSegmentMouseDown,
   onHoveredNodeChange,
 }: Props) {
-  const { x: vx, y: vy, scale: s } = viewport
+  const { scale: s } = viewport
   if (nodes.length === 0) return null
 
   const pathD = nodesToD(nodes, closed)
@@ -51,7 +51,7 @@ export function NodeEditLayer({
   }
 
   return (
-    <Layer x={vx} y={vy} scaleX={s} scaleY={-s} listening>
+    <Group>
       {/* Wide invisible hit area for segment clicks */}
       {pathD && (
         <Path
@@ -103,7 +103,7 @@ export function NodeEditLayer({
           onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(i, 'anchor', e) }}
         />
       ))}
-    </Layer>
+    </Group>
   )
 }
 

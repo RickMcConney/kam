@@ -164,7 +164,8 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
         prevIsC = false; prevIsQ = false; break
       }
       case 'Z': {
-        pushSub()  // closed polygon; don't push duplicate of start point
+        if (current.length >= 2) current.push([mx, my])  // close the loop so the closing segment is present
+        pushSub()
         cx = mx; cy = my
         prevIsC = false; prevIsQ = false; break
       }

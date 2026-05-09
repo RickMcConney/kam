@@ -1,4 +1,4 @@
-import { Layer, Path, Line, Circle } from 'react-konva'
+import { Group, Path, Line, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import type { PenNode } from '../../store/uiStore'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -53,7 +53,7 @@ interface Props {
 
 export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
   const cursorCNC = useCanvasStore((s) => s.cursorMM)
-  const { x: vx, y: vy, scale: s } = viewport
+  const { scale: s } = viewport
   const last = penNodes.length > 0 ? penNodes[penNodes.length - 1] : null
   const first = penNodes.length > 0 ? penNodes[0] : null
 
@@ -79,7 +79,7 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
   if (penNodes.length === 0 && !livePen) return null
 
   return (
-    <Layer x={vx} y={vy} scaleX={s} scaleY={-s} listening={false}>
+    <Group listening={false}>
       {/* Committed path so far */}
       {committedD && (
         <Path data={committedD} stroke="#38bdf8" strokeWidth={1.5 / s} fill="transparent" listening={false} />
@@ -168,6 +168,6 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
           listening={false}
         />
       )}
-    </Layer>
+    </Group>
   )
 }
