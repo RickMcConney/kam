@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ICON } from '../theme'
 import {
   Plus, Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
-  Crosshair, X, ChevronUp, ChevronDown,
+  Crosshair, X, ChevronUp, ChevronDown, Circle, CircleDot, Target, Layers
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide } from '../store/toolpathStore'
@@ -727,15 +727,18 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
       </div>
       <div className="p-2 grid grid-cols-3 gap-1.5">
         {([
-          ['profile', 'Profile', 'Cut along path edge'],
-          ['pocket', 'Pocket', 'Clear inside boundary'],
-          ['drill', 'Drill', 'Peck or helical drill'],
-          ['surface', 'Surface', 'Flatten workpiece top'],
-        ] as [OpType, string, string][]).map(([type, name, desc]) => (
+          ['profile', 'Profile', 'Cut along path edge', <Circle size={ICON.md} />],
+          ['pocket', 'Pocket', 'Clear inside boundary', < Target size={ICON.md} />],
+          ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
+          ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
+        ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
           <button key={type} onClick={() => onSelect(type)}
+          title={desc} 
             className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-gray-200 dark:border-neutral-600 bg-gray-50 dark:bg-neutral-900 hover:bg-gray-100 dark:hover:bg-neutral-800 text-gray-700 dark:text-neutral-300 hover:text-white transition-colors">
             <span className="text-body font-medium">{name}</span>
-            <span className="text-label text-gray-400 dark:text-neutral-500 text-center leading-tight">{desc}</span>
+            
+         
+            {icon}
           </button>
         ))}
       </div>

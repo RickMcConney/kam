@@ -1,4 +1,4 @@
-import { Pencil, Cpu, Layers } from 'lucide-react'
+import { DraftingCompass, Cpu, Route } from 'lucide-react'
 import { ICON } from '../theme'
 import { useUIStore, type SidebarTab } from '../store/uiStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -8,9 +8,9 @@ import PropertiesPanel from '../panels/PropertiesPanel'
 import ShapePanel from '../panels/draw/ShapePanel'
 
 const TABS: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
-  { id: 'draw', label: 'Draw', icon: <Pencil size={ICON.md} /> },
+  { id: 'draw', label: 'Draw', icon: <DraftingCompass size={ICON.md} /> },
   { id: 'machine', label: 'Machine', icon: <Cpu size={ICON.md} /> },
-  { id: 'paths', label: 'Paths', icon: <Layers size={ICON.md} /> },
+  { id: 'paths', label: 'Paths', icon: <Route size={ICON.md} /> },
 ]
 
 function TabContent({ tab }: { tab: SidebarTab }) {

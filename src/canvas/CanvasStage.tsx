@@ -14,7 +14,7 @@ import { importSvg, nextPathColor } from '../importers/svgImporter'
 import { GridLayer } from './layers/GridLayer'
 import { WorkpieceLayer } from './layers/WorkpieceLayer'
 import { OriginLayer } from './layers/OriginLayer'
-import { RulerLayer, RULER_H, RULER_W } from './layers/RulerLayer'
+import {  RULER_H, RULER_W } from './layers/RulerLayer'
 import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
@@ -986,7 +986,7 @@ export default function CanvasStage() {
               liveTransform={liveTransform}
             />
           )}
-          <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
+          {/* <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} /> */}
         </Layer>
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { ICON } from '../theme'
 import {
-  FilePlus, FolderOpen, Save, Upload, Download,
+  FilePlus, FolderOpen, Save, Import,FileCog,
   Undo2, Redo2, Magnet, Settings, HelpCircle, Play, Sun, Moon,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
@@ -157,80 +157,83 @@ export default function Toolbar() {
 
   return (
     <div className="h-10 bg-gray-100 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
-      {/* Brand */}
-      <span className="text-blue-400 font-bold text-sm px-2 mr-1 tracking-tight">
-        FK
-      </span>
-      <Sep />
+
 
       {/* File */}
-      <ToolbarButton
-        icon={<FilePlus size={ICON.md} />}
-        label="New Project (Ctrl+N)"
-        onClick={newProject}
-      />
-      <ToolbarButton
-        icon={<FolderOpen size={ICON.md} />}
-        label="Open Project (Ctrl+O)"
-        onClick={() => openProjectFile().catch(() => {})}
-      />
-      <ToolbarButton
-        icon={<Save size={ICON.md} />}
-        label="Save Project (Ctrl+S)"
-        onClick={saveProject}
-      />
-      <Sep />
-
-      {/* Import / Export */}
-      <input
-        ref={importRef}
-        type="file"
-        accept=".svg,.gcode,.nc,.ngc,.tap"
-        className="hidden"
-        onChange={handleImportFileChange}
-      />
-      <ToolbarButton
-        icon={<Upload size={ICON.md} />}
-        label="Import File (SVG or G-code)"
-        onClick={() => importRef.current?.click()}
-      />
-      <ToolbarButton
-        icon={<Download size={ICON.md} />}
-        label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
-        onClick={handleExportGcode}
-      />
-      <ToolbarButton
-        icon={<Play size={ICON.md} />}
-        label={hasToolpaths ? 'Simulate G-code' : 'Simulate G-code (no toolpaths)'}
-        onClick={handleSimulate}
-      />
-      <Sep />
-
-      {/* History */}
-      <ToolbarButton icon={<Undo2 size={ICON.md} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo()} />
-      <ToolbarButton icon={<Redo2 size={ICON.md} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo()} />
-      <Sep />
-
-      {/* Snap */}
-      <ToolbarButton
-        icon={<Magnet size={ICON.md} />}
-        label={`Snap to Grid (S) — ${snapEnabled ? 'On' : 'Off'}`}
-        onClick={toggleSnap}
-        active={snapEnabled}
-      />
-
-      {/* Editable project name */}
-      <ProjectNameEditor />
-
-      {/* Right side */}
-      <div className="ml-auto flex items-center gap-0.5">
+      <div style={{ display: 'flex', gap: '12px' }}>
         <ToolbarButton
-          icon={darkMode ? <Sun size={ICON.md} /> : <Moon size={ICON.md} />}
-          label={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
-          onClick={toggleDarkMode}
+          icon={<FilePlus size={ICON.md} />}
+          label="New Project (Ctrl+N)"
+          onClick={newProject}
         />
-        <ToolbarButton icon={<Settings size={ICON.md} />} label="Options" />
-        <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" />
+        <ToolbarButton
+          icon={<FolderOpen size={ICON.md} />}
+          label="Open Project (Ctrl+O)"
+          onClick={() => openProjectFile().catch(() => { })}
+        />
+        <ToolbarButton
+          icon={<Save size={ICON.md} />}
+          label="Save Project (Ctrl+S)"
+          onClick={saveProject}
+        />
+        
+
+        {/* Import / Export */}
+        <input
+          ref={importRef}
+          type="file"
+          accept=".svg,.gcode,.nc,.ngc,.tap"
+          className="hidden"
+          onChange={handleImportFileChange}
+        />
+        <ToolbarButton
+          icon={<Import size={ICON.md} />}
+          label="Import File (SVG or G-code)"
+          onClick={() => importRef.current?.click()}
+        />
+        <ToolbarButton
+          icon={<FileCog size={ICON.md} />}
+          label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
+          onClick={handleExportGcode}
+        />
+        <Sep />
+
+
+        {/* History */}
+        <ToolbarButton icon={<Undo2 size={ICON.md} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo()} />
+        <ToolbarButton icon={<Redo2 size={ICON.md} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo()} />
+        <Sep />
+
+        <ToolbarButton
+          icon={<Play size={ICON.md} />}
+          label={hasToolpaths ? 'Simulate G-code' : 'Simulate G-code (no toolpaths)'}
+          onClick={handleSimulate}
+        />
+        <Sep />
+
+
+        {/* Editable project name */}
+        <ProjectNameEditor />
+      </div>
+      {/* Right side */}
+
+      <div className="ml-auto flex items-center gap-0.5">
+        <div style={{ display: 'flex', gap: '12px' }}>
+                  {/* Snap */}
+        <ToolbarButton
+          icon={<Magnet size={ICON.md} />}
+          label={`Snap to Grid (S) — ${snapEnabled ? 'On' : 'Off'}`}
+          onClick={toggleSnap}
+          active={snapEnabled}
+        />
+          <ToolbarButton
+            icon={darkMode ? <Sun size={ICON.md} /> : <Moon size={ICON.md} />}
+            label={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+            onClick={toggleDarkMode}
+          />
+          <ToolbarButton icon={<Settings size={ICON.md} />} label="Options" />
+          <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" />
+        </div>
       </div>
     </div>
   )
