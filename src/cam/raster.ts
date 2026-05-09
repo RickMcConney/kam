@@ -51,7 +51,7 @@ function segmentsIntersect(a: Pt2, b: Pt2, c: Pt2, d: Pt2): boolean {
 function addContour(pts: Pt2[], z: number, segs: MotionSegment[], boundary: Pt2[]) {
     if (pts.length < 2) return
     const [sx, sy] = pts[0]
-    const [ex, ey] = pts[1]
+
 
     segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
     segs.push({ x: sx, y: sy, z, rapid: false })
