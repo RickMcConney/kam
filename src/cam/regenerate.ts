@@ -1,5 +1,5 @@
 import { generateProfile } from './profile'
-import { generatePocket } from './pocket'
+import { generatePocket } from './raster'
 import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { generateSurface } from './surfacing'
 import { useToolpathStore } from '../store/toolpathStore'
@@ -29,14 +29,14 @@ export function regenerateOperation(opId: string): void {
       } else if (op.type === 'pocket') {
         const boundary = paths.find((p) => p.id === op.pathId)
         if (!boundary) throw new Error('Boundary path not found')
-        const islandDs = op.islandIds.flatMap((id) => {
+        const islandDs = op.islandIds.flatMap((id) => { 
           const p = paths.find((x) => x.id === id)
           return p ? [p.d] : []
         })
         setSegments(opId, generatePocket(boundary.d, tool, {
           depthMM: op.depthMM, stepDownMM: op.stepDownMM,
           stepoverPercent: op.stepoverPercent, direction: op.direction,
-          islandDs,
+          islandDs,angle: 45,
         }))
       } else if (op.type === 'drill') {
         if (op.drillMode === 'helical' && op.helicalCenterX !== undefined && op.helicalCenterY !== undefined && op.helicalRadius !== undefined) {

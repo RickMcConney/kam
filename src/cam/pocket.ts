@@ -8,6 +8,7 @@ export interface PocketParams {
   stepoverPercent: number
   direction: CuttingDirection
   islandDs: string[]
+  angle: number
 }
 
 const SAFE_Z = 5.0

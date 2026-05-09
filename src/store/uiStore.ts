@@ -45,7 +45,7 @@ export const useUIStore = create<UIState>()((set) => ({
   pendingDrillPoints: [],
   penNodes: [],
   nodeEditPathId: null,
-  darkMode: false,
+  darkMode: true,
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),

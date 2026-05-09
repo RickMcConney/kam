@@ -10,7 +10,7 @@ import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useUIStore } from '../store/uiStore'
 import { generateProfile } from '../cam/profile'
-import { generatePocket } from '../cam/pocket'
+import { generatePocket } from '../cam/raster'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
 import { regenerateOperation } from '../cam/regenerate'
@@ -142,6 +142,7 @@ interface PocketFormState {
   stepDownMM: number
   stepoverPercent: number
   direction: CuttingDirection
+  angle: number
 }
 
 function PocketForm({ onClose }: { onClose: () => void }) {
@@ -156,6 +157,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
     direction: defaultTool?.direction ?? 'climb',
+    angle: 45,
   })
   const [generating, setGenerating] = useState(false)
 
@@ -196,6 +198,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
           stepoverPercent: form.stepoverPercent,
           direction: form.direction,
           islandDs: islandPaths.map((p) => p.d),
+          angle: 45
         }))
       } catch (err) {
         setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -543,6 +546,8 @@ function ToggleRow<T extends string>({ label, options, value, onChange }: {
     </div>
   )
 }
+
+
 
 function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
   depthMM: number; stepDownMM: number
