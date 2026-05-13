@@ -71,13 +71,8 @@ export function newProject() {
   useToolpathStore.getState().replaceOperations([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
-  const wps = useWorkpieceStore.getState()
-  wps.setWidth(300)
-  wps.setHeight(200)
-  wps.setThickness(18)
-  wps.setUnits('mm')
-  wps.setOrigin('bottom-left')
-  wps.setMaterial('mdf')
+  // Workpiece settings (size, origin, thickness, material) are persisted in
+  // localStorage and intentionally kept across new projects.
 }
 
 export function openProjectFile(): Promise<void> {

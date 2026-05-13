@@ -1,3 +1,4 @@
+
 export interface SimSegment {
   x: number
   y: number
@@ -86,7 +87,7 @@ export function parseGcode(text: string): ParsedGcode {
   const rawLines = text.split('\n')
   const segs: SimSegment[] = []
 
-  let cx = 0, cy = 0, cz = 0
+  let cx = 0, cy = 0, cz = 5
   let feedRate = 1000
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3
   let toolDiameterMM = 3.0

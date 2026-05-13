@@ -150,7 +150,6 @@ export function generatePocket(
 
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
-  segs.push({ x: 0, y: 0, z: SAFE_Z, rapid: true })
 
   for (const zDepth of zLevels) {
     for (const contour of allContours) {

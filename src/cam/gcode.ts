@@ -1,6 +1,8 @@
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { PostProcessorProfile } from '../store/postProcessorStore'
+import { useWorkpieceStore } from '../store/workpieceStore'
+import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 
 const MM_PER_IN = 25.4
 
@@ -38,9 +40,15 @@ export function generateGcode(
   const date = new Date().toISOString().replace('T', ' ').slice(0, 19)
   const c = (text: string) => { const l = cmt(text, profile.commentStyle); if (l) lines.push(l) }
 
+  // Segments are stored in workpiece-local coords (0→W, 0→H).
+  // G-code must be relative to the machine zero (the origin point the user set on the workpiece).
+  const { widthMM, heightMM, origin } = useWorkpieceStore.getState()
+  const org = originWorldXY(origin, widthMM, heightMM)
+
   c(`FreazyKam - ${projectName}`)
   c(`Generated: ${date}`)
   c(`Post-processor: ${profile.name}`)
+  c(`Origin: ${origin}  offset X${f(org.x)} Y${f(org.y)}`)
   if (profile.startGcode.trim()) lines.push(...profile.startGcode.split('\n'))
   lines.push('')
 
@@ -78,8 +86,9 @@ export function generateGcode(
       const posChanged = seg.x !== prevX || seg.y !== prevY || seg.z !== prevZ
       if (!posChanged) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
 
-      const x = f(toOut(seg.x, profile))
-      const y = f(toOut(seg.y, profile))
+      // Convert workpiece-local → machine-relative by subtracting origin offset
+      const x = f(toOut(seg.x - org.x, profile))
+      const y = f(toOut(seg.y - org.y, profile))
       const z = f(toOut(seg.z, profile))
 
       if (seg.rapid) {

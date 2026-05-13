@@ -36,9 +36,6 @@ export function generateProfile(
   const passes = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  // Lift to safe height at start
-  segs.push({ x: 0, y: 0, z: SAFE_Z, rapid: true })
-
   for (const subpath of subpaths) {
     const offsetPts = delta !== 0 ? offsetPolygon(subpath, delta) : subpath
     if (offsetPts.length < 2) continue

@@ -121,7 +121,8 @@ export default function Toolbar() {
     const profile = getActiveProfile()
     const gcode = generateGcode(operations, toolsById, name, profile)
     useSimStore.getState().loadGcode(gcode)
-    setWorkspaceTab('2d')
+    const cur = useUIStore.getState().workspaceTab
+    if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
   }
 
   function handleImportFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -132,7 +133,8 @@ export default function Toolbar() {
     if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
       file.text().then((text) => {
         useSimStore.getState().loadGcode(text)
-        setWorkspaceTab('2d')
+        const cur = useUIStore.getState().workspaceTab
+        if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
       })
       return
     }

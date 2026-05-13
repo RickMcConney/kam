@@ -89,7 +89,6 @@ export function generatePocket(
     const segs: MotionSegment[] = []
     const infill: Pt2[] = generateInfillWithBoundary([boundary], tool.diameterMM, params.stepoverPercent, params.angle)
     const zLevels = zPasses(params.depthMM, params.stepDownMM)
-    segs.push({ x: 0, y: 0, z: SAFE_Z, rapid: true })
 
     for (const zDepth of zLevels) {
         addContour(infill, zDepth, segs, boundary)

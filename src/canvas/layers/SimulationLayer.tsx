@@ -2,7 +2,9 @@ import { memo, useMemo } from 'react'
 import { Group, Circle, Line } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
+import { useWorkpieceStore } from '../../store/workpieceStore'
 import { getCurrentSegIdx, interpolatePos, type SimSegment } from '../../sim/gcodeParser'
+import { originWorldXY } from '../layers/WorkpieceLayer'
 
 interface Props {
   viewport: Viewport
@@ -10,9 +12,12 @@ interface Props {
 
 // Groups non-rapid cutting segments into continuous polylines for the trail.
 // Splits on rapids, above-material moves, or tool diameter changes.
+// ox/oy: origin offset to convert machine-relative G-code coords back to workpiece-local.
 function computeTrailSections(
   segments: SimSegment[],
   upToIdx: number,
+  ox: number,
+  oy: number,
 ): { points: number[]; toolDiameterMM: number }[] {
   const sections: { points: number[]; toolDiameterMM: number }[] = []
   let pts: number[] | null = null
@@ -24,10 +29,10 @@ function computeTrailSections(
 
     if (!isCut || seg.toolDiameterMM !== curDia) {
       if (pts && pts.length >= 4) sections.push({ points: pts, toolDiameterMM: curDia })
-      pts = isCut ? [seg.prevX, seg.prevY, seg.x, seg.y] : null
+      pts = isCut ? [seg.prevX + ox, seg.prevY + oy, seg.x + ox, seg.y + oy] : null
       curDia = isCut ? seg.toolDiameterMM : 0
     } else {
-      pts!.push(seg.x, seg.y)
+      pts!.push(seg.x + ox, seg.y + oy)
     }
   }
   if (pts && pts.length >= 4) sections.push({ points: pts, toolDiameterMM: curDia })
@@ -39,11 +44,13 @@ function computeTrailSections(
 interface CompletedTrailProps {
   segments: SimSegment[]
   upToIdx: number
+  ox: number
+  oy: number
 }
-const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx }: CompletedTrailProps) {
+const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy }: CompletedTrailProps) {
   const sections = useMemo(
-    () => computeTrailSections(segments, upToIdx),
-    [segments, upToIdx],
+    () => computeTrailSections(segments, upToIdx, ox, oy),
+    [segments, upToIdx, ox, oy],
   )
   return (
     <>
@@ -69,6 +76,12 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const gcode = useSimStore((s) => s.gcode)
   const { scale } = viewport
 
+  // G-code coords are machine-relative; add origin offset to get workpiece-local for rendering.
+  const { widthMM, heightMM, origin } = useWorkpieceStore()
+  const org = originWorldXY(origin, widthMM, heightMM)
+  const ox = org.x
+  const oy = org.y
+
   if (!gcode || segments.length === 0) return null
 
   const curSegIdx = getCurrentSegIdx(segments, elapsedTimeS)
@@ -79,15 +92,19 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const isCutting = pos.z < -0.001
   const toolRadius = curSeg ? Math.max(curSeg.toolDiameterMM / 2, 1.5 / scale) : 3 / scale
 
+  // Workpiece-local tool position
+  const tx = pos.x + ox
+  const ty = pos.y + oy
+
   return (
     <Group listening={false}>
       {/* Completed trail sections — memoized, only updates at segment boundaries */}
-      <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} />
+      <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} />
 
       {/* Active (partial) segment — updates at 60fps, just 2 points */}
       {curSeg && isCutting && (
         <Line
-          points={[curSeg.prevX, curSeg.prevY, pos.x, pos.y]}
+          points={[curSeg.prevX + ox, curSeg.prevY + oy, tx, ty]}
           stroke="#06b6d4"
           strokeWidth={curSeg.toolDiameterMM}
           lineCap="round"
@@ -99,8 +116,8 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
 
       {/* Tool dot — outer ring */}
       <Circle
-        x={pos.x}
-        y={pos.y}
+        x={tx}
+        y={ty}
         radius={toolRadius + 1.5 / scale}
         stroke="#ffffff"
         strokeWidth={1.5 / scale}
@@ -108,8 +125,8 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
       />
       {/* Tool dot — fill */}
       <Circle
-        x={pos.x}
-        y={pos.y}
+        x={tx}
+        y={ty}
         radius={toolRadius}
         fill={isCutting ? '#ef4444' : '#9ca3af'}
         opacity={0.95}

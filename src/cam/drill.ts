@@ -31,8 +31,6 @@ export function generatePeckDrill(
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  segs.push({ x: 0, y: 0, z: SAFE_Z, rapid: true })
-
   for (const pt of points) {
     segs.push({ x: pt.x, y: pt.y, z: SAFE_Z, rapid: true })
     for (const zDepth of zLevels) {

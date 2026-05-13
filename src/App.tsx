@@ -18,6 +18,7 @@ import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
+const ThreeView = lazy(() => import('./three/ThreeView'))
 
 const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
   { id: '2d', label: '2D View' },
@@ -27,9 +28,7 @@ const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
   { id: 'postprocessor', label: 'Post-Processor' },
 ]
 
-const PLACEHOLDER: Record<string, { icon: string; label: string }> = {
-  '3d': { icon: '◈', label: '3D View — added in Phase 15' },
-}
+const PLACEHOLDER: Record<string, { icon: string; label: string }> = {}
 
 function MainWorkspace() {
   const { workspaceTab, setWorkspaceTab } = useUIStore()
@@ -66,6 +65,11 @@ function MainWorkspace() {
             </Suspense>
           )}
 
+          {workspaceTab === '3d' && (
+            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 dark:text-neutral-500 text-sm">Loading 3D view…</div>}>
+              <ThreeView />
+            </Suspense>
+          )}
           {workspaceTab === 'setup' && <WorkpiecePanel />}
           {workspaceTab === 'tools' && <ToolLibraryPanel />}
           {workspaceTab === 'postprocessor' && <PostProcessorPanel />}
