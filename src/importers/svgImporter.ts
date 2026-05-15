@@ -1,4 +1,5 @@
 import type { ShapeParams } from '../shapes/shapeGenerators'
+import { PATH_COLOR } from '../colors'
 
 export interface ImportedPath {
   id: string
@@ -16,12 +17,10 @@ export interface SvgImportResult {
   svgHeightMM: number
 }
 
-const COLORS = ['#4ade80','#60a5fa','#f472b6','#fb923c','#a78bfa','#34d399','#fbbf24','#f87171']
-let colorIdx = 0
 let pathCounter = 0
 
 export function nextPathColor(): string {
-  return COLORS[(colorIdx++) % COLORS.length]
+  return PATH_COLOR
 }
 
 function parseNums(s: string): number[] {
@@ -370,7 +369,7 @@ export function importSvg(svgText: string, options?: ImportOptions | number): Sv
 
       const id = `path-${++pathCounter}`
       const name = el.getAttribute('id') || el.getAttribute('inkscape:label') || `Path ${pathCounter}`
-      const color = COLORS[colorIdx++ % COLORS.length]
+      const color = PATH_COLOR
       paths.push({ id, name, d, visible: true, color })
     } catch {
       // skip malformed elements

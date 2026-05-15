@@ -1,4 +1,5 @@
 import { memo, useMemo } from 'react'
+import { SIM_CUT_COLOR, SIM_TOOL_CUTTING_COLOR, SIM_TOOL_RAPID_COLOR, SIM_TOOL_OUTLINE_COLOR } from '../../colors'
 import { Group, Circle, Line, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
@@ -122,7 +123,7 @@ const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy 
         <Line
           key={i}
           points={sec.points}
-          stroke="#06b6d4"
+          stroke={SIM_CUT_COLOR}
           strokeWidth={sec.width}
           lineCap="round"
           lineJoin="round"
@@ -133,7 +134,7 @@ const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy 
       {trail.frustumSegs.length > 0 && (
         <Shape
           sceneFunc={frustumFn}
-          fill="#06b6d4"
+          fill={SIM_CUT_COLOR}
           strokeWidth={0}
           opacity={0.55}
           listening={false}
@@ -185,7 +186,7 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
       {activeFrustum && (
         <Shape
           sceneFunc={makeFrustumSceneFunc([activeFrustum])}
-          fill="#06b6d4"
+          fill={SIM_CUT_COLOR}
           strokeWidth={0}
           opacity={0.55}
           listening={false}
@@ -196,14 +197,14 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
       <Circle
         x={tx} y={ty}
         radius={toolRadius + 1.5 / scale}
-        stroke="#ffffff"
+        stroke={SIM_TOOL_OUTLINE_COLOR}
         strokeWidth={1.5 / scale}
         opacity={0.75}
       />
       <Circle
         x={tx} y={ty}
         radius={toolRadius}
-        fill={isCutting ? '#ef4444' : '#9ca3af'}
+        fill={isCutting ? SIM_TOOL_CUTTING_COLOR : SIM_TOOL_RAPID_COLOR}
         opacity={0.95}
       />
     </Group>

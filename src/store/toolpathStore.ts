@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { OP_TYPE_COLORS } from '../colors'
 import type { CuttingDirection } from './toolStore'
 import type { OriginPosition } from './workpieceStore'
 
@@ -100,8 +101,6 @@ type AddPayload =
   | Omit<VCarveOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<InlayOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
 
-const OP_COLORS = ['#f97316', '#06b6d4', '#10b981', '#8b5cf6', '#ec4899', '#eab308']
-let _colorIdx = 0
 let _idCounter = 0
 
 interface ToolpathState {
@@ -131,7 +130,7 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
 
   addOperation: (op) => {
     const id = `op-${++_idCounter}`
-    const color = OP_COLORS[_colorIdx++ % OP_COLORS.length]
+    const color = OP_TYPE_COLORS[op.type] ?? '#94a3b8'
     set((s) => ({
       operations: [...s.operations, { ...op, id, status: 'pending', segments: [], color, visible: true } as AnyOperation],
     }))

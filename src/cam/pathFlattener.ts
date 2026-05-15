@@ -185,6 +185,12 @@ export function signedArea(pts: Pt2[]): number {
   return area / 2
 }
 
+// Ensure polygon has the requested winding. Returns input unchanged or reversed.
+export function ensureWinding(pts: Pt2[], wantCCW: boolean): Pt2[] {
+  const isCCW = signedArea(pts) >= 0
+  return isCCW === wantCCW ? pts : [...pts].reverse()
+}
+
 // Offset a closed polygon by delta mm. Positive = expand outward (CCW).
 export function offsetPolygon(pts: Pt2[], delta: number): Pt2[] {
   // Remove near-duplicate consecutive points

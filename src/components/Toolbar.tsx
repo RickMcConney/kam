@@ -52,6 +52,33 @@ function Sep() {
   return <div className="w-px h-5 bg-gray-300 dark:bg-neutral-600 mx-1" />
 }
 
+function UnitToggle() {
+  const { units, setUnits } = useWorkpieceStore()
+  const isIn = units === 'in'
+  return (
+    <div
+      title={`Units: ${units} — click to switch`}
+      onClick={() => setUnits(isIn ? 'mm' : 'in')}
+      className="relative flex items-center cursor-pointer select-none rounded-full h-7 w-14 bg-gray-200 dark:bg-neutral-700 flex-shrink-0"
+    >
+      <div
+        className="absolute top-0.5 bottom-0.5 rounded-full bg-blue-600 transition-transform duration-150 ease-in-out"
+        style={{
+          left: 2,
+          width: 'calc(50% - 2px)',
+          transform: isIn ? 'translateX(100%)' : 'translateX(0)',
+        }}
+      />
+      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${!isIn ? 'text-white' : 'text-gray-500 dark:text-neutral-400'}`}>
+        mm
+      </span>
+      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${isIn ? 'text-white' : 'text-gray-500 dark:text-neutral-400'}`}>
+        in
+      </span>
+    </div>
+  )
+}
+
 function ProjectNameEditor() {
   const { name, setName } = useProjectStore()
   const [editing, setEditing] = useState(false)
@@ -220,14 +247,16 @@ export default function Toolbar() {
       {/* Right side */}
 
       <div className="ml-auto flex items-center gap-0.5">
-        <div style={{ display: 'flex', gap: '12px' }}>
-                  {/* Snap */}
-        <ToolbarButton
-          icon={<Magnet size={ICON.md} />}
-          label={`Snap to Grid (S) — ${snapEnabled ? 'On' : 'Off'}`}
-          onClick={toggleSnap}
-          active={snapEnabled}
-        />
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <UnitToggle />
+          <Sep />
+          {/* Snap */}
+          <ToolbarButton
+            icon={<Magnet size={ICON.md} />}
+            label={`Snap to Grid (S) — ${snapEnabled ? 'On' : 'Off'}`}
+            onClick={toggleSnap}
+            active={snapEnabled}
+          />
           <ToolbarButton
             icon={darkMode ? <Sun size={ICON.md} /> : <Moon size={ICON.md} />}
             label={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}

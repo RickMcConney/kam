@@ -6,7 +6,6 @@ import StatusBar from './components/StatusBar'
 import ToolLibraryPanel from './panels/ToolLibraryPanel'
 import PostProcessorPanel from './panels/PostProcessorPanel'
 import WorkpiecePanel from './panels/WorkpiecePanel'
-import GcodeViewer from './panels/GcodeViewer'
 import { useUIStore, type WorkspaceTab } from './store/uiStore'
 import { usePathsStore } from './store/pathsStore'
 import { saveProject } from './io/projectSave'
@@ -32,8 +31,6 @@ const PLACEHOLDER: Record<string, { icon: string; label: string }> = {}
 
 function MainWorkspace() {
   const { workspaceTab, setWorkspaceTab } = useUIStore()
-  const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
-  const hasGcode = useSimStore((s) => !!s.gcode)
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -93,8 +90,6 @@ function MainWorkspace() {
           )}
         </div>
 
-        {/* G-code viewer panel — visible below the canvas when open */}
-        {workspaceTab === '2d' && hasGcode && gcodeViewerOpen && <GcodeViewer />}
       </div>
     </div>
   )

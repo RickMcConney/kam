@@ -6,7 +6,7 @@ import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 
 const MM_PER_IN = 25.4
 
-function f(n: number) { return n.toFixed(3) }
+function f(n: number, decimals = 3) { return n.toFixed(decimals) }
 
 function sub(template: string, vals: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (_, k) => String(vals[k] ?? ''))
@@ -90,6 +90,7 @@ export function generateGcode(
       lastToolId = op.toolId
     }
 
+    const coordDecimals = profile.unitMode === 'in' ? 3 : 2
     let prevX = NaN, prevY = NaN, prevZ = NaN
 
     for (let i = 0; i < op.segments.length; i++) {
@@ -99,9 +100,9 @@ export function generateGcode(
       if (!posChanged) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
 
       // Convert workpiece-local → machine-relative by subtracting origin offset
-      const x = f(toOut(seg.x - org.x, profile))
-      const y = f(toOut(seg.y - org.y, profile))
-      const z = f(toOut(seg.z, profile))
+      const x = f(toOut(seg.x - org.x, profile), coordDecimals)
+      const y = f(toOut(seg.y - org.y, profile), coordDecimals)
+      const z = f(toOut(seg.z, profile), coordDecimals)
 
       if (seg.rapid) {
         lines.push(sub(profile.rapidTemplate, { x, y, z }))

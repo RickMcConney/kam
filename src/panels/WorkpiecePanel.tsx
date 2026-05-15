@@ -141,31 +141,12 @@ export default function WorkpiecePanel() {
   const {
     widthMM, heightMM, thicknessMM, units, origin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
-    setWidth, setHeight, setThickness, setUnits, setOrigin, setMaterial,
+    setWidth, setHeight, setThickness, setOrigin, setMaterial,
     setTableLimitWidth, setTableLimitHeight, setTableLimitDepth,
   } = useWorkpieceStore()
 
   return (
     <div className="flex flex-col">
-      {/* Units toggle */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-gray-300 dark:border-neutral-700">
-        <span className="text-body text-gray-500 dark:text-neutral-400 mr-1">Units</span>
-        {(['mm', 'in'] as Units[]).map((u) => (
-          <button
-            key={u}
-            onClick={() => setUnits(u)}
-            className={[
-              'px-3 py-1 rounded text-body font-semibold transition-colors',
-              units === u
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-200 dark:bg-neutral-700 text-gray-700 dark:text-neutral-300 hover:bg-gray-300 dark:hover:bg-neutral-600',
-            ].join(' ')}
-          >
-            {u}
-          </button>
-        ))}
-      </div>
-
       <Section title="Stock Dimensions">
         <DimInput label="Width (X)" valueMM={widthMM} units={units} onChange={setWidth} />
         <DimInput label="Height (Y)" valueMM={heightMM} units={units} onChange={setHeight} />

@@ -48,12 +48,17 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
           }
         }
 
+        const baseStroke = (isSelected ? 2 : 1.5) / scale
+        const strokeWidth = lt?.kind === 'scale'
+          ? baseStroke / Math.sqrt(Math.abs(nodeScaleX * nodeScaleY))
+          : baseStroke
+
         return (
           <Path
             key={p.id}
             data={p.d}
             stroke={isSelected ? C.path.selected : p.color}
-            strokeWidth={(isSelected ? 2 : 1.5) / scale}
+            strokeWidth={strokeWidth}
             listening={false}
             x={nodeX}
             y={nodeY}

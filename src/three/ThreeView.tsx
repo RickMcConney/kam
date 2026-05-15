@@ -8,6 +8,7 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
+import { SIM_CUT_COLOR_THREE } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -509,7 +510,7 @@ function rebuildVoxels(refs: SceneRefs) {
   woodMesh.frustumCulled = false
 
   // Cut mesh: yellow/gold for carved voxel surfaces
-  const yellowMat = new THREE.MeshLambertMaterial({ color: 0xffcc00 })
+  const yellowMat = new THREE.MeshLambertMaterial({ color: SIM_CUT_COLOR_THREE })
   const cutMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), yellowMat, N)
   cutMesh.frustumCulled = false
 

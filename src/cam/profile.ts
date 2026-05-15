@@ -1,4 +1,4 @@
-import { flattenPath, offsetPolygon } from './pathFlattener'
+import { flattenPath, offsetPolygon, ensureWinding } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -37,8 +37,12 @@ export function generateProfile(
   const segs: MotionSegment[] = []
 
   for (const subpath of subpaths) {
-    const offsetPts = delta !== 0 ? offsetPolygon(subpath, delta) : subpath
-    if (offsetPts.length < 2) continue
+    const rawOffset = delta !== 0 ? offsetPolygon(subpath, delta) : subpath
+    if (rawOffset.length < 2) continue
+
+    // climb+outside/centerline = CCW, climb+inside = CW; conventional inverts
+    const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
+    const offsetPts = ensureWinding(rawOffset, wantCCW)
 
     const [sx, sy] = offsetPts[0]
 

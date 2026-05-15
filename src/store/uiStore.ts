@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
 
-export type SidebarTab = 'draw' | 'machine' | 'paths'
+export type SidebarTab = 'draw' | 'paths'
 export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor' | 'setup'
 export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
 
@@ -22,6 +22,8 @@ interface UIState {
   penNodes: PenNode[]
   nodeEditPathId: string | null
   darkMode: boolean
+  machineFormActive: boolean
+  setMachineFormActive: (active: boolean) => void
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
   toggleSnap: () => void
@@ -46,6 +48,8 @@ export const useUIStore = create<UIState>()((set) => ({
   penNodes: [],
   nodeEditPathId: null,
   darkMode: true,
+  machineFormActive: false,
+  setMachineFormActive: (active) => set({ machineFormActive: active }),
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),

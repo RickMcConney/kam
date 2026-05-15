@@ -2,6 +2,10 @@ import { Group, Path, Line, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import type { PenNode } from '../../store/uiStore'
 import { useCanvasStore } from '../../store/canvasStore'
+import { useUIStore } from '../../store/uiStore'
+import { useWorkpieceStore } from '../../store/workpieceStore'
+import { majorStepMM, minorStepMM } from '../gridUtils'
+import { originWorldXY } from './WorkpieceLayer'
 
 export function penNodesToPathD(nodes: PenNode[], closed?: boolean): string {
   if (nodes.length < 1) return ''
@@ -52,8 +56,23 @@ interface Props {
 }
 
 export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
-  const cursorCNC = useCanvasStore((s) => s.cursorMM)
+  const rawCursorCNC = useCanvasStore((s) => s.cursorMM)
+  const snapEnabled = useUIStore((s) => s.snapEnabled)
+  const { units, origin, widthMM, heightMM } = useWorkpieceStore()
   const { scale: s } = viewport
+
+  let cursorCNC = rawCursorCNC
+  if (snapEnabled && rawCursorCNC) {
+    const org = originWorldXY(origin, widthMM, heightMM)
+    const step = minorStepMM(majorStepMM(s, units), units)
+    if (step > 0) {
+      cursorCNC = {
+        x: Math.round((rawCursorCNC.x - org.x) / step) * step + org.x,
+        y: Math.round((rawCursorCNC.y - org.y) / step) * step + org.y,
+      }
+    }
+  }
+
   const last = penNodes.length > 0 ? penNodes[penNodes.length - 1] : null
   const first = penNodes.length > 0 ? penNodes[0] : null
 

@@ -5,6 +5,7 @@ import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { AVAILABLE_FONTS, loadFont, isFontLoaded } from '../../shapes/textGenerator'
+import { PATH_COLOR } from '../../colors'
 
 
 
@@ -113,14 +114,12 @@ function ShapeConfig({ type, config, onChange, units }: {
   }
 }
 
-const toolBtnCls = (active: boolean, color: 'blue' | 'violet') =>
+const toolBtnCls = (active: boolean) =>
   [
     'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border',
     active
-      ? color === 'violet'
-        ? 'border-violet-500 bg-violet-500/20 text-violet-400'
-        : 'border-blue-500 bg-blue-500/20 text-blue-400'
-      : 'border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:border-gray-300 dark:hover:border-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300',
+      ? 'border-blue-500 bg-blue-500/20'
+      : 'border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500',
   ].join(' ')
 
 export default function ShapePanel() {
@@ -146,9 +145,9 @@ export default function ShapePanel() {
         <div className="grid grid-cols-3 gap-1">
           <button onClick={() => setActiveTool(activeTool === 'pen' ? 'select' : 'pen')}
             title="Pen Tool — click to add points, drag for curves"
-            className={toolBtnCls(activeTool === 'pen', 'violet')}>
-            <PenTool size={ICON.md} />
-            <span className="text-label">Pen</span>
+            className={toolBtnCls(activeTool === 'pen')}>
+            <span style={{ color: PATH_COLOR }}><PenTool size={ICON.md} /></span>
+            <span className="text-label text-gray-500 dark:text-neutral-400">Pen</span>
           </button>
         </div>
       </div>
@@ -158,9 +157,9 @@ export default function ShapePanel() {
         <div className="grid grid-cols-3 gap-1">
           {SHAPES.map(({ type, label, icon }) => (
             <button key={type} onClick={() => setActiveTool(activeTool === type ? 'select' : type)}
-              title={label} className={toolBtnCls(activeTool === type, 'blue')}>
-              {icon}
-              <span className="text-label">{label}</span>
+              title={label} className={toolBtnCls(activeTool === type)}>
+              <span style={{ color: PATH_COLOR }}>{icon}</span>
+              <span className="text-label text-gray-500 dark:text-neutral-400">{label}</span>
             </button>
           ))}
         </div>

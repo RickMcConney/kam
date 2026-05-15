@@ -1,4 +1,4 @@
-import { flattenPath, offsetPolygon, signedArea, type Pt2 } from './pathFlattener'
+import { flattenPath, offsetPolygon, signedArea, ensureWinding, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
@@ -138,11 +138,14 @@ export function generatePocket(
     }
   }
 
-  // Combine; conventional reverses the boundary pass order
-  const allContours: Pt2[][] =
-    params.direction === 'conventional'
-      ? [...boundaryContours].reverse().concat(islandContours)
-      : [...boundaryContours, ...islandContours]
+  // climb: outside-in pass order, CW winding (pocket = inside cut)
+  // conventional: inside-out pass order, CCW winding
+  const wantCCW = params.direction === 'conventional'
+  const orderedBoundary =
+    params.direction === 'conventional' ? [...boundaryContours].reverse() : boundaryContours
+
+  const allContours: Pt2[][] = [...orderedBoundary, ...islandContours]
+    .map((c) => ensureWinding(c, wantCCW))
 
   if (allContours.length === 0) {
     throw new Error('Pocket area is too small for the selected tool diameter')

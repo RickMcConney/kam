@@ -12,7 +12,8 @@ import type { ImportedPath } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { importSvg, nextPathColor } from '../importers/svgImporter'
 import { GridLayer } from './layers/GridLayer'
-import { WorkpieceLayer } from './layers/WorkpieceLayer'
+import { WorkpieceLayer, originWorldXY } from './layers/WorkpieceLayer'
+import { majorStepMM, minorStepMM } from './gridUtils'
 import { OriginLayer } from './layers/OriginLayer'
 import {  RULER_H, RULER_W } from './layers/RulerLayer'
 import { DesignLayer } from './layers/DesignLayer'
@@ -115,6 +116,55 @@ type CanvasMode =
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 
+function snapPoint(
+  cnc: { x: number; y: number },
+  vp: Viewport,
+  units: 'mm' | 'in',
+  orgWorld: { x: number; y: number },
+): { x: number; y: number } {
+  const step = minorStepMM(majorStepMM(vp.scale, units), units)
+  if (step <= 0) return cnc
+  return {
+    x: Math.round((cnc.x - orgWorld.x) / step) * step + orgWorld.x,
+    y: Math.round((cnc.y - orgWorld.y) / step) * step + orgWorld.y,
+  }
+}
+
+function PenLengthOverlay({ viewport, draggingHandle }: { viewport: Viewport; draggingHandle: boolean }) {
+  const activeTool = useUIStore((s) => s.activeTool)
+  const penNodes = useUIStore((s) => s.penNodes)
+  const snapEnabled = useUIStore((s) => s.snapEnabled)
+  const cursorMM = useCanvasStore((s) => s.cursorMM)
+  const { units, origin, widthMM, heightMM } = useWorkpieceStore()
+
+  if (activeTool !== 'pen' || penNodes.length === 0 || !cursorMM || draggingHandle) return null
+
+  let cursor = cursorMM
+  if (snapEnabled) {
+    const org = originWorldXY(origin, widthMM, heightMM)
+    cursor = snapPoint(cursorMM, viewport, units, org)
+  }
+
+  const last = penNodes[penNodes.length - 1]
+  const dist = Math.hypot(cursor.x - last.x, cursor.y - last.y)
+  if (dist < 0.01) return null
+
+  const sx = viewport.x + cursor.x * viewport.scale
+  const sy = viewport.y - cursor.y * viewport.scale
+  const label = units === 'in'
+    ? (dist / 25.4).toFixed(3) + '"'
+    : dist.toFixed(2) + ' mm'
+
+  return (
+    <div
+      className="absolute pointer-events-none bg-black/70 text-white text-xs px-1.5 py-0.5 rounded font-mono whitespace-nowrap z-10"
+      style={{ left: sx + 14, top: sy - 22 }}
+    >
+      {label}
+    </div>
+  )
+}
+
 export default function CanvasStage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Konva.Stage>(null)
@@ -131,7 +181,6 @@ export default function CanvasStage() {
   const [livePen, setLivePen] = useState<{ anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null>(null)
   const penClosingRef = useRef(false)
   const [penClosing, setPenClosing] = useState(false)
-  const [toolpathTooltip, setToolpathTooltip] = useState<{ name: string; depth: string; x: number; y: number } | null>(null)
   const didDragRef = useRef(false)
   const flatCache = useRef(new Map<string, [number, number][][]>())
 
@@ -163,14 +212,15 @@ export default function CanvasStage() {
     modeRef.current = m
   }, [])
 
-  const handleToolpathHover = useCallback(
-    (info: { name: string; depth: string } | null, stageX: number, stageY: number) => {
-      setToolpathTooltip(info ? { ...info, x: stageX, y: stageY } : null)
-    },
-    []
-  )
+  const snapCNC = useCallback((cnc: { x: number; y: number }): { x: number; y: number } => {
+    const { snapEnabled } = useUIStore.getState()
+    if (!snapEnabled) return cnc
+    const { units, origin, widthMM, heightMM } = useWorkpieceStore.getState()
+    const org = originWorldXY(origin, widthMM, heightMM)
+    return snapPoint(cnc, viewportRef.current, units, org)
+  }, [])
 
-  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
     if (!file) return
@@ -338,7 +388,7 @@ export default function CanvasStage() {
   // Start placing a pen node from the given screen pointer position
   const startPenDraw = useCallback((pointer: { x: number; y: number }) => {
     const vp = viewportRef.current
-    const cnc = screenToCNC(pointer.x, pointer.y, vp)
+    const cnc = snapCNC(screenToCNC(pointer.x, pointer.y, vp))
     const { penNodes: nodes } = useUIStore.getState()
 
     if (nodes.length >= 2) {
@@ -355,7 +405,7 @@ export default function CanvasStage() {
     didDragRef.current = false
     setMode2({ type: 'pendraw', anchorCNC: cnc, closing: false })
     setLivePen({ anchor: cnc, handle: null })
-  }, [setMode2])
+  }, [setMode2, snapCNC])
 
   // Parse path nodes when entering node edit mode
   useEffect(() => {
@@ -592,10 +642,11 @@ export default function CanvasStage() {
     if (m.type === 'resize') {
       didDragRef.current = true
       const { anchor, initHandle, pathIds, handle, shiftHeld } = m
+      const snappedMouse = snapCNC(cncMouse)
       const dhx = initHandle.x - anchor.x
       const dhy = initHandle.y - anchor.y
-      const newHx = cncMouse.x - anchor.x
-      const newHy = cncMouse.y - anchor.y
+      const newHx = snappedMouse.x - anchor.x
+      const newHy = snappedMouse.y - anchor.y
 
       let sx = dhx !== 0 ? newHx / dhx : 1
       let sy = dhy !== 0 ? newHy / dhy : 1
@@ -686,12 +737,15 @@ export default function CanvasStage() {
       setEditNodes(init.initialNodes.map((n, i) => {
         if (i !== m.nodeIdx) return n
         if (m.kind === 'anchor') {
+          const snapped = snapCNC({ x: n.x + dx, y: n.y + dy })
+          const sdx = snapped.x - n.x
+          const sdy = snapped.y - n.y
           return {
             ...n,
-            x: n.x + dx,
-            y: n.y + dy,
-            handleIn: n.handleIn ? { x: n.handleIn.x + dx, y: n.handleIn.y + dy } : undefined,
-            handleOut: n.handleOut ? { x: n.handleOut.x + dx, y: n.handleOut.y + dy } : undefined,
+            x: snapped.x,
+            y: snapped.y,
+            handleIn: n.handleIn ? { x: n.handleIn.x + sdx, y: n.handleIn.y + sdy } : undefined,
+            handleOut: n.handleOut ? { x: n.handleOut.x + sdx, y: n.handleOut.y + sdy } : undefined,
           }
         }
         if (m.kind === 'handle-in') {
@@ -700,7 +754,7 @@ export default function CanvasStage() {
         return { ...n, handleOut: { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy } }
       }))
     }
-  }, [setCursorMM, setViewport, setLiveRotationAngle])
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC])
 
   const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
     const m = modeRef.current
@@ -941,7 +995,7 @@ export default function CanvasStage() {
         {/* Layer 1: All CNC-space content (Y-flipped). Groups render in z-order within this single canvas. */}
         <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={-viewport.scale}>
           <WorkpieceLayer viewport={viewport} />
-          <GridLayer viewport={viewport} />
+          <GridLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} />
           <DesignLayer
             viewport={viewport}
             liveTransform={liveTransform}
@@ -958,7 +1012,7 @@ export default function CanvasStage() {
               onHoveredNodeChange={handleHoveredNodeChange}
             />
           )}
-          <ToolpathLayer viewport={viewport} onHover={handleToolpathHover} />
+          <ToolpathLayer viewport={viewport} />
           <SimulationLayer viewport={viewport} />
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
           {activeTool === 'pen' && (
@@ -1009,16 +1063,6 @@ export default function CanvasStage() {
         </Layer>
       </Stage>}
 
-      {/* Toolpath hover tooltip */}
-      {toolpathTooltip && (
-        <div
-          className="absolute pointer-events-none z-10 bg-panel/90 border border-ridge text-bright text-body rounded px-2 py-1 shadow-lg whitespace-nowrap"
-          style={{ left: toolpathTooltip.x + 12, top: toolpathTooltip.y - 8 }}
-        >
-          <div className="font-medium">{toolpathTooltip.name}</div>
-          {toolpathTooltip.depth && <div className="text-dim">{toolpathTooltip.depth}</div>}
-        </div>
-      )}
 
       {/* Drag-box selection overlay */}
       {dragBox && dragBoxStyle && (
@@ -1027,6 +1071,8 @@ export default function CanvasStage() {
           style={dragBoxStyle}
         />
       )}
+
+      <PenLengthOverlay viewport={viewport} draggingHandle={livePen !== null} />
 
       {/* Node edit indicator */}
       {nodeEditPathId && (
