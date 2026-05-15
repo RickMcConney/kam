@@ -6,13 +6,7 @@ import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { AVAILABLE_FONTS, loadFont, isFontLoaded } from '../../shapes/textGenerator'
 
-function RoundRectIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1.5" y="2.5" width="11" height="9" rx="2.5" />
-    </svg>
-  )
-}
+
 
 function EllipseIcon() {
   return (

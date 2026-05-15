@@ -92,7 +92,13 @@ function groupPathsByContainment(
       } else {
         const bCur = getBBox(selectedPaths.find(p => p.id === existing)!.d)
         const bNew = getBBox(outer.d)
-        if (bCur && bNew && bNew.w * bNew.h < bCur.w * bCur.h) parentId.set(inner.id, outer.id)
+        if (bCur && bNew) {
+          const curw = bCur.maxX - bCur.minX;
+          const curh = bCur.maxY - bCur.minY;
+          const neww = bNew.maxX - bNew.minX;
+          const newh = bNew.maxY - bNew.minY;
+          if (neww * newh < curw * curh) parentId.set(inner.id, outer.id)
+        }
       }
     }
   }
