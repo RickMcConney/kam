@@ -5,6 +5,9 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePostProcessorStore, type PostProcessorProfile } from '../store/postProcessorStore'
+import { useSimStore } from '../store/simStore'
+import { useUIStore } from '../store/uiStore'
+import { useCanvasStore } from '../store/canvasStore'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -67,10 +70,14 @@ export function loadProject(data: ProjectData) {
 }
 
 export function newProject() {
+  useSimStore.getState().clearSim()
+  useUIStore.getState().setWorkspaceTab('2d')
+  useUIStore.getState().setSidebarTab('draw')
   usePathsStore.getState().replacePaths([])
   useToolpathStore.getState().replaceOperations([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
+  useCanvasStore.getState().requestFit()
   // Workpiece settings (size, origin, thickness, material) are persisted in
   // localStorage and intentionally kept across new projects.
 }

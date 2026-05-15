@@ -5,7 +5,9 @@ import { useSimStore } from '../store/simStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { useWorkpieceStore, type Material } from '../store/workpieceStore'
 import { useToolStore } from '../store/toolStore'
+import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos } from '../sim/gcodeParser'
+import { flattenPath } from '../cam/pathFlattener'
 import { VoxelMaterial } from './VoxelMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -16,10 +18,6 @@ import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 // Three.js:  X right, Y up, Z toward viewer
 //
 // Mapping: threeX = cncX,  threeY = thicknessMM + cncZ,  threeZ = -cncY
-//
-// Camera at (cx, h, +dist) looking at (cx, T/2, -H/2):
-//   screen right = +X = CNC +X  ✓
-//   CNC Y=0 (near face) → Three.js Z=0 → appears at bottom  ✓
 
 function cncToThree(x: number, y: number, z: number, T: number): [number, number, number] {
   return [x, T + z, -y]
@@ -27,12 +25,11 @@ function cncToThree(x: number, y: number, z: number, T: number): [number, number
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-// Custom axes: red=CNC X (+X), green=CNC Y (Three.js -Z), blue=CNC Z (Three.js +Y)
 function buildCNCAxes(size: number): THREE.LineSegments {
   const pos = new Float32Array([
-    0, 0, 0,   size, 0,    0,     // X → red
-    0, 0, 0,   0,    0,   -size,  // CNC Y → green (Three.js -Z)
-    0, 0, 0,   0,    size,  0,    // CNC Z → blue  (Three.js +Y)
+    0, 0, 0,   size, 0,    0,
+    0, 0, 0,   0,    0,   -size,
+    0, 0, 0,   0,    size,  0,
   ])
   const col = new Float32Array([
     1, 0, 0,   1, 0, 0,
@@ -61,48 +58,121 @@ function materialColor(mat: Material): number {
   return map[mat] ?? 0xc8c8c8
 }
 
-function buildToolMesh(type: string, diamMM: number): THREE.Mesh {
+// Builds a tool indicator mesh/group.
+// V-bit:    sharp cone tip + cylindrical shank (cone height derived from included angle)
+// Ball nose: hemisphere tip + cylindrical shank
+// Flat/drill: plain cylinder
+function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60): THREE.Object3D {
   const r = diamMM / 2
-  const length = diamMM * 5
-  let geo: THREE.BufferGeometry
+  const shankH = diamMM * 4
+  const mat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.85 })
+
   if (type === 'vbit' || type === 'drill') {
-    // Cone: tip at Y=0 (cutting point), body extends up to Y=length
-    geo = new THREE.ConeGeometry(r, length, 16)
-    geo.rotateX(Math.PI)             // flip so tip faces down
-    geo.translate(0, length / 2, 0)  // tip at Y=0, base at Y=length
-  } else {
-    // End mill / ball nose: flat bottom at Y=0, shank extends up to Y=length
-    geo = new THREE.CylinderGeometry(r, r, length, 16)
-    geo.translate(0, length / 2, 0)  // bottom at Y=0
+    const halfAngle = (vbitAngleDeg / 2) * Math.PI / 180
+    const coneH = r / Math.tan(halfAngle)
+    const group = new THREE.Group()
+
+    // Cone: Three.js ConeGeometry apex is at +Y/2 by default.
+    // rotateX(π) flips apex to -Y/2, then translate puts apex at Y=0 and base at Y=coneH.
+    const coneGeo = new THREE.ConeGeometry(r, coneH, 24)
+    coneGeo.rotateX(Math.PI)
+    coneGeo.translate(0, coneH / 2, 0)
+    group.add(new THREE.Mesh(coneGeo, mat))
+
+    // Shank cylinder sitting on top of the cone base
+    const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
+    shankGeo.translate(0, coneH + shankH / 2, 0)
+    group.add(new THREE.Mesh(shankGeo, mat.clone()))
+
+    return group
   }
-  const mat = new THREE.MeshPhongMaterial({ color: 0x999999, shininess: 80, transparent: true, opacity: 0.85 })
+
+  if (type === 'ball') {
+    const group = new THREE.Group()
+
+    // Lower hemisphere: thetaStart=π/2 → equator (Y=0), thetaLength=π/2 → south pole (Y=-r).
+    // translate(0, r, 0) moves south pole to Y=0 and equator to Y=r.
+    const hemiGeo = new THREE.SphereGeometry(r, 24, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)
+    hemiGeo.translate(0, r, 0)
+    group.add(new THREE.Mesh(hemiGeo, mat))
+
+    // Shank cylinder from equator (Y=r) upward
+    const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
+    shankGeo.translate(0, r + shankH / 2, 0)
+    group.add(new THREE.Mesh(shankGeo, mat.clone()))
+
+    return group
+  }
+
+  // Flat end mill: plain cylinder, bottom at Y=0
+  const length = r * 2 + shankH
+  const geo = new THREE.CylinderGeometry(r, r, length, 24)
+  geo.translate(0, length / 2, 0)
   return new THREE.Mesh(geo, mat)
+}
+
+function disposeObject3D(obj: THREE.Object3D) {
+  obj.traverse(child => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose()
+      if (Array.isArray(child.material)) child.material.forEach((m: THREE.Material) => m.dispose())
+      else (child.material as THREE.Material).dispose()
+    }
+  })
 }
 
 // ─── voxel sync ──────────────────────────────────────────────────────────────
 
-// Reusable objects to avoid per-frame GC
 const _m  = new THREE.Matrix4()
 const _mp = new THREE.Vector3()
 const _mr = new THREE.Quaternion()
 const _ms = new THREE.Vector3()
 
-function syncDirtyInstances(voxelMat: VoxelMaterial, mesh: THREE.InstancedMesh) {
-  let updated = false
+const SYNC_BATCH = 200_000
+
+// Updates two instanced meshes per dirty leaf:
+//   woodMesh — uncut voxels at full height (all faces wood)
+//   cutMesh  — carved voxels at reduced height (yellow top+sides, wood bottom)
+function syncDirtyInstances(
+  voxelMat: VoxelMaterial,
+  woodMesh: THREE.InstancedMesh,
+  cutMesh: THREE.InstancedMesh,
+): boolean {
+  let count = 0
+  const T = voxelMat.thicknessMM
+  const zero = new THREE.Matrix4().makeScale(0, 0, 0)
+
   for (const leaf of voxelMat.leaves) {
     if (!leaf.dirty) continue
+
+    const isCut = leaf.height < T - 0.001
+
     if (leaf.height < 0.001) {
-      _m.makeScale(0, 0, 0)
+      woodMesh.setMatrixAt(leaf.instanceIdx, zero)
+      cutMesh.setMatrixAt(leaf.instanceIdx, zero)
+    } else if (isCut) {
+      woodMesh.setMatrixAt(leaf.instanceIdx, zero)
+      _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
+      _ms.set(leaf.cw, leaf.height, leaf.ch)
+      _m.compose(_mp, _mr, _ms)
+      cutMesh.setMatrixAt(leaf.instanceIdx, _m)
     } else {
       _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
       _ms.set(leaf.cw, leaf.height, leaf.ch)
       _m.compose(_mp, _mr, _ms)
+      woodMesh.setMatrixAt(leaf.instanceIdx, _m)
+      cutMesh.setMatrixAt(leaf.instanceIdx, zero)
     }
-    mesh.setMatrixAt(leaf.instanceIdx, _m)
+
     leaf.dirty = false
-    updated = true
+    if (++count >= SYNC_BATCH) break
   }
-  if (updated) mesh.instanceMatrix.needsUpdate = true
+
+  if (count > 0) {
+    woodMesh.instanceMatrix.needsUpdate = true
+    cutMesh.instanceMatrix.needsUpdate  = true
+  }
+  return count > 0
 }
 
 // ─── scene refs ──────────────────────────────────────────────────────────────
@@ -114,14 +184,17 @@ interface SceneRefs {
   controls: OrbitControls
   workpieceGroup: THREE.Group
   toolpathGroup: THREE.Group
-  toolMesh: THREE.Mesh | null
+  shapesGroup: THREE.Group
+  toolMesh: THREE.Object3D | null
   axesHelper: THREE.Object3D
   gridHelper: THREE.GridHelper
-  voxelMesh: THREE.InstancedMesh | null
+  voxelWoodMesh: THREE.InstancedMesh | null  // uncut voxels, all-wood
+  voxelCutMesh:  THREE.InstancedMesh | null  // carved voxels, yellow top/sides + wood bottom
   voxelMat: VoxelMaterial | null
   rafId: number
   fpsSamples: number[]
   lastFrameTs: number
+  renderNeeded: boolean
 }
 
 // ─── component ───────────────────────────────────────────────────────────────
@@ -134,46 +207,42 @@ export default function ThreeView() {
   const [showToolpaths, setShowToolpaths] = useState(true)
   const [showWorkpiece, setShowWorkpiece] = useState(true)
   const [showTool, setShowTool] = useState(true)
+  const [showShapes, setShowShapes] = useState(true)
+  const [followTool, setFollowTool] = useState(false)
 
   const showAxesRef      = useRef(showAxes)
   const showToolpathsRef = useRef(showToolpaths)
   const showWorkpieceRef = useRef(showWorkpiece)
   const showToolRef      = useRef(showTool)
+  const showShapesRef    = useRef(showShapes)
+  const followToolRef    = useRef(followTool)
   showAxesRef.current      = showAxes
   showToolpathsRef.current = showToolpaths
   showWorkpieceRef.current = showWorkpiece
   showToolRef.current      = showTool
+  showShapesRef.current    = showShapes
+  followToolRef.current    = followTool
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    // ── renderer ──
     const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setClearColor(0x1a1a1a)
-    renderer.shadowMap.enabled = true
     container.appendChild(renderer.domElement)
 
-    // ── scene ──
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x1a1a1a)
 
-    // ── lights ──
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55))
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6))
     const sun = new THREE.DirectionalLight(0xffffff, 1.0)
     sun.position.set(1, 2, 1)
-    sun.castShadow = true
     scene.add(sun)
-    const fill = new THREE.DirectionalLight(0x88aaff, 0.35)
-    fill.position.set(-1, 0.5, -1)
-    scene.add(fill)
 
-    // ── camera ──
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 5000)
 
-    // ── orbit controls ──
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.1
@@ -183,48 +252,51 @@ export default function ThreeView() {
       RIGHT: THREE.MOUSE.PAN,
     }
 
-    // ── groups ──
     const workpieceGroup = new THREE.Group()
     const toolpathGroup  = new THREE.Group()
+    const shapesGroup    = new THREE.Group()
     scene.add(workpieceGroup)
     scene.add(toolpathGroup)
+    scene.add(shapesGroup)
 
-    // ── axes ──
     const axesHelper = buildCNCAxes(40)
     scene.add(axesHelper)
 
-    // ── grid ──
     const gridHelper = new THREE.GridHelper(600, 60, 0x333333, 0x292929)
     scene.add(gridHelper)
 
     const refs: SceneRefs = {
       renderer, scene, camera, controls,
-      workpieceGroup, toolpathGroup,
+      workpieceGroup, toolpathGroup, shapesGroup,
       toolMesh: null,
       axesHelper,
       gridHelper,
-      voxelMesh: null,
+      voxelWoodMesh: null,
+      voxelCutMesh:  null,
       voxelMat: null,
       rafId: 0,
       fpsSamples: [],
       lastFrameTs: 0,
+      renderNeeded: true,
     }
     sceneRef.current = refs
 
+    controls.addEventListener('change', () => { refs.renderNeeded = true })
+
     rebuildWorkpiece(refs)
     rebuildToolpaths(refs)
+    rebuildShapes(refs)
     fitCamera(refs)
 
-    // ── resize ──
     const ro = new ResizeObserver(() => {
       const w = container.clientWidth, h = container.clientHeight
       renderer.setSize(w, h)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
+      refs.renderNeeded = true
     })
     ro.observe(container)
 
-    // ── RAF loop ──
     function animate(now: number) {
       refs.rafId = requestAnimationFrame(animate)
 
@@ -235,11 +307,16 @@ export default function ThreeView() {
         if (refs.fpsSamples.length > 30) refs.fpsSamples.shift()
       }
 
-      // Visibility
-      refs.axesHelper.visible      = showAxesRef.current
-      refs.toolpathGroup.visible   = showToolpathsRef.current
-      refs.workpieceGroup.visible  = showWorkpieceRef.current
-      if (refs.voxelMesh) refs.voxelMesh.visible = showWorkpieceRef.current
+      const axVis = showAxesRef.current
+      const tpVis = showToolpathsRef.current
+      const wpVis = showWorkpieceRef.current
+      const shVis = showShapesRef.current
+      if (refs.axesHelper.visible     !== axVis) { refs.axesHelper.visible     = axVis; refs.renderNeeded = true }
+      if (refs.toolpathGroup.visible  !== tpVis) { refs.toolpathGroup.visible  = tpVis; refs.renderNeeded = true }
+      if (refs.workpieceGroup.visible !== wpVis) { refs.workpieceGroup.visible = wpVis; refs.renderNeeded = true }
+      if (refs.voxelWoodMesh && refs.voxelWoodMesh.visible !== wpVis) { refs.voxelWoodMesh.visible = wpVis; refs.renderNeeded = true }
+      if (refs.voxelCutMesh  && refs.voxelCutMesh.visible  !== wpVis) { refs.voxelCutMesh.visible  = wpVis; refs.renderNeeded = true }
+      if (refs.shapesGroup.visible    !== shVis) { refs.shapesGroup.visible    = shVis; refs.renderNeeded = true }
 
       const sim = useSimStore.getState()
 
@@ -250,62 +327,76 @@ export default function ThreeView() {
         const T      = wp.thicknessMM
         const org    = originWorldXY(wp.origin, wp.widthMM, wp.heightMM)
 
-        // Tool indicator (MR → WL → Three.js)
         if (refs.toolMesh) {
-          refs.toolMesh.visible = showToolRef.current
-          if (pos) {
+          const toolVis = showToolRef.current
+          if (refs.toolMesh.visible !== toolVis) { refs.toolMesh.visible = toolVis; refs.renderNeeded = true }
+          if (pos && toolVis) {
             const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z, T)
             refs.toolMesh.position.set(tx, ty, tz)
+            refs.renderNeeded = true
           }
         }
 
-        // Voxel material removal
-        if (refs.voxelMat && refs.voxelMesh) {
-          const changed = refs.voxelMat.applyUpToSegIdx(sim.segments, segIdx)
-          if (changed) syncDirtyInstances(refs.voxelMat, refs.voxelMesh)
+        if (followToolRef.current && pos) {
+          const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z, T)
+          refs.controls.target.set(tx, ty, tz)
+        }
+
+        if (refs.voxelMat) {
+          const seg = sim.segments[segIdx]
+          const t = seg && seg.durationS > 1e-9
+            ? Math.max(0, Math.min(1, (sim.elapsedTimeS - seg.startTimeS) / seg.durationS))
+            : 1
+          refs.voxelMat.applyUpTo(sim.segments, segIdx, t)
         }
       } else {
-        if (refs.toolMesh) refs.toolMesh.visible = false
+        if (refs.toolMesh && refs.toolMesh.visible) { refs.toolMesh.visible = false; refs.renderNeeded = true }
 
-        // Reset voxels when sim is cleared
-        if (refs.voxelMat && refs.voxelMesh) {
-          const wasNonEmpty = refs.voxelMat.leaves.some(l => l.height < refs.voxelMat!.thicknessMM)
-          if (wasNonEmpty) {
-            refs.voxelMat.reset()
-            syncDirtyInstances(refs.voxelMat, refs.voxelMesh)
-          }
+        if (refs.voxelMat && (refs.voxelWoodMesh || refs.voxelCutMesh)) {
+          if (refs.voxelMat.anyCarved) refs.voxelMat.reset()
         }
+      }
+
+      if (refs.voxelMat && refs.voxelWoodMesh && refs.voxelCutMesh) {
+        if (syncDirtyInstances(refs.voxelMat, refs.voxelWoodMesh, refs.voxelCutMesh)) refs.renderNeeded = true
       }
 
       controls.update()
-      renderer.render(scene, camera)
+
+      if (refs.renderNeeded) {
+        renderer.render(scene, camera)
+        refs.renderNeeded = false
+      }
     }
     refs.rafId = requestAnimationFrame(animate)
 
-    // ── store subscriptions ──
     const unsubWP = useWorkpieceStore.subscribe(() => {
       rebuildWorkpiece(refs)
       fitCamera(refs)
+      refs.renderNeeded = true
     })
     const unsubTP = useToolpathStore.subscribe(() => {
       rebuildToolpaths(refs)
+      refs.renderNeeded = true
     })
     const unsubSim = useSimStore.subscribe((state, prev) => {
       if (state.gcode !== prev.gcode) {
-        rebuildVoxels(refs)  // quadtree built from new segments
-        const t = useToolStore.getState().tools[0]
-        if (t) buildToolIndicator(refs, t.type, t.diameterMM)
+        rebuildVoxels(refs)
+        buildToolIndicator(refs)
+        refs.renderNeeded = true
       }
+    })
+    const unsubPaths = usePathsStore.subscribe(() => {
+      rebuildShapes(refs)
     })
 
     return () => {
       cancelAnimationFrame(refs.rafId)
       ro.disconnect()
-      unsubWP(); unsubTP(); unsubSim()
-      if (refs.voxelMesh) {
-        refs.voxelMesh.geometry.dispose()
-        ;(refs.voxelMesh.material as THREE.Material).dispose()
-      }
+      unsubWP(); unsubTP(); unsubSim(); unsubPaths()
+      if (refs.voxelWoodMesh) { refs.voxelWoodMesh.geometry.dispose(); (refs.voxelWoodMesh.material as THREE.Material).dispose() }
+      if (refs.voxelCutMesh) { refs.voxelCutMesh.geometry.dispose(); (refs.voxelCutMesh.material as THREE.Material).dispose() }
+      if (refs.toolMesh) disposeObject3D(refs.toolMesh)
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
@@ -317,10 +408,12 @@ export default function ThreeView() {
 
       <div className="absolute top-2 right-2 z-10 flex flex-col gap-1">
         {([
-          ['Axes',      showAxes,      setShowAxes],
-          ['Toolpaths', showToolpaths, setShowToolpaths],
-          ['Workpiece', showWorkpiece, setShowWorkpiece],
-          ['Tool',      showTool,      setShowTool],
+          ['Axes',        showAxes,      setShowAxes],
+          ['Toolpaths',   showToolpaths, setShowToolpaths],
+          ['Workpiece',   showWorkpiece, setShowWorkpiece],
+          ['Tool',        showTool,      setShowTool],
+          ['Shapes',      showShapes,    setShowShapes],
+          ['Follow Tool', followTool,    setFollowTool],
         ] as [string, boolean, (v: boolean) => void][]).map(([label, val, set]) => (
           <button
             key={label}
@@ -354,35 +447,38 @@ function clearGroup(group: THREE.Group) {
 
 function rebuildWorkpiece(refs: SceneRefs) {
   clearGroup(refs.workpieceGroup)
-  if (refs.toolMesh) {
-    refs.scene.remove(refs.toolMesh)
-    refs.toolMesh.geometry.dispose()
-    ;(refs.toolMesh.material as THREE.Material).dispose()
-    refs.toolMesh = null
-  }
 
   const wp  = useWorkpieceStore.getState()
   const { widthMM: W, heightMM: H, thicknessMM: T, origin } = wp
   const org = originWorldXY(origin, W, H)
 
-  // Axes at machine zero: Three.js (org.x, T, -org.y)
   refs.axesHelper.position.set(org.x, T, -org.y)
-  // Grid at workpiece physical bottom
-  refs.gridHelper.position.y = -T
+
+  refs.scene.remove(refs.gridHelper)
+  refs.gridHelper.geometry.dispose()
+  ;(refs.gridHelper.material as THREE.Material).dispose()
+  const gridSize = Math.max(W, H) * 2
+  const gridDivs = Math.round(gridSize / 10)
+  refs.gridHelper = new THREE.GridHelper(gridSize, gridDivs, 0x333333, 0x292929)
+  refs.gridHelper.position.set(W / 2, 0, -H / 2)
+  refs.scene.add(refs.gridHelper)
 
   rebuildVoxels(refs)
-
-  const tool = useToolStore.getState().tools[0]
-  if (tool) buildToolIndicator(refs, tool.type, tool.diameterMM)
+  buildToolIndicator(refs)
 }
 
 function rebuildVoxels(refs: SceneRefs) {
-  // Dispose previous voxel mesh
-  if (refs.voxelMesh) {
-    refs.scene.remove(refs.voxelMesh)
-    refs.voxelMesh.geometry.dispose()
-    ;(refs.voxelMesh.material as THREE.Material).dispose()
-    refs.voxelMesh = null
+  if (refs.voxelWoodMesh) {
+    refs.scene.remove(refs.voxelWoodMesh)
+    refs.voxelWoodMesh.geometry.dispose()
+    ;(refs.voxelWoodMesh.material as THREE.Material).dispose()
+    refs.voxelWoodMesh = null
+  }
+  if (refs.voxelCutMesh) {
+    refs.scene.remove(refs.voxelCutMesh)
+    refs.voxelCutMesh.geometry.dispose()
+    ;(refs.voxelCutMesh.material as THREE.Material).dispose()
+    refs.voxelCutMesh = null
   }
   refs.voxelMat = null
 
@@ -392,47 +488,115 @@ function rebuildVoxels(refs: SceneRefs) {
 
   const segments = useSimStore.getState().segments
 
-  // Minimum cell = tool_diameter/4, clamped to [0.5, W/8]
+  // Finer cells than before — budget is 2M but we're typically well under it,
+  // so drop the minimum floor to 0.1mm for better V-carve detail resolution.
   let minDia = Infinity
   for (const seg of segments) {
-    if (!seg.rapid && seg.z < 0 && seg.toolDiameterMM < minDia) minDia = seg.toolDiameterMM
+    if (!seg.rapid && (seg.prevZ < 0 || seg.z < 0) && seg.toolDiameterMM < minDia) minDia = seg.toolDiameterMM
   }
   const minCellMM = minDia === Infinity
     ? Math.min(W, H) / 8
-    : Math.max(0.25, minDia / 32)  // 1/16 of tool radius
+    : Math.max(0.1, minDia / 64)
 
   const voxelMat = new VoxelMaterial(W, H, T, segments, org.x, org.y, minCellMM)
   refs.voxelMat  = voxelMat
+  const N = voxelMat.leaves.length
 
-  const voxMeshMat = new THREE.MeshPhongMaterial({ color: materialColor(material), shininess: 20 })
-  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), voxMeshMat, voxelMat.leaves.length)
-  mesh.receiveShadow = true
+  // Wood mesh: all faces wood — for uncut voxels
+  const woodColor = materialColor(material)
+  const woodMat   = new THREE.MeshLambertMaterial({ color: woodColor })
+  const woodMesh  = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), woodMat, N)
+  woodMesh.frustumCulled = false
 
-  // Set initial matrices: full-height voxels
+  // Cut mesh: yellow/gold for carved voxel surfaces
+  const yellowMat = new THREE.MeshLambertMaterial({ color: 0xffcc00 })
+  const cutMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), yellowMat, N)
+  cutMesh.frustumCulled = false
+
+  const zero = new THREE.Matrix4().makeScale(0, 0, 0)
+
   for (const leaf of voxelMat.leaves) {
     _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
     _ms.set(leaf.cw, leaf.height, leaf.ch)
     _m.compose(_mp, _mr, _ms)
-    mesh.setMatrixAt(leaf.instanceIdx, _m)
+    woodMesh.setMatrixAt(leaf.instanceIdx, _m)
+    cutMesh.setMatrixAt(leaf.instanceIdx, zero)
+    leaf.dirty = false
   }
-  mesh.instanceMatrix.needsUpdate = true
+  woodMesh.instanceMatrix.needsUpdate = true
+  cutMesh.instanceMatrix.needsUpdate  = true
 
-  refs.voxelMesh = mesh
-  refs.scene.add(mesh)
+  refs.voxelWoodMesh = woodMesh
+  refs.voxelCutMesh  = cutMesh
+  refs.scene.add(woodMesh)
+  refs.scene.add(cutMesh)
 }
 
-function buildToolIndicator(refs: SceneRefs, toolType: string, diamMM: number) {
+// Build the tool indicator from sim segments (for accurate shape/angle) or
+// fall back to the first tool in the library.
+function buildToolIndicator(refs: SceneRefs) {
   if (refs.toolMesh) {
     refs.scene.remove(refs.toolMesh)
-    refs.toolMesh.geometry.dispose()
-    ;(refs.toolMesh.material as THREE.Material).dispose()
+    disposeObject3D(refs.toolMesh)
     refs.toolMesh = null
   }
-  const mesh = buildToolMesh(toolType, diamMM)
-  mesh.castShadow = true
+
+  const segments = useSimStore.getState().segments
+  let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60
+
+  for (const seg of segments) {
+    if (!seg.rapid) {
+      diamMM = seg.toolDiameterMM
+      if (seg.toolVbitHalfAngleTan) {
+        toolType = 'vbit'
+        vbitAngleDeg = Math.atan(seg.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
+      } else if (seg.toolBallNose) {
+        toolType = 'ball'
+      }
+      break
+    }
+  }
+
+  if (!segments.length) {
+    const t = useToolStore.getState().tools[0]
+    if (!t) return
+    toolType = t.type
+    diamMM   = t.diameterMM
+    if (t.type === 'vbit') vbitAngleDeg = (t as any).vbitAngleDeg ?? 60
+  }
+
+  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg)
   mesh.visible = false
   refs.scene.add(mesh)
   refs.toolMesh = mesh
+}
+
+function rebuildShapes(refs: SceneRefs) {
+  clearGroup(refs.shapesGroup)
+
+  const paths = usePathsStore.getState().paths
+  const T = useWorkpieceStore.getState().thicknessMM
+  const surfaceY = T + 0.15
+
+  for (const path of paths) {
+    if (!path.visible) continue
+    const polylines = flattenPath(path.d, 0.3)
+    const color = new THREE.Color(path.color)
+    for (const pts of polylines) {
+      if (pts.length < 2) continue
+      const positions = new Float32Array(pts.length * 3)
+      for (let i = 0; i < pts.length; i++) {
+        positions[i * 3]     = pts[i][0]
+        positions[i * 3 + 1] = surfaceY
+        positions[i * 3 + 2] = -pts[i][1]
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+      refs.shapesGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })))
+    }
+  }
+
+  refs.renderNeeded = true
 }
 
 function rebuildToolpaths(refs: SceneRefs) {

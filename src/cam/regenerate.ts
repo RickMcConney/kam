@@ -2,6 +2,8 @@ import { generateProfile } from './profile'
 import { generatePocket } from './raster'
 import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { generateSurface } from './surfacing'
+import { generateVCarve } from './vcarve'
+import { generateInlayFemale, generateInlayMale } from './inlay'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore } from '../store/toolStore'
@@ -18,7 +20,7 @@ export function regenerateOperation(opId: string): void {
   if (!tool) return
 
   updateOperation(opId, { status: 'generating' })
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
       if (op.type === 'profile') {
         const path = paths.find((p) => p.id === op.pathId)
@@ -55,6 +57,35 @@ export function regenerateOperation(opId: string): void {
           depthMM: op.depthMM, stepDownMM: op.stepDownMM,
           stepoverPercent: op.stepoverPercent, passAngleDeg: op.passAngleDeg,
         }))
+      } else if (op.type === 'vcarve') {
+        const path = paths.find((p) => p.id === op.pathId)
+        if (!path) throw new Error('Source path not found')
+        const islandDs = op.islandIds.flatMap((id) => {
+          const p = paths.find((x) => x.id === id)
+          return p ? [p.d] : []
+        })
+        setSegments(opId, await generateVCarve(path.d, tool, {
+          angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
+        }))
+      } else if (op.type === 'inlay') {
+        const path = paths.find((p) => p.id === op.pathId)
+        if (!path) throw new Error('Source path not found')
+        const pocketTool = tools.find((t) => t.id === op.pocketToolId)
+        if (!pocketTool) throw new Error('Pocket/profile tool not found')
+        const islandDs = op.islandIds.flatMap((id) => {
+          const p = paths.find((x) => x.id === id)
+          return p ? [p.d] : []
+        })
+        const inlayParams = {
+          angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
+          stepDownMM: op.stepDownMM, stepoverPercent: op.stepoverPercent,
+          glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM, islandDs,
+        }
+        if (op.role === 'female') {
+          setSegments(opId, await generateInlayFemale(path.d, pocketTool, tool, inlayParams))
+        } else {
+          setSegments(opId, await generateInlayMale(path.d, pocketTool, tool, inlayParams))
+        }
       }
     } catch (err) {
       setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -64,7 +95,9 @@ export function regenerateOperation(opId: string): void {
 
 function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, pathId: string): boolean {
   if (op.type === 'profile' || op.type === 'drill') return op.pathId === pathId
-  if (op.type === 'pocket') return op.pathId === pathId || (op.islandIds?.includes(pathId) ?? false)
+  if (op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') {
+    return op.pathId === pathId || (op.islandIds?.includes(pathId) ?? false)
+  }
   return false
 }
 

@@ -1,18 +1,22 @@
 import { useState } from 'react'
 import { ICON } from '../theme'
 import {
-  Plus, Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
-  Crosshair, X, ChevronUp, ChevronDown, Circle, CircleDot, Target, Layers
+  Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
+  Crosshair, X, ChevronUp, ChevronDown, Circle, CircleDot, Target, Layers,
+  Star, Package
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useUIStore } from '../store/uiStore'
+import { flattenPath } from '../cam/pathFlattener'
 import { generateProfile } from '../cam/profile'
 import { generatePocket } from '../cam/raster'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
+import { generateVCarve } from '../cam/vcarve'
+import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { regenerateOperation } from '../cam/regenerate'
 import { getBBox } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
@@ -41,6 +45,65 @@ function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: 
   return null
 }
 
+// ─── Containment grouping ─────────────────────────────────────────────────────
+
+function ptInPoly(px: number, py: number, poly: [number, number][]): boolean {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j]
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+// Groups selected paths into {boundary, islands} pairs.
+// A path is an island if its first point lies inside another selected path.
+// Paths not contained in any other become independent boundaries.
+function groupPathsByContainment(
+  selectedPaths: ImportedPath[]
+): { boundary: ImportedPath; islands: ImportedPath[] }[] {
+  if (selectedPaths.length === 0) return []
+  if (selectedPaths.length === 1) return [{ boundary: selectedPaths[0], islands: [] }]
+
+  const polyCache = new Map<string, [number, number][]>()
+  function getPoly(p: ImportedPath): [number, number][] {
+    if (!polyCache.has(p.id)) {
+      const pts = flattenPath(p.d, 0.1)
+      polyCache.set(p.id, (pts[0] ?? []) as [number, number][])
+    }
+    return polyCache.get(p.id)!
+  }
+
+  // For each path find its smallest (most direct) containing path among the selection
+  const parentId = new Map<string, string>()
+  for (const inner of selectedPaths) {
+    const poly = getPoly(inner)
+    if (poly.length < 1) continue
+    const [px, py] = poly[0]
+    for (const outer of selectedPaths) {
+      if (outer.id === inner.id) continue
+      const outerPoly = getPoly(outer)
+      if (outerPoly.length < 3) continue
+      if (!ptInPoly(px, py, outerPoly)) continue
+      // Prefer the smallest container (direct parent over grandparent)
+      const existing = parentId.get(inner.id)
+      if (!existing) {
+        parentId.set(inner.id, outer.id)
+      } else {
+        const bCur = getBBox(selectedPaths.find(p => p.id === existing)!.d)
+        const bNew = getBBox(outer.d)
+        if (bCur && bNew && bNew.w * bNew.h < bCur.w * bCur.h) parentId.set(inner.id, outer.id)
+      }
+    }
+  }
+
+  const boundaries = selectedPaths.filter(p => !parentId.has(p.id))
+  return boundaries.map(b => ({
+    boundary: b,
+    islands: selectedPaths.filter(p => parentId.get(p.id) === b.id),
+  }))
+}
+
 // ─── Status icon ─────────────────────────────────────────────────────────────
 
 const STATUS_ICON = {
@@ -64,7 +127,6 @@ interface ProfileFormState {
 function ProfileForm({ onClose }: { onClose: () => void }) {
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
-  const selectedId = selectedIds[0] ?? null
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
 
   const defaultTool = tools[0]
@@ -77,7 +139,7 @@ function ProfileForm({ onClose }: { onClose: () => void }) {
   })
   const [generating, setGenerating] = useState(false)
 
-  const selectedPath = paths.find((p) => p.id === selectedId)
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
   const selectedTool = tools.find((t) => t.id === form.toolId)
 
   function handleToolChange(toolId: string) {
@@ -90,27 +152,29 @@ function ProfileForm({ onClose }: { onClose: () => void }) {
   }
 
   function handleGenerate() {
-    if (!selectedPath || !selectedTool) return
+    if (selectedPaths.length === 0 || !selectedTool) return
     pushHistoryBoth()
     setGenerating(true)
-    const opId = addOperation({
-      name: `Profile: ${selectedPath.name} (${selectedTool.name})`,
-      type: 'profile',
-      toolId: form.toolId,
-      pathId: selectedPath.id,
-      side: form.side,
-      depthMM: form.depthMM,
-      stepDownMM: form.stepDownMM,
-      direction: form.direction,
-    })
-    updateOperation(opId, { status: 'generating' })
     setTimeout(() => {
-      try {
-        setSegments(opId, generateProfile(selectedPath.d, selectedTool, {
-          side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
-        }))
-      } catch (err) {
-        setError(opId, err instanceof Error ? err.message : 'Generation failed')
+      for (const path of selectedPaths) {
+        const opId = addOperation({
+          name: `Profile: ${path.name} (${selectedTool.name})`,
+          type: 'profile',
+          toolId: form.toolId,
+          pathId: path.id,
+          side: form.side,
+          depthMM: form.depthMM,
+          stepDownMM: form.stepDownMM,
+          direction: form.direction,
+        })
+        updateOperation(opId, { status: 'generating' })
+        try {
+          setSegments(opId, generateProfile(path.d, selectedTool, {
+            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
+          }))
+        } catch (err) {
+          setError(opId, err instanceof Error ? err.message : 'Generation failed')
+        }
       }
       setGenerating(false)
       onClose()
@@ -119,14 +183,25 @@ function ProfileForm({ onClose }: { onClose: () => void }) {
 
   return (
     <FormShell title="New Profile Operation" onClose={onClose}>
-      <PathSelector selectedPath={selectedPath} />
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Paths {selectedPaths.length > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedPaths.length} selected — one operation each)</span>}
+        </label>
+        {selectedPaths.length > 0 ? (
+          <div className="space-y-0.5">
+            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a path on the canvas first</p>
+        )}
+      </div>
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <GenerateBtn
-        disabled={!selectedPath || !selectedTool || generating || form.depthMM <= 0}
+        disabled={selectedPaths.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
         onClick={handleGenerate}
       />
@@ -161,8 +236,8 @@ function PocketForm({ onClose }: { onClose: () => void }) {
   })
   const [generating, setGenerating] = useState(false)
 
-  const boundaryPath = paths.find((p) => p.id === selectedIds[0])
-  const islandPaths = paths.filter((p) => selectedIds.slice(1).includes(p.id))
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const groups = groupPathsByContainment(selectedPaths)
   const selectedTool = tools.find((t) => t.id === form.toolId)
 
   function handleToolChange(toolId: string) {
@@ -175,34 +250,36 @@ function PocketForm({ onClose }: { onClose: () => void }) {
   }
 
   function handleGenerate() {
-    if (!boundaryPath || !selectedTool) return
+    if (groups.length === 0 || !selectedTool) return
     pushHistoryBoth()
     setGenerating(true)
-    const opId = addOperation({
-      name: `Pocket: ${boundaryPath.name} (${selectedTool.name})`,
-      type: 'pocket',
-      toolId: form.toolId,
-      pathId: boundaryPath.id,
-      islandIds: islandPaths.map((p) => p.id),
-      depthMM: form.depthMM,
-      stepDownMM: form.stepDownMM,
-      stepoverPercent: form.stepoverPercent,
-      passAngleDeg: form.passAngleDeg,
-      direction: form.direction,
-    })
-    updateOperation(opId, { status: 'generating' })
     setTimeout(() => {
-      try {
-        setSegments(opId, generatePocket(boundaryPath.d, selectedTool, {
+      for (const { boundary, islands } of groups) {
+        const opId = addOperation({
+          name: `Pocket: ${boundary.name} (${selectedTool.name})`,
+          type: 'pocket',
+          toolId: form.toolId,
+          pathId: boundary.id,
+          islandIds: islands.map((p) => p.id),
           depthMM: form.depthMM,
           stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent,
+          passAngleDeg: form.passAngleDeg,
           direction: form.direction,
-          islandDs: islandPaths.map((p) => p.d),
-          angle: form.passAngleDeg,
-        }))
-      } catch (err) {
-        setError(opId, err instanceof Error ? err.message : 'Generation failed')
+        })
+        updateOperation(opId, { status: 'generating' })
+        try {
+          setSegments(opId, generatePocket(boundary.d, selectedTool, {
+            depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM,
+            stepoverPercent: form.stepoverPercent,
+            direction: form.direction,
+            islandDs: islands.map((p) => p.d),
+            angle: form.passAngleDeg,
+          }))
+        } catch (err) {
+          setError(opId, err instanceof Error ? err.message : 'Generation failed')
+        }
       }
       setGenerating(false)
       onClose()
@@ -211,23 +288,21 @@ function PocketForm({ onClose }: { onClose: () => void }) {
 
   return (
     <FormShell title="New Pocket Operation" onClose={onClose}>
-      {/* Boundary */}
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Boundary</label>
-        {boundaryPath ? (
-          <PathChip path={boundaryPath} label="boundary" />
-        ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
-        )}
-      </div>
-      {/* Islands */}
-      {islandPaths.length > 0 && (
-        <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Islands</label>
-          <div className="space-y-0.5">
-            {islandPaths.map((p) => <PathChip key={p.id} path={p} label="island" />)}
-          </div>
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">Additional selected paths treated as islands.</p>
+      {groups.length === 0 ? (
+        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+      ) : (
+        <div className="space-y-1">
+          {groups.map(({ boundary, islands }, i) => (
+            <div key={boundary.id}>
+              {groups.length > 1 && (
+                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Pocket {i + 1}</label>
+              )}
+              <div className="space-y-0.5">
+                <PathChip path={boundary} label="boundary" />
+                {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
@@ -259,7 +334,7 @@ function PocketForm({ onClose }: { onClose: () => void }) {
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <GenerateBtn
-        disabled={!boundaryPath || !selectedTool || generating || form.depthMM <= 0}
+        disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
         onClick={handleGenerate}
       />
@@ -498,20 +573,6 @@ function PathChip({ path, label }: { path: ImportedPath; label: string }) {
   )
 }
 
-function PathSelector({ selectedPath }: { selectedPath: ImportedPath | undefined }) {
-  return (
-    <div>
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
-      {selectedPath ? (
-        <PathChip path={selectedPath} label="selected" />
-      ) : (
-        <p className="text-body text-amber-400 flex items-center gap-1">
-          <AlertCircle size={ICON.sm} /> Select a path on the canvas first
-        </p>
-      )}
-    </div>
-  )
-}
 
 function ToolSelector({ tools, value, onChange }: {
   tools: Tool[]
@@ -594,6 +655,373 @@ function GenerateBtn({ disabled, generating, onClick }: { disabled: boolean; gen
       {generating && <Loader2 size={ICON.sm} className="animate-spin" />}
       {generating ? 'Generating…' : 'Generate Toolpath'}
     </button>
+  )
+}
+
+// ─── V-Carve form ────────────────────────────────────────────────────────────
+
+interface VCarveFormState {
+  toolId: string
+  angleDeg: number
+  maxDepthMM: number
+}
+
+function VCarveForm({ onClose }: { onClose: () => void }) {
+  const { tools } = useToolStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+
+  const vbits = tools.filter((t) => t.type === 'vbit')
+  const defaultTool = vbits[0] ?? tools[0]
+  const [form, setForm] = useState<VCarveFormState>({
+    toolId: defaultTool?.id ?? '',
+    angleDeg: defaultTool?.vbitAngleDeg ?? 60,
+    maxDepthMM: defaultTool?.maxDepthMM ?? 10,
+  })
+  const [generating, setGenerating] = useState(false)
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const groups = groupPathsByContainment(selectedPaths)
+  const selectedTool = tools.find((t) => t.id === form.toolId)
+
+  function handleToolChange(toolId: string) {
+    const t = tools.find((x) => x.id === toolId)
+    if (t) setForm((f) => ({ ...f, toolId, maxDepthMM: t.maxDepthMM, angleDeg: t.vbitAngleDeg ?? f.angleDeg }))
+  }
+
+  function up<K extends keyof VCarveFormState>(k: K, v: VCarveFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleGenerate() {
+    if (groups.length === 0 || !selectedTool) return
+    pushHistoryBoth()
+    setGenerating(true)
+    setTimeout(async () => {
+      for (const { boundary, islands } of groups) {
+        const opId = addOperation({
+          name: `V-Carve: ${boundary.name} (${selectedTool.name})`,
+          type: 'vcarve',
+          toolId: form.toolId,
+          pathId: boundary.id,
+          islandIds: islands.map((p) => p.id),
+          maxDepthMM: form.maxDepthMM,
+          angleDeg: form.angleDeg,
+        })
+        updateOperation(opId, { status: 'generating' })
+        try {
+          setSegments(opId, await generateVCarve(boundary.d, selectedTool, {
+            angleDeg: form.angleDeg,
+            maxDepthMM: form.maxDepthMM,
+            islandDs: islands.map((p) => p.d),
+          }))
+        } catch (err) {
+          setError(opId, err instanceof Error ? err.message : 'Generation failed')
+        }
+      }
+      setGenerating(false)
+      onClose()
+    }, 0)
+  }
+
+  return (
+    <FormShell title="New V-Carve Operation" onClose={onClose}>
+      {groups.length === 0 ? (
+        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+      ) : (
+        <div className="space-y-1">
+          {groups.map(({ boundary, islands }, i) => (
+            <div key={boundary.id}>
+              {groups.length > 1 && (
+                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Shape {i + 1}</label>
+              )}
+              <div className="space-y-0.5">
+                <PathChip path={boundary} label="boundary" />
+                {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <ToolSelector tools={vbits.length > 0 ? vbits : tools} value={form.toolId} onChange={handleToolChange} />
+      {selectedTool?.type !== 'vbit' && (
+        <p className="text-label text-amber-400 flex items-center gap-1">
+          <AlertCircle size={ICON.xs} /> V-carve requires a V-bit tool.
+        </p>
+      )}
+      {/* V-bit angle */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          V-Bit Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.angleDeg}°</span>
+        </label>
+        <input
+          type="range" min={10} max={120} step={5}
+          value={form.angleDeg}
+          onChange={(e) => up('angleDeg', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Full included angle of the V-bit.</p>
+      </div>
+      {/* Max depth */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
+        <div className="flex items-center gap-1">
+          <input type="number" value={form.maxDepthMM} min={0.1} step={0.5}
+            onChange={(e) => up('maxDepthMM', parseFloat(e.target.value) || 0)}
+            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+          />
+          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+        </div>
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+          Bit cuts at most {((form.maxDepthMM) * Math.tan((form.angleDeg / 2) * Math.PI / 180) * 2).toFixed(2)} mm wide at full depth.
+        </p>
+      </div>
+      <GenerateBtn
+        disabled={groups.length === 0 || !selectedTool || generating || form.maxDepthMM <= 0 || selectedTool.type !== 'vbit'}
+        generating={generating}
+        onClick={handleGenerate}
+      />
+    </FormShell>
+  )
+}
+
+// ─── Inlay form ───────────────────────────────────────────────────────────────
+
+interface InlayFormState {
+  vbitToolId: string
+  pocketToolId: string
+  angleDeg: number
+  pocketDepthMM: number
+  stepDownMM: number
+  stepoverPercent: number
+  glueLineMM: number
+  clearanceMM: number
+}
+
+function InlayForm({ onClose }: { onClose: () => void }) {
+  const { tools } = useToolStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+
+  const vbits = tools.filter((t) => t.type === 'vbit')
+  const endmills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
+  const defaultVbit = vbits[0] ?? tools[0]
+  const defaultEndmill = endmills[0] ?? tools[0]
+
+  const [form, setForm] = useState<InlayFormState>({
+    vbitToolId: defaultVbit?.id ?? '',
+    pocketToolId: defaultEndmill?.id ?? '',
+    angleDeg: defaultVbit?.vbitAngleDeg ?? 60,
+    pocketDepthMM: 5,
+    stepDownMM: defaultEndmill?.stepDownMM ?? 3,
+    stepoverPercent: 40,
+    glueLineMM: 0.2,
+    clearanceMM: 0.1,
+  })
+  const [generating, setGenerating] = useState(false)
+
+  const vbitTool = tools.find((t) => t.id === form.vbitToolId)
+  const pocketTool = tools.find((t) => t.id === form.pocketToolId)
+  const boundaryPath = paths.find((p) => p.id === selectedIds[0])
+  const islandPaths = paths.filter((p) => selectedIds.slice(1).includes(p.id))
+
+  function up<K extends keyof InlayFormState>(k: K, v: InlayFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleGenerate() {
+    if (!boundaryPath || !vbitTool || !pocketTool) return
+    pushHistoryBoth()
+    setGenerating(true)
+
+    const islandIds = islandPaths.map((p) => p.id)
+    const islandDs = islandPaths.map((p) => p.d)
+    const inlayParams = {
+      angleDeg: form.angleDeg,
+      pocketDepthMM: form.pocketDepthMM,
+      stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent,
+      glueLineMM: form.glueLineMM,
+      clearanceMM: form.clearanceMM,
+      islandDs,
+    }
+
+    const femaleId = addOperation({
+      name: `Inlay Female: ${boundaryPath.name}`,
+      type: 'inlay',
+      role: 'female',
+      toolId: form.vbitToolId,
+      pathId: boundaryPath.id,
+      islandIds,
+      pocketToolId: form.pocketToolId,
+      angleDeg: form.angleDeg,
+      pocketDepthMM: form.pocketDepthMM,
+      stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent,
+      glueLineMM: form.glueLineMM,
+      clearanceMM: form.clearanceMM,
+    })
+    const maleId = addOperation({
+      name: `Inlay Male: ${boundaryPath.name}`,
+      type: 'inlay',
+      role: 'male',
+      toolId: form.vbitToolId,
+      pathId: boundaryPath.id,
+      islandIds,
+      pocketToolId: form.pocketToolId,
+      angleDeg: form.angleDeg,
+      pocketDepthMM: form.pocketDepthMM,
+      stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent,
+      glueLineMM: form.glueLineMM,
+      clearanceMM: form.clearanceMM,
+    })
+    updateOperation(femaleId, { status: 'generating' })
+    updateOperation(maleId, { status: 'generating' })
+
+    setTimeout(async () => {
+      try {
+        setSegments(femaleId, await generateInlayFemale(boundaryPath.d, pocketTool, vbitTool, inlayParams))
+      } catch (err) {
+        setError(femaleId, err instanceof Error ? err.message : 'Generation failed')
+      }
+      try {
+        setSegments(maleId, await generateInlayMale(boundaryPath.d, pocketTool, vbitTool, inlayParams))
+      } catch (err) {
+        setError(maleId, err instanceof Error ? err.message : 'Generation failed')
+      }
+      setGenerating(false)
+      onClose()
+    }, 0)
+  }
+
+  const canGenerate = !!boundaryPath && !!vbitTool && !!pocketTool && !generating &&
+    form.pocketDepthMM > 0 && vbitTool.type === 'vbit'
+
+  return (
+    <FormShell title="New Inlay Operation" onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+        {boundaryPath ? (
+          <PathChip path={boundaryPath} label="inlay shape" />
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+        )}
+      </div>
+      {islandPaths.length > 0 && (
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Islands</label>
+          <div className="space-y-0.5">
+            {islandPaths.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+          </div>
+        </div>
+      )}
+      {/* V-bit */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">V-Bit (Finishing)</label>
+        <select
+          value={form.vbitToolId}
+          onChange={(e) => up('vbitToolId', e.target.value)}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+        >
+          {(vbits.length > 0 ? vbits : tools).map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          ))}
+        </select>
+        {vbitTool?.type !== 'vbit' && (
+          <p className="text-label text-amber-400 mt-0.5 flex items-center gap-1">
+            <AlertCircle size={ICON.xs} /> Select a V-bit tool.
+          </p>
+        )}
+      </div>
+      {/* Pocket tool */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">End Mill (Roughing / Profile)</label>
+        <select
+          value={form.pocketToolId}
+          onChange={(e) => {
+            const t = tools.find((x) => x.id === e.target.value)
+            if (t) up('stepDownMM', t.stepDownMM)
+            up('pocketToolId', e.target.value)
+          }}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+        >
+          {(endmills.length > 0 ? endmills : tools).map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          ))}
+        </select>
+      </div>
+      {/* V-bit angle */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          V-Bit Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.angleDeg}°</span>
+        </label>
+        <input type="range" min={10} max={120} step={5} value={form.angleDeg}
+          onChange={(e) => up('angleDeg', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+      </div>
+      {/* Depth */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Inlay Depth</label>
+          <div className="flex items-center gap-1">
+            <input type="number" value={form.pocketDepthMM} min={0.5} step={0.5}
+              onChange={(e) => up('pocketDepthMM', parseFloat(e.target.value) || 0)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
+          <div className="flex items-center gap-1">
+            <input type="number" value={form.stepDownMM} min={0.1} step={0.5}
+              onChange={(e) => up('stepDownMM', parseFloat(e.target.value) || 0)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+      </div>
+      {/* Stepover */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+        </label>
+        <input type="range" min={10} max={90} step={5} value={form.stepoverPercent}
+          onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
+      </div>
+      {/* Glue + clearance */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Glue Gap</label>
+          <div className="flex items-center gap-1">
+            <input type="number" value={form.glueLineMM} min={0} step={0.05}
+              onChange={(e) => up('glueLineMM', parseFloat(e.target.value) || 0)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Clearance</label>
+          <div className="flex items-center gap-1">
+            <input type="number" value={form.clearanceMM} min={0} step={0.05}
+              onChange={(e) => up('clearanceMM', parseFloat(e.target.value) || 0)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+      </div>
+      <p className="text-label text-gray-400 dark:text-neutral-500">
+        Generates Female (socket) + Male (plug) operations. Machine each on separate stock.
+      </p>
+      <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate} />
+    </FormShell>
   )
 }
 
@@ -716,28 +1144,25 @@ function SurfaceForm({ onClose }: { onClose: () => void }) {
 
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'pocket' | 'drill' | 'surface'
+type OpType = 'profile' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay'
 type FormState = null | 'menu' | OpType
 
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
   return (
-    <div className="mx-3 mt-3 mb-2 border border-gray-200 dark:border-neutral-600 rounded-lg overflow-hidden">
-      <div className="px-3 py-2 bg-gray-100 dark:bg-neutral-800 border-b border-gray-200 dark:border-neutral-600 text-body font-semibold text-gray-700 dark:text-neutral-300">
-        Add Operation
-      </div>
+    <div className="mx-3 mt-3 mb-2">
       <div className="p-2 grid grid-cols-3 gap-1.5">
         {([
           ['profile', 'Profile', 'Cut along path edge', <Circle size={ICON.md} />],
-          ['pocket', 'Pocket', 'Clear inside boundary', < Target size={ICON.md} />],
+          ['pocket', 'Pocket', 'Clear inside boundary', <Target size={ICON.md} />],
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
           ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
+          ['vcarve', 'V-Carve', 'V-bit depth-varying carve', <Star size={ICON.md} />],
+          //['inlay', 'Inlay', 'Female socket + male plug', <Package size={ICON.md} />],
         ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
           <button key={type} onClick={() => onSelect(type)}
-          title={desc} 
-            className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-gray-200 dark:border-neutral-600 bg-gray-50 dark:bg-neutral-900 hover:bg-gray-100 dark:hover:bg-neutral-800 text-gray-700 dark:text-neutral-300 hover:text-white transition-colors">
+            title={desc}
+            className="flex flex-col items-center gap-1 px-2 py-2.5 rounded border border-gray-200 dark:border-neutral-600 bg-gray-50 dark:bg-neutral-900 hover:bg-gray-100 dark:hover:bg-neutral-800 text-gray-500 dark:text-neutral-400 hover:text-white transition-colors">
             <span className="text-body font-medium">{name}</span>
-            
-         
             {icon}
           </button>
         ))}
@@ -752,7 +1177,7 @@ export default function MachinePanel() {
   const { operations, deleteOperation, toggleVisibility, moveOperation } = useToolpathStore()
   const { pushHistoryBoth } = usePathsStore()
   const { tools } = useToolStore()
-  const [activeForm, setActiveForm] = useState<FormState>(null)
+  const [activeForm, setActiveForm] = useState<FormState>('menu')
 
   function handleRegenerate(opId: string) {
     regenerateOperation(opId)
@@ -765,31 +1190,21 @@ export default function MachinePanel() {
     if (op.type === 'pocket') return `${toolName} · ${op.stepoverPercent}% stepover · ${op.depthMM}mm`
     if (op.type === 'drill') return `${toolName} · ${op.drillMode} · ${op.depthMM}mm`
     if (op.type === 'surface') return `${toolName} · ${op.stepoverPercent}% · ${op.passAngleDeg}° · ${op.depthMM}mm`
+    if (op.type === 'vcarve') return `${toolName} · ${op.angleDeg}° · max ${op.maxDepthMM}mm`
+    if (op.type === 'inlay') {
+      const pocketTool = tools.find((t) => t.id === op.pocketToolId)
+      return `${toolName} + ${pocketTool?.name ?? '?'} · ${op.angleDeg}° · ${op.pocketDepthMM}mm · ${op.role}`
+    }
     return toolName
   }
 
-  const closeForm = () => setActiveForm(null as FormState)
+  const closeForm = () => setActiveForm('menu')
 
   return (
     <div className="flex flex-col h-full">
       {/* Form area */}
-      {activeForm === null ? (
-        <div className="mx-3 mt-3 mb-2">
-          <button
-            onClick={() => setActiveForm('menu')}
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded text-body bg-gray-100 dark:bg-neutral-800 hover:bg-gray-200 dark:hover:bg-neutral-700 border border-gray-200 dark:border-neutral-600 text-gray-700 dark:text-neutral-300 transition-colors"
-          >
-            <Plus size={ICON.sm} />
-            Add Operation
-          </button>
-        </div>
-      ) : activeForm === 'menu' ? (
-        <div>
-          <AddOperationMenu onSelect={(t) => setActiveForm(t)} />
-          <div className="mx-3">
-            <button onClick={closeForm} className="w-full py-1 text-body text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">Cancel</button>
-          </div>
-        </div>
+      {activeForm === 'menu' ? (
+        <AddOperationMenu onSelect={(t) => setActiveForm(t)} />
       ) : activeForm === 'profile' ? (
         <ProfileForm onClose={closeForm} />
       ) : activeForm === 'pocket' ? (
@@ -798,6 +1213,10 @@ export default function MachinePanel() {
         <DrillForm onClose={closeForm} />
       ) : activeForm === 'surface' ? (
         <SurfaceForm onClose={closeForm} />
+      ) : activeForm === 'vcarve' ? (
+        <VCarveForm onClose={closeForm} />
+      ) : activeForm === 'inlay' ? (
+        <InlayForm onClose={closeForm} />
       ) : null}
 
       {/* Operations list */}

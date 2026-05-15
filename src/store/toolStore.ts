@@ -16,12 +16,13 @@ export interface Tool {
   stepDownMM: number
   maxDepthMM: number
   direction: CuttingDirection
+  vbitAngleDeg?: number  // full included angle; only meaningful for vbit type
 }
 
 const DEFAULT_TOOLS: Tool[] = [
   { id: 'default-1', name: '1/4" End Mill',   type: 'endmill',  diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2500, zFeedMmMin: 500, stepDownMM: 3.0, maxDepthMM: 25.0, direction: 'climb' },
   { id: 'default-2', name: '1/8" End Mill',   type: 'endmill',  diameterMM: 3.175, fluteCount: 2, rpm: 24000, xyFeedMmMin: 1500, zFeedMmMin: 300, stepDownMM: 1.5, maxDepthMM: 15.0, direction: 'climb' },
-  { id: 'default-3', name: '60° V-Bit',       type: 'vbit',     diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2.0, maxDepthMM: 10.0, direction: 'climb' },
+  { id: 'default-3', name: '60° V-Bit',       type: 'vbit',     diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2.0, maxDepthMM: 10.0, direction: 'climb', vbitAngleDeg: 60 },
   { id: 'default-4', name: '1/4" Ball Nose',  type: 'ballnose', diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2.0, maxDepthMM: 20.0, direction: 'climb' },
   { id: 'default-5', name: '3mm Drill',       type: 'drill',    diameterMM: 3.0,   fluteCount: 2, rpm: 12000, xyFeedMmMin: 0,    zFeedMmMin: 200, stepDownMM: 3.0, maxDepthMM: 20.0, direction: 'climb' },
 ]

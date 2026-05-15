@@ -28,8 +28,10 @@ function ToolRow({ tool }: { tool: Tool }) {
         <input type="text" value={tool.name} onChange={(e) => up({ name: e.target.value })} className={cellCls} />
       </td>
       <td className="px-2 py-1">
-        <select value={tool.type} onChange={(e) => up({ type: e.target.value as ToolType })}
-          className={cellCls + ' bg-gray-100 dark:bg-neutral-800'}>
+        <select value={tool.type} onChange={(e) => {
+            const type = e.target.value as ToolType
+            up(type === 'vbit' && !tool.vbitAngleDeg ? { type, vbitAngleDeg: 60 } : { type })
+          }} className={cellCls + ' bg-gray-100 dark:bg-neutral-800'}>
           <option value="endmill">End Mill</option>
           <option value="ballnose">Ball Nose</option>
           <option value="vbit">V-Bit</option>
@@ -78,6 +80,19 @@ function ToolRow({ tool }: { tool: Tool }) {
           <option value="conventional">Conventional</option>
         </select>
       </td>
+      <td className="px-2 py-1">
+        {tool.type === 'vbit' ? (
+          <input
+            type="number"
+            value={tool.vbitAngleDeg ?? 60}
+            min={5} max={175} step={5}
+            onChange={(e) => up({ vbitAngleDeg: parseFloat(e.target.value) || 60 })}
+            className={cellCls + ' text-right'}
+          />
+        ) : (
+          <span className="text-gray-400 dark:text-neutral-600 px-1">—</span>
+        )}
+      </td>
       <td className="px-2 py-1 text-center">
         <button onClick={() => canDelete && deleteTool(tool.id)} disabled={!canDelete}
           title={canDelete ? 'Delete tool' : 'Cannot delete the last tool'}
@@ -121,6 +136,10 @@ export default function ToolLibraryPanel() {
                   )}
                 </th>
               ))}
+              <th title="V-bit full included angle (V-bit only)"
+                className="px-2 py-1.5 text-left text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider whitespace-nowrap select-none">
+                Angle<span className="ml-0.5 normal-case font-normal tracking-normal">°</span>
+              </th>
               <th className="px-2 py-1.5 w-8" />
             </tr>
           </thead>

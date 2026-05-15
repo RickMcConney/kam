@@ -118,7 +118,7 @@ const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 export default function CanvasStage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Konva.Stage>(null)
-  const [size, setSize] = useState({ width: 800, height: 600 })
+  const [size, setSize] = useState({ width: 0, height: 0 })
   const [viewport, setViewportState] = useState<Viewport>({ x: 0, y: 0, scale: 2 })
   const viewportRef = useRef<Viewport>(viewport)
   const spaceHeldRef = useRef(false)
@@ -206,6 +206,7 @@ export default function CanvasStage() {
     return () => ro.disconnect()
   }, [])
 
+  const fitRequest = useCanvasStore((s) => s.fitRequest)
   const didFitRef = useRef(false)
   useEffect(() => {
     if (size.width > 100 && !didFitRef.current) {
@@ -213,6 +214,11 @@ export default function CanvasStage() {
       setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
     }
   }, [size, widthMM, heightMM, setViewport])
+
+  useEffect(() => {
+    if (fitRequest === 0 || size.width <= 100) return
+    setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
+  }, [fitRequest, size, widthMM, heightMM, setViewport])
 
   const fitToWorkpiece = useCallback(() => {
     setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
@@ -921,7 +927,7 @@ export default function CanvasStage() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleCanvasDrop}
     >
-      <Stage
+      {size.width > 0 && size.height > 0 && <Stage
         ref={stageRef}
         width={size.width}
         height={size.height}
@@ -1001,7 +1007,7 @@ export default function CanvasStage() {
             />
           )}
         </Layer>
-      </Stage>
+      </Stage>}
 
       {/* Toolpath hover tooltip */}
       {toolpathTooltip && (

@@ -40,7 +40,7 @@ function ToolbarButton({
         'disabled:opacity-40 disabled:cursor-not-allowed',
         active
           ? 'bg-blue-600 text-white hover:bg-blue-500'
-          : 'text-gray-700 dark:text-neutral-300 hover:text-gray-900 dark:hover:text-neutral-100 hover:bg-gray-300 dark:hover:bg-neutral-600',
+          : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-600',
       ].join(' ')}
     >
       {icon}

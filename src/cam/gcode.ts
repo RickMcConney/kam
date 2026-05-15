@@ -23,6 +23,7 @@ function opDesc(op: AnyOperation): string {
   if (op.type === 'pocket') return `pocket · ${op.stepoverPercent}% stepover · ${op.depthMM}mm`
   if (op.type === 'drill') return `${op.drillMode} drill · ${op.depthMM}mm`
   if (op.type === 'surface') return `surface · ${op.stepoverPercent}% stepover · ${op.passAngleDeg}° · ${op.depthMM}mm`
+  if (op.type === 'vcarve') return `vcarve · ${op.angleDeg}° · ${op.maxDepthMM}mm max`
   return ''
 }
 
@@ -67,6 +68,17 @@ export function generateGcode(
 
     c(`=== ${op.name} ===`)
     c(`Tool: ${tool.name}  dia ${f(tool.diameterMM)}mm  ${opDesc(op)}`)
+    if (tool.type === 'vbit') {
+      // For vcarve/inlay, op.angleDeg is the angle used to generate Z depths — must match exactly.
+      // For other ops (profile, pocket) the tool angle is used for simulation display only.
+      const angleDeg = (op.type === 'vcarve' || op.type === 'inlay')
+        ? op.angleDeg
+        : (tool.vbitAngleDeg ?? 60)
+      c(`vbit-angle:${f(angleDeg / 2)}`)
+    }
+    if (tool.type === 'ballnose') {
+      c(`ballnose`)
+    }
 
     if (lastToolId !== op.toolId) {
       if (lastToolId && profile.toolChangeGcode.trim()) {

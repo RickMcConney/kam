@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { Group, Circle, Line } from 'react-konva'
+import { Group, Circle, Line, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
@@ -10,37 +10,99 @@ interface Props {
   viewport: Viewport
 }
 
-// Groups non-rapid cutting segments into continuous polylines for the trail.
-// Splits on rapids, above-material moves, or tool diameter changes.
-// ox/oy: origin offset to convert machine-relative G-code coords back to workpiece-local.
-function computeTrailSections(
+// For V-bit segments, cut width = 2 * |z| * tan(halfAngle), capped at tool diameter.
+function effectiveCutWidthAt(seg: SimSegment, z: number): number {
+  if (seg.toolVbitHalfAngleTan !== undefined) {
+    return Math.min(2 * Math.abs(z) * seg.toolVbitHalfAngleTan, seg.toolDiameterMM)
+  }
+  return seg.toolDiameterMM
+}
+
+function roundWidth(w: number): number {
+  return Math.round(w * 10) / 10
+}
+
+interface FrustumSeg {
+  x0: number; y0: number; w0: number
+  x1: number; y1: number; w1: number
+}
+
+interface TrailResult {
+  lineSections: { points: number[]; width: number }[]
+  frustumSegs: FrustumSeg[]
+}
+
+// Groups non-rapid cutting segments into:
+//   lineSections — consecutive uniform-width segs rendered as Konva Lines
+//   frustumSegs  — segs where start/end widths differ by ≥ 0.1mm, rendered as filled trapezoids
+function computeTrail(
   segments: SimSegment[],
   upToIdx: number,
   ox: number,
   oy: number,
-): { points: number[]; toolDiameterMM: number }[] {
-  const sections: { points: number[]; toolDiameterMM: number }[] = []
+): TrailResult {
+  const lineSections: { points: number[]; width: number }[] = []
+  const frustumSegs: FrustumSeg[] = []
   let pts: number[] | null = null
-  let curDia = 0
+  let curWidth = 0
+
+  const flushLine = () => {
+    if (pts && pts.length >= 4) lineSections.push({ points: pts, width: curWidth })
+    pts = null
+    curWidth = 0
+  }
 
   for (let i = 0; i <= upToIdx && i < segments.length; i++) {
     const seg = segments[i]
-    const isCut = !seg.rapid && seg.z < -0.001
+    if (seg.rapid || (seg.prevZ >= -0.001 && seg.z >= -0.001)) { flushLine(); continue }
 
-    if (!isCut || seg.toolDiameterMM !== curDia) {
-      if (pts && pts.length >= 4) sections.push({ points: pts, toolDiameterMM: curDia })
-      pts = isCut ? [seg.prevX + ox, seg.prevY + oy, seg.x + ox, seg.y + oy] : null
-      curDia = isCut ? seg.toolDiameterMM : 0
+    const w0 = effectiveCutWidthAt(seg, seg.prevZ)
+    const w1 = effectiveCutWidthAt(seg, seg.z)
+    const x0 = seg.prevX + ox, y0 = seg.prevY + oy
+    const x1 = seg.x + ox,    y1 = seg.y + oy
+
+    if (Math.abs(w0 - w1) < 0.1) {
+      const w = roundWidth((w0 + w1) / 2)
+      if (w !== curWidth || pts === null) {
+        flushLine()
+        pts = [x0, y0, x1, y1]
+        curWidth = w
+      } else {
+        pts.push(x1, y1)
+      }
     } else {
-      pts!.push(seg.x + ox, seg.y + oy)
+      flushLine()
+      frustumSegs.push({ x0, y0, w0, x1, y1, w1 })
     }
   }
-  if (pts && pts.length >= 4) sections.push({ points: pts, toolDiameterMM: curDia })
-  return sections
+
+  flushLine()
+  return { lineSections, frustumSegs }
 }
 
-// Completed trail — only re-renders when the current segment index changes.
-// The 60fps elapsedTimeS updates don't flow through here.
+// Builds a Konva sceneFunc that fills all frustum segments as closed quad subpaths.
+// Each quad: left-start → left-end → right-end → right-start.
+// Coordinates are in CNC mm (the layer's Y-flipped transform handles screen mapping).
+function makeFrustumSceneFunc(segs: FrustumSeg[]) {
+  return (ctx: any, shape: any) => {
+    ctx.beginPath()
+    for (const { x0, y0, w0, x1, y1, w1 } of segs) {
+      const dx = x1 - x0, dy = y1 - y0
+      const len = Math.hypot(dx, dy)
+      if (len < 0.0001) continue
+      const nx = -dy / len, ny = dx / len   // left-hand normal in CNC Y-up space
+      const r0 = w0 / 2, r1 = w1 / 2
+      ctx.moveTo(x0 + nx * r0, y0 + ny * r0)
+      ctx.lineTo(x1 + nx * r1, y1 + ny * r1)
+      ctx.lineTo(x1 - nx * r1, y1 - ny * r1)
+      ctx.lineTo(x0 - nx * r0, y0 - ny * r0)
+      ctx.closePath()
+    }
+    ctx.fillStrokeShape(shape)
+  }
+}
+
+// Completed trail — re-renders only when the current segment index changes.
 interface CompletedTrailProps {
   segments: SimSegment[]
   upToIdx: number
@@ -48,24 +110,35 @@ interface CompletedTrailProps {
   oy: number
 }
 const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy }: CompletedTrailProps) {
-  const sections = useMemo(
-    () => computeTrailSections(segments, upToIdx, ox, oy),
+  const trail = useMemo(
+    () => computeTrail(segments, upToIdx, ox, oy),
     [segments, upToIdx, ox, oy],
   )
+  const frustumFn = useMemo(() => makeFrustumSceneFunc(trail.frustumSegs), [trail.frustumSegs])
+
   return (
     <>
-      {sections.map((sec, i) => (
+      {trail.lineSections.map((sec, i) => (
         <Line
           key={i}
           points={sec.points}
           stroke="#06b6d4"
-          strokeWidth={sec.toolDiameterMM}
+          strokeWidth={sec.width}
           lineCap="round"
           lineJoin="round"
           opacity={0.55}
           listening={false}
         />
       ))}
+      {trail.frustumSegs.length > 0 && (
+        <Shape
+          sceneFunc={frustumFn}
+          fill="#06b6d4"
+          strokeWidth={0}
+          opacity={0.55}
+          listening={false}
+        />
+      )}
     </>
   )
 })
@@ -76,7 +149,6 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const gcode = useSimStore((s) => s.gcode)
   const { scale } = viewport
 
-  // G-code coords are machine-relative; add origin offset to get workpiece-local for rendering.
   const { widthMM, heightMM, origin } = useWorkpieceStore()
   const org = originWorldXY(origin, widthMM, heightMM)
   const ox = org.x
@@ -89,44 +161,47 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   if (!pos) return null
 
   const curSeg = curSegIdx >= 0 ? segments[curSegIdx] : null
-  const isCutting = pos.z < -0.001
-  const toolRadius = curSeg ? Math.max(curSeg.toolDiameterMM / 2, 1.5 / scale) : 3 / scale
-
-  // Workpiece-local tool position
+  const isCutting = !!curSeg && !curSeg.rapid && (curSeg.prevZ < -0.001 || pos.z < -0.001)
   const tx = pos.x + ox
   const ty = pos.y + oy
 
+  // Active partial segment: frustum when widths differ, plain line otherwise.
+  // Always a Shape so the element type stays stable across frames (no React remounting).
+  const activeFrustum: FrustumSeg | null = curSeg && isCutting ? {
+    x0: curSeg.prevX + ox, y0: curSeg.prevY + oy,
+    w0: effectiveCutWidthAt(curSeg, curSeg.prevZ),
+    x1: tx, y1: ty,
+    w1: effectiveCutWidthAt(curSeg, pos.z),
+  } : null
+
+  const activeCutWidth = activeFrustum ? activeFrustum.w1 : (curSeg?.toolDiameterMM ?? 0)
+  const toolRadius = Math.max(activeCutWidth / 2, 1.5 / scale)
+
   return (
     <Group listening={false}>
-      {/* Completed trail sections — memoized, only updates at segment boundaries */}
       <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} />
 
-      {/* Active (partial) segment — updates at 60fps, just 2 points */}
-      {curSeg && isCutting && (
-        <Line
-          points={[curSeg.prevX + ox, curSeg.prevY + oy, tx, ty]}
-          stroke="#06b6d4"
-          strokeWidth={curSeg.toolDiameterMM}
-          lineCap="round"
-          lineJoin="round"
+      {/* Active partial segment — 60fps updates */}
+      {activeFrustum && (
+        <Shape
+          sceneFunc={makeFrustumSceneFunc([activeFrustum])}
+          fill="#06b6d4"
+          strokeWidth={0}
           opacity={0.55}
           listening={false}
         />
       )}
 
-      {/* Tool dot — outer ring */}
+      {/* Tool dot */}
       <Circle
-        x={tx}
-        y={ty}
+        x={tx} y={ty}
         radius={toolRadius + 1.5 / scale}
         stroke="#ffffff"
         strokeWidth={1.5 / scale}
         opacity={0.75}
       />
-      {/* Tool dot — fill */}
       <Circle
-        x={tx}
-        y={ty}
+        x={tx} y={ty}
         radius={toolRadius}
         fill={isCutting ? '#ef4444' : '#9ca3af'}
         opacity={0.95}

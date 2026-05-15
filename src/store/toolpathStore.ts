@@ -68,13 +68,37 @@ export interface SurfaceOperation extends BaseOperation {
   passAngleDeg: number
 }
 
-export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation
+export interface VCarveOperation extends BaseOperation {
+  type: 'vcarve'
+  pathId: string
+  islandIds: string[]
+  maxDepthMM: number
+  angleDeg: number
+}
+
+export interface InlayOperation extends BaseOperation {
+  type: 'inlay'
+  role: 'female' | 'male'
+  pathId: string
+  islandIds: string[]
+  pocketToolId: string    // flat end mill for roughing (female) or profiling (male)
+  angleDeg: number
+  pocketDepthMM: number
+  stepDownMM: number
+  stepoverPercent: number
+  glueLineMM: number
+  clearanceMM: number
+}
+
+export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation | VCarveOperation | InlayOperation
 
 type AddPayload =
   | Omit<ProfileOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<PocketOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<DrillOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<SurfaceOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<VCarveOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<InlayOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
 
 const OP_COLORS = ['#f97316', '#06b6d4', '#10b981', '#8b5cf6', '#ec4899', '#eab308']
 let _colorIdx = 0
@@ -97,6 +121,8 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   if (op.type === 'profile') return op.pathId === pathId
   if (op.type === 'pocket') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'drill') return op.pathId === pathId
+  if (op.type === 'vcarve') return op.pathId === pathId || op.islandIds.includes(pathId)
+  if (op.type === 'inlay') return op.pathId === pathId || op.islandIds.includes(pathId)
   return false
 }
 

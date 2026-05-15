@@ -12,6 +12,8 @@ export interface SimSegment {
   durationS: number     // seconds to traverse this segment
   startTimeS: number    // cumulative elapsed time at the start of this segment
   toolDiameterMM: number
+  toolVbitHalfAngleTan?: number  // set for V-bit segments; tan(halfAngle)
+  toolBallNose?: boolean         // set for ball nose segments
 }
 
 export interface ParsedGcode {
@@ -43,6 +45,8 @@ function arcToSegments(
   lineIdx: number,
   startTimeS: number,
   toolDiameterMM: number,
+  toolVbitHalfAngleTan?: number,
+  toolBallNose?: boolean,
 ): SimSegment[] {
   const cx = x0 + ii
   const cy = y0 + jj
@@ -76,6 +80,8 @@ function arcToSegments(
       durationS: dur,
       startTimeS: cumT,
       toolDiameterMM,
+      toolVbitHalfAngleTan,
+      toolBallNose,
     })
     cumT += dur
     px = nx; py = ny
@@ -91,6 +97,8 @@ export function parseGcode(text: string): ParsedGcode {
   let feedRate = 1000
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3
   let toolDiameterMM = 3.0
+  let toolVbitHalfAngleTan: number | undefined
+  let toolBallNose: boolean | undefined
   let cumT = 0
 
   for (let li = 0; li < rawLines.length; li++) {
@@ -98,7 +106,19 @@ export function parseGcode(text: string): ParsedGcode {
 
     // Parse tool diameter from comments: "; Tool: ... dia 6.350mm ..." or "(Tool: ... dia 6.350mm ...)"
     const diamMatch = raw.match(/dia\s+([\d.]+)\s*mm/i)
-    if (diamMatch) toolDiameterMM = parseFloat(diamMatch[1])
+    if (diamMatch) {
+      toolDiameterMM = parseFloat(diamMatch[1])
+      toolVbitHalfAngleTan = undefined  // reset; overwritten below if vbit-angle present
+      toolBallNose = undefined           // reset; overwritten below if ballnose present
+    }
+
+    // Parse V-bit half-angle tangent: "; vbit-angle:30.0" (half-angle in degrees)
+    const vbitMatch = raw.match(/vbit-angle:([\d.]+)/i)
+    if (vbitMatch) toolVbitHalfAngleTan = Math.tan(parseFloat(vbitMatch[1]) * (Math.PI / 180))
+
+
+    // Parse ball nose marker: "; ballnose"
+    if (/\bballnose\b/i.test(raw)) toolBallNose = true
 
     const pairs = parseWords(raw)
     if (pairs.length === 0) continue
@@ -136,6 +156,8 @@ export function parseGcode(text: string): ParsedGcode {
           durationS: dur,
           startTimeS: cumT,
           toolDiameterMM,
+          toolVbitHalfAngleTan,
+          toolBallNose,
         })
         cumT += dur
       }
@@ -153,11 +175,13 @@ export function parseGcode(text: string): ParsedGcode {
           durationS: dur,
           startTimeS: cumT,
           toolDiameterMM,
+          toolVbitHalfAngleTan,
+          toolBallNose,
         })
         cumT += dur
       }
     } else if (motionMode === 2 || motionMode === 3) {
-      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, nz, Math.max(feedRate, 1), li, cumT, toolDiameterMM)
+      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, nz, Math.max(feedRate, 1), li, cumT, toolDiameterMM, toolVbitHalfAngleTan, toolBallNose)
       segs.push(...arcSegs)
       if (arcSegs.length > 0) {
         const last = arcSegs[arcSegs.length - 1]

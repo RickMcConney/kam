@@ -61,14 +61,17 @@ export class MaterialRemoval {
   }
 
   private _carve(seg: SimSegment) {
-    const r = seg.toolDiameterMM / 2
-    // Height from workpiece bottom after this cut (cncZ is negative = into material)
-    const cutHeight = Math.max(0, this.thicknessMM + seg.z)
+    const isVbit = seg.toolVbitHalfAngleTan !== undefined && seg.toolVbitHalfAngleTan > 0
+    // For V-bit the swept radius at the workpiece surface depends on depth:
+    // cone half-width at z_tool = |z_tool| * tan(halfAngle)
+    const tan = seg.toolVbitHalfAngleTan ?? 0
+    const r = isVbit
+      ? Math.abs(seg.z) * tan
+      : seg.toolDiameterMM / 2
 
     const cellW = this.workpieceW / this.gridW
     const cellH = this.workpieceH / this.gridH
 
-    // Translate segment coords into workpiece-local space
     const ax = seg.prevX - this.originX
     const ay = seg.prevY - this.originY
     const bx = seg.x - this.originX
@@ -101,10 +104,23 @@ export class MaterialRemoval {
           dist = Math.hypot(cx - (ax + t * dx), cy - (ay + t * dy))
         }
 
-        if (dist <= r) {
-          const idx = row * this.gridW + col
-          if (this.heights[idx] > cutHeight) {
-            this.heights[idx] = cutHeight
+        const idx = row * this.gridW + col
+        if (isVbit) {
+          // Conical geometry: height at dist from axis = tip_depth + dist/tan
+          if (dist < r) {
+            const newH = Math.max(0, this.thicknessMM + seg.z + dist / tan)
+            if (this.heights[idx] > newH) this.heights[idx] = newH
+          }
+        } else if (seg.toolBallNose) {
+          // Spherical cap: use unclamped depth so ball correctly passes through bottom
+          if (dist <= r) {
+            const newH = Math.max(0, this.thicknessMM + seg.z + r - Math.sqrt(Math.max(0, r * r - dist * dist)))
+            if (this.heights[idx] > newH) this.heights[idx] = newH
+          }
+        } else {
+          if (dist <= r) {
+            const cutHeight = Math.max(0, this.thicknessMM + seg.z)
+            if (this.heights[idx] > cutHeight) this.heights[idx] = cutHeight
           }
         }
       }

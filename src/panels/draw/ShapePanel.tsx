@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Hexagon, Star as StarIcon, PenTool, Type } from 'lucide-react'
+import { Square, Circle, Hexagon, Star as StarIcon, PenTool, Type, SquircleIcon} from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
@@ -24,7 +24,7 @@ function EllipseIcon() {
 
 const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'rectangle', label: 'Rect',    icon: <Square size={ICON.md} /> },
-  { type: 'roundrect', label: 'Round',   icon: <RoundRectIcon /> },
+  { type: 'roundrect', label: 'Round',   icon: <SquircleIcon size={ICON.md} /> },
   { type: 'circle',    label: 'Circle',  icon: <Circle size={ICON.md} /> },
   { type: 'ellipse',   label: 'Ellipse', icon: <EllipseIcon /> },
   { type: 'polygon',   label: 'Polygon', icon: <Hexagon size={ICON.md} /> },
