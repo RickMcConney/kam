@@ -3,7 +3,7 @@ import { ICON } from '../theme'
 import {
   Trash2, Eye, EyeOff, AlertCircle, CheckCircle2, Loader2, Cpu,
   Crosshair, X, ChevronUp, ChevronDown, Circle, CircleDot, Target, Layers,
-  Star, Package
+  Star
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide } from '../store/toolpathStore'
