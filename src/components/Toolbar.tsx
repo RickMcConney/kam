@@ -128,8 +128,13 @@ function ProjectNameEditor() {
 }
 
 export default function Toolbar() {
-  const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab, darkMode, toggleDarkMode } = useUIStore()
-  const { undo, redo, canUndo, canRedo } = usePathsStore()
+  const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab, darkMode, toggleDarkMode,
+          nodeEditUndo, nodeEditRedo, nodeEditCanUndo, nodeEditCanRedo } = useUIStore()
+  const { undo: mainUndo, redo: mainRedo, canUndo, canRedo } = usePathsStore()
+  const undo = nodeEditUndo ?? mainUndo
+  const redo = nodeEditRedo ?? mainRedo
+  const undoDisabled = nodeEditUndo ? !nodeEditCanUndo : !canUndo()
+  const redoDisabled = nodeEditRedo ? !nodeEditCanRedo : !canRedo()
   const { operations } = useToolpathStore()
   const { tools } = useToolStore()
   const { name } = useProjectStore()
@@ -171,9 +176,12 @@ export default function Toolbar() {
       reader.onload = (ev) => {
         try {
           const { widthMM, heightMM } = useWorkpieceStore.getState()
-          const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } })
+          const gn = file.name.replace(/\.svg$/i, '')
+          const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } }, gn)
           if (result.paths.length > 0) {
-            usePathsStore.getState().addPaths(result.paths)
+            const store = usePathsStore.getState()
+            store.addPaths(result.paths)
+            store.toggleGroupCollapsed(result.groupId)
             setSidebarTab('paths')
           }
         } catch { /* ignore */ }
@@ -229,8 +237,8 @@ export default function Toolbar() {
 
 
         {/* History */}
-        <ToolbarButton icon={<Undo2 size={ICON.md} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo()} />
-        <ToolbarButton icon={<Redo2 size={ICON.md} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo()} />
+        <ToolbarButton icon={<Undo2 size={ICON.md} />} label="Undo (Ctrl+Z)" onClick={undo} disabled={undoDisabled} />
+        <ToolbarButton icon={<Redo2 size={ICON.md} />} label="Redo (Ctrl+Y)" onClick={redo} disabled={redoDisabled} />
         <Sep />
 
         <ToolbarButton

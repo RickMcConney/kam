@@ -23,6 +23,11 @@ interface UIState {
   nodeEditPathId: string | null
   darkMode: boolean
   machineFormActive: boolean
+  // Local undo/redo for point-edit sessions — registered by CanvasStage, used by Toolbar + App
+  nodeEditUndo: (() => void) | null
+  nodeEditRedo: (() => void) | null
+  nodeEditCanUndo: boolean
+  nodeEditCanRedo: boolean
   setMachineFormActive: (active: boolean) => void
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
@@ -36,6 +41,8 @@ interface UIState {
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
   toggleDarkMode: () => void
+  setNodeEditUndoRedo: (undo: (() => void) | null, redo: (() => void) | null) => void
+  setNodeEditHistoryFlags: (canUndo: boolean, canRedo: boolean) => void
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -49,8 +56,12 @@ export const useUIStore = create<UIState>()((set) => ({
   nodeEditPathId: null,
   darkMode: true,
   machineFormActive: false,
+  nodeEditUndo: null,
+  nodeEditRedo: null,
+  nodeEditCanUndo: false,
+  nodeEditCanRedo: false,
   setMachineFormActive: (active) => set({ machineFormActive: active }),
-  setSidebarTab: (tab) => set({ sidebarTab: tab }),
+  setSidebarTab: (tab) => set({ sidebarTab: tab, activeTool: 'select' }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
   setSnap: (enabled) => set({ snapEnabled: enabled }),
@@ -62,4 +73,6 @@ export const useUIStore = create<UIState>()((set) => ({
   clearPenNodes: () => set({ penNodes: [] }),
   setNodeEditPathId: (id) => set({ nodeEditPathId: id }),
   toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
+  setNodeEditUndoRedo: (undo, redo) => set({ nodeEditUndo: undo, nodeEditRedo: redo, nodeEditCanUndo: false, nodeEditCanRedo: false }),
+  setNodeEditHistoryFlags: (canUndo, canRedo) => set({ nodeEditCanUndo: canUndo, nodeEditCanRedo: canRedo }),
 }))

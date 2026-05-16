@@ -1,5 +1,5 @@
 import { flattenPath } from '../cam/pathFlattener'
-import { parseD, stringifyD, applyMat, type Mat6 } from '../importers/svgImporter'
+import { parseD, stringifyD, applyMat, type Mat6, type ImportedPath } from '../importers/svgImporter'
 
 export interface BBox {
   minX: number; minY: number; maxX: number; maxY: number
@@ -71,3 +71,25 @@ export function transformPoint(
     }
   }
 }
+
+export function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: number } | null {
+  if (path.shapeParams?.type === 'circle') {
+    return { cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }
+  }
+  if (path.shapeParams?.type === 'ellipse') {
+    const { cx, cy, rx, ry } = path.shapeParams
+    if (Math.abs(rx - ry) / Math.max(rx, ry, 0.001) < 0.05) {
+      return { cx, cy, radiusMM: (rx + ry) / 2 }
+    }
+  }
+  const bb = getBBox(path.d)
+  if (!bb) return null
+  const rx = (bb.maxX - bb.minX) / 2
+  const ry = (bb.maxY - bb.minY) / 2
+  if (Math.max(rx, ry) < 0.001) return null
+  if (Math.abs(rx - ry) / Math.max(rx, ry) < 0.08) {
+    return { cx: bb.cx, cy: bb.cy, radiusMM: (rx + ry) / 2 }
+  }
+  return null
+}
+

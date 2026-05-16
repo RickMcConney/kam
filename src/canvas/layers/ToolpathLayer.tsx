@@ -14,22 +14,47 @@ interface SegmentGroups {
   firstCut: [number, number] | null
 }
 
+// Expands an arc MotionSegment to flat [x,y,...] polyline points starting after the given prev position.
+function arcToPolyPts(px: number, py: number, seg: MotionSegment): number[] {
+  const { cx, cy, cw } = seg.arc!
+  const r = Math.hypot(px - cx, py - cy)
+  if (r < 0.001) return [seg.x, seg.y]
+  let a0 = Math.atan2(py - cy, px - cx)
+  let a1 = Math.atan2(seg.y - cy, seg.x - cx)
+  const isFullCircle = Math.abs(px - seg.x) < 0.001 && Math.abs(py - seg.y) < 0.001
+  if (isFullCircle) a1 = a0 + (cw ? -2 * Math.PI : 2 * Math.PI)
+  else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
+  else { if (a1 <= a0) a1 += 2 * Math.PI }
+  const steps = Math.max(8, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
+  const pts: number[] = []
+  for (let k = 1; k <= steps; k++) {
+    const a = a0 + (a1 - a0) * (k / steps)
+    pts.push(cx + r * Math.cos(a), cy + r * Math.sin(a))
+  }
+  return pts
+}
+
 function groupSegments(segments: MotionSegment[]): SegmentGroups {
   const cutting: number[][] = []
   const rapid: number[][] = []
   let cur: number[] = []
   let isRapid = segments[0]?.rapid ?? true
   let firstCut: [number, number] | null = null
+  let prevX = segments[0]?.x ?? 0
+  let prevY = segments[0]?.y ?? 0
 
   for (const seg of segments) {
+    const pts = seg.arc ? arcToPolyPts(prevX, prevY, seg) : [seg.x, seg.y]
+
     if (seg.rapid !== isRapid) {
       if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
-      cur = cur.length >= 2 ? [cur[cur.length - 2], cur[cur.length - 1], seg.x, seg.y] : [seg.x, seg.y]
+      cur = cur.length >= 2 ? [cur[cur.length - 2], cur[cur.length - 1], ...pts] : [...pts]
       isRapid = seg.rapid
     } else {
-      cur.push(seg.x, seg.y)
+      cur.push(...pts)
     }
-    if (!seg.rapid && firstCut === null) firstCut = [seg.x, seg.y]
+    if (!seg.rapid && firstCut === null) firstCut = [pts[0], pts[1]]
+    prevX = seg.x; prevY = seg.y
   }
   if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
 

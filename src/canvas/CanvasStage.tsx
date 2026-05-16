@@ -130,6 +130,72 @@ function snapPoint(
   }
 }
 
+function NodeEditDimensionOverlay({
+  viewport,
+  nodes,
+  closed,
+  dragNodeIdx,
+  hoverSegIdx,
+}: {
+  viewport: Viewport
+  nodes: PathNode[]
+  closed: boolean
+  dragNodeIdx: number | null
+  hoverSegIdx: number | null
+}) {
+  const { units } = useWorkpieceStore()
+  if (nodes.length < 2) return null
+
+  const fmt = (d: number) =>
+    units === 'in' ? (d / 25.4).toFixed(3) + '"' : d.toFixed(2) + ' mm'
+
+  const segLabel = (fromIdx: number, toIdx: number) => {
+    const a = nodes[fromIdx], b = nodes[toIdx]
+    const dist = Math.hypot(b.x - a.x, b.y - a.y)
+    if (dist < 0.01) return null
+    const mx = (a.x + b.x) / 2
+    const my = (a.y + b.y) / 2
+    return { sx: viewport.x + mx * viewport.scale, sy: viewport.y - my * viewport.scale, text: fmt(dist) }
+  }
+
+  const labels: { sx: number; sy: number; text: string }[] = []
+
+  if (dragNodeIdx !== null && nodes[dragNodeIdx]) {
+    const prevIdx = dragNodeIdx > 0 ? dragNodeIdx - 1 : closed ? nodes.length - 1 : -1
+    if (prevIdx >= 0) {
+      const l = segLabel(prevIdx, dragNodeIdx)
+      if (l) labels.push(l)
+    }
+    const nextIdx = dragNodeIdx < nodes.length - 1 ? dragNodeIdx + 1 : closed ? 0 : -1
+    if (nextIdx >= 0 && nextIdx !== prevIdx) {
+      const l = segLabel(dragNodeIdx, nextIdx)
+      if (l) labels.push(l)
+    }
+  } else if (hoverSegIdx !== null) {
+    const toIdx = (hoverSegIdx + 1) % nodes.length
+    if (closed || toIdx !== 0) {
+      const l = segLabel(hoverSegIdx, toIdx)
+      if (l) labels.push(l)
+    }
+  }
+
+  if (labels.length === 0) return null
+
+  return (
+    <>
+      {labels.map((l, i) => (
+        <div
+          key={i}
+          className="absolute pointer-events-none bg-black/70 text-white text-xs px-1.5 py-0.5 rounded font-mono whitespace-nowrap z-10"
+          style={{ left: l.sx, top: l.sy - 36, transform: 'translateX(-50%)' }}
+        >
+          {l.text}
+        </div>
+      ))}
+    </>
+  )
+}
+
 function PenLengthOverlay({ viewport, draggingHandle }: { viewport: Viewport; draggingHandle: boolean }) {
   const activeTool = useUIStore((s) => s.activeTool)
   const penNodes = useUIStore((s) => s.penNodes)
@@ -204,9 +270,40 @@ export default function CanvasStage() {
   useEffect(() => { editNodesRef.current = editNodes }, [editNodes])
   useEffect(() => { editClosedRef.current = editClosed }, [editClosed])
 
+  const prevNodeEditPathIdRef = useRef<string | null>(null)
   const editDragInitRef = useRef<{ initialNodes: PathNode[]; startCNC: { x: number; y: number } } | null>(null)
   const hoveredEditNodeRef = useRef<number | null>(null)
   const [hoveredEditNode, setHoveredEditNode] = useState<number | null>(null)
+  const [dragNodeIdx, setDragNodeIdx] = useState<number | null>(null)
+  const [hoverSegIdx, setHoverSegIdx] = useState<number | null>(null)
+  const localPast = useRef<PathNode[][]>([])
+  const localFuture = useRef<PathNode[][]>([])
+
+  const pushLocalUndo = useCallback((snapshot: PathNode[]) => {
+    localPast.current = [...localPast.current, snapshot]
+    localFuture.current = []
+    useUIStore.getState().setNodeEditHistoryFlags(true, false)
+  }, [])
+
+  const localUndo = useCallback(() => {
+    if (localPast.current.length === 0) return
+    const prev = localPast.current[localPast.current.length - 1]
+    localFuture.current = [editNodesRef.current, ...localFuture.current]
+    localPast.current = localPast.current.slice(0, -1)
+    setEditNodes(prev)
+    editNodesRef.current = prev
+    useUIStore.getState().setNodeEditHistoryFlags(localPast.current.length > 0, true)
+  }, [])
+
+  const localRedo = useCallback(() => {
+    if (localFuture.current.length === 0) return
+    const next = localFuture.current[0]
+    localPast.current = [...localPast.current, editNodesRef.current]
+    localFuture.current = localFuture.current.slice(1)
+    setEditNodes(next)
+    editNodesRef.current = next
+    useUIStore.getState().setNodeEditHistoryFlags(true, localFuture.current.length > 0)
+  }, [])
 
   const setMode2 = useCallback((m: CanvasMode) => {
     modeRef.current = m
@@ -274,8 +371,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
   }, [size, widthMM, heightMM, setViewport])
 
-  const commitEditNodes = useCallback((nodes: PathNode[]) => {
-    const { nodeEditPathId: pid } = useUIStore.getState()
+  const commitEditNodes = useCallback((pid: string, nodes: PathNode[]) => {
     if (!pid || nodes.length < 2) return
     const d = nodesToD(nodes, editClosedRef.current)
     usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
@@ -285,11 +381,8 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
   const exitNodeEdit = useCallback(() => {
     const { nodeEditPathId: pid, setNodeEditPathId } = useUIStore.getState()
     if (!pid) return
-    commitEditNodes(editNodesRef.current)
-    setNodeEditPathId(null)
-    setEditNodes([])
-    setEditClosed(false)
-  }, [commitEditNodes])
+    setNodeEditPathId(null)  // useEffect handles commit + cleanup
+  }, [])
 
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
@@ -304,10 +397,9 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           e.preventDefault()
           const idx = hoveredEditNodeRef.current
           setEditNodes((prev) => {
+            pushLocalUndo(prev)
             const next = removeNode(prev, idx)
-            const d = nodesToD(next, editClosedRef.current)
-            usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
-            regenerateAffected(pid)
+            editNodesRef.current = next
             return next
           })
           hoveredEditNodeRef.current = null
@@ -352,7 +444,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
     return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
-  }, [setMode2, exitNodeEdit])
+  }, [setMode2, exitNodeEdit, pushLocalUndo])
 
   useEffect(() => {
     const el = containerRef.current
@@ -407,15 +499,28 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     setLivePen({ anchor: cnc, handle: null })
   }, [setMode2, snapCNC])
 
-  // Parse path nodes when entering node edit mode
+  // Parse path nodes when entering node edit mode; commit + clean up on exit
   useEffect(() => {
-    if (!nodeEditPathId) { setEditNodes([]); setEditClosed(false); return }
+    const prevId = prevNodeEditPathIdRef.current
+    prevNodeEditPathIdRef.current = nodeEditPathId
+    localPast.current = []
+    localFuture.current = []
+    if (!nodeEditPathId) {
+      // Commit using the captured id — nodeEditPathId is already null in the store at this point
+      if (prevId && editNodesRef.current.length >= 2) commitEditNodes(prevId, editNodesRef.current)
+      setEditNodes([])
+      setEditClosed(false)
+      useUIStore.getState().setNodeEditUndoRedo(null, null)
+      useUIStore.getState().setNodeEditHistoryFlags(false, false)
+      return
+    }
     const path = usePathsStore.getState().paths.find((p) => p.id === nodeEditPathId)
     if (!path) { setEditNodes([]); return }
     const { nodes, closed } = parseDToNodes(path.d)
     setEditNodes(nodes)
     setEditClosed(closed)
-  }, [nodeEditPathId])
+    useUIStore.getState().setNodeEditUndoRedo(localUndo, localRedo)
+  }, [nodeEditPathId, localUndo, localRedo, commitEditNodes])
 
   const handleNodeMouseDown = useCallback((nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => {
     const vp = viewportRef.current
@@ -433,15 +538,18 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     }
     didDragRef.current = false
     setMode2({ type: 'nodedit-drag', nodeIdx, kind })
+    setDragNodeIdx(kind === 'anchor' ? nodeIdx : null)
   }, [setMode2])
 
   const handleSegmentMouseDown = useCallback((segIdx: number, cncX: number, cncY: number) => {
     const { nodeEditPathId: pid } = useUIStore.getState()
     if (!pid) return
-    const next = insertNodeOnSegment(editNodesRef.current, segIdx, cncX, cncY, editClosedRef.current)
+    const old = editNodesRef.current
+    const next = insertNodeOnSegment(old, segIdx, cncX, cncY, editClosedRef.current)
+    pushLocalUndo(old)
     setEditNodes(next)
-    commitEditNodes(next)
-  }, [commitEditNodes])
+    editNodesRef.current = next
+  }, [pushLocalUndo])
 
   const handlePathDblClick = useCallback((id: string) => {
     const path = usePathsStore.getState().paths.find((p) => p.id === id)
@@ -451,7 +559,8 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       usePathsStore.getState().splitPath(id, subDs)
       return
     }
-    const { setNodeEditPathId } = useUIStore.getState()
+    const { setNodeEditPathId, setActiveTool } = useUIStore.getState()
+    setActiveTool('select')
     usePathsStore.getState().selectPath(id)
     setNodeEditPathId(id)
   }, [])
@@ -862,7 +971,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       setLiveShapeD(null)
       setMode2({ type: 'idle' })
 
-      const { activeTool, shapeToolConfig, setActiveTool } = useUIStore.getState()
+      const { activeTool, shapeToolConfig } = useUIStore.getState()
       if (activeTool !== 'select') {
         const shapeType = activeTool as ShapeType
         const params = didDragRef.current
@@ -874,7 +983,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         const d = generateShapeD(params)
         add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }])
         sel(id)
-        setActiveTool('select')
 
         // If text font wasn't loaded yet, update d once it loads
         if (params.type === 'text' && !d) {
@@ -891,8 +999,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
 
     if (m.type === 'nodedit-drag') {
       setMode2({ type: 'idle' })
+      const initSnap = editDragInitRef.current?.initialNodes
       editDragInitRef.current = null
-      commitEditNodes(editNodesRef.current)
+      setDragNodeIdx(null)
+      if (initSnap && didDragRef.current) pushLocalUndo(initSnap)
       return
     }
 
@@ -944,7 +1054,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     }
 
     setMode2({ type: 'idle' })
-  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, commitEditNodes])
+  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, commitEditNodes, pushLocalUndo])
 
   const activeTool = useUIStore((s) => s.activeTool)
 
@@ -1010,6 +1120,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
               onNodeMouseDown={handleNodeMouseDown}
               onSegmentMouseDown={handleSegmentMouseDown}
               onHoveredNodeChange={handleHoveredNodeChange}
+              onHoverSegChange={setHoverSegIdx}
             />
           )}
           <ToolpathLayer viewport={viewport} />
@@ -1073,6 +1184,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       )}
 
       <PenLengthOverlay viewport={viewport} draggingHandle={livePen !== null} />
+      <NodeEditDimensionOverlay viewport={viewport} nodes={editNodes} closed={editClosed} dragNodeIdx={dragNodeIdx} hoverSegIdx={hoverSegIdx} />
 
       {/* Node edit indicator */}
       {nodeEditPathId && (

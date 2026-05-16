@@ -1,5 +1,6 @@
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { PATH_COLOR } from '../colors'
+import { splitCompoundPath } from '../canvas/nodeUtils'
 
 export interface ImportedPath {
   id: string
@@ -8,6 +9,8 @@ export interface ImportedPath {
   visible: boolean
   color: string
   shapeParams?: ShapeParams
+  groupId?: string   // shared across all paths from the same SVG import
+  groupName?: string // display name for the group (SVG filename without extension)
 }
 
 export interface SvgImportResult {
@@ -15,6 +18,7 @@ export interface SvgImportResult {
   needsPpiPrompt: boolean
   svgWidthMM: number
   svgHeightMM: number
+  groupId: string
 }
 
 let pathCounter = 0
@@ -286,7 +290,10 @@ export interface ImportOptions {
   workpieceMM?: { w: number; h: number }  // if provided, SVG is centered on workpiece
 }
 
-export function importSvg(svgText: string, options?: ImportOptions | number): SvgImportResult {
+let _groupCounter = 0
+
+export function importSvg(svgText: string, options?: ImportOptions | number, groupName?: string): SvgImportResult {
+  const groupId = `svg-group-${++_groupCounter}-${Date.now()}`
   const opts: ImportOptions = typeof options === 'number' ? { ppi: options } : (options ?? {})
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
   if (doc.querySelector('parsererror')) throw new Error('Invalid SVG file')
@@ -367,10 +374,19 @@ export function importSvg(svgText: string, options?: ImportOptions | number): Sv
       const withGlobal = applyGlobalTransform(withElMat, gsx, gsy, gtx, gty)
       const d = stringifyD(withGlobal)
 
-      const id = `path-${++pathCounter}`
-      const name = el.getAttribute('id') || el.getAttribute('inkscape:label') || `Path ${pathCounter}`
-      const color = PATH_COLOR
-      paths.push({ id, name, d, visible: true, color })
+      const baseName = el.getAttribute('id') || el.getAttribute('inkscape:label') || null
+      const subDs = splitCompoundPath(d)
+      if (subDs.length > 1) {
+        subDs.forEach((subD, i) => {
+          const id = `path-${++pathCounter}`
+          const name = baseName ? `${baseName} ${i + 1}` : `Path ${pathCounter}`
+          paths.push({ id, name, d: subD, visible: true, color: PATH_COLOR, groupId, groupName })
+        })
+      } else {
+        const id = `path-${++pathCounter}`
+        const name = baseName || `Path ${pathCounter}`
+        paths.push({ id, name, d, visible: true, color: PATH_COLOR, groupId, groupName })
+      }
     } catch {
       // skip malformed elements
     }
@@ -379,5 +395,5 @@ export function importSvg(svgText: string, options?: ImportOptions | number): Sv
   const svgMat = parseSvgTransform(svg.getAttribute('transform'))
   for (const child of svg.children) processElement(child, svgMat)
 
-  return { paths, needsPpiPrompt, svgWidthMM: widthMM, svgHeightMM: heightMM }
+  return { paths, needsPpiPrompt, svgWidthMM: widthMM, svgHeightMM: heightMM, groupId }
 }

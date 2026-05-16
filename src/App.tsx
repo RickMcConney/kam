@@ -127,8 +127,20 @@ function useKeyboardShortcuts() {
         if (!useUIStore.getState().nodeEditPathId) deleteSelected()
         return
       }
-      if (mod && e.key === 'z') { e.preventDefault(); undo(); return }
-      if (mod && (e.key === 'y' || e.key === 'Z')) { e.preventDefault(); redo(); return }
+      if (mod && e.key === 'z') {
+        e.preventDefault()
+        const { nodeEditUndo } = useUIStore.getState()
+        if (nodeEditUndo) { nodeEditUndo(); return }
+        undo()
+        return
+      }
+      if (mod && (e.key === 'y' || e.key === 'Z')) {
+        e.preventDefault()
+        const { nodeEditRedo } = useUIStore.getState()
+        if (nodeEditRedo) { nodeEditRedo(); return }
+        redo()
+        return
+      }
       if (mod && e.key === 'd') { e.preventDefault(); duplicateSelected(); return }
     }
     window.addEventListener('keydown', onKey)

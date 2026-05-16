@@ -1,8 +1,9 @@
+import { useState } from 'react'
 import { Group, Path, Line, Circle } from 'react-konva'
 import type Konva from 'konva'
 import type { Viewport } from '../CanvasStage'
 import type { PathNode } from '../nodeUtils'
-import { nodesToD, nearestSegmentOnPath } from '../nodeUtils'
+import { nodesToD, nearestSegmentOnPath, nearestPointOnSegment, segmentMidpoint } from '../nodeUtils'
 
 interface Props {
   viewport: Viewport
@@ -12,6 +13,7 @@ interface Props {
   onNodeMouseDown: (nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => void
   onSegmentMouseDown: (segIdx: number, cncX: number, cncY: number) => void
   onHoveredNodeChange: (idx: number | null) => void
+  onHoverSegChange?: (segIdx: number | null) => void
 }
 
 const ANCHOR_R = 4.5
@@ -19,6 +21,12 @@ const HANDLE_R = 3
 const STROKE_COLOR = '#38bdf8'
 const HANDLE_COLOR = '#94a3b8'
 const HOVERED_COLOR = '#ef4444'
+const INSERT_COLOR = '#38bdf8'
+const INSERT_CENTER_COLOR = '#f59e0b'
+const INSERT_THRESHOLD_PX = 8
+const CENTER_SNAP_THRESHOLD_PX = 12
+
+type HoverInsert = { x: number; y: number; segIdx: number; snapCenter: boolean }
 
 export function NodeEditLayer({
   viewport,
@@ -28,31 +36,73 @@ export function NodeEditLayer({
   onNodeMouseDown,
   onSegmentMouseDown,
   onHoveredNodeChange,
+  onHoverSegChange,
 }: Props) {
   const { scale: s } = viewport
+  const [hoverInsert, setHoverInsert] = useState<HoverInsert | null>(null)
+
+  const updateHoverInsert = (h: HoverInsert | null) => {
+    setHoverInsert(h)
+    onHoverSegChange?.(h?.segIdx ?? null)
+  }
+
   if (nodes.length === 0) return null
 
   const pathD = nodesToD(nodes, closed)
 
+  const toCNC = (pointer: { x: number; y: number }) => ({
+    x: (pointer.x - viewport.x) / viewport.scale,
+    y: (viewport.y - pointer.y) / viewport.scale,
+  })
+
+  const handleSegmentMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    const pointer = e.target.getStage()?.getPointerPosition()
+    if (!pointer) { updateHoverInsert(null); return }
+    const { x: cncX, y: cncY } = toCNC(pointer)
+
+    const nearest = nearestSegmentOnPath(nodes, closed, cncX, cncY)
+    if (!nearest) { updateHoverInsert(null); return }
+
+    const pt = nearestPointOnSegment(nodes, nearest.segIdx, cncX, cncY)
+    const threshSq = (INSERT_THRESHOLD_PX / s) ** 2
+    if (pt.distSq > threshSq) { updateHoverInsert(null); return }
+
+    const mid = segmentMidpoint(nodes, nearest.segIdx)
+    const midScreenDistSq = ((mid.x - pt.x) * s) ** 2 + ((mid.y - pt.y) * s) ** 2
+    const snapCenter = midScreenDistSq < CENTER_SNAP_THRESHOLD_PX ** 2
+
+    updateHoverInsert({
+      x: snapCenter ? mid.x : pt.x,
+      y: snapCenter ? mid.y : pt.y,
+      segIdx: nearest.segIdx,
+      snapCenter,
+    })
+  }
+
+  const handleSegmentMouseLeave = () => updateHoverInsert(null)
+
   const handleSegmentMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
     e.cancelBubble = true
+
+    if (hoverInsert?.snapCenter) {
+      onSegmentMouseDown(hoverInsert.segIdx, hoverInsert.x, hoverInsert.y)
+      return
+    }
+
     const pointer = e.target.getStage()?.getPointerPosition()
     if (!pointer) return
-    const cncX = (pointer.x - viewport.x) / viewport.scale
-    const cncY = (viewport.y - pointer.y) / viewport.scale
+    const { x: cncX, y: cncY } = toCNC(pointer)
 
-    // Only insert if not near any anchor (anchors cancel bubble first)
     const nearest = nearestSegmentOnPath(nodes, closed, cncX, cncY)
     if (!nearest) return
-    // Threshold: 8 screen pixels → CNC
-    const threshSq = (8 / s) * (8 / s)
+    const threshSq = (INSERT_THRESHOLD_PX / s) ** 2
     if (nearest.distSq > threshSq) return
     onSegmentMouseDown(nearest.segIdx, cncX, cncY)
   }
 
   return (
     <Group>
-      {/* Wide invisible hit area for segment clicks */}
+      {/* Wide invisible hit area for segment hover + clicks */}
       {pathD && (
         <Path
           data={pathD}
@@ -61,6 +111,8 @@ export function NodeEditLayer({
           fill="transparent"
           hitStrokeWidth={12 / s}
           listening
+          onMouseMove={handleSegmentMouseMove}
+          onMouseLeave={handleSegmentMouseLeave}
           onMouseDown={handleSegmentMouseDown}
         />
       )}
@@ -103,6 +155,20 @@ export function NodeEditLayer({
           onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(i, 'anchor', e) }}
         />
       ))}
+
+      {/* Insert preview point */}
+      {hoverInsert && (
+        <Circle
+          x={hoverInsert.x}
+          y={hoverInsert.y}
+          radius={ANCHOR_R / s}
+          fill={hoverInsert.snapCenter ? INSERT_CENTER_COLOR : 'transparent'}
+          stroke={hoverInsert.snapCenter ? INSERT_CENTER_COLOR : INSERT_COLOR}
+          strokeWidth={1.5 / s}
+          opacity={0.85}
+          listening={false}
+        />
+      )}
     </Group>
   )
 }

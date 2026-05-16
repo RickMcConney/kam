@@ -8,6 +8,7 @@ import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
+import { extractCircle } from '../canvas/selectionUtils'
 
 export function regenerateOperation(opId: string): void {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
@@ -41,8 +42,23 @@ export function regenerateOperation(opId: string): void {
           islandDs,angle: 45,
         }))
       } else if (op.type === 'drill') {
-        if (op.drillMode === 'helical' && op.helicalCenterX !== undefined && op.helicalCenterY !== undefined && op.helicalRadius !== undefined) {
-          setSegments(opId, generateHelicalDrill(op.helicalCenterX, op.helicalCenterY, op.helicalRadius, tool, {
+        if (op.drillMode === 'helical') {
+          let cx = op.helicalCenterX ?? 0
+          let cy = op.helicalCenterY ?? 0
+          let r = op.helicalRadius ?? 0
+          if (op.pathId) {
+            const path = paths.find((p) => p.id === op.pathId)
+            if (path) {
+              const circle = extractCircle(path)
+              if (circle) {
+                cx = circle.cx
+                cy = circle.cy
+                r = Math.max(0, circle.radiusMM - tool.diameterMM / 2)
+                updateOperation(opId, { helicalCenterX: cx, helicalCenterY: cy, helicalRadius: r } as Parameters<typeof updateOperation>[1])
+              }
+            }
+          }
+          setSegments(opId, generateHelicalDrill(cx, cy, r, tool, {
             depthMM: op.depthMM, stepDownMM: op.stepDownMM,
           }))
         } else {

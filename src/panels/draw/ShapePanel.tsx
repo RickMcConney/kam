@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Hexagon, Star as StarIcon, PenTool, Type, SquircleIcon} from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
@@ -8,20 +8,11 @@ import { AVAILABLE_FONTS, loadFont, isFontLoaded } from '../../shapes/textGenera
 import { PATH_COLOR } from '../../colors'
 
 
-
-function EllipseIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <ellipse cx="7" cy="7" rx="5.5" ry="3.5" />
-    </svg>
-  )
-}
-
 const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'rectangle', label: 'Rect',    icon: <Square size={ICON.md} /> },
-  { type: 'roundrect', label: 'Round',   icon: <SquircleIcon size={ICON.md} /> },
+  { type: 'roundrect', label: 'Round',   icon: <Squircle size={ICON.md} /> },
   { type: 'circle',    label: 'Circle',  icon: <Circle size={ICON.md} /> },
-  { type: 'ellipse',   label: 'Ellipse', icon: <EllipseIcon /> },
+  { type: 'ellipse',   label: 'Ellipse', icon: <Ellipse size={ICON.md} /> },
   { type: 'polygon',   label: 'Polygon', icon: <Hexagon size={ICON.md} /> },
   { type: 'star',      label: 'Star',    icon: <StarIcon size={ICON.md} /> },
   { type: 'text',      label: 'Text',    icon: <Type size={ICON.md} /> },

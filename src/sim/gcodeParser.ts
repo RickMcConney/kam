@@ -40,7 +40,8 @@ function arcToSegments(
   x1: number, y1: number,
   ii: number, jj: number,
   cw: boolean,
-  z: number,
+  z0: number,  // start Z (for helical interpolation)
+  z1: number,  // end Z
   feedMmMin: number,
   lineIdx: number,
   startTimeS: number,
@@ -62,18 +63,20 @@ function arcToSegments(
   const sweep = Math.abs(a1 - a0)
   const steps = Math.max(4, Math.ceil(sweep / (5 * Math.PI / 180)))
   const segs: SimSegment[] = []
-  let px = x0, py = y0
+  let px = x0, py = y0, pz = z0
   let cumT = startTimeS
 
   for (let k = 1; k <= steps; k++) {
-    const a = a0 + (a1 - a0) * (k / steps)
+    const t = k / steps
+    const a = a0 + (a1 - a0) * t
     const nx = cx + r * Math.cos(a)
     const ny = cy + r * Math.sin(a)
-    const dist = Math.hypot(nx - px, ny - py)
+    const nz = z0 + (z1 - z0) * t  // interpolate Z linearly along the arc (helical support)
+    const dist = Math.hypot(nx - px, ny - py, nz - pz)
     const dur = dist / (feedMmMin / 60)
     segs.push({
-      x: nx, y: ny, z,
-      prevX: px, prevY: py, prevZ: z,
+      x: nx, y: ny, z: nz,
+      prevX: px, prevY: py, prevZ: pz,
       rapid: false,
       feedRateMmMin: feedMmMin,
       lineIdx,
@@ -84,7 +87,7 @@ function arcToSegments(
       toolBallNose,
     })
     cumT += dur
-    px = nx; py = ny
+    px = nx; py = ny; pz = nz
   }
   return segs
 }
@@ -181,7 +184,7 @@ export function parseGcode(text: string): ParsedGcode {
         cumT += dur
       }
     } else if (motionMode === 2 || motionMode === 3) {
-      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, nz, Math.max(feedRate, 1), li, cumT, toolDiameterMM, toolVbitHalfAngleTan, toolBallNose)
+      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, cz, nz, Math.max(feedRate, 1), li, cumT, toolDiameterMM, toolVbitHalfAngleTan, toolBallNose)
       segs.push(...arcSegs)
       if (arcSegs.length > 0) {
         const last = arcSegs[arcSegs.length - 1]

@@ -11,7 +11,7 @@
   "dependencies": {
     "@types/three": "^0.184.1",
     "konva": "^10.3.0",
-    "lucide-react": "^0.439.0",
+    "lucide-react": "^1.16.0",
     "opentype.js": "^2.0.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

@@ -97,7 +97,8 @@ export function generateGcode(
       const seg = op.segments[i]
       const prevSeg = i > 0 ? op.segments[i - 1] : null
       const posChanged = seg.x !== prevX || seg.y !== prevY || seg.z !== prevZ
-      if (!posChanged) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
+      // Arc segments (full circle) have start == end, so posChanged is false — never skip them.
+      if (!posChanged && !seg.arc) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
 
       // Convert workpiece-local → machine-relative by subtracting origin offset
       const x = f(toOut(seg.x - org.x, profile), coordDecimals)
@@ -106,6 +107,33 @@ export function generateGcode(
 
       if (seg.rapid) {
         lines.push(sub(profile.rapidTemplate, { x, y, z }))
+      } else if (seg.arc && profile.outputArcs) {
+        // Arc move (G2/G3). I/J are offsets from the arc START point to the center.
+        const ii = f(toOut(seg.arc.cx - prevX, profile), coordDecimals)
+        const jj = f(toOut(seg.arc.cy - prevY, profile), coordDecimals)
+        const feed = Math.round(toOut(tool.xyFeedMmMin, profile))
+        const template = seg.arc.cw ? profile.arcCWTemplate : profile.arcCCWTemplate
+        lines.push(sub(template, { x, y, z, i: ii, j: jj, f: feed }))
+      } else if (seg.arc) {
+        // outputArcs disabled — expand arc to G1 linear approximation
+        const { cx, cy, cw } = seg.arc
+        const r = Math.hypot(prevX - cx, prevY - cy)
+        let a0 = Math.atan2(prevY - cy, prevX - cx)
+        let a1 = Math.atan2(seg.y - cy, seg.x - cx)
+        const isFullCircle = Math.abs(prevX - seg.x) < 0.001 && Math.abs(prevY - seg.y) < 0.001
+        if (isFullCircle) a1 = a0 + (cw ? -2 * Math.PI : 2 * Math.PI)
+        else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
+        else { if (a1 <= a0) a1 += 2 * Math.PI }
+        const steps = Math.max(4, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
+        const feed = Math.round(toOut(tool.xyFeedMmMin, profile))
+        for (let k = 1; k <= steps; k++) {
+          const t = k / steps
+          const a = a0 + (a1 - a0) * t
+          const ax = f(toOut(cx + r * Math.cos(a) - org.x, profile), coordDecimals)
+          const ay = f(toOut(cy + r * Math.sin(a) - org.y, profile), coordDecimals)
+          const az = f(toOut(prevZ + (seg.z - prevZ) * t, profile), coordDecimals)
+          lines.push(sub(profile.cutTemplate, { x: ax, y: ay, z: az, f: feed }))
+        }
       } else {
         const zChanged = seg.z !== prevZ
         const xyChanged = seg.x !== prevX || seg.y !== prevY

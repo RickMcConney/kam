@@ -11,13 +11,17 @@ type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[] }
 interface PathsState {
   paths: ImportedPath[]
   selectedIds: string[]
+  collapsedGroups: Set<string>
 
   past: HistoryEntry[]
   future: HistoryEntry[]
 
   addPaths: (newPaths: ImportedPath[]) => void
   deletePath: (id: string) => void
+  deleteGroup: (groupId: string) => void
   toggleVisibility: (id: string) => void
+  toggleGroupVisibility: (groupId: string) => void
+  toggleGroupCollapsed: (groupId: string) => void
   selectPath: (id: string | null, extend?: boolean) => void
   setSelectedIds: (ids: string[]) => void
   deleteSelected: () => void
@@ -43,6 +47,7 @@ let _dupCounter = 0
 export const usePathsStore = create<PathsState>()((set, get) => ({
   paths: [],
   selectedIds: [],
+  collapsedGroups: new Set<string>(),
   past: [],
   future: [],
 
@@ -68,6 +73,33 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   toggleVisibility: (id) => set((s) => ({
     paths: s.paths.map((p) => p.id === id ? { ...p, visible: !p.visible } : p),
   })),
+
+  toggleGroupVisibility: (groupId) => set((s) => {
+    const groupPaths = s.paths.filter((p) => p.groupId === groupId)
+    const allVisible = groupPaths.every((p) => p.visible)
+    return { paths: s.paths.map((p) => p.groupId === groupId ? { ...p, visible: !allVisible } : p) }
+  }),
+
+  toggleGroupCollapsed: (groupId) => set((s) => {
+    const next = new Set(s.collapsedGroups)
+    if (next.has(groupId)) next.delete(groupId); else next.add(groupId)
+    return { collapsedGroups: next }
+  }),
+
+  deleteGroup: (groupId) => {
+    const s = get()
+    const ids = s.paths.filter((p) => p.groupId === groupId).map((p) => p.id)
+    if (ids.length === 0) return
+    const ops = useToolpathStore.getState().operations
+    const newOps = ops.filter((op) => !ids.some((id) => refsPathId(op, id)))
+    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
+    set((s) => ({
+      past: pushHistory(s.past, s.paths),
+      future: [],
+      paths: s.paths.filter((p) => p.groupId !== groupId),
+      selectedIds: s.selectedIds.filter((sid) => !ids.includes(sid)),
+    }))
+  },
 
   selectPath: (id, extend = false) => set((s) => {
     if (id === null) return { selectedIds: [] }
@@ -136,6 +168,8 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       d: subD,
       color: orig.color,
       visible: orig.visible,
+      groupId: orig.groupId,
+      groupName: orig.groupName,
     }))
     const paths = [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)]
     return {

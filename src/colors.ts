@@ -21,3 +21,7 @@ export const SIM_CUT_COLOR_THREE = 0xffcc00  // Three.js integer format
 export const SIM_TOOL_CUTTING_COLOR = '#ef4444'  // red   — actively cutting
 export const SIM_TOOL_RAPID_COLOR   = '#9ca3af'  // gray  — rapid move
 export const SIM_TOOL_OUTLINE_COLOR = '#ffffff'  // white — tool ring
+
+// 3D view background.
+export const THREE_BG_COLOR       = '#bfdbfe'  // blue-200 (light blue)
+export const THREE_BG_COLOR_THREE = 0xbfdbfe   // Three.js integer format

@@ -42,8 +42,8 @@ export function generatePeckDrill(
   return segs
 }
 
-// Helical drilling: spiral down at outermost radius, then concentric flat passes
-// inward to clear the full hole interior.
+// Helical drilling: spiral down at outermost radius (G3/CCW arc), then concentric flat
+// arc passes inward to clear the full hole interior.
 // helicalRadius = holeRadius - tool.diameterMM / 2 (must be > 0)
 export function generateHelicalDrill(
   centerX: number,
@@ -58,7 +58,6 @@ export function generateHelicalDrill(
   }
 
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
-  const stepsPerTurn = 32
   const stepoverMM = tool.diameterMM * 0.4
 
   // Radii for flat cleanup passes: outermost first, stepping inward to center
@@ -66,45 +65,44 @@ export function generateHelicalDrill(
   for (let r = helicalRadius; r > stepoverMM / 2; r -= stepoverMM) radii.push(r)
   radii.push(0) // center peck to ensure core is cleared
 
+  // Start point: rightmost point of helix circle (I = -r, J = 0 → clean G-code)
+  const sx = centerX + helicalRadius
+
   const segs: MotionSegment[] = []
-  segs.push({ x: centerX + helicalRadius, y: centerY, z: SAFE_Z, rapid: true })
+  segs.push({ x: sx, y: centerY, z: SAFE_Z, rapid: true })
 
   let prevZ = SAFE_Z
+  let firstPass = true
+
   for (const zDepth of zLevels) {
-    // Helical descent at outermost radius
-    for (let i = 1; i <= stepsPerTurn; i++) {
-      const angle = (i / stepsPerTurn) * 2 * Math.PI
-      const z = prevZ + ((zDepth - prevZ) * i) / stepsPerTurn
-      segs.push({
-        x: centerX + helicalRadius * Math.cos(angle),
-        y: centerY + helicalRadius * Math.sin(angle),
-        z,
-        rapid: false,
-      })
+    // Between passes, machine is at (cx, cy, prevZ) after center peck.
+    // Move back to helix start position at the same Z before descending.
+    if (!firstPass) {
+      segs.push({ x: sx, y: centerY, z: prevZ, rapid: false })
     }
+    firstPass = false
+
+    // Helical descent: one full CCW revolution from prevZ down to zDepth (G3).
+    segs.push({ x: sx, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
     prevZ = zDepth
 
-    // Flat cleanup passes working inward
+    // Flat cleanup arc passes working inward.
     for (const r of radii) {
       if (r === 0) {
         segs.push({ x: centerX, y: centerY, z: zDepth, rapid: false })
       } else {
-        segs.push({ x: centerX + r, y: centerY, z: zDepth, rapid: false })
-        for (let i = 1; i <= stepsPerTurn; i++) {
-          const angle = (i / stepsPerTurn) * 2 * Math.PI
-          segs.push({
-            x: centerX + r * Math.cos(angle),
-            y: centerY + r * Math.sin(angle),
-            z: zDepth,
-            rapid: false,
-          })
+        // After the helical descent we're already at (sx, cy) = (cx+helicalRadius, cy).
+        // For smaller radii, move to the new start position first.
+        if (r !== helicalRadius) {
+          segs.push({ x: centerX + r, y: centerY, z: zDepth, rapid: false })
         }
+        // Full flat circle arc (CCW = G3).
+        segs.push({ x: centerX + r, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
       }
     }
   }
 
   // Retract from center
-  segs.push({ x: centerX, y: centerY, z: prevZ, rapid: false })
   segs.push({ x: centerX, y: centerY, z: SAFE_Z, rapid: true })
 
   return segs

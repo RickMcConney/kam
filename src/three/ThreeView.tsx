@@ -8,7 +8,7 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
-import { SIM_CUT_COLOR_THREE } from '../colors'
+import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -231,11 +231,11 @@ export default function ThreeView() {
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     renderer.setSize(container.clientWidth, container.clientHeight)
-    renderer.setClearColor(0x1a1a1a)
+    renderer.setClearColor(THREE_BG_COLOR_THREE)
     container.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1a1a)
+    scene.background = new THREE.Color(THREE_BG_COLOR_THREE)
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.6))
     const sun = new THREE.DirectionalLight(0xffffff, 1.0)
@@ -600,6 +600,31 @@ function rebuildShapes(refs: SceneRefs) {
   refs.renderNeeded = true
 }
 
+// Expands an arc segment to [x,y,z][] points for 3D display (step every 5°).
+// Z is linearly interpolated from pz to ez to correctly show helical descents.
+function expandArc3D(
+  px: number, py: number, pz: number,
+  ex: number, ey: number, ez: number,
+  arcCx: number, arcCy: number, cw: boolean,
+): [number, number, number][] {
+  const r = Math.hypot(px - arcCx, py - arcCy)
+  if (r < 0.001) return [[ex, ey, ez]]
+  let a0 = Math.atan2(py - arcCy, px - arcCx)
+  let a1 = Math.atan2(ey - arcCy, ex - arcCx)
+  const isFullCircle = Math.abs(px - ex) < 0.001 && Math.abs(py - ey) < 0.001
+  if (isFullCircle) a1 = a0 + (cw ? -2 * Math.PI : 2 * Math.PI)
+  else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
+  else { if (a1 <= a0) a1 += 2 * Math.PI }
+  const steps = Math.max(8, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
+  const pts: [number, number, number][] = []
+  for (let k = 1; k <= steps; k++) {
+    const t = k / steps
+    const a = a0 + (a1 - a0) * t
+    pts.push([arcCx + r * Math.cos(a), arcCy + r * Math.sin(a), pz + (ez - pz) * t])
+  }
+  return pts
+}
+
 function rebuildToolpaths(refs: SceneRefs) {
   clearGroup(refs.toolpathGroup)
 
@@ -614,9 +639,21 @@ function rebuildToolpaths(refs: SceneRefs) {
     for (let i = 1; i < op.segments.length; i++) {
       const p = op.segments[i - 1]
       const c = op.segments[i]
-      const [px, py, pz] = cncToThree(p.x, p.y, p.z, T)
-      const [cx, cy, cz] = cncToThree(c.x, c.y, c.z, T)
-      points.push(px, py, pz, cx, cy, cz)
+
+      if (c.arc) {
+        const arcPts = expandArc3D(p.x, p.y, p.z, c.x, c.y, c.z, c.arc.cx, c.arc.cy, c.arc.cw)
+        let lpx = p.x, lpy = p.y, lpz = p.z
+        for (const [ax, ay, az] of arcPts) {
+          const [fx, fy, fz] = cncToThree(lpx, lpy, lpz, T)
+          const [tx, ty, tz] = cncToThree(ax, ay, az, T)
+          points.push(fx, fy, fz, tx, ty, tz)
+          lpx = ax; lpy = ay; lpz = az
+        }
+      } else {
+        const [px, py, pz] = cncToThree(p.x, p.y, p.z, T)
+        const [cx, cy, cz] = cncToThree(c.x, c.y, c.z, T)
+        points.push(px, py, pz, cx, cy, cz)
+      }
     }
     if (points.length === 0) continue
 

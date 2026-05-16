@@ -136,6 +136,7 @@ export default function PropertiesPanel() {
   const { units } = useWorkpieceStore()
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
   const setNodeEditPathId = useUIStore((s) => s.setNodeEditPathId)
+  const setActiveTool = useUIStore((s) => s.setActiveTool)
   const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
 
   if (selectedPaths.length === 0) return null
@@ -184,7 +185,11 @@ export default function PropertiesPanel() {
         }
         return (
           <button
-            onClick={() => setNodeEditPathId(nodeEditPathId === p.id ? null : p.id)}
+            onClick={() => {
+              const entering = nodeEditPathId !== p.id
+              if (entering) setActiveTool('select')
+              setNodeEditPathId(entering ? p.id : null)
+            }}
             className={[
               'mt-2 w-full text-label py-1 rounded border transition-colors',
               nodeEditPathId === p.id

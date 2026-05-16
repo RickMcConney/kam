@@ -175,6 +175,28 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
   return subpaths
 }
 
+// Detect whether a closed polygon's edges properly intersect (O(n²)).
+// Skips adjacent edge pairs that share a vertex.
+export function hasSelfIntersection(pts: Pt2[]): boolean {
+  const n = pts.length
+  for (let i = 0; i < n - 1; i++) {
+    const ax = pts[i][0], ay = pts[i][1]
+    const bx = pts[(i + 1) % n][0], by = pts[(i + 1) % n][1]
+    // When i=0 skip j=n-1: that edge shares pts[0] (adjacent via the closing seam)
+    const jEnd = i === 0 ? n - 1 : n
+    for (let j = i + 2; j < jEnd; j++) {
+      const cx = pts[j][0], cy = pts[j][1]
+      const dx = pts[(j + 1) % n][0], dy = pts[(j + 1) % n][1]
+      const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+      const d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
+      const d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
+      const d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
+      if (d1 * d2 < -1e-10 && d3 * d4 < -1e-10) return true
+    }
+  }
+  return false
+}
+
 // Compute signed area via shoelace (positive = CCW in Y-up system)
 export function signedArea(pts: Pt2[]): number {
   let area = 0

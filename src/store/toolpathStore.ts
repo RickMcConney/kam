@@ -11,6 +11,7 @@ export interface MotionSegment {
   y: number
   z: number
   rapid: boolean
+  arc?: { cx: number; cy: number; cw: boolean }  // absolute arc center + direction; G2=cw, G3=ccw
 }
 
 export interface DrillPoint {

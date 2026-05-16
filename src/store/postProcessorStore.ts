@@ -32,9 +32,9 @@ const GRBL_MM: PostProcessorProfile = {
   spindleOffGcode: 'M5',
   rapidTemplate: 'G0 X{x} Y{y} Z{z}',
   cutTemplate: 'G1 X{x} Y{y} Z{z} F{f}',
-  arcCWTemplate: 'G2 X{x} Y{y} I{i} J{j} F{f}',
-  arcCCWTemplate: 'G3 X{x} Y{y} I{i} J{j} F{f}',
-  outputArcs: false,
+  arcCWTemplate: 'G2 X{x} Y{y} Z{z} I{i} J{j} F{f}',
+  arcCCWTemplate: 'G3 X{x} Y{y} Z{z} I{i} J{j} F{f}',
+  outputArcs: true,
 }
 
 const GRBL_IN: PostProcessorProfile = {
@@ -49,9 +49,9 @@ const GRBL_IN: PostProcessorProfile = {
   spindleOffGcode: 'M5',
   rapidTemplate: 'G0 X{x} Y{y} Z{z}',
   cutTemplate: 'G1 X{x} Y{y} Z{z} F{f}',
-  arcCWTemplate: 'G2 X{x} Y{y} I{i} J{j} F{f}',
-  arcCCWTemplate: 'G3 X{x} Y{y} I{i} J{j} F{f}',
-  outputArcs: false,
+  arcCWTemplate: 'G2 X{x} Y{y} Z{z} I{i} J{j} F{f}',
+  arcCCWTemplate: 'G3 X{x} Y{y} Z{z} I{i} J{j} F{f}',
+  outputArcs: true,
 }
 
 let _idCounter = 0

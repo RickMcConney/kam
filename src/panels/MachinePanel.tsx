@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation } from '../store/toolpathStore'
+import { useFormDefaultsStore, mergeWithDefaults } from '../store/formDefaultsStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useUIStore } from '../store/uiStore'
@@ -18,32 +19,10 @@ import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
 import { generateVCarve } from '../cam/vcarve'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
-import { getBBox } from '../canvas/selectionUtils'
+import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: number } | null {
-  if (path.shapeParams?.type === 'circle') {
-    return { cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }
-  }
-  if (path.shapeParams?.type === 'ellipse') {
-    const { cx, cy, rx, ry } = path.shapeParams
-    if (Math.abs(rx - ry) / Math.max(rx, ry, 0.001) < 0.05) {
-      return { cx, cy, radiusMM: (rx + ry) / 2 }
-    }
-  }
-  // Fall back to bounding box: accept if aspect ratio is close to 1
-  const bb = getBBox(path.d)
-  if (!bb) return null
-  const rx = (bb.maxX - bb.minX) / 2
-  const ry = (bb.maxY - bb.minY) / 2
-  if (Math.max(rx, ry) < 0.001) return null
-  if (Math.abs(rx - ry) / Math.max(rx, ry) < 0.08) {
-    return { cx: bb.cx, cy: bb.cy, radiusMM: (rx + ry) / 2 }
-  }
-  return null
-}
 
 // ─── Containment grouping ─────────────────────────────────────────────────────
 
@@ -124,23 +103,22 @@ interface ProfileFormState {
 export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?: ProfileOperation }) {
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<ProfileFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    side: editOp.side,
-    depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM,
-    direction: editOp.direction,
-  } : {
+    toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
+    stepDownMM: editOp.stepDownMM, direction: editOp.direction,
+  } : mergeWithDefaults(load('profile'), {
     toolId: defaultTool?.id ?? '',
-    side: 'outside',
+    side: 'outside' as CutSide,
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
-    direction: defaultTool?.direction ?? 'climb',
-  })
+    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+  }, tools))
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const selectedPaths = editOp
     ? paths.filter((p) => p.id === editOp.pathId)
@@ -160,7 +138,9 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     if (selectedPaths.length === 0 || !selectedTool) return
     pushHistoryBoth()
     setGenerating(true)
+    setErrorMsg(null)
     setTimeout(() => {
+      let failed = false
       if (editOp) {
         updateOperation(editOp.id, {
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
@@ -171,7 +151,10 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
           }))
         } catch (err) {
-          setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+          const msg = err instanceof Error ? err.message : 'Generation failed'
+          setError(editOp.id, msg)
+          setErrorMsg(msg)
+          failed = true
         }
       } else {
         for (const path of selectedPaths) {
@@ -191,12 +174,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
               side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
             }))
           } catch (err) {
-            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+            deleteOperation(opId)
+            setErrorMsg(err instanceof Error ? err.message : 'Generation failed')
+            failed = true
           }
         }
       }
       setGenerating(false)
-      onClose()
+      if (!failed) { save('profile', form); onClose() }
     }, 0)
   }
 
@@ -219,6 +204,11 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      {errorMsg && (
+        <p className="text-body text-red-400 flex items-start gap-1.5">
+          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
+        </p>
+      )}
       <GenerateBtn
         disabled={selectedPaths.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
@@ -244,23 +234,20 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<PocketFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM,
-    stepoverPercent: editOp.stepoverPercent,
-    passAngleDeg: editOp.passAngleDeg,
-    direction: editOp.direction,
-  } : {
+    toolId: editOp.toolId, depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+    stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg, direction: editOp.direction,
+  } : mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
     passAngleDeg: 0,
-    direction: defaultTool?.direction ?? 'climb',
-  })
+    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+  }, tools))
   const [generating, setGenerating] = useState(false)
 
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
@@ -326,6 +313,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         }
       }
       setGenerating(false)
+      save('pocket', form)
       onClose()
     }, 0)
   }
@@ -401,19 +389,18 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
+  const { load, save } = useFormDefaultsStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<DrillFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    drillMode: editOp.drillMode,
-    depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM,
-  } : {
+    toolId: editOp.toolId, drillMode: editOp.drillMode,
+    depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+  } : mergeWithDefaults(load('drill'), {
     toolId: defaultTool?.id ?? '',
-    drillMode: 'peck',
+    drillMode: 'peck' as const,
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
-  })
+  }, tools))
   const [generating, setGenerating] = useState(false)
 
   // Auto-enter/exit drill-placing mode based on selected mode
@@ -484,6 +471,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
         }
         setGenerating(false)
+        save('drill', form)
         onClose()
       }, 0)
       return
@@ -538,6 +526,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         }
       }
       setGenerating(false)
+      save('drill', form)
       clearDrillPoints()
       setActiveTool('select')
       onClose()
@@ -776,18 +765,18 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
-  const [form, setForm] = useState<VCarveFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    angleDeg: editOp.angleDeg,
-    maxDepthMM: editOp.maxDepthMM,
-  } : {
-    toolId: defaultTool?.id ?? '',
-    angleDeg: defaultTool?.vbitAngleDeg ?? 60,
-    maxDepthMM: defaultTool?.maxDepthMM ?? 10,
-  })
+  const [form, setForm] = useState<VCarveFormState>(() => editOp
+    ? { toolId: editOp.toolId, angleDeg: editOp.angleDeg, maxDepthMM: editOp.maxDepthMM }
+    : mergeWithDefaults(load('vcarve'), {
+        toolId: defaultTool?.id ?? '',
+        angleDeg: defaultTool?.vbitAngleDeg ?? 60,
+        maxDepthMM: defaultTool?.maxDepthMM ?? 10,
+      }, tools)
+  )
   const [generating, setGenerating] = useState(false)
 
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
@@ -846,6 +835,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         }
       }
       setGenerating(false)
+      save('vcarve', form)
       onClose()
     }, 0)
   }
@@ -927,6 +917,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const endmills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
@@ -934,15 +925,11 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const defaultEndmill = endmills[0] ?? tools[0]
 
   const [form, setForm] = useState<InlayFormState>(() => editOp ? {
-    vbitToolId: editOp.toolId,
-    pocketToolId: editOp.pocketToolId,
-    angleDeg: editOp.angleDeg,
-    pocketDepthMM: editOp.pocketDepthMM,
-    stepDownMM: editOp.stepDownMM,
-    stepoverPercent: editOp.stepoverPercent,
-    glueLineMM: editOp.glueLineMM,
-    clearanceMM: editOp.clearanceMM,
-  } : {
+    vbitToolId: editOp.toolId, pocketToolId: editOp.pocketToolId,
+    angleDeg: editOp.angleDeg, pocketDepthMM: editOp.pocketDepthMM,
+    stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
+    glueLineMM: editOp.glueLineMM, clearanceMM: editOp.clearanceMM,
+  } : mergeWithDefaults(load('inlay'), {
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
     angleDeg: defaultVbit?.vbitAngleDeg ?? 60,
@@ -951,7 +938,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     stepoverPercent: 40,
     glueLineMM: 0.2,
     clearanceMM: 0.1,
-  })
+  }, tools))
   const [generating, setGenerating] = useState(false)
 
   const vbitTool = tools.find((t) => t.id === form.vbitToolId)
@@ -999,6 +986,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
         }
         setGenerating(false)
+        save('inlay', form)
         onClose()
       }, 0)
       return
@@ -1035,6 +1023,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         setError(maleId, err instanceof Error ? err.message : 'Generation failed')
       }
       setGenerating(false)
+      save('inlay', form)
       onClose()
     }, 0)
   }
@@ -1187,22 +1176,20 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const { widthMM, heightMM, origin } = useWorkpieceStore()
   const { pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
 
   const endMills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
   const defaultTool = endMills[0] ?? tools[0]
   const [form, setForm] = useState<SurfaceFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM,
-    stepoverPercent: editOp.stepoverPercent,
-    passAngleDeg: editOp.passAngleDeg,
-  } : {
+    toolId: editOp.toolId, depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+    stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
+  } : mergeWithDefaults(load('surface'), {
     toolId: defaultTool?.id ?? '',
     depthMM: defaultTool?.stepDownMM ?? 1,
     stepDownMM: defaultTool?.stepDownMM ?? 1,
     stepoverPercent: 40,
     passAngleDeg: 0,
-  })
+  }, tools))
   const [generating, setGenerating] = useState(false)
   const selectedTool = tools.find((t) => t.id === form.toolId)
 
@@ -1235,6 +1222,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
         }
         setGenerating(false)
+        save('surface', form)
         onClose()
       }, 0)
       return
@@ -1262,6 +1250,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         setError(opId, err instanceof Error ? err.message : 'Generation failed')
       }
       setGenerating(false)
+      save('surface', form)
       onClose()
     }, 0)
   }
@@ -1346,10 +1335,12 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export default function MachinePanel({ fill = false }: { fill?: boolean }) {
-  const { setMachineFormActive } = useUIStore()
+  const { setMachineFormActive, setActiveTool } = useUIStore()
   const [activeForm, setActiveForm] = useState<FormState>('menu')
 
-  const openForm = (t: FormState) => { setActiveForm(t); setMachineFormActive(true) }
+  useEffect(() => () => setMachineFormActive(false), [setMachineFormActive])
+
+  const openForm = (t: FormState) => { setActiveForm(t); setMachineFormActive(true); setActiveTool('select') }
   const closeForm = () => { setActiveForm('menu'); setMachineFormActive(false) }
 
   return (

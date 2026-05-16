@@ -109,6 +109,10 @@ export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean }
   const nodes: PathNode[] = []
   let closed = false
   let i = 0
+  // Track last control point for S/T smooth continuation
+  let lastCmd = ''
+  let lastC2x = 0, lastC2y = 0  // for S: reflection of previous C's c2
+  let lastQ1x = 0, lastQ1y = 0  // for T: reflection of previous Q's control point
 
   while (i < tokens.length) {
     const cmd = tokens[i++]
@@ -122,6 +126,42 @@ export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean }
       const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
       if (nodes.length > 0) nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
       nodes.push({ x: ex, y: ey, handleIn: { x: c2x, y: c2y } })
+      lastC2x = c2x; lastC2y = c2y
+    } else if (cmd === 'S') {
+      // Smooth cubic: c1 is reflection of previous c2 (or current point if prev wasn't C/S)
+      const c2x = parseFloat(tokens[i++]), c2y = parseFloat(tokens[i++])
+      const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
+      const prev = nodes.length > 0 ? nodes[nodes.length - 1] : { x: 0, y: 0 }
+      const c1x = (lastCmd === 'C' || lastCmd === 'S') ? 2 * prev.x - lastC2x : prev.x
+      const c1y = (lastCmd === 'C' || lastCmd === 'S') ? 2 * prev.y - lastC2y : prev.y
+      if (nodes.length > 0) nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
+      nodes.push({ x: ex, y: ey, handleIn: { x: c2x, y: c2y } })
+      lastC2x = c2x; lastC2y = c2y
+    } else if (cmd === 'Q') {
+      // Quadratic bezier → cubic: c1 = p0 + 2/3*(q-p0), c2 = p + 2/3*(q-p)
+      const qx = parseFloat(tokens[i++]), qy = parseFloat(tokens[i++])
+      const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
+      const prev = nodes.length > 0 ? nodes[nodes.length - 1] : { x: 0, y: 0 }
+      const c1x = prev.x + (2 / 3) * (qx - prev.x)
+      const c1y = prev.y + (2 / 3) * (qy - prev.y)
+      const c2x = ex + (2 / 3) * (qx - ex)
+      const c2y = ey + (2 / 3) * (qy - ey)
+      if (nodes.length > 0) nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
+      nodes.push({ x: ex, y: ey, handleIn: { x: c2x, y: c2y } })
+      lastQ1x = qx; lastQ1y = qy
+    } else if (cmd === 'T') {
+      // Smooth quadratic: control point is reflection of previous Q's control point
+      const ex = parseFloat(tokens[i++]), ey = parseFloat(tokens[i++])
+      const prev = nodes.length > 0 ? nodes[nodes.length - 1] : { x: 0, y: 0 }
+      const qx = (lastCmd === 'Q' || lastCmd === 'T') ? 2 * prev.x - lastQ1x : prev.x
+      const qy = (lastCmd === 'Q' || lastCmd === 'T') ? 2 * prev.y - lastQ1y : prev.y
+      const c1x = prev.x + (2 / 3) * (qx - prev.x)
+      const c1y = prev.y + (2 / 3) * (qy - prev.y)
+      const c2x = ex + (2 / 3) * (qx - ex)
+      const c2y = ey + (2 / 3) * (qy - ey)
+      if (nodes.length > 0) nodes[nodes.length - 1].handleOut = { x: c1x, y: c1y }
+      nodes.push({ x: ex, y: ey, handleIn: { x: c2x, y: c2y } })
+      lastQ1x = qx; lastQ1y = qy
     } else if (cmd === 'A') {
       const rx = parseFloat(tokens[i++]), ry = parseFloat(tokens[i++])
       const xRot = parseFloat(tokens[i++])
@@ -141,16 +181,18 @@ export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean }
     } else if (cmd === 'Z' || cmd === 'z') {
       closed = true
     }
+    lastCmd = cmd
   }
 
-  // Font paths often explicitly close back to the start (last node coincident with node[0]).
-  // Merge that duplicate: transfer its handleIn to node[0] so the closing bezier is preserved.
-  if (closed && nodes.length >= 2) {
+  // Detect implicit close: last node coincident with first (with or without Z).
+  // Font paths often return explicitly to the start instead of using Z.
+  if (nodes.length >= 2) {
     const first = nodes[0]
     const last = nodes[nodes.length - 1]
     if (Math.abs(last.x - first.x) < 0.001 && Math.abs(last.y - first.y) < 0.001) {
       if (last.handleIn) first.handleIn = last.handleIn
       nodes.pop()
+      closed = true
     }
   }
 
@@ -246,6 +288,48 @@ export function insertNodeOnSegment(
   result[toIdx] = { ...to, handleIn: hasCurve ? split.rightIn : undefined }
   result.splice(segIdx + 1, 0, newNode)
   return result
+}
+
+export function segmentMidpoint(
+  nodes: PathNode[],
+  segIdx: number,
+): { x: number; y: number } {
+  const toIdx = (segIdx + 1) % nodes.length
+  const from = nodes[segIdx]
+  const to = nodes[toIdx]
+  return evalCubic(
+    { x: from.x, y: from.y },
+    from.handleOut ?? { x: from.x, y: from.y },
+    to.handleIn ?? { x: to.x, y: to.y },
+    { x: to.x, y: to.y },
+    0.5,
+  )
+}
+
+export function nearestPointOnSegment(
+  nodes: PathNode[],
+  segIdx: number,
+  cx: number,
+  cy: number,
+): { x: number; y: number; distSq: number } {
+  const toIdx = (segIdx + 1) % nodes.length
+  const from = nodes[segIdx]
+  const to = nodes[toIdx]
+  const p0 = { x: from.x, y: from.y }
+  const p3 = { x: to.x, y: to.y }
+  const c1 = from.handleOut ?? p0
+  const c2 = to.handleIn ?? p3
+
+  let best = p0
+  let bestDistSq = Infinity
+  const SAMPLES = 40
+  for (let j = 0; j <= SAMPLES; j++) {
+    const pt = evalCubic(p0, c1, c2, p3, j / SAMPLES)
+    const dx = pt.x - cx, dy = pt.y - cy
+    const dsq = dx * dx + dy * dy
+    if (dsq < bestDistSq) { bestDistSq = dsq; best = pt }
+  }
+  return { x: best.x, y: best.y, distSq: bestDistSq }
 }
 
 export function nearestSegmentOnPath(
