@@ -9,6 +9,7 @@ export interface PocketParams {
   direction: CuttingDirection
   islandDs: string[]
   angle: number
+  startNear?: { x: number; y: number }
 }
 
 const SAFE_Z = 5.0

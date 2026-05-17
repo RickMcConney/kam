@@ -19,7 +19,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
 
   return (
     <Group listening={false}>
-      {paths.filter((p) => p.visible && p.id !== excludePathId).map((p) => {
+      {paths.filter((p) => p.visible && !p.hidden && p.id !== excludePathId).map((p) => {
         const isSelected = selectedIds.includes(p.id)
         const lt = liveTransform && liveTransform.pathIds.has(p.id) ? liveTransform : null
 

@@ -28,6 +28,7 @@ interface BaseOperation {
   color: string
   visible: boolean
   errorMessage?: string
+  entryHint?: { x: number; y: number }
 }
 
 export interface ProfileOperation extends BaseOperation {

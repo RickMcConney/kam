@@ -23,12 +23,14 @@ interface UIState {
   nodeEditPathId: string | null
   darkMode: boolean
   machineFormActive: boolean
+  tabsFormActive: boolean
   // Local undo/redo for point-edit sessions — registered by CanvasStage, used by Toolbar + App
   nodeEditUndo: (() => void) | null
   nodeEditRedo: (() => void) | null
   nodeEditCanUndo: boolean
   nodeEditCanRedo: boolean
   setMachineFormActive: (active: boolean) => void
+  setTabsFormActive: (active: boolean) => void
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
   toggleSnap: () => void
@@ -56,11 +58,13 @@ export const useUIStore = create<UIState>()((set) => ({
   nodeEditPathId: null,
   darkMode: true,
   machineFormActive: false,
+  tabsFormActive: false,
   nodeEditUndo: null,
   nodeEditRedo: null,
   nodeEditCanUndo: false,
   nodeEditCanRedo: false,
   setMachineFormActive: (active) => set({ machineFormActive: active }),
+  setTabsFormActive: (active) => set({ tabsFormActive: active }),
   setSidebarTab: (tab) => set({ sidebarTab: tab, activeTool: 'select' }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),

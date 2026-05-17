@@ -27,6 +27,7 @@ export interface VCarveParams {
   angleDeg: number    // full included angle of the V-bit (e.g. 60)
   maxDepthMM: number
   islandDs: string[]  // additional paths treated as holes
+  startNear?: { x: number; y: number }  // CNC mm — where the tool is before this operation
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -157,10 +158,10 @@ function buildGraph(segs: Seg[]): { nodeMap: Map<string, GraphNode>; graph: Grap
   return { nodeMap, graph }
 }
 
-function findTopLeftNode(nodeMap: Map<string, GraphNode>): GraphNode | null {
+function findNearestNode(nodeMap: Map<string, GraphNode>, refX: number, refY: number): GraphNode | null {
   let min = Infinity, start: GraphNode | null = null
   nodeMap.forEach(p => {
-    const d = Math.hypot(p.x, p.y)
+    const d = Math.hypot(p.x - refX, p.y - refY)
     if (d < min) { min = d; start = p }
   })
   return start
@@ -198,12 +199,13 @@ function findClosestTarget(curId: string, nodeMap: Map<string, GraphNode>, graph
   return { target: nodeMap.get(result.targetId) ?? null, path: result.path }
 }
 
-function findStartNodes(nodeMap: Map<string, GraphNode>): GraphNode[] {
+function findStartNodes(nodeMap: Map<string, GraphNode>, refX = 0, refY = 0): GraphNode[] {
   const starts: GraphNode[] = []
   nodeMap.forEach(n => { if (n.connections.size === 1) starts.push(n) })
 
   if (!starts.length) {
-    const fallback = findTopLeftNode(nodeMap)
+    // No leaf nodes (closed loops like O) — start from the node nearest to the entry position
+    const fallback = findNearestNode(nodeMap, refX, refY)
     return fallback ? [fallback] : []
   }
 
@@ -312,16 +314,19 @@ function findPossiblePath(
   return { toolpath, travelDistance: travel }
 }
 
-function findBestPath(segs: Seg[]): TPoint[] {
+// entrySX/entrySY are in scaled units (mm × SCALE)
+function findBestPath(segs: Seg[], entrySX = 0, entrySY = 0): TPoint[] {
   if (!segs.length) return []
   const { nodeMap, graph } = buildGraph(segs)
-  const startNodes = findStartNodes(nodeMap)
+  const startNodes = findStartNodes(nodeMap, entrySX, entrySY)
 
   let bestPath: TPoint[] = []
   let bestCost = Infinity
   for (const startNode of startNodes) {
+    const entryDist = Math.hypot(startNode.x - entrySX, startNode.y - entrySY)
     const { toolpath, travelDistance } = findPossiblePath(nodeMap, graph, startNode)
-    if (travelDistance < bestCost) { bestCost = travelDistance; bestPath = toolpath }
+    const totalCost = travelDistance + entryDist
+    if (totalCost < bestCost) { bestCost = totalCost; bestPath = toolpath }
   }
   return bestPath
 }
@@ -476,6 +481,13 @@ export async function generateVCarve(
   }
 
   const regions = classifySubpaths([...allSubpathsPt2, ...islandPt2])
+  // Sort regions left-to-right by centroid X so text cuts in reading order
+  regions.sort((a, b) => centroidX(a.outer) - centroidX(b.outer))
+
+  // Current cutter position in scaled units — used to pick the best start node per region
+  let curSX = (params.startNear?.x ?? 0) * SCALE
+  let curSY = (params.startNear?.y ?? 0) * SCALE
+
   const segs: MotionSegment[] = []
 
   // flattenPath adds a closing duplicate for Z paths (first === last).
@@ -519,7 +531,7 @@ export async function generateVCarve(
       continue
     }
 
-    const toolpath = findBestPath(jsSegs)
+    const toolpath = findBestPath(jsSegs, curSX, curSY)
     if (!toolpath.length) continue
 
     const first = toolpath[0]
@@ -536,6 +548,10 @@ export async function generateVCarve(
 
     const last = toolpath[toolpath.length - 1]
     segs.push({ x: last.x / SCALE, y: last.y / SCALE, z: SAFE_Z, rapid: true })
+
+    // Update current position to this region's exit for the next region's start selection
+    curSX = last.x
+    curSY = last.y
   }
 
   if (!segs.length) throw new Error('Could not compute V-carve medial axis — check that the selected path is a closed shape')

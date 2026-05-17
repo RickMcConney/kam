@@ -6,6 +6,7 @@ import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { AVAILABLE_FONTS, loadFont, isFontLoaded } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
+import { NumericInput } from '../../components/NumericInput'
 
 
 const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
@@ -19,7 +20,7 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
 ]
 
 const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
-const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-12 flex-shrink-0'
+const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-14 flex-shrink-0'
 
 function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }: {
   label: string; valueMM: number; units: string; onChange: (mm: number) => void
@@ -31,15 +32,12 @@ function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }:
   return (
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
-      <input
-        type="number"
-        value={+display.toFixed(integer ? 0 : 4)}
+      <NumericInput
+        value={display}
         min={min}
         step={s}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value)
-          if (!isNaN(v) && v >= min) onChange(integer ? v : toMM(v, units as 'mm' | 'in'))
-        }}
+        integer={integer}
+        onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
         className={inputCls}
       />
       {!integer && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
@@ -113,6 +111,9 @@ const toolBtnCls = (active: boolean) =>
       : 'border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500',
   ].join(' ')
 
+
+// ─── Main ShapePanel ──────────────────────────────────────────────────────────
+
 export default function ShapePanel() {
   const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig } = useUIStore()
   const { units } = useWorkpieceStore()
@@ -167,6 +168,7 @@ export default function ShapePanel() {
           </div>
         )}
       </div>
+
     </>
   )
 }

@@ -207,6 +207,16 @@ export function signedArea(pts: Pt2[]): number {
   return area / 2
 }
 
+// Rotate a closed polyline so the point nearest (x, y) becomes first.
+export function rotatePolylineNear(pts: Pt2[], x: number, y: number): Pt2[] {
+  let best = 0, bestDist = Infinity
+  for (let i = 0; i < pts.length; i++) {
+    const d = (pts[i][0] - x) ** 2 + (pts[i][1] - y) ** 2
+    if (d < bestDist) { bestDist = d; best = i }
+  }
+  return best === 0 ? pts : [...pts.slice(best), ...pts.slice(0, best)]
+}
+
 // Ensure polygon has the requested winding. Returns input unchanged or reversed.
 export function ensureWinding(pts: Pt2[], wantCCW: boolean): Pt2[] {
   const isCCW = signedArea(pts) >= 0

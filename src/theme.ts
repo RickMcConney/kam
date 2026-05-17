@@ -7,6 +7,22 @@ export const ICON = {
   lg:  22,   // empty-state illustrations
 } as const
 
+// ─── Material fill colors (light / dark) ───────────────────────────────────
+import type { Material } from './store/workpieceStore'
+
+export const MATERIAL_FILL: Record<Material, { light: string; dark: string }> = {
+  pine:      { light: '#e8c98a', dark: '#7a5828' },
+  oak:       { light: '#c8a060', dark: '#6a4820' },
+  maple:     { light: '#f0d9a8', dark: '#8a6e3a' },
+  walnut:    { light: '#7a4a28', dark: '#3a2010' },
+  cherry:    { light: '#c47a45', dark: '#6a3a1a' },
+  mdf:       { light: '#c8b89a', dark: '#5a4a38' },
+  plywood:   { light: '#d4b07a', dark: '#6a5030' },
+  hdpe:      { light: '#d8ecd8', dark: '#3a5a3a' },
+  aluminum:  { light: '#c8ccd0', dark: '#4a5058' },
+  other:     { light: '#e0e0e0', dark: '#404040' },
+}
+
 // ─── Canvas (Konva) colors ──────────────────────────────────────────────────
 // Konva draws to a bitmap canvas — it can't use CSS variables.
 // Call canvasTheme(darkMode) to get the correct set for the active theme.
@@ -27,10 +43,7 @@ const CANVAS_LIGHT = {
     axisMn:     '#e5e7eb',
     mmLabel:    '#9ca3af',
   },
-  workpiece: {
-    fill:   '#ffffff',
-    stroke: '#3b82f6',
-  },
+  workpiece: {},
   path: {
     selected: '#1e40af',
   },
@@ -52,10 +65,7 @@ const CANVAS_DARK = {
     axisMn:     '#333333',
     mmLabel:    '#737373',
   },
-  workpiece: {
-    fill:   '#1c1c1c',
-    stroke: '#3b82f6',
-  },
+  workpiece: {},
   path: {
     selected: '#ffffff',
   },

@@ -1,4 +1,4 @@
-import { flattenPath, offsetPolygon, signedArea, type Pt2 } from './pathFlattener'
+import { flattenPath, offsetPolygon, signedArea, rotatePolylineNear, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { PocketParams } from './pocket'
@@ -267,7 +267,10 @@ export function generatePocket(
     .map((isl) => growPolygon(isl, tool.diameterMM / 2))
     .filter((c) => c.length >= 3)
 
-  const insetBoundary = insetPolygon(boundary, tool.diameterMM / 2)   // finishing contour path
+  const rawInsetBoundary = insetPolygon(boundary, tool.diameterMM / 2)
+  const insetBoundary = params.startNear && rawInsetBoundary.length >= 3
+    ? rotatePolylineNear(rawInsetBoundary, params.startNear.x, params.startNear.y)
+    : rawInsetBoundary  // finishing contour path
   const rawScanlines = generateScanlines(
     insetPolygon(boundary, tool.diameterMM),                          // raster stops one radius from wall
     stepoverMM,

@@ -13,6 +13,7 @@ import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useSimStore } from '../store/simStore'
 import { generateGcode, downloadGcode } from '../cam/gcode'
+import { optimizeStartPoints } from '../cam/startOptimizer'
 import { importSvg } from '../importers/svgImporter'
 import { saveProject } from '../io/projectSave'
 import { openProjectFile, newProject } from '../io/projectLoad'
@@ -141,17 +142,21 @@ export default function Toolbar() {
   const getActiveProfile = usePostProcessorStore((s) => s.getActiveProfile)
   const importRef = useRef<HTMLInputElement>(null)
 
-  function handleExportGcode() {
+  async function handleExportGcode() {
+    await optimizeStartPoints()
     const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
     const profile = getActiveProfile()
-    const gcode = generateGcode(operations, toolsById, name, profile)
+    const { operations: ops } = useToolpathStore.getState()
+    const gcode = generateGcode(ops, toolsById, name, profile)
     downloadGcode(gcode, name)
   }
 
-  function handleSimulate() {
+  async function handleSimulate() {
+    await optimizeStartPoints()
     const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
     const profile = getActiveProfile()
-    const gcode = generateGcode(operations, toolsById, name, profile)
+    const { operations: ops } = useToolpathStore.getState()
+    const gcode = generateGcode(ops, toolsById, name, profile)
     useSimStore.getState().loadGcode(gcode)
     const cur = useUIStore.getState().workspaceTab
     if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')

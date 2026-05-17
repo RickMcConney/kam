@@ -2,11 +2,11 @@ import { usePathsStore } from '../store/pathsStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffected } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
-import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox } from '../canvas/selectionUtils'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { AVAILABLE_FONTS, loadFont } from '../shapes/textGenerator'
+import { NumericInput } from '../components/NumericInput'
 
 const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
 const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-5 flex-shrink-0'
@@ -41,15 +41,12 @@ function EditField({
   return (
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
-      <input
-        type="number"
-        value={+display.toFixed(integer ? 0 : 4)}
+      <NumericInput
+        value={display}
         min={min}
         step={step}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value)
-          if (!isNaN(v) && v >= min) onChange(integer ? v : toMM(v, units as 'mm' | 'in'))
-        }}
+        integer={integer}
+        onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
         className={fieldCls}
       />
       {!integer && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
@@ -130,13 +127,11 @@ function ShapeParamsEditor({ id, params, units }: { id: string; params: ShapePar
   }
 }
 
+
 export default function PropertiesPanel() {
   const { paths, selectedIds } = usePathsStore()
   const liveRotationAngle = useCanvasStore((s) => s.liveRotationAngle)
   const { units } = useWorkpieceStore()
-  const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
-  const setNodeEditPathId = useUIStore((s) => s.setNodeEditPathId)
-  const setActiveTool = useUIStore((s) => s.setActiveTool)
   const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
 
   if (selectedPaths.length === 0) return null
@@ -173,31 +168,13 @@ export default function PropertiesPanel() {
       {selectedPaths.length === 1 && (() => {
         const p = selectedPaths[0]
         const isCompound = splitCompoundPath(p.d).length > 1
-        if (isCompound) {
-          return (
-            <button
-              onClick={() => usePathsStore.getState().splitPath(p.id, splitCompoundPath(p.d))}
-              className="mt-2 w-full text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
-            >
-              Split Paths
-            </button>
-          )
-        }
+        if (!isCompound) return null
         return (
           <button
-            onClick={() => {
-              const entering = nodeEditPathId !== p.id
-              if (entering) setActiveTool('select')
-              setNodeEditPathId(entering ? p.id : null)
-            }}
-            className={[
-              'mt-2 w-full text-label py-1 rounded border transition-colors',
-              nodeEditPathId === p.id
-                ? 'border-emerald-500 bg-emerald-500/20 text-emerald-400'
-                : 'border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300',
-            ].join(' ')}
+            onClick={() => usePathsStore.getState().splitPath(p.id, splitCompoundPath(p.d))}
+            className="mt-2 w-full text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
           >
-            {nodeEditPathId === p.id ? 'Exit Point Edit' : 'Edit Points'}
+            Split Paths
           </button>
         )
       })()}

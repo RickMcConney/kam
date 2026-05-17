@@ -8,38 +8,42 @@ import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
+import { useTabStore } from '../store/tabStore'
 import { extractCircle } from '../canvas/selectionUtils'
 
-export function regenerateOperation(opId: string): void {
+export function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
   const { paths } = usePathsStore.getState()
   const { tools } = useToolStore.getState()
 
   const op = operations.find((o) => o.id === opId)
-  if (!op) return
+  if (!op) return Promise.resolve()
   const tool = tools.find((t) => t.id === op.toolId)
-  if (!tool) return
+  if (!tool) return Promise.resolve()
 
   updateOperation(opId, { status: 'generating' })
+  return new Promise((resolve) => {
   setTimeout(async () => {
     try {
       if (op.type === 'profile') {
         const path = paths.find((p) => p.id === op.pathId)
         if (!path) throw new Error('Source path not found')
+        const pathTabs = useTabStore.getState().getPathTabs(op.pathId)
         setSegments(opId, generateProfile(path.d, tool, {
           side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM, direction: op.direction,
-        }))
+          startNear: op.entryHint,
+        }, pathTabs.length > 0 ? pathTabs : undefined))
       } else if (op.type === 'pocket') {
         const boundary = paths.find((p) => p.id === op.pathId)
         if (!boundary) throw new Error('Boundary path not found')
-        const islandDs = op.islandIds.flatMap((id) => { 
+        const islandDs = op.islandIds.flatMap((id) => {
           const p = paths.find((x) => x.id === id)
           return p ? [p.d] : []
         })
         setSegments(opId, generatePocket(boundary.d, tool, {
           depthMM: op.depthMM, stepDownMM: op.stepDownMM,
           stepoverPercent: op.stepoverPercent, direction: op.direction,
-          islandDs,angle: 45,
+          islandDs, angle: op.passAngleDeg, startNear: op.entryHint,
         }))
       } else if (op.type === 'drill') {
         if (op.drillMode === 'helical') {
@@ -63,7 +67,7 @@ export function regenerateOperation(opId: string): void {
           }))
         } else {
           setSegments(opId, generatePeckDrill(op.points, tool, {
-            depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+            depthMM: op.depthMM, stepDownMM: op.stepDownMM, startNear: op.entryHint,
           }))
         }
       } else if (op.type === 'surface') {
@@ -82,6 +86,7 @@ export function regenerateOperation(opId: string): void {
         })
         setSegments(opId, await generateVCarve(path.d, tool, {
           angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
+          startNear: op.entryHint,
         }))
       } else if (op.type === 'inlay') {
         const path = paths.find((p) => p.id === op.pathId)
@@ -105,8 +110,11 @@ export function regenerateOperation(opId: string): void {
       }
     } catch (err) {
       setError(opId, err instanceof Error ? err.message : 'Generation failed')
+    } finally {
+      resolve()
     }
   }, 0)
+  })
 }
 
 function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, pathId: string): boolean {

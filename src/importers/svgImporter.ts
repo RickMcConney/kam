@@ -7,6 +7,7 @@ export interface ImportedPath {
   name: string
   d: string        // SVG d string in CNC mm coordinates (Y-up)
   visible: boolean
+  hidden?: boolean // soft-hidden by boolean ops; shows in panel but not on canvas
   color: string
   shapeParams?: ShapeParams
   groupId?: string   // shared across all paths from the same SVG import

@@ -4,6 +4,7 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
+import { useTabStore } from '../store/tabStore'
 
 export const PROJECT_VERSION = 1
 
@@ -23,6 +24,7 @@ export function buildProjectData() {
     status: 'needs-update' as const,
   }))
   const { profiles, activeId } = usePostProcessorStore.getState()
+  const { tabs } = useTabStore.getState()
 
   return {
     version: PROJECT_VERSION,
@@ -35,6 +37,7 @@ export function buildProjectData() {
     paths,
     operations,
     postProcessors: { profiles, activeId },
+    tabs,
   }
 }
 

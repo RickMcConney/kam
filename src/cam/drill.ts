@@ -9,6 +9,24 @@ export interface DrillPoint {
 export interface DrillParams {
   depthMM: number
   stepDownMM: number
+  startNear?: { x: number; y: number }
+}
+
+function nearestNeighbourOrder(pts: DrillPoint[], startX: number, startY: number): DrillPoint[] {
+  const remaining = [...pts]
+  const ordered: DrillPoint[] = []
+  let cx = startX, cy = startY
+  while (remaining.length > 0) {
+    let bestIdx = 0, bestDist = Infinity
+    for (let i = 0; i < remaining.length; i++) {
+      const d = (remaining[i].x - cx) ** 2 + (remaining[i].y - cy) ** 2
+      if (d < bestDist) { bestDist = d; bestIdx = i }
+    }
+    ordered.push(remaining[bestIdx])
+    cx = remaining[bestIdx].x; cy = remaining[bestIdx].y
+    remaining.splice(bestIdx, 1)
+  }
+  return ordered
 }
 
 const SAFE_Z = 5.0
@@ -31,7 +49,11 @@ export function generatePeckDrill(
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  for (const pt of points) {
+  const ordered = params.startNear
+    ? nearestNeighbourOrder(points, params.startNear.x, params.startNear.y)
+    : points
+
+  for (const pt of ordered) {
     segs.push({ x: pt.x, y: pt.y, z: SAFE_Z, rapid: true })
     for (const zDepth of zLevels) {
       segs.push({ x: pt.x, y: pt.y, z: zDepth, rapid: false })

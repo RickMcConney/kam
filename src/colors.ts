@@ -11,6 +11,10 @@ export const OP_TYPE_COLORS: Record<string, string> = {
   surface:  '#8b5cf6',  // violet-500
   vcarve:   '#ec4899',  // pink-500
   inlay:    '#eab308',  // yellow-500
+  boolean:  '#38bdf8',  // sky-400
+  offset:   '#4ade80',  // green-400
+  pattern:  '#c084fc',  // purple-400
+  tabs:     '#f59e0b',  // amber-400
 }
 
 // Simulation cut trail — matches the 3D carved-surface color.

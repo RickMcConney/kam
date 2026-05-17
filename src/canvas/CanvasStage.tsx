@@ -38,6 +38,7 @@ import {
 } from '../shapes/shapeGenerators'
 import type { PenNode } from '../store/uiStore'
 import { NodeEditLayer } from './layers/NodeEditLayer'
+import { TabLayer } from './layers/TabLayer'
 import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath } from './nodeUtils'
 import type { PathNode } from './nodeUtils'
 
@@ -1124,6 +1125,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             />
           )}
           <ToolpathLayer viewport={viewport} />
+          <TabLayer viewport={viewport} />
           <SimulationLayer viewport={viewport} />
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
           {activeTool === 'pen' && (

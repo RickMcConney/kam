@@ -9,6 +9,7 @@ import {
   fromMM,
   toMM,
 } from '../store/workpieceStore'
+import { NumericInput } from '../components/NumericInput'
 
 function DimInput({
   label,
@@ -26,21 +27,15 @@ function DimInput({
   const displayVal = fromMM(valueMM, units)
   const step = units === 'in' ? 0.0625 : 1
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value)
-    if (!isNaN(v) && v >= min) onChange(toMM(v, units))
-  }
-
   return (
     <div className="flex items-center gap-2 mb-1.5">
       <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
       <div className="relative flex-1">
-        <input
-          type="number"
+        <NumericInput
           value={displayVal}
-          onChange={handleChange}
           min={min}
           step={step}
+          onChange={(v) => onChange(toMM(v, units))}
           className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-8 font-mono"
         />
         <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">

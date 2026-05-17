@@ -40,7 +40,7 @@ export default function PathsPanel() {
     paths, selectedIds, collapsedGroups,
     selectPath, toggleVisibility, deletePath,
     toggleGroupVisibility, toggleGroupCollapsed, deleteGroup,
-    pushHistoryBoth,
+    pushHistoryBoth, showPath,
   } = usePathsStore()
   const { operations, toggleVisibility: toggleOpVisibility, deleteOperation, replaceOperations } = useToolpathStore()
   const toolsById = useToolStore((s) => Object.fromEntries(s.tools.map((t) => [t.id, t])))
@@ -223,19 +223,31 @@ export default function PathsPanel() {
               key={p.id}
               className={[
                 'flex items-center gap-1.5 px-2 py-1.5 rounded cursor-pointer group',
+                p.hidden ? 'opacity-40' : '',
                 selectedIds.includes(p.id) ? 'bg-blue-600/20 text-blue-300' : 'hover:bg-gray-200/50 dark:hover:bg-neutral-700/50',
               ].join(' ')}
               onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
             >
               <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
               <span className="flex-1 text-body truncate text-gray-800 dark:text-neutral-200">{p.name}</span>
-              <button
-                title={p.visible ? 'Hide path' : 'Show path'}
-                onClick={(e) => { e.stopPropagation(); toggleVisibility(p.id) }}
-                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 transition-opacity"
-              >
-                {p.visible ? <Eye size={ICON.sm} /> : <EyeOff size={ICON.sm} />}
-              </button>
+              {p.hidden && (
+                <button
+                  title="Restore (un-hide from boolean op)"
+                  onClick={(e) => { e.stopPropagation(); showPath(p.id) }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-amber-400 transition-opacity"
+                >
+                  <Eye size={ICON.sm} />
+                </button>
+              )}
+              {!p.hidden && (
+                <button
+                  title={p.visible ? 'Hide path' : 'Show path'}
+                  onClick={(e) => { e.stopPropagation(); toggleVisibility(p.id) }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 transition-opacity"
+                >
+                  {p.visible ? <Eye size={ICON.sm} /> : <EyeOff size={ICON.sm} />}
+                </button>
+              )}
               <button
                 title="Delete path"
                 onClick={(e) => { e.stopPropagation(); deletePath(p.id) }}
@@ -251,7 +263,9 @@ export default function PathsPanel() {
       {/* Toolpaths section */}
       {operations.length > 0 && (
         <div className="border-t border-gray-300 dark:border-neutral-700 mt-1">
-          <p className="px-3 py-1.5 text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Toolpaths</p>
+          <div className="flex items-center px-3 py-1.5">
+            <p className="flex-1 text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Toolpaths</p>
+          </div>
           <ul className="px-2 pb-1 space-y-0.5">
             {opGroupOrder.map((toolId) => {
               const groupOps = opGroupMap.get(toolId)!

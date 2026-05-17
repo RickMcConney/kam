@@ -8,6 +8,7 @@ import { usePostProcessorStore, type PostProcessorProfile } from '../store/postP
 import { useSimStore } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
+import { useTabStore, type Tab } from '../store/tabStore'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -36,6 +37,7 @@ interface ProjectData {
     profiles: PostProcessorProfile[]
     activeId: string
   }
+  tabs?: Tab[]
 }
 
 export function loadProject(data: ProjectData) {
@@ -65,6 +67,8 @@ export function loadProject(data: ProjectData) {
     )
   }
 
+  useTabStore.getState().replaceTabs(data.tabs ?? [])
+
   useProjectStore.getState().markClean()
   regenerateAll()
 }
@@ -75,6 +79,7 @@ export function newProject() {
   useUIStore.getState().setSidebarTab('draw')
   usePathsStore.getState().replacePaths([])
   useToolpathStore.getState().replaceOperations([])
+  useTabStore.getState().replaceTabs([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
   useCanvasStore.getState().requestFit()

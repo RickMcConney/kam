@@ -1,16 +1,24 @@
 import { useState, useEffect } from 'react'
+import { NumericInput } from '../components/NumericInput'
 import { OP_TYPE_COLORS } from '../colors'
 import { ICON } from '../theme'
 import {
-  AlertCircle, Loader2,
+  AlertCircle, Loader2, Trash2,
   X, Circle, CircleDot, Target, Layers,
-  Star
+  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation } from '../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../store/formDefaultsStore'
 import { usePathsStore } from '../store/pathsStore'
-import { useWorkpieceStore } from '../store/workpieceStore'
+import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
+import { applyBooleanOp, type BooleanOpType } from '../tools/booleanOps'
+import { applyOffset, type OffsetCornerStyle } from '../tools/offsetOp'
+import { applyCornerTreatment, type CornerTreatmentType } from '../tools/cornerTreatment'
+import { computePatternInstances, applyPatternInstance } from '../tools/patternOp'
+import { nextPathColor } from '../importers/svgImporter'
+import { useTabStore } from '../store/tabStore'
+import { regenerateAffected } from '../cam/regenerate'
 import { useUIStore } from '../store/uiStore'
 import { flattenPath } from '../cam/pathFlattener'
 import { generateProfile } from '../cam/profile'
@@ -731,8 +739,8 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
         <div key={lbl}>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
           <div className="flex items-center gap-1">
-            <input type="number" value={val} min={0.01} step={0.5}
-              onChange={(e) => fn(parseFloat(e.target.value) || 0)}
+            <NumericInput value={val} min={0.01} step={0.5}
+              onChange={(v) => fn(v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -880,8 +888,8 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
         <div className="flex items-center gap-1">
-          <input type="number" value={form.maxDepthMM} min={0.1} step={0.5}
-            onChange={(e) => up('maxDepthMM', parseFloat(e.target.value) || 0)}
+          <NumericInput value={form.maxDepthMM} min={0.1} step={0.5}
+            onChange={(v) => up('maxDepthMM', v)}
             className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -1099,8 +1107,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Inlay Depth</label>
           <div className="flex items-center gap-1">
-            <input type="number" value={form.pocketDepthMM} min={0.5} step={0.5}
-              onChange={(e) => up('pocketDepthMM', parseFloat(e.target.value) || 0)}
+            <NumericInput value={form.pocketDepthMM} min={0.5} step={0.5}
+              onChange={(v) => up('pocketDepthMM', v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -1109,8 +1117,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
           <div className="flex items-center gap-1">
-            <input type="number" value={form.stepDownMM} min={0.1} step={0.5}
-              onChange={(e) => up('stepDownMM', parseFloat(e.target.value) || 0)}
+            <NumericInput value={form.stepDownMM} min={0.1} step={0.5}
+              onChange={(v) => up('stepDownMM', v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -1132,8 +1140,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Glue Gap</label>
           <div className="flex items-center gap-1">
-            <input type="number" value={form.glueLineMM} min={0} step={0.05}
-              onChange={(e) => up('glueLineMM', parseFloat(e.target.value) || 0)}
+            <NumericInput value={form.glueLineMM} min={0} step={0.05}
+              onChange={(v) => up('glueLineMM', v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -1142,8 +1150,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Clearance</label>
           <div className="flex items-center gap-1">
-            <input type="number" value={form.clearanceMM} min={0} step={0.05}
-              onChange={(e) => up('clearanceMM', parseFloat(e.target.value) || 0)}
+            <NumericInput value={form.clearanceMM} min={0} step={0.05}
+              onChange={(v) => up('clearanceMM', v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
@@ -1303,9 +1311,507 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
   )
 }
 
+// ─── Boolean form ────────────────────────────────────────────────────────────
+
+interface BooleanFormState {
+  opType: BooleanOpType
+}
+
+export function BooleanForm({ onClose }: { onClose: () => void }) {
+  const { paths, selectedIds, addPaths, hidePathIds, pushHistoryBoth } = usePathsStore()
+  const { load, save } = useFormDefaultsStore()
+
+  const [form, setForm] = useState<BooleanFormState>(() => {
+    const saved = load('boolean') as { opType?: BooleanOpType } | null
+    return { opType: saved?.opType ?? 'union' }
+  })
+  const [error, setError] = useState<string | null>(null)
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const canApply = selectedPaths.length >= 2
+
+  function handleApply() {
+    setError(null)
+    const result = applyBooleanOp(form.opType, selectedPaths.map((p) => p.d))
+    if ('error' in result) { setError(result.error); return }
+    if (!result.resultD) { setError('Result is empty'); return }
+    pushHistoryBoth()
+    const label = form.opType.charAt(0).toUpperCase() + form.opType.slice(1)
+    const newPath = {
+      id: `path-bool-${Date.now()}`,
+      name: `${label} result`,
+      d: result.resultD,
+      visible: true,
+      color: nextPathColor(),
+    }
+    addPaths([newPath])
+    hidePathIds(selectedIds)
+    usePathsStore.getState().setSelectedIds([newPath.id])
+    save('boolean', form)
+    onClose()
+  }
+
+  return (
+    <FormShell title="Boolean Operation" onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Paths {selectedPaths.length > 0 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedPaths.length} selected)</span>}
+        </label>
+        {canApply ? (
+          <div className="space-y-0.5">
+            {selectedPaths.map((p, i) => <PathChip key={p.id} path={p} label={i === 0 ? 'primary' : 'operand'} />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select 2+ paths on the canvas first</p>
+        )}
+      </div>
+      <ToggleRow label="Operation" options={['union', 'intersect', 'subtract'] as BooleanOpType[]} value={form.opType} onChange={(v) => setForm((f) => ({ ...f, opType: v }))} />
+      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label="Apply Boolean" />
+    </FormShell>
+  )
+}
+
+// ─── Offset form ──────────────────────────────────────────────────────────────
+
+interface OffsetFormState {
+  distanceMM: number
+  cornerStyle: OffsetCornerStyle
+}
+
+export function OffsetForm({ onClose }: { onClose: () => void }) {
+  const { paths, selectedIds, addPaths, pushHistoryBoth } = usePathsStore()
+  const { load, save } = useFormDefaultsStore()
+  const { units } = useWorkpieceStore()
+
+  const [form, setForm] = useState<OffsetFormState>(() => {
+    const saved = load('offset') as { distanceMM?: number; cornerStyle?: OffsetCornerStyle } | null
+    return {
+      distanceMM: saved?.distanceMM ?? 5,
+      cornerStyle: saved?.cornerStyle ?? 'miter',
+    }
+  })
+  const [error, setError] = useState<string | null>(null)
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const canApply = selectedPaths.length >= 1
+
+  function up<K extends keyof OffsetFormState>(k: K, v: OffsetFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleApply() {
+    setError(null)
+    const newPaths = selectedPaths.map((p) => {
+      const resultD = applyOffset(p.d, { distanceMM: form.distanceMM, cornerStyle: form.cornerStyle })
+      if (!resultD) return null
+      return {
+        id: `path-offset-${Date.now()}-${Math.random()}`,
+        name: `${p.name} offset`,
+        d: resultD,
+        visible: true,
+        color: nextPathColor(),
+      }
+    }).filter(Boolean) as Parameters<typeof addPaths>[0]
+    if (newPaths.length === 0) { setError('Offset produced no geometry'); return }
+    pushHistoryBoth()
+    addPaths(newPaths)
+    usePathsStore.getState().setSelectedIds(newPaths.map((p) => p.id))
+    save('offset', form)
+    onClose()
+  }
+
+  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+
+  return (
+    <FormShell title="Offset Path" onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Paths</label>
+        {canApply ? (
+          <div className="space-y-0.5">
+            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a path first</p>
+        )}
+      </div>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Distance</label>
+        <div className="flex items-center gap-1">
+          <NumericInput
+            value={fromMM(form.distanceMM, units as 'mm' | 'in')}
+            step={units === 'in' ? 0.0625 : 0.5}
+            onChange={(v) => up('distanceMM', toMM(v, units as 'mm' | 'in'))}
+            className={inputCls}
+          />
+          <span className="text-label text-gray-400 dark:text-neutral-500">{units}</span>
+        </div>
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Positive = outset, negative = inset</p>
+      </div>
+      <ToggleRow label="Corner Style" options={['miter', 'round', 'square'] as OffsetCornerStyle[]} value={form.cornerStyle} onChange={(v) => up('cornerStyle', v)} />
+      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label="Apply Offset" />
+    </FormShell>
+  )
+}
+
+// ─── Pattern form ─────────────────────────────────────────────────────────────
+
+interface PatternLinParams { rows: number; cols: number; xSpacingMM: number; ySpacingMM: number }
+interface PatternCirParams { count: number; radiusMM: number; startAngleDeg: number; endAngleDeg: number; rotateItems: boolean }
+interface PatternFormState {
+  mode: 'linear' | 'circular'
+  linParams: PatternLinParams
+  cirParams: PatternCirParams
+}
+
+export function PatternForm({ onClose }: { onClose: () => void }) {
+  const { paths, selectedIds, addPaths, pushHistoryBoth } = usePathsStore()
+  const { load, save } = useFormDefaultsStore()
+  const { units } = useWorkpieceStore()
+
+  const [form, setForm] = useState<PatternFormState>(() => {
+    const saved = load('pattern') as Partial<PatternFormState> | null
+    return {
+      mode: saved?.mode ?? 'linear',
+      linParams: saved?.linParams ?? { rows: 2, cols: 3, xSpacingMM: 20, ySpacingMM: 20 },
+      cirParams: saved?.cirParams ?? { count: 6, radiusMM: 30, startAngleDeg: 0, endAngleDeg: 360, rotateItems: true },
+    }
+  })
+  const [error, setError] = useState<string | null>(null)
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const canApply = selectedPaths.length >= 1
+
+  function upLin<K extends keyof PatternLinParams>(k: K, v: PatternLinParams[K]) {
+    setForm((f) => ({ ...f, linParams: { ...f.linParams, [k]: v } }))
+  }
+  function upCir<K extends keyof PatternCirParams>(k: K, v: PatternCirParams[K]) {
+    setForm((f) => ({ ...f, cirParams: { ...f.cirParams, [k]: v } }))
+  }
+
+  function handleApply() {
+    setError(null)
+    const params = form.mode === 'linear'
+      ? { type: 'linear' as const, ...form.linParams }
+      : { type: 'circular' as const, ...form.cirParams }
+    const instances = computePatternInstances(params)
+    if (instances.length === 0) { setError('Pattern produced no instances'); return }
+    const instancesToCreate = form.mode === 'linear' ? instances.slice(1) : instances
+    const newPaths: Parameters<typeof addPaths>[0] = []
+    for (const inst of instancesToCreate) {
+      for (const src of selectedPaths) {
+        newPaths.push({
+          id: `path-pattern-${Date.now()}-${Math.random()}`,
+          name: `${src.name} ${inst.index !== undefined ? inst.index + 1 : `r${inst.row}c${inst.col}`}`,
+          d: applyPatternInstance(src.d, inst),
+          visible: true,
+          color: src.color,
+        })
+      }
+    }
+    if (newPaths.length === 0) { setError('Pattern produced no geometry'); return }
+    pushHistoryBoth()
+    addPaths(newPaths)
+    save('pattern', form)
+    onClose()
+  }
+
+  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+  const u = units
+
+  return (
+    <FormShell title="Pattern" onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Paths</label>
+        {canApply ? (
+          <div className="space-y-0.5">
+            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a path first</p>
+        )}
+      </div>
+      <ToggleRow label="Mode" options={['linear', 'circular'] as const} value={form.mode} onChange={(v) => setForm((f) => ({ ...f, mode: v }))} />
+      {form.mode === 'linear' ? (
+        <div className="grid grid-cols-2 gap-2">
+          {([
+            ['Rows', form.linParams.rows, (v: number) => upLin('rows', Math.max(1, Math.round(v))), 1, 1, ''],
+            ['Cols', form.linParams.cols, (v: number) => upLin('cols', Math.max(1, Math.round(v))), 1, 1, ''],
+            ['X Gap', fromMM(form.linParams.xSpacingMM, u as 'mm' | 'in'), (v: number) => upLin('xSpacingMM', toMM(v, u as 'mm' | 'in')), 0, u === 'in' ? 0.0625 : 1, u],
+            ['Y Gap', fromMM(form.linParams.ySpacingMM, u as 'mm' | 'in'), (v: number) => upLin('ySpacingMM', toMM(v, u as 'mm' | 'in')), 0, u === 'in' ? 0.0625 : 1, u],
+          ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
+            <div key={lbl}>
+              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
+              <div className="flex items-center gap-1">
+                <NumericInput value={val} min={min} step={step}
+                  onChange={fn}
+                  className={inputCls} />
+                {suffix && <span className="text-label text-gray-400 dark:text-neutral-500">{suffix}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            {([
+              ['Count', form.cirParams.count, (v: number) => upCir('count', Math.max(2, Math.round(v))), 2, 1, ''],
+              ['Radius', fromMM(form.cirParams.radiusMM, u as 'mm' | 'in'), (v: number) => upCir('radiusMM', toMM(v, u as 'mm' | 'in')), 0.1, u === 'in' ? 0.0625 : 1, u],
+              ['Start°', form.cirParams.startAngleDeg, (v: number) => upCir('startAngleDeg', v), -360, 5, '°'],
+              ['End°',   form.cirParams.endAngleDeg,   (v: number) => upCir('endAngleDeg', v),   -360, 5, '°'],
+            ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
+              <div key={lbl}>
+                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
+                <div className="flex items-center gap-1">
+                  <NumericInput value={val} min={min} step={step}
+                    onChange={fn}
+                    className={inputCls} />
+                  {suffix && <span className="text-label text-gray-400 dark:text-neutral-500">{suffix}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="pattern-rotate" checked={form.cirParams.rotateItems}
+              onChange={(e) => upCir('rotateItems', e.target.checked)} className="accent-blue-500" />
+            <label htmlFor="pattern-rotate" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">Items face outward</label>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label="Apply Pattern" />
+    </FormShell>
+  )
+}
+
+// ─── Tabs form ────────────────────────────────────────────────────────────────
+
+interface TabsFormState {
+  count: number
+  lengthMM: number
+  heightMM: number
+}
+
+export function TabsForm({ onClose }: { onClose: () => void }) {
+  const { paths, selectedIds } = usePathsStore()
+  const { tabs, applyTabs, deleteTab, deletePathTabs } = useTabStore()
+  const { load, save } = useFormDefaultsStore()
+  const { units } = useWorkpieceStore()
+
+  const [form, setForm] = useState<TabsFormState>(() => {
+    const saved = load('tabs') as { count?: number; lengthMM?: number; heightMM?: number } | null
+    return {
+      count: saved?.count ?? 4,
+      lengthMM: saved?.lengthMM ?? 5,
+      heightMM: saved?.heightMM ?? 2,
+    }
+  })
+
+  const singlePath = selectedIds.length === 1 ? paths.find((p) => p.id === selectedIds[0]) ?? null : null
+  const pathTabs = singlePath ? tabs.filter((t) => t.pathId === singlePath.id) : []
+
+  function up<K extends keyof TabsFormState>(k: K, v: TabsFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleApply() {
+    if (!singlePath) return
+    applyTabs(singlePath.id, form.count, form.lengthMM, form.heightMM)
+    regenerateAffected(singlePath.id)
+    save('tabs', form)
+  }
+
+  function handleDelete(id: string) {
+    deleteTab(id)
+    if (singlePath) regenerateAffected(singlePath.id)
+  }
+
+  function handleClearAll() {
+    if (!singlePath) return
+    deletePathTabs(singlePath.id)
+    regenerateAffected(singlePath.id)
+  }
+
+  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+  const u = units
+
+  return (
+    <FormShell title="Holding Tabs" onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+        {singlePath ? (
+          <PathChip path={singlePath} label="selected" />
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a single path on the canvas first</p>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Count</label>
+          <NumericInput value={form.count} min={1} max={20} step={1} integer
+            onChange={(v) => up('count', v)}
+            className={inputCls} />
+        </div>
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Height</label>
+          <div className="flex items-center gap-1">
+            <NumericInput value={fromMM(form.heightMM, u as 'mm' | 'in')} min={0.1} step={u === 'in' ? 0.0625 : 0.5}
+              onChange={(v) => up('heightMM', toMM(v, u as 'mm' | 'in'))}
+              className={inputCls} />
+            <span className="text-label text-gray-400 dark:text-neutral-500">{u}</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Length</label>
+        <div className="flex items-center gap-1">
+          <NumericInput value={fromMM(form.lengthMM, u as 'mm' | 'in')} min={0.5} step={u === 'in' ? 0.0625 : 1}
+            onChange={(v) => up('lengthMM', toMM(v, u as 'mm' | 'in'))}
+            className={inputCls} />
+          <span className="text-label text-gray-400 dark:text-neutral-500">{u}</span>
+        </div>
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Tab width along the path edge</p>
+      </div>
+      <GenerateBtn disabled={!singlePath} generating={false} onClick={handleApply} label="Apply Tabs" />
+      {pathTabs.length > 0 && (
+        <div className="space-y-1">
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider">
+            Current Tabs <span className="normal-case text-gray-500 dark:text-neutral-400">({pathTabs.length})</span>
+          </label>
+          {pathTabs.map((tab, i) => (
+            <div key={tab.id} className="flex items-center gap-1.5 text-body text-gray-700 dark:text-neutral-300 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1">
+              <span className="flex-1">Tab {i + 1} — {(tab.t * 100).toFixed(0)}% along path</span>
+              <button onClick={() => handleDelete(tab.id)}
+                className="p-0.5 rounded hover:bg-red-900/40 text-gray-400 dark:text-neutral-500 hover:text-red-400 transition-colors flex-shrink-0">
+                <Trash2 size={ICON.xs} />
+              </button>
+            </div>
+          ))}
+          <button onClick={handleClearAll}
+            className="w-full py-1 rounded text-label border border-gray-200 dark:border-neutral-600 text-gray-400 dark:text-neutral-500 hover:text-red-400 hover:border-red-400 transition-colors">
+            Clear All Tabs
+          </button>
+        </div>
+      )}
+    </FormShell>
+  )
+}
+
+// ─── Node Edit / Corner Treatment form ───────────────────────────────────────
+
+interface NodeEditFormState {
+  treatmentType: CornerTreatmentType
+  radiusMM: number
+}
+
+const CORNER_TREATMENTS: { type: CornerTreatmentType; label: string; desc: string; preview: string }[] = [
+  { type: 'outerRound', label: 'Outer Round', desc: 'Arc rounding the outside of the corner', preview: '╮' },
+  { type: 'innerRound', label: 'Inner Round', desc: 'Concave arc curving into the corner (fillet)', preview: '⌒' },
+  { type: 'chamfer',    label: 'Chamfer',     desc: 'Straight bevel cut across the corner', preview: '╱' },
+  { type: 'dogbone',    label: 'Dogbone',     desc: 'Circular notch for CNC internal corners', preview: '⦿' },
+]
+
+export function NodeEditForm({ onClose }: { onClose: () => void }) {
+  const { paths, selectedIds, batchUpdatePaths, pushHistoryBoth } = usePathsStore()
+  const { setNodeEditPathId } = useUIStore()
+  const { load, save } = useFormDefaultsStore()
+
+  const [form, setForm] = useState<NodeEditFormState>(() => {
+    const saved = load('nodeedit') as NodeEditFormState | null
+    return {
+      treatmentType: (saved?.treatmentType ?? 'chamfer') as CornerTreatmentType,
+      radiusMM: saved?.radiusMM ?? 2,
+    }
+  })
+
+  // Clear any active node-edit overlay when this panel closes
+  useEffect(() => () => { setNodeEditPathId(null) }, [])
+
+  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const activePath = selectedPaths.length === 1 ? selectedPaths[0] : null
+
+  function handleApply() {
+    if (!activePath) return
+    pushHistoryBoth()
+    const newD = applyCornerTreatment(activePath.d, { type: form.treatmentType, radiusMM: form.radiusMM })
+    if (newD === activePath.d) return
+    batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null }])
+    regenerateAffected(activePath.id)
+    save('nodeedit', form)
+  }
+
+  function up<K extends keyof NodeEditFormState>(k: K, v: NodeEditFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  return (
+    <FormShell title="Corner Treatment" onClose={onClose}>
+      {/* Selected path */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+        {activePath ? (
+          <PathChip path={activePath} label="selected" />
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1">
+            <AlertCircle size={ICON.sm} /> Select exactly one path on canvas
+          </p>
+        )}
+      </div>
+
+      {/* Corner treatment section */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Corner Treatment</label>
+        <div className="grid grid-cols-2 gap-1">
+          {CORNER_TREATMENTS.map(({ type, label, desc }) => (
+            <button
+              key={type}
+              title={desc}
+              onClick={() => up('treatmentType', type)}
+              className={[
+                'py-1.5 px-2 rounded border text-body text-left transition-colors',
+                form.treatmentType === type
+                  ? 'border-blue-500 bg-blue-500/20 text-blue-300'
+                  : 'border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:border-gray-300 dark:hover:border-neutral-500',
+              ].join(' ')}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Radius */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          {form.treatmentType === 'dogbone' ? 'Tool Radius' : 'Radius'} (mm)
+        </label>
+        <NumericInput
+          value={form.radiusMM}
+          min={0.01}
+          step={0.5}
+          onChange={(v) => up('radiusMM', v)}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-blue-500"
+        />
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+          Applied to all sharp corner nodes. Use Undo to revert.
+        </p>
+      </div>
+
+      <button
+        disabled={!activePath}
+        onClick={handleApply}
+        className="w-full py-1.5 rounded text-body font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-blue-600 hover:bg-blue-500 text-white"
+      >
+        Apply to All Corners
+      </button>
+    </FormShell>
+  )
+}
+
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay'
+type OpType = 'profile' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
 type FormState = null | 'menu' | OpType
 
 const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500'
@@ -1313,7 +1819,7 @@ const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body tr
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
   return (
     <div className="px-3 py-2 space-y-2 border-b border-gray-300 dark:border-neutral-700">
-      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Operations</p>
+      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">CAM Operations</p>
       <div className="grid grid-cols-3 gap-1">
         {([
           ['profile', 'Profile', 'Cut along path edge', <Circle size={ICON.md} />],
@@ -1328,6 +1834,21 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           </button>
         ))}
       </div>
+      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Path Tools</p>
+      <div className="grid grid-cols-3 gap-1">
+        {([
+          ['boolean', 'Boolean', 'Union, intersect, or subtract paths', <SquaresUnite size={ICON.md} />],
+          ['offset', 'Offset', 'Inset or outset path by distance', <SquareSquare size={ICON.md} />],
+          ['pattern', 'Pattern', 'Linear or circular array', <LayoutGrid size={ICON.md} />],
+          ['tabs', 'Tabs', 'Add holding tabs to keep part from moving', <RectangleEllipsis size={ICON.md} />],
+          ['nodeedit', 'Corners', 'Apply corner treatments: round, chamfer, dogbone', <VectorSquare size={ICON.md} />],
+        ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
+          <button key={type} onClick={() => onSelect(type)} title={desc} className={opBtnCls}>
+            <span style={{ color: OP_TYPE_COLORS[type as string] ?? '#94a3b8' }}>{icon}</span>
+            <span className="text-label text-gray-500 dark:text-neutral-400">{name}</span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -1335,10 +1856,11 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export default function MachinePanel({ fill = false }: { fill?: boolean }) {
-  const { setMachineFormActive, setActiveTool } = useUIStore()
+  const { setMachineFormActive, setActiveTool, setTabsFormActive } = useUIStore()
   const [activeForm, setActiveForm] = useState<FormState>('menu')
 
-  useEffect(() => () => setMachineFormActive(false), [setMachineFormActive])
+  useEffect(() => () => { setMachineFormActive(false); setTabsFormActive(false) }, [setMachineFormActive, setTabsFormActive])
+  useEffect(() => { setTabsFormActive(activeForm === 'tabs') }, [activeForm, setTabsFormActive])
 
   const openForm = (t: FormState) => { setActiveForm(t); setMachineFormActive(true); setActiveTool('select') }
   const closeForm = () => { setActiveForm('menu'); setMachineFormActive(false) }
@@ -1359,6 +1881,16 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
         <VCarveForm onClose={closeForm} />
       ) : activeForm === 'inlay' ? (
         <InlayForm onClose={closeForm} />
+      ) : activeForm === 'boolean' ? (
+        <BooleanForm onClose={closeForm} />
+      ) : activeForm === 'offset' ? (
+        <OffsetForm onClose={closeForm} />
+      ) : activeForm === 'pattern' ? (
+        <PatternForm onClose={closeForm} />
+      ) : activeForm === 'tabs' ? (
+        <TabsForm onClose={closeForm} />
+      ) : activeForm === 'nodeedit' ? (
+        <NodeEditForm onClose={closeForm} />
       ) : null}
     </div>
   )

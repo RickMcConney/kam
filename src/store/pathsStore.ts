@@ -30,6 +30,8 @@ interface PathsState {
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
+  hidePathIds: (ids: string[]) => void
+  showPath: (id: string) => void
   undo: () => void
   redo: () => void
   replacePaths: (paths: ImportedPath[]) => void
@@ -157,6 +159,14 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
     }
   }),
+
+  hidePathIds: (ids) => set((s) => ({
+    paths: s.paths.map((p) => ids.includes(p.id) ? { ...p, hidden: true } : p),
+  })),
+
+  showPath: (id) => set((s) => ({
+    paths: s.paths.map((p) => p.id === id ? { ...p, hidden: false } : p),
+  })),
 
   splitPath: (id, subDs) => set((s) => {
     const idx = s.paths.findIndex((p) => p.id === id)
