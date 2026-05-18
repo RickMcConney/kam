@@ -1005,6 +1005,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             })
           })
         }
+        useUIStore.getState().setActiveTool('select')
       }
       return
     }
