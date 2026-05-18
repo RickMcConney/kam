@@ -68,6 +68,7 @@ function ShapeParamsEditor({ id, params, units }: { id: string; params: ShapePar
         <EditField label="H" valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
       </>)
     case 'roundrect':
+    case 'inroundrect':
       return (<>
         <EditField label="X" valueMM={params.x} units={u} onChange={(x) => update({ ...params, x })} min={-10000} />
         <EditField label="Y" valueMM={params.y} units={u} onChange={(y) => update({ ...params, y })} min={-10000} />
@@ -88,6 +89,13 @@ function ShapeParamsEditor({ id, params, units }: { id: string; params: ShapePar
         <EditField label="RX" valueMM={params.rx} units={u} onChange={(rx) => update({ ...params, rx })} />
         <EditField label="RY" valueMM={params.ry} units={u} onChange={(ry) => update({ ...params, ry })} />
       </>)
+    case 'shield':
+      return (<>
+        <EditField label="CX" valueMM={params.cx} units={u} onChange={(cx) => update({ ...params, cx })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy} units={u} onChange={(cy) => update({ ...params, cy })} min={-10000} />
+        <EditField label="W"  valueMM={params.w}  units={u} onChange={(w)  => update({ ...params, w })} />
+        <EditField label="H"  valueMM={params.h}  units={u} onChange={(h)  => update({ ...params, h })} />
+      </>)
     case 'polygon':
       return (<>
         <EditField label="CX" valueMM={params.cx} units={u} onChange={(cx) => update({ ...params, cx })} min={-10000} />
@@ -102,6 +110,20 @@ function ShapeParamsEditor({ id, params, units }: { id: string; params: ShapePar
         <EditField label="OR" valueMM={params.outerRadius} units={u} onChange={(outerRadius) => update({ ...params, outerRadius })} />
         <EditField label="IR" valueMM={params.innerRadius} units={u} onChange={(innerRadius) => update({ ...params, innerRadius })} />
         <EditField label="N" valueMM={params.points} units="" min={3} integer onChange={(points) => update({ ...params, points: Math.max(3, Math.round(points)) })} />
+      </>)
+    case 'heart':
+      return (<>
+        <EditField label="CX" valueMM={params.cx} units={u} onChange={(cx) => update({ ...params, cx })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy} units={u} onChange={(cy) => update({ ...params, cy })} min={-10000} />
+        <EditField label="R" valueMM={params.curveRadius} units={u} onChange={(curveRadius) => update({ ...params, curveRadius })} />
+        <EditField label="Ang" valueMM={params.angle} units="" integer min={1} onChange={(angle) => update({ ...params, angle: Math.min(179, Math.max(1, Math.round(angle))) })} />
+      </>)
+    case 'slot':
+      return (<>
+        <EditField label="CX"  valueMM={params.cx}     units={u} onChange={(cx)     => update({ ...params, cx })} min={-10000} />
+        <EditField label="CY"  valueMM={params.cy}     units={u} onChange={(cy)     => update({ ...params, cy })} min={-10000} />
+        <EditField label="Len" valueMM={params.length} units={u} onChange={(length) => update({ ...params, length: Math.max(length, params.width) })} />
+        <EditField label="W"   valueMM={params.width}  units={u} onChange={(width)  => update({ ...params, width: Math.min(width, params.length) })} />
       </>)
     case 'text': {
       const updateText = (newParams: ShapeParams) => {

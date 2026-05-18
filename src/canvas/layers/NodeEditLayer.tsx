@@ -16,8 +16,8 @@ interface Props {
   onHoverSegChange?: (segIdx: number | null) => void
 }
 
-const ANCHOR_R = 4.5
-const HANDLE_R = 3
+const ANCHOR_R = 7
+const HANDLE_R = 5
 const STROKE_COLOR = '#38bdf8'
 const HANDLE_COLOR = '#94a3b8'
 const HOVERED_COLOR = '#ef4444'
@@ -146,7 +146,7 @@ export function NodeEditLayer({
           x={node.x}
           y={node.y}
           radius={ANCHOR_R / s}
-          fill={i === 0 ? '#0f172a' : '#1e293b'}
+          fill={hoveredNodeIdx === i ? HOVERED_COLOR : i === 0 ? '#0f172a' : '#1e293b'}
           stroke={hoveredNodeIdx === i ? HOVERED_COLOR : i === 0 ? '#ffffff' : STROKE_COLOR}
           strokeWidth={1.5 / s}
           listening
@@ -184,6 +184,9 @@ function NodeHandles({
   scale: number
   onMouseDown: (nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => void
 }) {
+  const [hoveredIn, setHoveredIn] = useState(false)
+  const [hoveredOut, setHoveredOut] = useState(false)
+
   return (
     <>
       {node.handleIn && (
@@ -198,8 +201,10 @@ function NodeHandles({
             x={node.handleIn.x}
             y={node.handleIn.y}
             radius={HANDLE_R / s}
-            fill={HANDLE_COLOR}
+            fill={hoveredIn ? '#ffffff' : HANDLE_COLOR}
             listening
+            onMouseEnter={() => setHoveredIn(true)}
+            onMouseLeave={() => setHoveredIn(false)}
             onMouseDown={(e) => { e.cancelBubble = true; onMouseDown(nodeIdx, 'handle-in', e) }}
           />
         </>
@@ -216,8 +221,10 @@ function NodeHandles({
             x={node.handleOut.x}
             y={node.handleOut.y}
             radius={HANDLE_R / s}
-            fill={HANDLE_COLOR}
+            fill={hoveredOut ? '#ffffff' : HANDLE_COLOR}
             listening
+            onMouseEnter={() => setHoveredOut(true)}
+            onMouseLeave={() => setHoveredOut(false)}
             onMouseDown={(e) => { e.cancelBubble = true; onMouseDown(nodeIdx, 'handle-out', e) }}
           />
         </>

@@ -196,6 +196,7 @@ interface SceneRefs {
   fpsSamples: number[]
   lastFrameTs: number
   renderNeeded: boolean
+  activeToolKey: string  // encodes type+diam+angle; rebuild mesh when it changes
 }
 
 // ─── component ───────────────────────────────────────────────────────────────
@@ -279,6 +280,7 @@ export default function ThreeView() {
       fpsSamples: [],
       lastFrameTs: 0,
       renderNeeded: true,
+      activeToolKey: '',
     }
     sceneRef.current = refs
 
@@ -327,6 +329,23 @@ export default function ThreeView() {
         const wp     = useWorkpieceStore.getState()
         const T      = wp.thicknessMM
         const org    = originWorldXY(wp.origin, wp.widthMM, wp.heightMM)
+
+        // Rebuild tool mesh if the current segment uses a different tool type/size
+        const activeSeg = sim.segments[segIdx]
+        if (activeSeg) {
+          let tType = 'flat', tDiam = activeSeg.toolDiameterMM, tAngle = 60
+          if (activeSeg.toolVbitHalfAngleTan) {
+            tType  = 'vbit'
+            tAngle = Math.atan(activeSeg.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
+          } else if (activeSeg.toolBallNose) {
+            tType = 'ball'
+          }
+          const key = `${tType}|${tDiam}|${tAngle}`
+          if (key !== refs.activeToolKey) {
+            buildToolIndicatorForParams(refs, tType, tDiam, tAngle)
+            refs.activeToolKey = key
+          }
+        }
 
         if (refs.toolMesh) {
           const toolVis = showToolRef.current
@@ -489,15 +508,10 @@ function rebuildVoxels(refs: SceneRefs) {
 
   const segments = useSimStore.getState().segments
 
-  // Finer cells than before — budget is 2M but we're typically well under it,
-  // so drop the minimum floor to 0.1mm for better V-carve detail resolution.
-  let minDia = Infinity
-  for (const seg of segments) {
-    if (!seg.rapid && (seg.prevZ < 0 || seg.z < 0) && seg.toolDiameterMM < minDia) minDia = seg.toolDiameterMM
-  }
-  const minCellMM = minDia === Infinity
-    ? Math.min(W, H) / 8
-    : Math.max(0.1, minDia / 64)
+  // Target 0.05 mm cells; the budget refinement in VoxelMaterial will scale up
+  // if the actual voxel count would exceed 2M.
+  const hasAnyCut = segments.some(s => !s.rapid && (s.prevZ < 0 || s.z < 0))
+  const minCellMM = hasAnyCut ? 0.01 : Math.min(W, H) / 8
 
   const voxelMat = new VoxelMaterial(W, H, T, segments, org.x, org.y, minCellMM)
   refs.voxelMat  = voxelMat
@@ -533,14 +547,22 @@ function rebuildVoxels(refs: SceneRefs) {
   refs.scene.add(cutMesh)
 }
 
-// Build the tool indicator from sim segments (for accurate shape/angle) or
-// fall back to the first tool in the library.
-function buildToolIndicator(refs: SceneRefs) {
+function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: number, vbitAngleDeg: number) {
   if (refs.toolMesh) {
     refs.scene.remove(refs.toolMesh)
     disposeObject3D(refs.toolMesh)
     refs.toolMesh = null
   }
+  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg)
+  mesh.visible = false
+  refs.scene.add(mesh)
+  refs.toolMesh = mesh
+}
+
+// Build the tool indicator from the first non-rapid sim segment, or fall back
+// to the first tool in the library.
+function buildToolIndicator(refs: SceneRefs) {
+  refs.activeToolKey = ''
 
   const segments = useSimStore.getState().segments
   let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60
@@ -566,10 +588,7 @@ function buildToolIndicator(refs: SceneRefs) {
     if (t.type === 'vbit') vbitAngleDeg = (t as any).vbitAngleDeg ?? 60
   }
 
-  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg)
-  mesh.visible = false
-  refs.scene.add(mesh)
-  refs.toolMesh = mesh
+  buildToolIndicatorForParams(refs, toolType, diamMM, vbitAngleDeg)
 }
 
 function rebuildShapes(refs: SceneRefs) {

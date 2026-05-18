@@ -326,8 +326,15 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
-        const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } })
+        const result = importSvg(ev.target?.result as string, {})
         if (result.paths.length > 0) {
+          const bbox = getMultiBBox(result.paths.map(p => p.d))
+          if (bbox) {
+            const dx = widthMM / 2 - (bbox.minX + bbox.maxX) / 2
+            const dy = heightMM / 2 - (bbox.minY + bbox.maxY) / 2
+            if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001)
+              for (const path of result.paths) path.d = translateD(path.d, dx, dy)
+          }
           addPaths(result.paths)
           setSidebarTab('paths')
         }
@@ -904,12 +911,16 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         const updates = m.pathIds.flatMap((id) => {
           const path = allPaths.find((p) => p.id === id)
           if (!path) return []
-          const newD = scaleAroundD(path.d, ax, ay, sx, sy)
           const newShapeParams = path.shapeParams
             ? scaleShapeParams(path.shapeParams, ax, ay, sx, sy)
             : undefined
-          // null means computed but not representable → clear shapeParams
-          return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams }]
+          // When params are valid, regenerate d from them to preserve exact geometry (arcs stay circular)
+          const newD = (newShapeParams != null && newShapeParams !== undefined)
+            ? generateShapeD(newShapeParams)
+            : scaleAroundD(path.d, ax, ay, sx, sy)
+          const typeChanged = newShapeParams && path.shapeParams && newShapeParams.type !== path.shapeParams.type
+          const name = typeChanged ? shapeDisplayName(newShapeParams!.type) : undefined
+          return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams, name }]
         })
         if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }

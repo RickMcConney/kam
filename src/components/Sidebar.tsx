@@ -15,11 +15,11 @@ const TABS: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
   { id: 'paths', label: 'Paths', icon: <Route size={ICON.md} /> },
 ]
 
-function TabContent({ tab, machineFormActive }: { tab: SidebarTab; machineFormActive: boolean }) {
+function TabContent({ tab, machineFormActive, shapesPanelOpen }: { tab: SidebarTab; machineFormActive: boolean; shapesPanelOpen: boolean }) {
   if (tab === 'draw') return (
     <>
-      {!machineFormActive && <ShapePanel />}
-      <MachinePanel fill={machineFormActive} />
+      {!machineFormActive && <ShapePanel fill={shapesPanelOpen} />}
+      {!shapesPanelOpen && <MachinePanel fill={machineFormActive} />}
     </>
   )
   return <PathsPanel />
@@ -31,6 +31,7 @@ export default function Sidebar() {
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
   const hasGcode = useSimStore((s) => !!s.gcode)
   const machineFormActive = useUIStore((s) => s.machineFormActive)
+  const shapesPanelOpen = useUIStore((s) => s.shapesPanelOpen)
 
   const [width, setWidth] = useState(320)
   const dragging = useRef(false)
@@ -96,12 +97,12 @@ export default function Sidebar() {
             ))}
           </div>
 
-          {/* Scrollable content — switches to flex-col fill when machine form is open */}
-          <div className={machineFormActive && sidebarTab === 'draw'
+          {/* Scrollable content — switches to flex-col fill when machine or shapes panel is open */}
+          <div className={(machineFormActive || shapesPanelOpen) && sidebarTab === 'draw'
             ? 'flex-1 overflow-hidden flex flex-col'
             : 'flex-1 overflow-y-auto'
           }>
-            <TabContent tab={sidebarTab} machineFormActive={machineFormActive} />
+            <TabContent tab={sidebarTab} machineFormActive={machineFormActive} shapesPanelOpen={shapesPanelOpen} />
           </div>
 
           {/* Properties panel — hidden while machine form fills the sidebar */}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ICON } from '../theme'
-import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown } from 'lucide-react'
+import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown, Image } from 'lucide-react'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import type { AnyOperation } from '../store/toolpathStore'
@@ -228,7 +228,10 @@ export default function PathsPanel() {
               ].join(' ')}
               onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
             >
-              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
+              {p.imageSrc
+                ? <Image size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
+                : <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
+              }
               <span className="flex-1 text-body truncate text-gray-800 dark:text-neutral-200">{p.name}</span>
               {p.hidden && (
                 <button

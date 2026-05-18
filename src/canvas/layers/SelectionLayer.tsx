@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Group, Line, Circle } from 'react-konva'
 import type Konva from 'konva'
 import type { Viewport } from '../CanvasStage'
@@ -5,7 +6,7 @@ import type { HandleType, LiveTransform } from '../types'
 import { getMultiBBox, transformPoint } from '../selectionUtils'
 import type { ImportedPath } from '../../store/pathsStore'
 
-const HANDLE_R = 5
+const HANDLE_R = 8
 const ROT_OFFSET_PX = 22
 
 function applyLT(x: number, y: number, lt: LiveTransform | null): { x: number; y: number } {
@@ -69,6 +70,7 @@ interface HandleLayerProps extends SharedProps {
 
 export function SelectionHandleLayer({ viewport, selectedPaths, liveTransform, onResizeHandleDown, onRotateHandleDown }: HandleLayerProps) {
   const pos = useHandlePositions(viewport, selectedPaths, liveTransform)
+  const [hoveredId, setHoveredId] = useState<HandleType | 'rot' | null>(null)
   if (!pos) return null
   const { corners: c, rotHandle } = pos
 
@@ -86,14 +88,20 @@ export function SelectionHandleLayer({ viewport, selectedPaths, liveTransform, o
           key={id}
           x={p.x} y={p.y}
           radius={HANDLE_R}
-          fill="#1e293b" stroke="#60a5fa" strokeWidth={1.5}
+          fill={hoveredId === id ? '#60a5fa' : '#1e293b'}
+          stroke="#60a5fa" strokeWidth={1.5}
+          onMouseEnter={() => setHoveredId(id)}
+          onMouseLeave={() => setHoveredId(null)}
           onMouseDown={(e) => { e.cancelBubble = true; onResizeHandleDown(id, e) }}
         />
       ))}
       <Circle
         x={rotHandle.x} y={rotHandle.y}
         radius={HANDLE_R}
-        fill="#1e293b" stroke="#a78bfa" strokeWidth={1.5}
+        fill={hoveredId === 'rot' ? '#a78bfa' : '#1e293b'}
+        stroke="#a78bfa" strokeWidth={1.5}
+        onMouseEnter={() => setHoveredId('rot')}
+        onMouseLeave={() => setHoveredId(null)}
         onMouseDown={(e) => { e.cancelBubble = true; onRotateHandleDown(e) }}
       />
     </Group>

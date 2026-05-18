@@ -62,7 +62,7 @@ function buildLeaves(
     if (!isCuttingSeg(seg)) continue
     const ax = seg.prevX + orgX, ay = seg.prevY + orgY
     const bx = seg.x + orgX,    by = seg.y + orgY
-    const r = segMaxRadius(seg)
+    const r = segMaxRadius(seg) 
     bboxes.push([Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r])
   }
   const leaves: VoxelLeaf[] = []
@@ -95,7 +95,7 @@ function buildGrid(leaves: VoxelLeaf[], W: number, H: number): Int32Array[] {
 
 // ── main class ───────────────────────────────────────────────────────────────
 
-const MAX_VOXELS = 2_000_000
+const MAX_VOXELS = 500_000
 
 export class VoxelMaterial {
   readonly leaves: VoxelLeaf[]
@@ -127,19 +127,50 @@ export class VoxelMaterial {
     this._W = W
     this._H = H
 
+    // Use capsule area (segLen × 2r) rather than bbox area — bbox is wildly
+    // conservative for diagonal/overlapping passes and causes the budget formula
+    // to pick a cell size much coarser than the 2M-voxel limit actually requires.
     let totalCutArea = 0
     for (const seg of segments) {
       if (!isCuttingSeg(seg)) continue
       const r = segMaxRadius(seg)
-      const bboxW = Math.abs(seg.x - seg.prevX) + 2 * r
-      const bboxH = Math.abs(seg.y - seg.prevY) + 2 * r
-      totalCutArea += bboxW * bboxH
+      const segLen = Math.hypot(seg.x - seg.prevX, seg.y - seg.prevY)
+      totalCutArea += (segLen + 2 * r) * (2 * r)
     }
     const effectiveArea = totalCutArea > 0 ? Math.min(totalCutArea, W * H) : W * H
 
-    const cellMM = Math.max(minCellMM, Math.sqrt(effectiveArea / MAX_VOXELS))
+    let cellMM = Math.max(minCellMM, Math.sqrt(effectiveArea / MAX_VOXELS))
+
+    // Build a first pass at the budget-formula cell size, then use the real
+    // voxel count to check whether we can afford minCellMM.  The area formula
+    // typically overestimates for sparse paths, so the first pass usually has
+    // far fewer voxels than MAX_VOXELS.
+    let leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
+    if (cellMM > minCellMM) {
+      // Estimate count at minCellMM; if it fits go there, else find finest that does.
+      const ratio = cellMM / minCellMM
+      const estimatedAtMin = leaves.length * ratio * ratio
+      const targetCell = Math.max(minCellMM,
+        estimatedAtMin <= MAX_VOXELS
+          ? minCellMM
+          : cellMM * Math.sqrt(leaves.length / MAX_VOXELS)
+      )
+      if (targetCell < cellMM - 1e-6) {
+        console.log(`[VoxelMaterial] refining ${cellMM.toFixed(3)} → ${targetCell.toFixed(3)} mm`)
+        cellMM = targetCell
+        leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
+        // Quadratic estimate can underestimate; correct with real count if we overshot.
+        if (leaves.length > MAX_VOXELS) {
+          const correctedCell = Math.max(minCellMM, cellMM * Math.sqrt(leaves.length / MAX_VOXELS))
+          console.log(`[VoxelMaterial] correcting ${cellMM.toFixed(3)} → ${correctedCell.toFixed(3)} mm (actual ${leaves.length.toLocaleString()} over budget)`)
+          cellMM = correctedCell
+          leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
+        }
+      }
+    }
+
     this.effectiveCellMM = cellMM
-    this.leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
+    this.leaves = leaves
     console.log(`[VoxelMaterial] ${this.leaves.length.toLocaleString()} voxels, cell size ${cellMM.toFixed(3)} mm`)
 
     this._grid  = buildGrid(this.leaves, W, H)

@@ -12,6 +12,7 @@ export interface ImportedPath {
   shapeParams?: ShapeParams
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
+  imageSrc?: string  // base64 data URL — path acts as bounding box for this image
 }
 
 export interface SvgImportResult {
@@ -288,7 +289,6 @@ function parseSvgLength(attr: string|null): {px:number; unit:string}|null {
 // ── Main export ───────────────────────────────────────────────────────────────
 export interface ImportOptions {
   ppi?: number
-  workpieceMM?: { w: number; h: number }  // if provided, SVG is centered on workpiece
 }
 
 let _groupCounter = 0
@@ -340,12 +340,6 @@ export function importSvg(svgText: string, options?: ImportOptions | number, gro
   let gtx = -vbX * gsx
   let gty = heightMM + vbY * (heightMM / vbH)
 
-  // Center on workpiece if dimensions provided
-  if (opts.workpieceMM) {
-    gtx += (opts.workpieceMM.w - widthMM) / 2
-    gty += (opts.workpieceMM.h - heightMM) / 2
-  }
-
   const paths: ImportedPath[] = []
 
   function processElement(el: Element, parentMat: Mat6) {
@@ -373,8 +367,24 @@ export function importSvg(svgText: string, options?: ImportOptions | number, gro
       const cmds = parseD(rawD)
       const withElMat = applyMat(cmds, elMat)
       const withGlobal = applyGlobalTransform(withElMat, gsx, gsy, gtx, gty)
-      const d = stringifyD(withGlobal)
 
+      // M-only paths are drill-point markers — render each M as a crosshair
+      const hasDrawable = withGlobal.some(c => c.t !== 'M' && c.t !== 'Z')
+      if (!hasDrawable) {
+        const baseName = el.getAttribute('id') || el.getAttribute('inkscape:label') || null
+        const ARM = 1 // crosshair arm length in CNC mm
+        for (const cmd of withGlobal) {
+          if (cmd.t !== 'M') continue
+          const cx = cmd.x, cy = cmd.y
+          const crossD = `M${fmt(cx - ARM)},${fmt(cy)} L${fmt(cx + ARM)},${fmt(cy)} M${fmt(cx)},${fmt(cy - ARM)} L${fmt(cx)},${fmt(cy + ARM)}`
+          const id = `path-${++pathCounter}`
+          const name = baseName || `Marker ${pathCounter}`
+          paths.push({ id, name, d: crossD, visible: true, color: PATH_COLOR, groupId, groupName })
+        }
+        return
+      }
+
+      const d = stringifyD(withGlobal)
       const baseName = el.getAttribute('id') || el.getAttribute('inkscape:label') || null
       const subDs = splitCompoundPath(d)
       if (subDs.length > 1) {

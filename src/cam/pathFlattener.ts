@@ -175,6 +175,32 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
   return subpaths
 }
 
+// Iterative Ramer-Douglas-Peucker simplification.
+// Reduces a dense polyline to the minimum set of points that deviate no more
+// than `tol` from the original curve. Runs in O(n log n) average.
+export function douglasPeucker(pts: Pt2[], tol: number): Pt2[] {
+  const n = pts.length
+  if (n <= 2) return [...pts]
+  const keep = new Uint8Array(n)
+  keep[0] = keep[n - 1] = 1
+  const stack: [number, number][] = [[0, n - 1]]
+  while (stack.length > 0) {
+    const [lo, hi] = stack.pop()!
+    if (hi <= lo + 1) continue
+    const ax = pts[lo][0], ay = pts[lo][1], bx = pts[hi][0], by = pts[hi][1]
+    let maxD = 0, split = lo
+    for (let i = lo + 1; i < hi; i++) {
+      const d = dist(pts[i][0], pts[i][1], ax, ay, bx, by)
+      if (d > maxD) { maxD = d; split = i }
+    }
+    if (maxD > tol) {
+      keep[split] = 1
+      stack.push([lo, split], [split, hi])
+    }
+  }
+  return pts.filter((_, i) => keep[i])
+}
+
 // Detect whether a closed polygon's edges properly intersect (O(n²)).
 // Skips adjacent edge pairs that share a vertex.
 export function hasSelfIntersection(pts: Pt2[]): boolean {
@@ -232,10 +258,23 @@ export function offsetPolygon(pts: Pt2[], delta: number): Pt2[] {
   }
   // Remove closing duplicate (last ≈ first) so the polygon has no degenerate edge at the seam
   if (u.length > 1 && Math.hypot(u[u.length-1][0] - u[0][0], u[u.length-1][1] - u[0][1]) < 1e-6) u.pop()
-  const n = u.length
+  if (u.length < 3) return []
+
+  // Simplify before offset. Dense polylines from DXF line-segment approximations
+  // (e.g. gear teeth at 0.02–0.05 mm/segment) create near-collinear vertex clusters
+  // that produce huge miter spikes and false self-intersection detections.
+  // Open the closed polygon at u[0], run D-P, then drop the re-appended closing point.
+  // Tolerance: 2% of |delta|, floor 0.001 mm — well within CNC accuracy.
+  const dpTol = Math.max(1e-3, Math.abs(delta) * 0.02)
+  const opened = [...u, u[0]]
+  const simplified = douglasPeucker(opened, dpTol)
+  simplified.pop()
+  const v = simplified.length >= 3 ? simplified : u
+
+  const n = v.length
   if (n < 3) return []
 
-  const area = signedArea(u)
+  const area = signedArea(v)
   // Normalise winding so that positive delta = outward offset
   // CCW polygon (area > 0) in Y-up: outward normal is to the left of travel direction → (-dy, dx)/len
   // For CW polygon, flip sign
@@ -244,7 +283,7 @@ export function offsetPolygon(pts: Pt2[], delta: number): Pt2[] {
   const en: Pt2[] = []
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n
-    const dx = u[j][0] - u[i][0], dy = u[j][1] - u[i][1]
+    const dx = v[j][0] - v[i][0], dy = v[j][1] - v[i][1]
     const len = Math.hypot(dx, dy)
     // CCW (windSign=1): outward = right of travel = (dy, -dx)/len
     // CW  (windSign=-1): outward = left of travel = (-dy, dx)/len
@@ -258,13 +297,13 @@ export function offsetPolygon(pts: Pt2[], delta: number): Pt2[] {
     const bx = prev[0] + next[0], by = prev[1] + next[1]
     const blen = Math.hypot(bx, by)
     if (blen < 1e-10) {
-      result.push([u[i][0] + next[0] * delta, u[i][1] + next[1] * delta])
+      result.push([v[i][0] + next[0] * delta, v[i][1] + next[1] * delta])
     } else {
       const nx = bx / blen, ny = by / blen
       const dot = next[0] * nx + next[1] * ny
       // Cap miter at 4× to avoid spikes at very sharp corners
       const scale = Math.abs(dot) > 0.25 ? delta / dot : delta * 4 * Math.sign(dot || 1)
-      result.push([u[i][0] + nx * scale, u[i][1] + ny * scale])
+      result.push([v[i][0] + nx * scale, v[i][1] + ny * scale])
     }
   }
   return result

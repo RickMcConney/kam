@@ -26,7 +26,7 @@ interface PathsState {
   setSelectedIds: (ids: string[]) => void
   deleteSelected: () => void
   updatePathD: (id: string, newD: string) => void
-  batchUpdatePaths: (updates: { id: string; d: string; shapeParams?: ShapeParams | null }[]) => void
+  batchUpdatePaths: (updates: { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }[]) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
@@ -135,7 +135,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   })),
 
   batchUpdatePaths: (updates) => set((s) => {
-    const map = new Map(updates.map(({ id, d, shapeParams }) => [id, { d, shapeParams }]))
+    const map = new Map(updates.map(({ id, d, shapeParams, name }) => [id, { d, shapeParams, name }]))
     return {
       past: pushHistory(s.past, s.paths),
       future: [],
@@ -145,6 +145,9 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         const newPath = { ...p, d: upd.d }
         if (upd.shapeParams !== undefined) {
           newPath.shapeParams = upd.shapeParams ?? undefined
+        }
+        if (upd.name !== undefined) {
+          newPath.name = upd.name
         }
         return newPath
       }),

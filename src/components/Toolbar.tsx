@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { ICON } from '../theme'
 import {
-  FilePlus, FolderOpen, Save, Import,FileCog,
+  FilePlus, FolderOpen, Save, Import, FileCog,
   Undo2, Redo2, Magnet, Settings, HelpCircle, Play, Sun, Moon,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
@@ -12,9 +12,12 @@ import { useToolStore } from '../store/toolStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useSimStore } from '../store/simStore'
+import type { DxfUnitsChoice } from '../importers/dxfImporter'
 import { generateGcode, downloadGcode } from '../cam/gcode'
 import { optimizeStartPoints } from '../cam/startOptimizer'
 import { importSvg } from '../importers/svgImporter'
+import { importDxf } from '../importers/dxfImporter'
+import { getMultiBBox, translateD } from '../canvas/selectionUtils'
 import { saveProject } from '../io/projectSave'
 import { openProjectFile, newProject } from '../io/projectLoad'
 
@@ -141,6 +144,8 @@ export default function Toolbar() {
   const { name } = useProjectStore()
   const getActiveProfile = usePostProcessorStore((s) => s.getActiveProfile)
   const importRef = useRef<HTMLInputElement>(null)
+  const [pendingDxf, setPendingDxf] = useState<{ text: string; name: string } | null>(null)
+  const fmt = (n: number) => +n.toFixed(4)
 
   async function handleExportGcode() {
     await optimizeStartPoints()
@@ -160,6 +165,20 @@ export default function Toolbar() {
     useSimStore.getState().loadGcode(gcode)
     const cur = useUIStore.getState().workspaceTab
     if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
+  }
+
+  function completeDxfImport(text: string, fileName: string, units?: DxfUnitsChoice) {
+    setPendingDxf(null)
+    const { widthMM, heightMM } = useWorkpieceStore.getState()
+    const result = importDxf(text, fileName, units, { x: widthMM / 2, y: heightMM / 2 })
+    if (result.paths.length > 0) {
+      const store = usePathsStore.getState()
+      store.addPaths(result.paths)
+      store.toggleGroupCollapsed(result.groupId)
+      setSidebarTab('paths')
+    } else if (!result.needsUnitsPrompt) {
+      console.warn('DXF import: no supported geometry found')
+    }
   }
 
   function handleImportFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -182,8 +201,17 @@ export default function Toolbar() {
         try {
           const { widthMM, heightMM } = useWorkpieceStore.getState()
           const gn = file.name.replace(/\.svg$/i, '')
-          const result = importSvg(ev.target?.result as string, { workpieceMM: { w: widthMM, h: heightMM } }, gn)
+          const result = importSvg(ev.target?.result as string, {}, gn)
           if (result.paths.length > 0) {
+            // Center on workpiece by actual path bbox (handles SVGs where content
+            // is smaller than the declared page size, e.g. tiny art on an A4 canvas)
+            const bbox = getMultiBBox(result.paths.map(p => p.d))
+            if (bbox) {
+              const dx = widthMM / 2 - (bbox.minX + bbox.maxX) / 2
+              const dy = heightMM / 2 - (bbox.minY + bbox.maxY) / 2
+              if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001)
+                for (const path of result.paths) path.d = translateD(path.d, dx, dy)
+            }
             const store = usePathsStore.getState()
             store.addPaths(result.paths)
             store.toggleGroupCollapsed(result.groupId)
@@ -192,6 +220,56 @@ export default function Toolbar() {
         } catch { /* ignore */ }
       }
       reader.readAsText(file)
+      return
+    }
+
+    if (file.name.toLowerCase().endsWith('.dxf')) {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        const text = ev.target?.result as string
+        const fileName = file.name.replace(/\.dxf$/i, '')
+        const result = importDxf(text, fileName)
+        if (result.needsUnitsPrompt) {
+          setPendingDxf({ text, name: fileName })
+        } else {
+          completeDxfImport(text, fileName)
+        }
+      }
+      reader.readAsText(file)
+      return
+    }
+
+    if (/\.(png|jpe?g|webp)$/i.test(file.name) || file.type.startsWith('image/')) {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        const src = ev.target?.result as string
+        const img = new window.Image()
+        img.onload = () => {
+          const { widthMM, heightMM } = useWorkpieceStore.getState()
+          // Convert natural pixels → mm at 96 DPI, then scale to fit 80% of workpiece
+          const PX_TO_MM = 25.4 / 96
+          const naturalW = img.naturalWidth * PX_TO_MM
+          const naturalH = img.naturalHeight * PX_TO_MM
+          const scl = Math.min((widthMM * 0.8) / naturalW, (heightMM * 0.8) / naturalH, 1)
+          const imgW = naturalW * scl
+          const imgH = naturalH * scl
+          // Center on the workpiece
+          const cx = widthMM / 2, cy = heightMM / 2
+          const hw = imgW / 2, hh = imgH / 2
+          const d = `M${fmt(cx - hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy + hh)} L${fmt(cx - hw)},${fmt(cy + hh)} Z`
+          usePathsStore.getState().addPaths([{
+            id: `img-${Date.now()}`,
+            name: file.name.replace(/\.[^.]+$/, ''),
+            d,
+            visible: true,
+            color: '#94a3b8',
+            imageSrc: src,
+          }])
+          setSidebarTab('paths')
+        }
+        img.src = src
+      }
+      reader.readAsDataURL(file)
     }
   }
 
@@ -224,13 +302,13 @@ export default function Toolbar() {
         <input
           ref={importRef}
           type="file"
-          accept=".svg,.gcode,.nc,.ngc,.tap"
+          accept=".svg,.dxf,.png,.jpg,.jpeg,.webp,.gcode,.nc,.ngc,.tap"
           className="hidden"
           onChange={handleImportFileChange}
         />
         <ToolbarButton
           icon={<Import size={ICON.md} />}
-          label="Import File (SVG or G-code)"
+          label="Import File (SVG, DXF, Image, or G-code)"
           onClick={() => importRef.current?.click()}
         />
         <ToolbarButton
@@ -279,6 +357,35 @@ export default function Toolbar() {
           <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" />
         </div>
       </div>
+
+      {/* DXF units prompt modal */}
+      {pendingDxf && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-neutral-800 rounded-lg p-6 shadow-2xl w-80 border border-gray-200 dark:border-neutral-700">
+            <h3 className="text-base font-semibold text-gray-900 dark:text-neutral-100 mb-1">DXF Units</h3>
+            <p className="text-sm text-gray-500 dark:text-neutral-400 mb-4">
+              This DXF file has no unit information. Select the drawing units:
+            </p>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {(['mm', 'cm', 'in', 'ft', 'm'] as DxfUnitsChoice[]).map((u) => (
+                <button
+                  key={u}
+                  onClick={() => completeDxfImport(pendingDxf.text, pendingDxf.name, u)}
+                  className="px-3 py-2 rounded bg-gray-100 dark:bg-neutral-700 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-sm font-medium text-gray-800 dark:text-neutral-200 transition-colors"
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setPendingDxf(null)}
+              className="w-full text-sm text-gray-400 hover:text-gray-600 dark:hover:text-neutral-300 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
