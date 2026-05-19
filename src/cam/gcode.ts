@@ -24,6 +24,7 @@ function opDesc(op: AnyOperation): string {
   if (op.type === 'drill') return `${op.drillMode} drill · ${op.depthMM}mm`
   if (op.type === 'surface') return `surface · ${op.stepoverPercent}% stepover · ${op.passAngleDeg}° · ${op.depthMM}mm`
   if (op.type === 'vcarve') return `vcarve · ${op.angleDeg}° · ${op.maxDepthMM}mm max`
+  if (op.type === 'profile3d') return `3D raster · ${op.stepoverPercent}% stepover · ${op.maxDepthMM}mm max depth`
   return ''
 }
 
@@ -53,7 +54,7 @@ export function generateGcode(
   if (profile.startGcode.trim()) lines.push(...profile.startGcode.split('\n'))
   lines.push('')
 
-  const doneOps = operations.filter((o) => o.visible && o.status === 'done' && o.segments.length > 0)
+  const doneOps = operations.filter((o) => o.visible && o.status === 'done' && o.segments.length > 0 && o.type !== 'gcode')
   if (doneOps.length === 0) {
     c('No toolpaths to export.')
     lines.push('M30')
@@ -63,38 +64,68 @@ export function generateGcode(
   let lastToolId = ''
 
   for (const op of doneOps) {
-    const tool = toolsById[op.toolId]
-    if (!tool) continue
+    const finishTool = toolsById[op.toolId]
+    if (!finishTool) continue
+
+    // For profile3d ops with a roughing tool, the first tool used is the roughing tool
+    const roughingToolId = op.type === 'profile3d' ? op.roughingToolId : undefined
+    const roughTool = roughingToolId ? toolsById[roughingToolId] : null
+    const firstTool = roughTool || finishTool
+    const firstToolId = roughTool ? roughingToolId! : op.toolId
 
     c(`=== ${op.name} ===`)
-    c(`Tool: ${tool.name}  dia ${f(tool.diameterMM)}mm  ${opDesc(op)}`)
-    if (tool.type === 'vbit') {
-      // For vcarve/inlay, op.angleDeg is the angle used to generate Z depths — must match exactly.
-      // For other ops (profile, pocket) the tool angle is used for simulation display only.
-      const angleDeg = (op.type === 'vcarve' || op.type === 'inlay')
-        ? op.angleDeg
-        : (tool.vbitAngleDeg ?? 60)
-      c(`vbit-angle:${f(angleDeg / 2)}`)
-    }
-    if (tool.type === 'ballnose') {
-      c(`ballnose`)
+    if (roughingToolId && toolsById[roughingToolId]) {
+      const rt = toolsById[roughingToolId]
+      // Sim parser reads "dia X.XXXmm" to set tool diameter — emit roughing tool LAST so
+      // the roughing segments get the correct (large) diameter.  Finishing tool dia is
+      // emitted at the tool-change segment later.
+      c(`Finishing: ${finishTool.name}  ${opDesc(op)}`)
+      c(`Roughing: ${rt.name}  dia ${f(rt.diameterMM)}mm`)
+      if (rt.type === 'ballnose') c(`ballnose`)
+    } else {
+      c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  ${opDesc(op)}`)
+      if (finishTool.type === 'vbit') {
+        const angleDeg = (op.type === 'vcarve' || op.type === 'inlay')
+          ? op.angleDeg
+          : (finishTool.vbitAngleDeg ?? 60)
+        c(`vbit-angle:${f(angleDeg / 2)}`)
+      }
+      if (finishTool.type === 'ballnose') c(`ballnose`)
     }
 
-    if (lastToolId !== op.toolId) {
+    if (lastToolId !== firstToolId) {
       if (lastToolId && profile.toolChangeGcode.trim()) {
         lines.push(...profile.toolChangeGcode.split('\n'))
       }
       if (profile.spindleOnTemplate.trim()) {
-        lines.push(sub(profile.spindleOnTemplate, { s: tool.rpm }))
+        lines.push(sub(profile.spindleOnTemplate, { s: firstTool.rpm }))
       }
-      lastToolId = op.toolId
+      lastToolId = firstToolId
     }
 
     const coordDecimals = profile.unitMode === 'in' ? 3 : 2
     let prevX = NaN, prevY = NaN, prevZ = NaN
+    let currentTool = firstTool
 
     for (let i = 0; i < op.segments.length; i++) {
       const seg = op.segments[i]
+
+      // Tool-change marker: emit tool-change gcode, update current tool, no movement
+      if (seg.toolChange) {
+        const newTool = toolsById[seg.toolChange]
+        if (newTool && seg.toolChange !== lastToolId) {
+          if (profile.toolChangeGcode.trim()) lines.push(...profile.toolChangeGcode.split('\n'))
+          // Emit dia + tool type so sim parser updates to the finishing tool
+          c(`${newTool.name}  dia ${f(newTool.diameterMM)}mm`)
+          if (newTool.type === 'ballnose') c(`ballnose`)
+          if (profile.spindleOnTemplate.trim()) lines.push(sub(profile.spindleOnTemplate, { s: newTool.rpm }))
+          currentTool = newTool
+          lastToolId = seg.toolChange
+        }
+        prevX = seg.x; prevY = seg.y; prevZ = seg.z
+        continue
+      }
+
       const prevSeg = i > 0 ? op.segments[i - 1] : null
       const posChanged = seg.x !== prevX || seg.y !== prevY || seg.z !== prevZ
       // Arc segments (full circle) have start == end, so posChanged is false — never skip them.
@@ -111,7 +142,7 @@ export function generateGcode(
         // Arc move (G2/G3). I/J are offsets from the arc START point to the center.
         const ii = f(toOut(seg.arc.cx - prevX, profile), coordDecimals)
         const jj = f(toOut(seg.arc.cy - prevY, profile), coordDecimals)
-        const feed = Math.round(toOut(tool.xyFeedMmMin, profile))
+        const feed = Math.round(toOut(currentTool.xyFeedMmMin, profile))
         const template = seg.arc.cw ? profile.arcCWTemplate : profile.arcCCWTemplate
         lines.push(sub(template, { x, y, z, i: ii, j: jj, f: feed }))
       } else if (seg.arc) {
@@ -125,7 +156,7 @@ export function generateGcode(
         else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
         else { if (a1 <= a0) a1 += 2 * Math.PI }
         const steps = Math.max(4, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
-        const feed = Math.round(toOut(tool.xyFeedMmMin, profile))
+        const feed = Math.round(toOut(currentTool.xyFeedMmMin, profile))
         for (let k = 1; k <= steps; k++) {
           const t = k / steps
           const a = a0 + (a1 - a0) * t
@@ -138,7 +169,7 @@ export function generateGcode(
         const zChanged = seg.z !== prevZ
         const xyChanged = seg.x !== prevX || seg.y !== prevY
         const isPlunge = zChanged && prevSeg && !prevSeg.rapid && !xyChanged
-        const feedMm = isPlunge ? tool.zFeedMmMin : tool.xyFeedMmMin
+        const feedMm = isPlunge ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
         const feed = Math.round(toOut(feedMm, profile))
         lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
       }

@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { OP_TYPE_COLORS } from '../colors'
 import type { CuttingDirection } from './toolStore'
 import type { OriginPosition } from './workpieceStore'
-
 export type CutSide = 'inside' | 'outside' | 'centerline'
 export type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
 
@@ -12,6 +11,7 @@ export interface MotionSegment {
   z: number
   rapid: boolean
   arc?: { cx: number; cy: number; cw: boolean }  // absolute arc center + direction; G2=cw, G3=ccw
+  toolChange?: string  // toolId: emit tool-change gcode at this point, no movement
 }
 
 export interface DrillPoint {
@@ -93,7 +93,26 @@ export interface InlayOperation extends BaseOperation {
   clearanceMM: number
 }
 
-export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation | VCarveOperation | InlayOperation
+export interface Profile3dOperation extends BaseOperation {
+  type: 'profile3d'
+  pathId: string
+  stepoverPercent: number
+  rasterAngleDeg: number
+  maxDepthMM: number
+  roughingToolId?: string
+  roughingStepoverPercent?: number
+  roughingStepDownMM?: number
+  roughingStockAllowanceMM?: number
+}
+
+export interface GcodeOperation extends BaseOperation {
+  type: 'gcode'
+  filename: string
+}
+
+export const GCODE_IMPORT_TOOL_ID = '__gcode_import__'
+
+export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation | VCarveOperation | InlayOperation | Profile3dOperation | GcodeOperation
 
 type AddPayload =
   | Omit<ProfileOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
@@ -102,6 +121,8 @@ type AddPayload =
   | Omit<SurfaceOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<VCarveOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<InlayOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<Profile3dOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<GcodeOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
 
 let _idCounter = 0
 
@@ -124,6 +145,7 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   if (op.type === 'drill') return op.pathId === pathId
   if (op.type === 'vcarve') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'inlay') return op.pathId === pathId || op.islandIds.includes(pathId)
+  if (op.type === 'profile3d') return op.pathId === pathId
   return false
 }
 

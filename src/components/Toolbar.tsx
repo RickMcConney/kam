@@ -12,11 +12,14 @@ import { useToolStore } from '../store/toolStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useSimStore } from '../store/simStore'
+import { GCODE_IMPORT_TOOL_ID, type MotionSegment } from '../store/toolpathStore'
+import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { DxfUnitsChoice } from '../importers/dxfImporter'
 import { generateGcode, downloadGcode } from '../cam/gcode'
 import { optimizeStartPoints } from '../cam/startOptimizer'
 import { importSvg } from '../importers/svgImporter'
 import { importDxf } from '../importers/dxfImporter'
+import { importStl } from '../importers/stlImporter'
 import { getMultiBBox, translateD } from '../canvas/selectionUtils'
 import { saveProject } from '../io/projectSave'
 import { openProjectFile, newProject } from '../io/projectLoad'
@@ -188,7 +191,43 @@ export default function Toolbar() {
 
     if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
       file.text().then((text) => {
+        // Load into sim store for simulation playback
         useSimStore.getState().loadGcode(text)
+
+        // Convert parsed SimSegments (machine coords) → MotionSegments (workpiece coords)
+        const { widthMM, heightMM, origin } = useWorkpieceStore.getState()
+        const org = originWorldXY(origin, widthMM, heightMM)
+        const simSegs = useSimStore.getState().segments
+        const motionSegs: MotionSegment[] = simSegs.map((s) => ({
+          x: s.x + org.x,
+          y: s.y + org.y,
+          z: s.z,
+          rapid: s.rapid,
+        }))
+
+        // Replace any existing imported G-code operations, then add the new one
+        const tpStore = useToolpathStore.getState()
+        tpStore.replaceOperations(
+          tpStore.operations.filter((o) => o.type !== 'gcode')
+        )
+        const filename = file.name
+        const opName = filename.replace(/\.(gcode|nc|ngc|tap)$/i, '')
+        const opId = tpStore.addOperation({
+          type: 'gcode',
+          name: opName,
+          toolId: GCODE_IMPORT_TOOL_ID,
+          filename,
+        })
+        useToolpathStore.getState().setSegments(opId, motionSegs)
+
+        // Rename project to match the imported file
+        useProjectStore.getState().setName(opName)
+
+        // Open the G-code viewer so the user sees the imported code immediately
+        const simState = useSimStore.getState()
+        if (!simState.gcodeViewerOpen) simState.toggleGcodeViewer()
+
+        setSidebarTab('paths')
         const cur = useUIStore.getState().workspaceTab
         if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
       })
@@ -236,6 +275,26 @@ export default function Toolbar() {
         }
       }
       reader.readAsText(file)
+      return
+    }
+
+    if (file.name.toLowerCase().endsWith('.stl')) {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        const buffer = ev.target?.result as ArrayBuffer
+        try {
+          const { widthMM, heightMM } = useWorkpieceStore.getState()
+          const path = importStl(buffer, file.name.replace(/\.stl$/i, ''), widthMM / 2, heightMM / 2)
+          const store = usePathsStore.getState()
+          store.addPaths([path])
+          store.selectPath(path.id)
+          setSidebarTab('draw')
+        } catch (err) {
+          console.error('STL import failed:', err)
+          alert(`Could not import STL: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        }
+      }
+      reader.readAsArrayBuffer(file)
       return
     }
 
@@ -302,13 +361,13 @@ export default function Toolbar() {
         <input
           ref={importRef}
           type="file"
-          accept=".svg,.dxf,.png,.jpg,.jpeg,.webp,.gcode,.nc,.ngc,.tap"
+          accept=".svg,.dxf,.stl,.png,.jpg,.jpeg,.webp,.gcode,.nc,.ngc,.tap"
           className="hidden"
           onChange={handleImportFileChange}
         />
         <ToolbarButton
           icon={<Import size={ICON.md} />}
-          label="Import File (SVG, DXF, Image, or G-code)"
+          label="Import File (SVG, DXF, STL, Image, or G-code)"
           onClick={() => importRef.current?.click()}
         />
         <ToolbarButton

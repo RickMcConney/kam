@@ -54,6 +54,8 @@ export default function GcodeViewer({ fill = false }: { fill?: boolean }) {
     scrollRef.current.scrollTop = target
   }, [currentLineIdx, playing, visibleH])
 
+  const lineNumCh = String(gcodeLines.length).length + 1
+
   const buffer = 6
   const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_H) - buffer)
   const visibleEnd = Math.min(gcodeLines.length, Math.ceil((scrollTop + visibleH) / ROW_H) + buffer)
@@ -110,7 +112,7 @@ export default function GcodeViewer({ fill = false }: { fill?: boolean }) {
                     isActive ? 'bg-yellow-500/20' : 'hover:bg-gray-100 dark:hover:bg-neutral-800',
                   ].join(' ')}
                 >
-                  <span className="text-gray-400 dark:text-neutral-500 shrink-0 w-8 text-right select-none mr-3">
+                  <span className="text-gray-400 dark:text-neutral-500 shrink-0 text-right select-none mr-3" style={{ minWidth: `${lineNumCh}ch` }}>
                     {lineIdx + 1}
                   </span>
                   <span className={isActive ? 'text-yellow-100' : 'text-gray-400 dark:text-neutral-500'}>

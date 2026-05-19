@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { ICON } from '../theme'
-import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown, Image } from 'lucide-react'
+import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown, Image, Box } from 'lucide-react'
 import { usePathsStore } from '../store/pathsStore'
-import { useToolpathStore } from '../store/toolpathStore'
-import type { AnyOperation } from '../store/toolpathStore'
+import { useToolpathStore, GCODE_IMPORT_TOOL_ID } from '../store/toolpathStore'
+import type { AnyOperation, GcodeOperation, Profile3dOperation } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { OP_TYPE_COLORS } from '../colors'
-import { ProfileForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm } from './MachinePanel'
+import { ProfileForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './MachinePanel'
 
 const STATUS_ICON = {
   pending: <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-neutral-600 flex-shrink-0" />,
@@ -17,12 +17,32 @@ const STATUS_ICON = {
 }
 
 const OP_TYPE_LABELS: Record<string, string> = {
-  profile: 'Profile',
-  pocket:  'Pocket',
-  drill:   'Drill',
-  surface: 'Surface',
-  vcarve:  'V-Carve',
-  inlay:   'Inlay',
+  profile:   'Profile',
+  pocket:    'Pocket',
+  drill:     'Drill',
+  surface:   'Surface',
+  vcarve:    'V-Carve',
+  inlay:     'Inlay',
+  profile3d: '3D Profile',
+  gcode:     'G-code',
+}
+
+function GcodeInfo({ op, onClose }: { op: GcodeOperation; onClose: () => void }) {
+  const cutSegs = op.segments.filter((s) => !s.rapid).length
+  const rapidSegs = op.segments.filter((s) => s.rapid).length
+  return (
+    <div className="border-b border-gray-300 dark:border-neutral-700 px-3 py-3 space-y-2 bg-gray-50 dark:bg-neutral-900">
+      <div className="flex items-center justify-between">
+        <span className="text-label font-semibold text-gray-500 dark:text-neutral-400 uppercase tracking-wider">Imported G-code</span>
+        <button onClick={onClose} className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-xs">✕</button>
+      </div>
+      <div className="text-body text-gray-700 dark:text-neutral-300 space-y-1">
+        <div className="truncate" title={op.filename}><span className="text-gray-400 dark:text-neutral-500">File: </span>{op.filename}</div>
+        <div><span className="text-gray-400 dark:text-neutral-500">Moves: </span>{cutSegs.toLocaleString()} cut, {rapidSegs.toLocaleString()} rapid</div>
+      </div>
+      <p className="text-xs text-gray-400 dark:text-neutral-500">Read-only — re-import the file to update.</p>
+    </div>
+  )
 }
 
 function OperationEditForm({ op, onClose }: { op: AnyOperation; onClose: () => void }) {
@@ -32,6 +52,8 @@ function OperationEditForm({ op, onClose }: { op: AnyOperation; onClose: () => v
   if (op.type === 'surface') return <SurfaceForm onClose={onClose} editOp={op} />
   if (op.type === 'vcarve') return <VCarveForm onClose={onClose} editOp={op} />
   if (op.type === 'inlay') return <InlayForm onClose={onClose} editOp={op} />
+  if (op.type === 'profile3d') return <Profile3dForm onClose={onClose} editOp={op as Profile3dOperation} />
+  if (op.type === 'gcode') return <GcodeInfo op={op} onClose={onClose} />
   return null
 }
 
@@ -228,9 +250,11 @@ export default function PathsPanel() {
               ].join(' ')}
               onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
             >
-              {p.imageSrc
-                ? <Image size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
-                : <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
+              {p.stlSrc
+                ? <Box size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
+                : p.imageSrc
+                  ? <Image size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
+                  : <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
               }
               <span className="flex-1 text-body truncate text-gray-800 dark:text-neutral-200">{p.name}</span>
               {p.hidden && (
@@ -274,7 +298,8 @@ export default function PathsPanel() {
               const groupOps = opGroupMap.get(toolId)!
               const collapsed = collapsedOpGroups.has(toolId)
               const tool = toolsById[toolId]
-              const toolLabel = tool ? tool.name : 'Unknown Tool'
+              const isGcodeGroup = toolId === GCODE_IMPORT_TOOL_ID
+              const toolLabel = isGcodeGroup ? 'Imported G-code' : (tool ? tool.name : 'Unknown Tool')
               const toolDia = tool ? `Ø${tool.diameterMM}mm` : ''
               const allVisible = groupOps.every((o) => o.visible)
               const groupIdx = opGroupOrder.indexOf(toolId)

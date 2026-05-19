@@ -1,5 +1,5 @@
 import { useEffect, useState, memo } from 'react'
-import { Group, Path, Image as KonvaImage } from 'react-konva'
+import { Group, Path, Image as KonvaImage, Text as KonvaText } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { usePathsStore } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
@@ -7,6 +7,9 @@ import { canvasTheme } from '../../theme'
 import type { LiveTransform } from '../types'
 import type { ImportedPath } from '../../store/pathsStore'
 import { parseD } from '../../importers/svgImporter'
+import { getBBox } from '../selectionUtils'
+import { parseStlGeometry, base64ToArrayBuffer } from '../../importers/stlImporter'
+import { buildHeightMap } from '../../cam/profile3d'
 
 interface Props {
   viewport: Viewport
@@ -129,6 +132,153 @@ const ImagePath = memo(function ImagePath({
   )
 })
 
+// ── STL bounding-box path ─────────────────────────────────────────────────────
+
+interface StlPathProps {
+  p: ImportedPath
+  isSelected: boolean
+  liveTransform: LiveTransform | null
+  scale: number
+  darkMode: boolean
+}
+
+const HM_SIZE = 256
+
+function buildHeightMapCanvas(p: ImportedPath): HTMLCanvasElement | null {
+  if (!p.stlSrc || !p.stlModelBounds) return null
+  const bbox = getBBox(p.d)
+  if (!bbox) return null
+
+  const buf = base64ToArrayBuffer(p.stlSrc)
+  const geo = parseStlGeometry(buf)
+  const positions = new Float32Array(geo.attributes.position.array)
+  const indices = geo.index ? new Uint32Array(geo.index.array) : null
+  geo.dispose()
+
+  const grid = buildHeightMap(positions, indices, p.stlModelBounds, bbox, HM_SIZE, HM_SIZE)
+
+  let minZ = 0
+  for (let i = 0; i < grid.length; i++) {
+    if (grid[i] !== -Infinity && grid[i] < minZ) minZ = grid[i]
+  }
+  const range = Math.abs(minZ) || 1
+
+  const canvas = document.createElement('canvas')
+  canvas.width = HM_SIZE
+  canvas.height = HM_SIZE
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const imgData = ctx.createImageData(HM_SIZE, HM_SIZE)
+
+  for (let iy = 0; iy < HM_SIZE; iy++) {
+    const gridIy = HM_SIZE - 1 - iy  // flip Y: canvas top = CNC maxY
+    for (let ix = 0; ix < HM_SIZE; ix++) {
+      const h = grid[gridIy * HM_SIZE + ix]
+      const pi = (iy * HM_SIZE + ix) * 4
+      if (h === -Infinity) {
+        imgData.data[pi + 3] = 0  // transparent outside model footprint
+      } else {
+        const t = (h - minZ) / range  // 0 = deepest, 1 = surface
+        imgData.data[pi]     = Math.round(30  + t * 190)  // R 30→220
+        imgData.data[pi + 1] = Math.round(20  + t * 140)  // G 20→160
+        imgData.data[pi + 2] = Math.round(10  + t * 70)   // B 10→80
+        imgData.data[pi + 3] = 230
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0)
+  return canvas
+}
+
+const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, darkMode }: StlPathProps) {
+  const C = canvasTheme(darkMode)
+  const lt = liveTransform?.pathIds.has(p.id) ? liveTransform : null
+  const [hmCanvas, setHmCanvas] = useState<HTMLCanvasElement | null>(null)
+
+  // Build height map on a deferred timer so the first render isn't blocked
+  useEffect(() => {
+    setHmCanvas(null)
+    const timer = setTimeout(() => {
+      setHmCanvas(buildHeightMapCanvas(p))
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [p.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  let nodeX = 0, nodeY = 0, nodeScaleX = 1, nodeScaleY = 1
+  let nodeOffsetX = 0, nodeOffsetY = 0, nodeRotation = 0
+  if (lt) {
+    if (lt.kind === 'translate') {
+      nodeX = lt.dx; nodeY = lt.dy
+    } else if (lt.kind === 'scale') {
+      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
+      nodeX = lt.ax; nodeY = lt.ay
+      nodeScaleX = lt.sx; nodeScaleY = lt.sy
+    } else if (lt.kind === 'rotate') {
+      nodeOffsetX = lt.cx; nodeOffsetY = lt.cy
+      nodeX = lt.cx; nodeY = lt.cy
+      nodeRotation = lt.angle
+    }
+  }
+
+  const baseStroke = (isSelected ? 2 : 1.5) / scale
+  const strokeWidth = lt?.kind === 'scale'
+    ? baseStroke / Math.sqrt(Math.abs(nodeScaleX * nodeScaleY))
+    : baseStroke
+
+  const rect = extractRectInfo(p.d)
+  const labelSize = 10 / scale
+
+  return (
+    <Group
+      x={nodeX} y={nodeY}
+      scaleX={nodeScaleX} scaleY={nodeScaleY}
+      offsetX={nodeOffsetX} offsetY={nodeOffsetY}
+      rotation={nodeRotation}
+      listening={false}
+    >
+      {/* Height map image — same Y-flip placement as ImagePath */}
+      {hmCanvas && rect && (
+        <Group x={rect.p0.x} y={rect.p0.y} rotation={rect.rotationDeg} listening={false}>
+          <Group scaleY={-1}>
+            <KonvaImage
+              image={hmCanvas}
+              x={0}
+              y={-rect.heightMM}
+              width={rect.widthMM}
+              height={rect.heightMM}
+              listening={false}
+            />
+          </Group>
+        </Group>
+      )}
+      {/* Dashed bounding-box outline */}
+      <Path
+        data={p.d}
+        stroke={isSelected ? C.path.selected : p.color}
+        strokeWidth={strokeWidth}
+        dash={[6 / scale, 4 / scale]}
+        listening={false}
+      />
+      {/* "STL" label in un-flipped space */}
+      {rect && (
+        <Group x={rect.p0.x} y={rect.p0.y} rotation={rect.rotationDeg} listening={false}>
+          <Group scaleY={-1}>
+            <KonvaText
+              text="STL"
+              x={4 / scale}
+              y={4 / scale}
+              fontSize={labelSize}
+              fill={isSelected ? C.path.selected : p.color}
+              opacity={0.8}
+              listening={false}
+            />
+          </Group>
+        </Group>
+      )}
+    </Group>
+  )
+})
+
 // ── Main layer ────────────────────────────────────────────────────────────────
 export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
   const { paths, selectedIds } = usePathsStore()
@@ -145,6 +295,20 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
         if (p.imageSrc) {
           return (
             <ImagePath
+              key={p.id}
+              p={p}
+              isSelected={isSelected}
+              liveTransform={liveTransform}
+              scale={scale}
+              darkMode={darkMode}
+            />
+          )
+        }
+
+        // STL-backed paths: dashed bounding box + label
+        if (p.stlSrc) {
+          return (
+            <StlPath
               key={p.id}
               p={p}
               isSelected={isSelected}

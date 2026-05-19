@@ -8,10 +8,13 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
+import { getBBox } from '../canvas/selectionUtils'
 import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
+import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
+import type { StlModelBounds } from '../importers/stlImporter'
 
 // ─── coordinate mapping ──────────────────────────────────────────────────────
 //
@@ -178,6 +181,11 @@ function syncDirtyInstances(
 
 // ─── scene refs ──────────────────────────────────────────────────────────────
 
+interface StlGeoCacheEntry {
+  geo: THREE.BufferGeometry  // raw parsed geometry, not modified
+  stlSrcLen: number          // detect changes by length
+}
+
 interface SceneRefs {
   renderer: THREE.WebGLRenderer
   scene: THREE.Scene
@@ -192,6 +200,7 @@ interface SceneRefs {
   voxelWoodMesh: THREE.InstancedMesh | null  // uncut voxels, all-wood
   voxelCutMesh:  THREE.InstancedMesh | null  // carved voxels, yellow top/sides + wood bottom
   voxelMat: VoxelMaterial | null
+  stlGeoCache: Map<string, StlGeoCacheEntry>  // path.id → parsed raw geometry
   rafId: number
   fpsSamples: number[]
   lastFrameTs: number
@@ -276,6 +285,7 @@ export default function ThreeView() {
       voxelWoodMesh: null,
       voxelCutMesh:  null,
       voxelMat: null,
+      stlGeoCache: new Map(),
       rafId: 0,
       fpsSamples: [],
       lastFrameTs: 0,
@@ -417,6 +427,8 @@ export default function ThreeView() {
       if (refs.voxelWoodMesh) { refs.voxelWoodMesh.geometry.dispose(); (refs.voxelWoodMesh.material as THREE.Material).dispose() }
       if (refs.voxelCutMesh) { refs.voxelCutMesh.geometry.dispose(); (refs.voxelCutMesh.material as THREE.Material).dispose() }
       if (refs.toolMesh) disposeObject3D(refs.toolMesh)
+      for (const entry of refs.stlGeoCache.values()) entry.geo.dispose()
+      refs.stlGeoCache.clear()
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
@@ -598,8 +610,37 @@ function rebuildShapes(refs: SceneRefs) {
   const T = useWorkpieceStore.getState().thicknessMM
   const surfaceY = T + 0.15
 
+  // Prune deleted STL paths from the geometry cache
+  const stlPathIds = new Set(paths.filter(p => p.stlSrc).map(p => p.id))
+  for (const [id, entry] of refs.stlGeoCache) {
+    if (!stlPathIds.has(id)) {
+      entry.geo.dispose()
+      refs.stlGeoCache.delete(id)
+    }
+  }
+
   for (const path of paths) {
     if (!path.visible) continue
+
+    if (path.stlSrc && path.stlModelBounds) {
+      // Refresh raw geometry cache only when the STL data changes
+      let cached = refs.stlGeoCache.get(path.id)
+      if (!cached || cached.stlSrcLen !== path.stlSrc.length) {
+        cached?.geo.dispose()
+        try {
+          const buf = base64ToArrayBuffer(path.stlSrc)
+          const geo = parseStlGeometry(buf)
+          cached = { geo, stlSrcLen: path.stlSrc.length }
+          refs.stlGeoCache.set(path.id, cached)
+        } catch {
+          continue
+        }
+      }
+      const mesh = buildStlMesh(cached.geo, path.stlModelBounds, path.d, T, path.color)
+      if (mesh) refs.shapesGroup.add(mesh)
+      continue
+    }
+
     const polylines = flattenPath(path.d, 0.3)
     const color = new THREE.Color(path.color)
     for (const pts of polylines) {
@@ -617,6 +658,65 @@ function rebuildShapes(refs: SceneRefs) {
   }
 
   refs.renderNeeded = true
+}
+
+// Build a Three.js mesh for an STL path, positioned and scaled to match the
+// 2D bounding rect (d string) in CNC space.
+//
+// Coordinate mapping (from CLAUDE.md): threeX = cncX, threeY = T + cncZ, threeZ = -cncY
+// STL space: X and Y are the horizontal footprint (→ CNC X and Y), Z is height (→ CNC Z).
+function buildStlMesh(
+  rawGeo: THREE.BufferGeometry,
+  bounds: StlModelBounds,
+  d: string,
+  T: number,
+  color: string,
+): THREE.Mesh | null {
+  const bbox = getBBox(d)
+  if (!bbox) return null
+
+  const modelW = bounds.maxX - bounds.minX
+  const modelH = bounds.maxY - bounds.minY
+  if (modelW < 0.001 || modelH < 0.001) return null
+
+  const scaleX = bbox.width / modelW
+  const scaleY = bbox.height / modelH
+  const scaleZ = (scaleX + scaleY) / 2  // uniform Z scale preserves proportions
+
+  const modelCX = (bounds.minX + bounds.maxX) / 2
+  const modelCY = (bounds.minY + bounds.maxY) / 2
+
+  const positions = rawGeo.attributes.position
+  const count = positions.count
+  const newPos = new Float32Array(count * 3)
+
+  for (let i = 0; i < count; i++) {
+    const stlX = positions.getX(i)
+    const stlY = positions.getY(i)
+    const stlZ = positions.getZ(i)
+
+    // Map STL → CNC with scale and placement.
+    // Anchor maxZ (top of STL) to CNC Z=0 (workpiece top surface) so the model
+    // sits down into the material — the top of the relief flush with the stock.
+    const cncX = (stlX - modelCX) * scaleX + bbox.cx
+    const cncY = (stlY - modelCY) * scaleY + bbox.cy
+    const cncZ = (stlZ - bounds.maxZ) * scaleZ
+
+    // CNC → Three.js
+    newPos[i * 3]     = cncX
+    newPos[i * 3 + 1] = T + cncZ
+    newPos[i * 3 + 2] = -cncY
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3))
+  if (rawGeo.index) geo.setIndex(rawGeo.index.clone())
+  geo.computeVertexNormals()
+
+  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    color: new THREE.Color(color),
+    side: THREE.DoubleSide,
+  }))
 }
 
 // Expands an arc segment to [x,y,z][] points for 3D display (step every 5°).

@@ -4,12 +4,14 @@ import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { generateSurface } from './surfacing'
 import { generateVCarve } from './vcarve'
 import { generateInlayFemale, generateInlayMale } from './inlay'
+import { generateProfile3d } from './profile3d'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
-import { extractCircle } from '../canvas/selectionUtils'
+import { getBBox, extractCircle } from '../canvas/selectionUtils'
+import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 
 export function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
@@ -88,6 +90,29 @@ export function regenerateOperation(opId: string): Promise<void> {
           angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
           startNear: op.entryHint,
         }))
+      } else if (op.type === 'profile3d') {
+        const stlPath = paths.find((p) => p.id === op.pathId)
+        if (!stlPath) throw new Error('STL path not found')
+        if (!stlPath.stlSrc || !stlPath.stlModelBounds) throw new Error('Path is not an STL import')
+        const buf = base64ToArrayBuffer(stlPath.stlSrc)
+        const geo = parseStlGeometry(buf)
+        const positions = new Float32Array(geo.attributes.position.array)
+        const indices = geo.index ? new Uint32Array(geo.index.array) : null
+        geo.dispose()
+        const cncBbox = getBBox(stlPath.d)
+        if (!cncBbox) throw new Error('Could not compute STL bounding box')
+        const roughingTool = op.roughingToolId ? tools.find((t) => t.id === op.roughingToolId) : undefined
+        setSegments(opId, generateProfile3d(positions, indices, stlPath.stlModelBounds, cncBbox, tool, {
+          stepoverPercent: op.stepoverPercent,
+          rasterAngleDeg: op.rasterAngleDeg,
+          maxDepthMM: op.maxDepthMM,
+          roughingBallRadius: roughingTool?.type === 'ballnose' ? roughingTool.diameterMM / 2 : undefined,
+          roughingStepoverPercent: op.roughingStepoverPercent,
+          roughingStepDownMM: op.roughingStepDownMM,
+          roughingStockAllowanceMM: op.roughingStockAllowanceMM,
+          roughingToolId: op.roughingToolId,
+          finishingToolId: op.toolId,
+        }))
       } else if (op.type === 'inlay') {
         const path = paths.find((p) => p.id === op.pathId)
         if (!path) throw new Error('Source path not found')
@@ -118,7 +143,7 @@ export function regenerateOperation(opId: string): Promise<void> {
 }
 
 function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, pathId: string): boolean {
-  if (op.type === 'profile' || op.type === 'drill') return op.pathId === pathId
+  if (op.type === 'profile' || op.type === 'drill' || op.type === 'profile3d') return op.pathId === pathId
   if (op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') {
     return op.pathId === pathId || (op.islandIds?.includes(pathId) ?? false)
   }

@@ -2,6 +2,12 @@ import type { ShapeParams } from '../shapes/shapeGenerators'
 import { PATH_COLOR } from '../colors'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 
+export interface StlModelBounds {
+  minX: number; maxX: number
+  minY: number; maxY: number
+  minZ: number; maxZ: number
+}
+
 export interface ImportedPath {
   id: string
   name: string
@@ -13,6 +19,8 @@ export interface ImportedPath {
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
   imageSrc?: string  // base64 data URL — path acts as bounding box for this image
+  stlSrc?: string            // base64-encoded STL file — path acts as 2D bounding box
+  stlModelBounds?: StlModelBounds  // original STL bounding box in model space (mm)
 }
 
 export interface SvgImportResult {

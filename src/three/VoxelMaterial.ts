@@ -10,35 +10,68 @@ export interface VoxelLeaf {
   dirty: boolean
 }
 
-type BBox4 = [number, number, number, number]
+// ax, ay, bx, by, r — segment endpoints in world mm + tool radius
+type Seg5 = [number, number, number, number, number]
 
 // ── quadtree builder ─────────────────────────────────────────────────────────
+//
+// Each recursive call receives only the segments that overlap the current cell,
+// so work at each level is O(local_segs) rather than O(all_segs). This
+// turns the O(nodes × all_segs) complexity into O(segs × log(area/cell)).
+//
+// Uses a 3-axis SAT capsule-vs-AABB test (X, Y, segment-perpendicular) instead
+// of a simple bbox test. For diagonal segments this rejects the large "corner"
+// regions that a bbox would falsely include, dramatically reducing voxel count
+// for shapes like hexagons with sloped sides.
 
-function overlapsAny(x0: number, y0: number, x1: number, y1: number, bboxes: BBox4[]): boolean {
-  for (const [bx0, by0, bx1, by1] of bboxes) {
-    if (x0 < bx1 && x1 > bx0 && y0 < by1 && y1 > by0) return true
-  }
-  return false
+function capsuleOverlapsAABB(
+  ax: number, ay: number, bx: number, by: number, r: number,
+  x0: number, y0: number, x1: number, y1: number,
+): boolean {
+  // Axis 1 & 2: capsule bbox vs cell bbox
+  if (Math.max(ax, bx) + r <= x0 || Math.min(ax, bx) - r >= x1) return false
+  if (Math.max(ay, by) + r <= y0 || Math.min(ay, by) - r >= y1) return false
+  const dx = bx - ax, dy = by - ay
+  const lenSq = dx * dx + dy * dy
+  if (lenSq < 1e-8) return true  // point tool — bbox test above is sufficient
+  // Axis 3: perpendicular to the segment direction (unnormalised normal = (-dy, dx))
+  // The capsule projects to [C − r·|n|, C + r·|n|]; the AABB projects to [min, max]
+  // of its four corners.  A gap on this axis means the AABB is "off to the side"
+  // of the segment and outside the capsule's rectangular body.
+  const C = -dy * ax + dx * ay
+  const rN = r * Math.sqrt(lenSq)
+  const p00 = -dy * x0 + dx * y0, p10 = -dy * x1 + dx * y0
+  const p01 = -dy * x0 + dx * y1, p11 = -dy * x1 + dx * y1
+  const aabbMinP = Math.min(p00, p10, p01, p11)
+  const aabbMaxP = Math.max(p00, p10, p01, p11)
+  return C + rN > aabbMinP && C - rN < aabbMaxP
 }
 
 function subdivide(
   x0: number, y0: number, x1: number, y1: number,
-  bboxes: BBox4[],
+  segs: Seg5[],
   minCellMM: number,
   T: number,
   out: VoxelLeaf[],
 ) {
   const w = x1 - x0, h = y1 - y0
-  if ((w > minCellMM * 1.5 || h > minCellMM * 1.5) && bboxes.length > 0 && overlapsAny(x0, y0, x1, y1, bboxes)) {
-    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2
-    subdivide(x0, y0, mx, my, bboxes, minCellMM, T, out)
-    subdivide(mx, y0, x1, my, bboxes, minCellMM, T, out)
-    subdivide(x0, my, mx, y1, bboxes, minCellMM, T, out)
-    subdivide(mx, my, x1, y1, bboxes, minCellMM, T, out)
+  if (segs.length === 0 || (w <= minCellMM * 1.5 && h <= minCellMM * 1.5)) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2
+    out.push({ x0, y0, x1, y1, cx, cy, cw: w, ch: h, height: T, dirty: false, instanceIdx: out.length })
     return
   }
-  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2
-  out.push({ x0, y0, x1, y1, cx, cy, cw: w, ch: h, height: T, dirty: false, instanceIdx: out.length })
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2
+  const q00: Seg5[] = [], q10: Seg5[] = [], q01: Seg5[] = [], q11: Seg5[] = []
+  for (const s of segs) {
+    if (capsuleOverlapsAABB(s[0], s[1], s[2], s[3], s[4], x0, y0, mx, my)) q00.push(s)
+    if (capsuleOverlapsAABB(s[0], s[1], s[2], s[3], s[4], mx, y0, x1, my)) q10.push(s)
+    if (capsuleOverlapsAABB(s[0], s[1], s[2], s[3], s[4], x0, my, mx, y1)) q01.push(s)
+    if (capsuleOverlapsAABB(s[0], s[1], s[2], s[3], s[4], mx, my, x1, y1)) q11.push(s)
+  }
+  subdivide(x0, y0, mx, my, q00, minCellMM, T, out)
+  subdivide(mx, y0, x1, my, q10, minCellMM, T, out)
+  subdivide(x0, my, mx, y1, q01, minCellMM, T, out)
+  subdivide(mx, my, x1, y1, q11, minCellMM, T, out)
 }
 
 function isCuttingSeg(seg: SimSegment): boolean {
@@ -57,16 +90,20 @@ function buildLeaves(
   orgX: number, orgY: number,
   minCellMM: number,
 ): VoxelLeaf[] {
-  const bboxes: BBox4[] = []
+  const segs: Seg5[] = []
   for (const seg of segments) {
     if (!isCuttingSeg(seg)) continue
     const ax = seg.prevX + orgX, ay = seg.prevY + orgY
     const bx = seg.x + orgX,    by = seg.y + orgY
-    const r = segMaxRadius(seg) 
-    bboxes.push([Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r])
+    const r = segMaxRadius(seg)
+    // Discard segments whose capsule bbox is entirely outside the workpiece
+    if (Math.max(ax, bx) + r > 0 && Math.min(ax, bx) - r < W &&
+        Math.max(ay, by) + r > 0 && Math.min(ay, by) - r < H) {
+      segs.push([ax, ay, bx, by, r])
+    }
   }
   const leaves: VoxelLeaf[] = []
-  subdivide(0, 0, W, H, bboxes, minCellMM, T, leaves)
+  subdivide(0, 0, W, H, segs, minCellMM, T, leaves)
   return leaves
 }
 
