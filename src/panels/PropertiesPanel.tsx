@@ -1,9 +1,10 @@
+import { useRef, useState } from 'react'
 import { usePathsStore } from '../store/pathsStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffected } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
-import { getMultiBBox } from '../canvas/selectionUtils'
+import { getMultiBBox, rotateAroundD } from '../canvas/selectionUtils'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { AVAILABLE_FONTS, loadFont } from '../shapes/textGenerator'
 import { NumericInput } from '../components/NumericInput'
@@ -50,6 +51,46 @@ function EditField({
         className={fieldCls}
       />
       {!integer && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
+    </div>
+  )
+}
+
+function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApply: (deg: number) => void }) {
+  const [text, setText] = useState('0')
+  // Guard against double-commit: Enter calls commit() then blur() which re-triggers onBlur.
+  const committedRef = useRef(false)
+
+  function commit(currentText: string) {
+    if (committedRef.current) return
+    committedRef.current = true
+    const v = parseFloat(currentText)
+    if (!isNaN(v) && Math.abs(v) > 0.0001) onApply(v)
+    setText('0')
+  }
+
+  if (liveAngle !== null) {
+    return <ReadField label="∠" value={`${liveAngle.toFixed(1)}°`} />
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={labelCls}>∠</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={text}
+        onChange={(e) => { committedRef.current = false; setText(e.target.value) }}
+        onFocus={(e) => { committedRef.current = false; e.target.select() }}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { commit(e.currentTarget.value); e.currentTarget.blur() }
+          if (e.key === 'Escape') { committedRef.current = true; setText('0'); e.currentTarget.blur() }
+          if (e.key === 'ArrowUp') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) + 1)) }
+          if (e.key === 'ArrowDown') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) - 1)) }
+        }}
+        className={fieldCls}
+      />
+      <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
     </div>
   )
 }
@@ -161,8 +202,22 @@ export default function PropertiesPanel() {
   if (!bbox) return null
 
   const fmt = (n: number) => n.toFixed(2)
-  const fmtAngle = (n: number) => `${n.toFixed(1)}°`
   const singleShape = selectedPaths.length === 1 && selectedPaths[0].shapeParams ? selectedPaths[0] : null
+
+  function applyRotation(angle: number) {
+    if (!bbox) return
+    const cx = (bbox.minX + bbox.maxX) / 2
+    const cy = (bbox.minY + bbox.maxY) / 2
+    const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+    const updates = selectedPaths
+      .map((p) => allPaths.find((ap) => ap.id === p.id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map((p) => ({ id: p.id, d: rotateAroundD(p.d, cx, cy, angle), shapeParams: null as null }))
+    if (updates.length) {
+      batchUpdatePaths(updates)
+      for (const { id } of selectedPaths) regenerateAffected(id)
+    }
+  }
 
   return (
     <div className="border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0">
@@ -184,7 +239,7 @@ export default function PropertiesPanel() {
       )}
 
       <div className="mt-1.5">
-        <ReadField label="∠" value={liveRotationAngle !== null ? fmtAngle(liveRotationAngle) : '0.0°'} />
+        <RotationField liveAngle={liveRotationAngle} onApply={applyRotation} />
       </div>
 
       {selectedPaths.length === 1 && (() => {

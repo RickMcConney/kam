@@ -789,7 +789,8 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     if (m.type === 'rotate') {
       didDragRef.current = true
       const currentAngle = Math.atan2(cncMouse.y - m.center.y, cncMouse.x - m.center.x) * 180 / Math.PI
-      const delta = currentAngle - m.initAngle
+      let delta = currentAngle - m.initAngle
+      if (useUIStore.getState().snapEnabled) delta = Math.round(delta / 5) * 5
       setLiveTransform({ kind: 'rotate', pathIds: new Set(m.pathIds), angle: delta, cx: m.center.x, cy: m.center.y })
       setLiveRotationAngle(delta)
       return

@@ -1,4 +1,4 @@
-import { flattenPath, offsetPolygon, ensureWinding, hasSelfIntersection, rotatePolylineNear, type Pt2 } from './pathFlattener'
+import { flattenPath, offsetPolygon, ensureWinding, hasSelfIntersection, resolveOffsetLoops, rotatePolylineNear, arcFitPolyline, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -186,14 +186,13 @@ export function generateProfile(
   for (const subpath of subpaths) {
     const rawOffset = delta !== 0 ? offsetPolygon(subpath, delta) : subpath
     if (rawOffset.length < 2) continue
-    if (delta !== 0 && hasSelfIntersection(rawOffset)) {
-      throw new Error(
-        `Tool ⌀${tool.diameterMM}mm is too large for this geometry — the offset path self-intersects (a concave feature is smaller than the tool radius). Use a smaller tool or switch to centerline.`
-      )
-    }
+    const cleanOffset = (delta !== 0 && hasSelfIntersection(rawOffset))
+      ? resolveOffsetLoops(rawOffset, Math.abs(delta))
+      : rawOffset
+    if (cleanOffset.length < 3) continue
 
     const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
-    const offsetPts = ensureWinding(rawOffset, wantCCW)
+    const offsetPts = ensureWinding(cleanOffset, wantCCW)
 
     const circle = fitCircle(offsetPts)
 
@@ -257,10 +256,17 @@ export function generateProfile(
         // Only apply a tab range on passes that cut deeper than the tab top (zDepth < tabZ).
         // Shallower passes are above the tab and need no lifting.
         const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
-        const passSegs = polylinePassWithTabs(closed, zDepth, activeRanges, lens)
-        segs.push(...passSegs)
-        // passSegs already ends at rotated[0] since closed ends there; the explicit
-        // return-to-start below is a harmless duplicate that keeps the rest of the code simple.
+        if (activeRanges.length === 0) {
+          // No tabs — use arc fitting to emit G2/G3 for circular spans
+          const arcSegs = arcFitPolyline(closed, 0.1)
+          for (const s of arcSegs) {
+            segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+          }
+        } else {
+          const passSegs = polylinePassWithTabs(closed, zDepth, activeRanges, lens)
+          segs.push(...passSegs)
+        }
+        // Harmless duplicate return-to-start; keeps code consistent across both branches.
         segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
       }
       segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })

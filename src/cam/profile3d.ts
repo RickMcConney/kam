@@ -315,8 +315,9 @@ function generateRaster(
       // null = outside the STL footprint (waste material) — skip without retracting
       if (h === null) continue
 
-      // Already cleared by a previous roughing pass — skip without retracting
-      if (prevPassDepthMM > 0 && h >= -prevPassDepthMM + 1e-6) continue
+      // Already cleared by a previous roughing pass — retract so the move to the next
+      // deep feature doesn't gouge through the shallower surface that remains here.
+      if (prevPassDepthMM > 0 && h >= -prevPassDepthMM + 1e-6) { endGroup(); continue }
 
       const surfZ = Math.max(h, -maxDepthMM)
       const toolZ = surfZ + ballRadius + stockAllowanceMM

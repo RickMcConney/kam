@@ -175,6 +175,131 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
   return subpaths
 }
 
+// Intersection of open line segments (a→b) and (c→d). Returns null if parallel or endpoint-only.
+function segIntersect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number,
+): Pt2 | null {
+  const rx = bx - ax, ry = by - ay
+  const sx = dx - cx, sy = dy - cy
+  const d = rx * sy - ry * sx
+  if (Math.abs(d) < 1e-10) return null
+  const t = ((cx - ax) * sy - (cy - ay) * sx) / d
+  const u = ((cx - ax) * ry - (cy - ay) * rx) / d
+  return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9
+    ? [ax + t * rx, ay + t * ry]
+    : null
+}
+
+// Remove self-intersecting loops from an offset polygon. Iteratively finds the
+// first self-crossing and retains the larger (outer) sub-polygon until clean.
+// safetyDelta: push the bridge point this far outward (away from the inner loop)
+// so the tool centre never dips inside the original shape at concave features.
+export function resolveOffsetLoops(pts: Pt2[], safetyDelta = 0): Pt2[] {
+  let poly = [...pts]
+  for (let iter = 0; iter < 30; iter++) {
+    const n = poly.length
+    if (n < 4) break
+    let found = false
+    outer: for (let i = 0; i < n - 1; i++) {
+      const ax = poly[i][0], ay = poly[i][1]
+      const bx = poly[i + 1][0], by = poly[i + 1][1]
+      const jEnd = i === 0 ? n - 1 : n   // skip closing-edge pair (shares vertex 0)
+      for (let j = i + 2; j < jEnd; j++) {
+        const p = segIntersect(ax, ay, bx, by,
+          poly[j][0], poly[j][1], poly[(j + 1) % n][0], poly[(j + 1) % n][1])
+        if (p) {
+          // Compute a safe bridge point: push p away from the inner-loop centroid
+          // so the tool doesn't cut into a concave feature (e.g. heart V-notch).
+          let bridge: Pt2 = p
+          if (safetyDelta > 0) {
+            let icx = 0, icy = 0
+            for (let k = i + 1; k <= j; k++) { icx += poly[k][0]; icy += poly[k][1] }
+            const cnt = j - i
+            icx /= cnt; icy /= cnt
+            const odx = p[0] - icx, ody = p[1] - icy
+            const olen = Math.hypot(odx, ody)
+            if (olen > 1e-6) bridge = [p[0] + (odx / olen) * safetyDelta, p[1] + (ody / olen) * safetyDelta]
+          }
+          const loopA: Pt2[] = [...poly.slice(0, i + 1), bridge, ...poly.slice(j + 1)]
+          const loopB: Pt2[] = [...poly.slice(i + 1, j + 1), p]
+          poly = Math.abs(signedArea(loopA)) >= Math.abs(signedArea(loopB)) ? loopA : loopB
+          found = true
+          break outer
+        }
+      }
+    }
+    if (!found) break
+  }
+  return poly
+}
+
+// Fit a circle through 3 points. Returns null if collinear or radius < 0.1mm.
+function circleFrom3Pts(a: Pt2, b: Pt2, c: Pt2): { cx: number; cy: number; r: number } | null {
+  const ax = b[0] - a[0], ay = b[1] - a[1]
+  const bx = c[0] - a[0], by = c[1] - a[1]
+  const D = 2 * (ax * by - ay * bx)
+  if (Math.abs(D) < 1e-10) return null
+  const ux = (by * (ax * ax + ay * ay) - ay * (bx * bx + by * by)) / D
+  const uy = (ax * (bx * bx + by * by) - bx * (ax * ax + ay * ay)) / D
+  const r = Math.hypot(ux, uy)
+  if (r < 0.1) return null
+  return { cx: a[0] + ux, cy: a[1] + uy, r }
+}
+
+export type ArcFitSeg = { x: number; y: number; arc?: { cx: number; cy: number; cw: boolean } }
+
+// Convert a polyline to a list of G1/G2/G3 motion endpoints.
+// Arc spans where all points fit within `tol` of a circle are collapsed to a single arc segment.
+// The first point of `pts` is the current position (not emitted); segments cover pts[1..n-1].
+export function arcFitPolyline(pts: Pt2[], tol: number): ArcFitSeg[] {
+  const result: ArcFitSeg[] = []
+  const n = pts.length
+  let i = 0
+  while (i < n - 1) {
+    let bestJ = -1
+    let bestCircle: { cx: number; cy: number; r: number } | null = null
+    for (let j = Math.min(i + 2, n - 1); j < n; j++) {
+      const mid = (i + j) >> 1
+      const c = circleFrom3Pts(pts[i], pts[mid], pts[j])
+      if (!c) break
+      let ok = true
+      for (let k = i + 1; k <= j; k++) {
+        if (Math.abs(Math.hypot(pts[k][0] - c.cx, pts[k][1] - c.cy) - c.r) > tol) {
+          ok = false
+          break
+        }
+      }
+      if (ok) { bestJ = j; bestCircle = c }
+      else break
+    }
+    if (bestJ >= i + 3 && bestCircle) {
+      const s = pts[i], e = pts[bestJ], m = pts[(i + bestJ) >> 1]
+      // Sagitta = bow height from midpoint to chord.  Near-zero = effectively straight.
+      const sagitta = dist(m[0], m[1], s[0], s[1], e[0], e[1])
+      // Local circle from first three interior points — this approximates the true arc.
+      // pts[i] must also lie on this circle; if it doesn't, pts[i] is a line endpoint
+      // adjacent to the arc start (arc tangent point), not the arc start itself.
+      const localC = circleFrom3Pts(pts[i + 1], pts[i + 2], pts[i + 3])
+      const startOnArc = localC !== null &&
+        Math.abs(Math.hypot(s[0] - localC.cx, s[1] - localC.cy) - localC.r) <= tol
+      if (sagitta > 0.05 && startOnArc) {
+        // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
+        const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
+        result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw: triArea < 0 } })
+        i = bestJ
+      } else {
+        result.push({ x: pts[i + 1][0], y: pts[i + 1][1] })
+        i++
+      }
+    } else {
+      result.push({ x: pts[i + 1][0], y: pts[i + 1][1] })
+      i++
+    }
+  }
+  return result
+}
+
 // Iterative Ramer-Douglas-Peucker simplification.
 // Reduces a dense polyline to the minimum set of points that deviate no more
 // than `tol` from the original curve. Runs in O(n log n) average.

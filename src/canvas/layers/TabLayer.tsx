@@ -19,6 +19,7 @@ interface TabVisual {
   tx: number
   ty: number
   lengthMM: number
+  heightMM: number
 }
 
 function evalPathAtT(d: string, t: number): { x: number; y: number; tx: number; ty: number } | null {
@@ -104,7 +105,7 @@ interface Props {
   viewport: Viewport
 }
 
-const TAB_HALF_W_MM = 1.0  // perpendicular visual half-width (2 mm total), length along path is lengthMM
+// Perpendicular visual width is driven by tab.heightMM; length along path is tab.lengthMM
 const TAB_COLOR = '#f59e0b'
 const TAB_HOVER_COLOR = '#fcd34d'
 const TAB_DRAG_COLOR = '#fde68a'
@@ -126,7 +127,7 @@ export function TabLayer({ viewport }: Props) {
     for (const tab of tabs) {
       const pos = evalPathAtT(path.d, tab.t)
       if (!pos) continue
-      visuals.push({ id: tab.id, pathId: path.id, pathD: path.d, x: pos.x, y: pos.y, tx: pos.tx, ty: pos.ty, lengthMM: tab.lengthMM })
+      visuals.push({ id: tab.id, pathId: path.id, pathD: path.d, x: pos.x, y: pos.y, tx: pos.tx, ty: pos.ty, lengthMM: tab.lengthMM, heightMM: tab.heightMM })
     }
   }
 
@@ -136,7 +137,7 @@ export function TabLayer({ viewport }: Props) {
     <Group listening={tabsFormActive}>
       {visuals.map((v) => {
         const halfLen = v.lengthMM / 2
-        const halfW = TAB_HALF_W_MM
+        const halfW = v.heightMM / 2
         const rotDeg = Math.atan2(v.ty, v.tx) * 180 / Math.PI
         const isDragging = draggingTabId === v.id
         const isHovered = hoveredTabId === v.id

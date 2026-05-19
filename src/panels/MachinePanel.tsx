@@ -1949,7 +1949,7 @@ export function TabsForm({ onClose }: { onClose: () => void }) {
 
   function handleApply() {
     if (!singlePath) return
-    applyTabs(singlePath.id, form.count, form.lengthMM, form.heightMM)
+    applyTabs(singlePath.id, form.count, singlePath.d, form.lengthMM, form.heightMM)
     regenerateAffected(singlePath.id)
     save('tabs', form)
   }

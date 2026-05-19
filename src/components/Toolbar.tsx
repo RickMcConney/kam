@@ -23,6 +23,7 @@ import { importStl } from '../importers/stlImporter'
 import { getMultiBBox, translateD } from '../canvas/selectionUtils'
 import { saveProject } from '../io/projectSave'
 import { openProjectFile, newProject } from '../io/projectLoad'
+import HelpPanel from '../panels/HelpPanel'
 
 function ToolbarButton({
   icon,
@@ -136,7 +137,7 @@ function ProjectNameEditor() {
 
 export default function Toolbar() {
   const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab, darkMode, toggleDarkMode,
-          nodeEditUndo, nodeEditRedo, nodeEditCanUndo, nodeEditCanRedo } = useUIStore()
+          nodeEditUndo, nodeEditRedo, nodeEditCanUndo, nodeEditCanRedo, setHelpOpen } = useUIStore()
   const { undo: mainUndo, redo: mainRedo, canUndo, canRedo } = usePathsStore()
   const undo = nodeEditUndo ?? mainUndo
   const redo = nodeEditRedo ?? mainRedo
@@ -413,9 +414,11 @@ export default function Toolbar() {
             onClick={toggleDarkMode}
           />
           <ToolbarButton icon={<Settings size={ICON.md} />} label="Options" />
-          <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" />
+          <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" onClick={() => setHelpOpen(true)} />
         </div>
       </div>
+
+      <HelpPanel />
 
       {/* DXF units prompt modal */}
       {pendingDxf && (
