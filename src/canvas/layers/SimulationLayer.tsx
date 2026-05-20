@@ -81,6 +81,23 @@ function computeTrail(
   return { lineSections, frustumSegs }
 }
 
+// Backward-facing semicircle cap at the start of a frustum segment.
+// Arc goes from θ+π/2 counterclockwise (in CNC Y-up) to θ-π/2, covering the backward half.
+// anticlockwise=false in canvas Y-down-ctx = CCW in the Y-flipped CNC layer space.
+function makeStartCapSceneFunc(af: FrustumSeg) {
+  const dx = af.x1 - af.x0, dy = af.y1 - af.y0
+  const len = Math.hypot(dx, dy)
+  if (len < 0.0001) return null
+  const θ = Math.atan2(dy, dx)
+  const r = af.w0 / 2
+  return (ctx: any, shape: any) => {
+    ctx.beginPath()
+    ctx.arc(af.x0, af.y0, r, θ + Math.PI / 2, θ - Math.PI / 2, false)
+    ctx.closePath()
+    ctx.fillStrokeShape(shape)
+  }
+}
+
 // Builds a Konva sceneFunc that fills all frustum segments as closed quad subpaths.
 // Each quad: left-start → left-end → right-end → right-start.
 // Coordinates are in CNC mm (the layer's Y-flipped transform handles screen mapping).
@@ -183,15 +200,29 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
       <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} />
 
       {/* Active partial segment — 60fps updates */}
-      {activeFrustum && (
-        <Shape
-          sceneFunc={makeFrustumSceneFunc([activeFrustum])}
-          fill={SIM_CUT_COLOR}
-          strokeWidth={0}
-          opacity={0.55}
-          listening={false}
-        />
-      )}
+      {activeFrustum && (() => {
+        const capFn = makeStartCapSceneFunc(activeFrustum)
+        return (
+          <>
+            {capFn && (
+              <Shape
+                sceneFunc={capFn}
+                fill={SIM_CUT_COLOR}
+                strokeWidth={0}
+                opacity={0.55}
+                listening={false}
+              />
+            )}
+            <Shape
+              sceneFunc={makeFrustumSceneFunc([activeFrustum])}
+              fill={SIM_CUT_COLOR}
+              strokeWidth={0}
+              opacity={0.55}
+              listening={false}
+            />
+          </>
+        )
+      })()}
 
       {/* Tool dot */}
       <Circle

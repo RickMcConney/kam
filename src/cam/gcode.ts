@@ -170,7 +170,7 @@ export function generateGcode(
         const xyChanged = seg.x !== prevX || seg.y !== prevY
         const isPlunge = zChanged && prevSeg && !prevSeg.rapid && !xyChanged
         const feedMm = isPlunge ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
-        const feed = Math.round(toOut(feedMm, profile))
+        const feed = Math.round(toOut(feedMm * (seg.feedScale ?? 1), profile))
         lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
       }
 

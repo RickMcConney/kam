@@ -42,6 +42,7 @@ interface UIState {
   setActiveTool: (tool: ActiveTool) => void
   setShapeToolConfig: (config: ShapeToolConfig) => void
   addDrillPoint: (pt: { x: number; y: number }) => void
+  setDrillPoints: (pts: { x: number; y: number }[]) => void
   clearDrillPoints: () => void
   addPenNode: (node: PenNode) => void
   clearPenNodes: () => void
@@ -80,6 +81,7 @@ export const useUIStore = create<UIState>()((set) => ({
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
+  setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),
   clearDrillPoints: () => set({ pendingDrillPoints: [] }),
   addPenNode: (node) => set((s) => ({ penNodes: [...s.penNodes, node] })),
   clearPenNodes: () => set({ penNodes: [] }),

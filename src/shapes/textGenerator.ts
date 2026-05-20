@@ -86,8 +86,13 @@ export function generateTextD(params: TextParams): string {
   const font = fontCache.get(params.fontFamily) ?? fontCache.get(DEFAULT_FONT_FAMILY)
   if (!font || !params.text.trim()) return ''
 
+  // Scale so cap height (not em-square) matches params.fontSize.
+  // sCapHeight is in font units; fall back to ascender if absent.
+  const capHeight: number = font.tables?.os2?.sCapHeight || font.ascender
+  const scaledSize = params.fontSize * (font.unitsPerEm / capHeight)
+
   // getPath returns path in screen Y-down coords; we flip Y for CNC Y-up
-  const path = font.getPath(params.text, 0, 0, params.fontSize)
+  const path = font.getPath(params.text, 0, 0, scaledSize)
   const { x: bx, y: by } = params
 
   const cmds: string[] = []

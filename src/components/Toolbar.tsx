@@ -167,6 +167,7 @@ export default function Toolbar() {
     const { operations: ops } = useToolpathStore.getState()
     const gcode = generateGcode(ops, toolsById, name, profile)
     useSimStore.getState().loadGcode(gcode)
+    useSimStore.getState().play()
     const cur = useUIStore.getState().workspaceTab
     if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
   }
@@ -179,7 +180,7 @@ export default function Toolbar() {
       const store = usePathsStore.getState()
       store.addPaths(result.paths)
       store.toggleGroupCollapsed(result.groupId)
-      setSidebarTab('paths')
+      setSidebarTab('draw')
     } else if (!result.needsUnitsPrompt) {
       console.warn('DXF import: no supported geometry found')
     }
@@ -228,7 +229,7 @@ export default function Toolbar() {
         const simState = useSimStore.getState()
         if (!simState.gcodeViewerOpen) simState.toggleGcodeViewer()
 
-        setSidebarTab('paths')
+        setSidebarTab('draw')
         const cur = useUIStore.getState().workspaceTab
         if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
       })
@@ -255,7 +256,7 @@ export default function Toolbar() {
             const store = usePathsStore.getState()
             store.addPaths(result.paths)
             store.toggleGroupCollapsed(result.groupId)
-            setSidebarTab('paths')
+            setSidebarTab('draw')
           }
         } catch { /* ignore */ }
       }
@@ -325,7 +326,7 @@ export default function Toolbar() {
             color: '#94a3b8',
             imageSrc: src,
           }])
-          setSidebarTab('paths')
+          setSidebarTab('draw')
         }
         img.src = src
       }

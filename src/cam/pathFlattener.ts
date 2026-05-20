@@ -175,64 +175,6 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
   return subpaths
 }
 
-// Intersection of open line segments (a→b) and (c→d). Returns null if parallel or endpoint-only.
-function segIntersect(
-  ax: number, ay: number, bx: number, by: number,
-  cx: number, cy: number, dx: number, dy: number,
-): Pt2 | null {
-  const rx = bx - ax, ry = by - ay
-  const sx = dx - cx, sy = dy - cy
-  const d = rx * sy - ry * sx
-  if (Math.abs(d) < 1e-10) return null
-  const t = ((cx - ax) * sy - (cy - ay) * sx) / d
-  const u = ((cx - ax) * ry - (cy - ay) * rx) / d
-  return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9
-    ? [ax + t * rx, ay + t * ry]
-    : null
-}
-
-// Remove self-intersecting loops from an offset polygon. Iteratively finds the
-// first self-crossing and retains the larger (outer) sub-polygon until clean.
-// safetyDelta: push the bridge point this far outward (away from the inner loop)
-// so the tool centre never dips inside the original shape at concave features.
-export function resolveOffsetLoops(pts: Pt2[], safetyDelta = 0): Pt2[] {
-  let poly = [...pts]
-  for (let iter = 0; iter < 30; iter++) {
-    const n = poly.length
-    if (n < 4) break
-    let found = false
-    outer: for (let i = 0; i < n - 1; i++) {
-      const ax = poly[i][0], ay = poly[i][1]
-      const bx = poly[i + 1][0], by = poly[i + 1][1]
-      const jEnd = i === 0 ? n - 1 : n   // skip closing-edge pair (shares vertex 0)
-      for (let j = i + 2; j < jEnd; j++) {
-        const p = segIntersect(ax, ay, bx, by,
-          poly[j][0], poly[j][1], poly[(j + 1) % n][0], poly[(j + 1) % n][1])
-        if (p) {
-          // Compute a safe bridge point: push p away from the inner-loop centroid
-          // so the tool doesn't cut into a concave feature (e.g. heart V-notch).
-          let bridge: Pt2 = p
-          if (safetyDelta > 0) {
-            let icx = 0, icy = 0
-            for (let k = i + 1; k <= j; k++) { icx += poly[k][0]; icy += poly[k][1] }
-            const cnt = j - i
-            icx /= cnt; icy /= cnt
-            const odx = p[0] - icx, ody = p[1] - icy
-            const olen = Math.hypot(odx, ody)
-            if (olen > 1e-6) bridge = [p[0] + (odx / olen) * safetyDelta, p[1] + (ody / olen) * safetyDelta]
-          }
-          const loopA: Pt2[] = [...poly.slice(0, i + 1), bridge, ...poly.slice(j + 1)]
-          const loopB: Pt2[] = [...poly.slice(i + 1, j + 1), p]
-          poly = Math.abs(signedArea(loopA)) >= Math.abs(signedArea(loopB)) ? loopA : loopB
-          found = true
-          break outer
-        }
-      }
-    }
-    if (!found) break
-  }
-  return poly
-}
 
 // Fit a circle through 3 points. Returns null if collinear or radius < 0.1mm.
 function circleFrom3Pts(a: Pt2, b: Pt2, c: Pt2): { cx: number; cy: number; r: number } | null {
@@ -326,27 +268,6 @@ export function douglasPeucker(pts: Pt2[], tol: number): Pt2[] {
   return pts.filter((_, i) => keep[i])
 }
 
-// Detect whether a closed polygon's edges properly intersect (O(n²)).
-// Skips adjacent edge pairs that share a vertex.
-export function hasSelfIntersection(pts: Pt2[]): boolean {
-  const n = pts.length
-  for (let i = 0; i < n - 1; i++) {
-    const ax = pts[i][0], ay = pts[i][1]
-    const bx = pts[(i + 1) % n][0], by = pts[(i + 1) % n][1]
-    // When i=0 skip j=n-1: that edge shares pts[0] (adjacent via the closing seam)
-    const jEnd = i === 0 ? n - 1 : n
-    for (let j = i + 2; j < jEnd; j++) {
-      const cx = pts[j][0], cy = pts[j][1]
-      const dx = pts[(j + 1) % n][0], dy = pts[(j + 1) % n][1]
-      const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-      const d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax)
-      const d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx)
-      const d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx)
-      if (d1 * d2 < -1e-10 && d3 * d4 < -1e-10) return true
-    }
-  }
-  return false
-}
 
 // Compute signed area via shoelace (positive = CCW in Y-up system)
 export function signedArea(pts: Pt2[]): number {
@@ -374,62 +295,3 @@ export function ensureWinding(pts: Pt2[], wantCCW: boolean): Pt2[] {
   return isCCW === wantCCW ? pts : [...pts].reverse()
 }
 
-// Offset a closed polygon by delta mm. Positive = expand outward (CCW).
-export function offsetPolygon(pts: Pt2[], delta: number): Pt2[] {
-  // Remove near-duplicate consecutive points
-  const u: Pt2[] = [pts[0]]
-  for (let i = 1; i < pts.length; i++) {
-    if (Math.hypot(pts[i][0] - u[u.length-1][0], pts[i][1] - u[u.length-1][1]) > 1e-6) u.push(pts[i])
-  }
-  // Remove closing duplicate (last ≈ first) so the polygon has no degenerate edge at the seam
-  if (u.length > 1 && Math.hypot(u[u.length-1][0] - u[0][0], u[u.length-1][1] - u[0][1]) < 1e-6) u.pop()
-  if (u.length < 3) return []
-
-  // Simplify before offset. Dense polylines from DXF line-segment approximations
-  // (e.g. gear teeth at 0.02–0.05 mm/segment) create near-collinear vertex clusters
-  // that produce huge miter spikes and false self-intersection detections.
-  // Open the closed polygon at u[0], run D-P, then drop the re-appended closing point.
-  // Tolerance: 2% of |delta|, floor 0.001 mm — well within CNC accuracy.
-  const dpTol = Math.max(1e-3, Math.abs(delta) * 0.02)
-  const opened = [...u, u[0]]
-  const simplified = douglasPeucker(opened, dpTol)
-  simplified.pop()
-  const v = simplified.length >= 3 ? simplified : u
-
-  const n = v.length
-  if (n < 3) return []
-
-  const area = signedArea(v)
-  // Normalise winding so that positive delta = outward offset
-  // CCW polygon (area > 0) in Y-up: outward normal is to the left of travel direction → (-dy, dx)/len
-  // For CW polygon, flip sign
-  const windSign = area >= 0 ? 1 : -1
-
-  const en: Pt2[] = []
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n
-    const dx = v[j][0] - v[i][0], dy = v[j][1] - v[i][1]
-    const len = Math.hypot(dx, dy)
-    // CCW (windSign=1): outward = right of travel = (dy, -dx)/len
-    // CW  (windSign=-1): outward = left of travel = (-dy, dx)/len
-    en.push(len < 1e-10 ? [0, 0] : [dy * windSign / len, -dx * windSign / len])
-  }
-
-  const result: Pt2[] = []
-  for (let i = 0; i < n; i++) {
-    const prev = en[(i - 1 + n) % n]
-    const next = en[i]
-    const bx = prev[0] + next[0], by = prev[1] + next[1]
-    const blen = Math.hypot(bx, by)
-    if (blen < 1e-10) {
-      result.push([v[i][0] + next[0] * delta, v[i][1] + next[1] * delta])
-    } else {
-      const nx = bx / blen, ny = by / blen
-      const dot = next[0] * nx + next[1] * ny
-      // Cap miter at 4× to avoid spikes at very sharp corners
-      const scale = Math.abs(dot) > 0.25 ? delta / dot : delta * 4 * Math.sign(dot || 1)
-      result.push([v[i][0] + nx * scale, v[i][1] + ny * scale])
-    }
-  }
-  return result
-}

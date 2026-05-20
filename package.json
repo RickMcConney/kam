@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@types/three": "^0.184.1",
+    "clipper2-ts": "^2.0.1-15",
     "dxf-parser": "^1.1.2",
     "konva": "^10.3.0",
     "lucide-react": "^1.16.0",

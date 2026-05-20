@@ -12,6 +12,7 @@ export interface MotionSegment {
   rapid: boolean
   arc?: { cx: number; cy: number; cw: boolean }  // absolute arc center + direction; G2=cw, G3=ccw
   toolChange?: string  // toolId: emit tool-change gcode at this point, no movement
+  feedScale?: number   // multiplier applied to computed feed rate (default 1.0)
 }
 
 export interface DrillPoint {
@@ -38,6 +39,7 @@ export interface ProfileOperation extends BaseOperation {
   depthMM: number
   stepDownMM: number
   direction: CuttingDirection
+  rampIn: boolean
 }
 
 export interface PocketOperation extends BaseOperation {
@@ -49,6 +51,8 @@ export interface PocketOperation extends BaseOperation {
   stepoverPercent: number
   passAngleDeg: number
   direction: CuttingDirection
+  strategy: 'raster' | 'contour'
+  rampIn: boolean
 }
 
 export interface DrillOperation extends BaseOperation {

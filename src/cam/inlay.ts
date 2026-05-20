@@ -1,5 +1,5 @@
 import { flattenPath, signedArea, type Pt2 } from './pathFlattener'
-import { generatePocket } from './raster'
+import { generatePocket } from './pocket'
 import { generateVCarve } from './vcarve'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'

@@ -279,6 +279,7 @@ export default function CanvasStage() {
   const [hoverSegIdx, setHoverSegIdx] = useState<number | null>(null)
   const localPast = useRef<PathNode[][]>([])
   const localFuture = useRef<PathNode[][]>([])
+  const drillPast = useRef<{ x: number; y: number }[][]>([])
 
   const pushLocalUndo = useCallback((snapshot: PathNode[]) => {
     localPast.current = [...localPast.current, snapshot]
@@ -306,6 +307,13 @@ export default function CanvasStage() {
     useUIStore.getState().setNodeEditHistoryFlags(true, localFuture.current.length > 0)
   }, [])
 
+  const drillUndo = useCallback(() => {
+    if (drillPast.current.length === 0) return
+    const prev = drillPast.current[drillPast.current.length - 1]
+    drillPast.current = drillPast.current.slice(0, -1)
+    useUIStore.getState().setDrillPoints(prev)
+  }, [])
+
   const setMode2 = useCallback((m: CanvasMode) => {
     modeRef.current = m
   }, [])
@@ -317,6 +325,28 @@ export default function CanvasStage() {
     const org = originWorldXY(origin, widthMM, heightMM)
     return snapPoint(cnc, viewportRef.current, units, org)
   }, [])
+
+  // Snap to nearest visible path vertex within 10 screen px, then fall back to grid snap.
+  const snapDrillPoint = useCallback((cnc: { x: number; y: number }): { x: number; y: number } => {
+    const vp = viewportRef.current
+    const radiusCNC = 10 / vp.scale
+    const { paths: allPaths } = usePathsStore.getState()
+    let bestDist = radiusCNC
+    let best: { x: number; y: number } | null = null
+    for (const p of allPaths) {
+      if (!p.visible) continue
+      let polys = flatCache.current.get(p.d)
+      if (!polys) { polys = flattenPath(p.d, 0.5); flatCache.current.set(p.d, polys) }
+      for (const poly of polys) {
+        for (const [vx, vy] of poly) {
+          const d = Math.hypot(vx - cnc.x, vy - cnc.y)
+          if (d < bestDist) { bestDist = d; best = { x: vx, y: vy } }
+        }
+      }
+    }
+    if (best) return best
+    return snapCNC(cnc)
+  }, [snapCNC])
 
 const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -529,6 +559,23 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     setEditClosed(closed)
     useUIStore.getState().setNodeEditUndoRedo(localUndo, localRedo)
   }, [nodeEditPathId, localUndo, localRedo, commitEditNodes])
+
+  // Register drill-local undo only while there are pending drill points to undo.
+  // When points are empty (e.g. after generation or after undoing all), unregister so
+  // the toolbar button and keyboard shortcut fall through to the global path undo.
+  const activeTool = useUIStore((s) => s.activeTool)
+  useEffect(() => {
+    if (activeTool === 'drill' && pendingDrillPoints.length > 0) {
+      useUIStore.getState().setNodeEditUndoRedo(drillUndo, null)
+      useUIStore.getState().setNodeEditHistoryFlags(true, false)
+    } else {
+      drillPast.current = []
+      if (useUIStore.getState().nodeEditUndo === drillUndo) {
+        useUIStore.getState().setNodeEditUndoRedo(null, null)
+        useUIStore.getState().setNodeEditHistoryFlags(false, false)
+      }
+    }
+  }, [activeTool, pendingDrillPoints.length, drillUndo])
 
   const handleNodeMouseDown = useCallback((nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => {
     const vp = viewportRef.current
@@ -1062,15 +1109,15 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         const pointer = stageRef.current?.getPointerPosition()
         if (pointer) {
           const cnc = screenToCNC(pointer.x, pointer.y, viewportRef.current)
-          useUIStore.getState().addDrillPoint(cnc)
+          const { pendingDrillPoints } = useUIStore.getState()
+          drillPast.current = [...drillPast.current, pendingDrillPoints]
+          useUIStore.getState().addDrillPoint(snapDrillPoint(cnc))
         }
       }
     }
 
     setMode2({ type: 'idle' })
   }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, commitEditNodes, pushLocalUndo])
-
-  const activeTool = useUIStore((s) => s.activeTool)
 
   const getCursor = () => {
     if (nodeEditPathId) return 'default'

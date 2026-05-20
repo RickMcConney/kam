@@ -1,5 +1,5 @@
 import { generateProfile } from './profile'
-import { generatePocket } from './raster'
+import { generatePocket } from './pocket'
 import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { generateSurface } from './surfacing'
 import { generateVCarve } from './vcarve'
@@ -10,6 +10,7 @@ import { usePathsStore } from '../store/pathsStore'
 import { useToolStore } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
+import { useSimStore } from '../store/simStore'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 
@@ -33,7 +34,7 @@ export function regenerateOperation(opId: string): Promise<void> {
         const pathTabs = useTabStore.getState().getPathTabs(op.pathId)
         setSegments(opId, generateProfile(path.d, tool, {
           side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM, direction: op.direction,
-          startNear: op.entryHint,
+          startNear: op.entryHint, rampIn: op.rampIn,
         }, pathTabs.length > 0 ? pathTabs : undefined))
       } else if (op.type === 'pocket') {
         const boundary = paths.find((p) => p.id === op.pathId)
@@ -43,9 +44,10 @@ export function regenerateOperation(opId: string): Promise<void> {
           return p ? [p.d] : []
         })
         setSegments(opId, generatePocket(boundary.d, tool, {
+          strategy: op.strategy ?? 'raster',
           depthMM: op.depthMM, stepDownMM: op.stepDownMM,
           stepoverPercent: op.stepoverPercent, direction: op.direction,
-          islandDs, angle: op.passAngleDeg, startNear: op.entryHint,
+          islandDs, angle: op.passAngleDeg, startNear: op.entryHint, rampIn: op.rampIn,
         }))
       } else if (op.type === 'drill') {
         if (op.drillMode === 'helical') {
@@ -152,13 +154,16 @@ function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, 
 
 export function regenerateAffected(pathId: string): void {
   const { operations } = useToolpathStore.getState()
-  for (const op of operations) {
-    if (affectsOp(op, pathId)) regenerateOperation(op.id)
+  const affected = operations.filter((op) => affectsOp(op, pathId))
+  if (affected.length > 0) {
+    if (useSimStore.getState().gcode) useSimStore.getState().clearSim()
+    for (const op of affected) regenerateOperation(op.id)
   }
 }
 
 export function regenerateAll(): void {
   const { operations } = useToolpathStore.getState()
+  if (operations.length > 0 && useSimStore.getState().gcode) useSimStore.getState().clearSim()
   for (const op of operations) {
     regenerateOperation(op.id)
   }

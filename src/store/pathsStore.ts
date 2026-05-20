@@ -3,10 +3,11 @@ import type { ImportedPath } from '../importers/svgImporter'
 import { translateD } from '../canvas/selectionUtils'
 import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
+import { useTabStore, type Tab } from './tabStore'
 
 export type { ImportedPath }
 
-type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[] }
+type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[]; selectedIds: string[]; tabs: Tab[] }
 
 interface PathsState {
   paths: ImportedPath[]
@@ -40,8 +41,13 @@ interface PathsState {
   canRedo: () => boolean
 }
 
-function pushHistory(past: HistoryEntry[], paths: ImportedPath[]): HistoryEntry[] {
-  return [...past.slice(-49), { paths, operations: useToolpathStore.getState().operations }]
+function pushHistory(past: HistoryEntry[], paths: ImportedPath[], selectedIds: string[]): HistoryEntry[] {
+  return [...past.slice(-49), {
+    paths,
+    operations: useToolpathStore.getState().operations,
+    selectedIds,
+    tabs: useTabStore.getState().tabs,
+  }]
 }
 
 let _dupCounter = 0
@@ -54,7 +60,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   future: [],
 
   addPaths: (newPaths) => set((s) => ({
-    past: pushHistory(s.past, s.paths),
+    past: pushHistory(s.past, s.paths, s.selectedIds),
     future: [],
     paths: [...s.paths, ...newPaths],
   })),
@@ -65,7 +71,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const newOps = ops.filter((op) => !refsPathId(op, id))
     if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
     set({
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: s.paths.filter((p) => p.id !== id),
       selectedIds: s.selectedIds.filter((sid) => sid !== id),
@@ -96,7 +102,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const newOps = ops.filter((op) => !ids.some((id) => refsPathId(op, id)))
     if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
     set((s) => ({
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: s.paths.filter((p) => p.groupId !== groupId),
       selectedIds: s.selectedIds.filter((sid) => !ids.includes(sid)),
@@ -121,7 +127,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const newOps = ops.filter((op) => !s.selectedIds.some((id) => refsPathId(op, id)))
     if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
     set({
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: s.paths.filter((p) => !s.selectedIds.includes(p.id)),
       selectedIds: [],
@@ -129,7 +135,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   },
 
   updatePathD: (id, newD) => set((s) => ({
-    past: pushHistory(s.past, s.paths),
+    past: pushHistory(s.past, s.paths, s.selectedIds),
     future: [],
     paths: s.paths.map((p) => p.id === id ? { ...p, d: newD } : p),
   })),
@@ -137,7 +143,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   batchUpdatePaths: (updates) => set((s) => {
     const map = new Map(updates.map(({ id, d, shapeParams, name }) => [id, { d, shapeParams, name }]))
     return {
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: s.paths.map((p) => {
         const upd = map.get(p.id)
@@ -157,7 +163,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   updateShapeParams: (id, params) => set((s) => {
     const d = generateShapeD(params)
     return {
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
     }
@@ -186,7 +192,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     }))
     const paths = [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)]
     return {
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths,
       selectedIds: newPaths.map((p) => p.id),
@@ -205,7 +211,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         shapeParams: p.shapeParams ? translateShapeParams(p.shapeParams, offsetMM, offsetMM) : undefined,
       }))
     return {
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
       paths: [...s.paths, ...newPaths],
       selectedIds: newPaths.map((p) => p.id),
@@ -217,12 +223,16 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     if (s.past.length === 0) return
     const prev = s.past[s.past.length - 1]
     const currentOps = useToolpathStore.getState().operations
+    const currentTabs = useTabStore.getState().tabs
     useToolpathStore.getState().replaceOperations(prev.operations)
+    useTabStore.getState().replaceTabs(prev.tabs)
+    const prevIds = new Set(prev.paths.map((p) => p.id))
+    const restoredSelection = prev.selectedIds.filter((id) => prevIds.has(id))
     set({
       past: s.past.slice(0, -1),
-      future: [{ paths: s.paths, operations: currentOps }, ...s.future.slice(0, 49)],
+      future: [{ paths: s.paths, operations: currentOps, selectedIds: s.selectedIds, tabs: currentTabs }, ...s.future.slice(0, 49)],
       paths: prev.paths,
-      selectedIds: [],
+      selectedIds: restoredSelection,
     })
   },
 
@@ -231,12 +241,16 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     if (s.future.length === 0) return
     const next = s.future[0]
     const currentOps = useToolpathStore.getState().operations
+    const currentTabs = useTabStore.getState().tabs
     useToolpathStore.getState().replaceOperations(next.operations)
+    useTabStore.getState().replaceTabs(next.tabs)
+    const nextIds = new Set(next.paths.map((p) => p.id))
+    const restoredSelection = next.selectedIds.filter((id) => nextIds.has(id))
     set({
-      past: [...s.past.slice(-49), { paths: s.paths, operations: currentOps }],
+      past: [...s.past.slice(-49), { paths: s.paths, operations: currentOps, selectedIds: s.selectedIds, tabs: currentTabs }],
       future: s.future.slice(1),
       paths: next.paths,
-      selectedIds: [],
+      selectedIds: restoredSelection,
     })
   },
 
@@ -245,7 +259,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   pushHistoryBoth: () => {
     const s = get()
     set({
-      past: pushHistory(s.past, s.paths),
+      past: pushHistory(s.past, s.paths, s.selectedIds),
       future: [],
     })
   },

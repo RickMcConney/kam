@@ -9,6 +9,9 @@ import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 
 
+const LS_SHAPE_KEY = 'kam:lastShapeType'
+const LS_TEXT_KEY = 'kam:textConfig'
+
 const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'rectangle', label: 'Rect',    icon: <Square size={ICON.md} /> },
   { type: 'roundrect',   label: 'Round',   icon: <Squircle size={ICON.md} /> },
@@ -164,6 +167,29 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
 
   useEffect(() => { loadFont(shapeToolConfig.text.fontFamily) }, [shapeToolConfig.text.fontFamily])
 
+  // Load saved text config on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(LS_TEXT_KEY)
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved)
+      setShapeToolConfig({ ...shapeToolConfig, text: { ...shapeToolConfig.text, ...parsed } })
+    } catch {}
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateConfig = (config: ShapeToolConfig) => {
+    setShapeToolConfig(config)
+    localStorage.setItem(LS_TEXT_KEY, JSON.stringify(config.text))
+  }
+
+  useEffect(() => {
+    if (!fill) return
+    const saved = localStorage.getItem(LS_SHAPE_KEY) as ShapeType | null
+    const valid = SHAPES.map(s => s.type)
+    setActiveTool(saved && valid.includes(saved) ? saved : SHAPES[0].type)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fill])
+
   // ── Full-panel shapes selector ─────────────────────────────────────────────
   if (fill) {
     return (
@@ -182,7 +208,11 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
             {SHAPES.map(({ type, label, icon }) => (
               <button
                 key={type}
-                onClick={() => setActiveTool(activeTool === type ? 'select' : type)}
+                onClick={() => {
+                  const next = activeTool === type ? 'select' : type
+                  setActiveTool(next)
+                  if (next !== 'select') localStorage.setItem(LS_SHAPE_KEY, next)
+                }}
                 title={label}
                 className={toolBtnCls(activeTool === type)}
               >
@@ -196,7 +226,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
               <p className="text-label text-gray-400 dark:text-neutral-500 font-medium capitalize">
                 {activeTool} defaults
               </p>
-              <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={setShapeToolConfig} units={units} />
+              <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={updateConfig} units={units} />
             </div>
           )}
         </div>
@@ -239,7 +269,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
         <div className="space-y-1.5 pt-0.5">
           <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Text defaults</p>
           {!fontReady && <p className="text-label text-yellow-500">Loading font…</p>}
-          <ShapeConfig type="text" config={shapeToolConfig} onChange={setShapeToolConfig} units={units} />
+          <ShapeConfig type="text" config={shapeToolConfig} onChange={updateConfig} units={units} />
         </div>
       )}
     </div>

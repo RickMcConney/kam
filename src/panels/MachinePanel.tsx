@@ -22,7 +22,7 @@ import { regenerateAffected } from '../cam/regenerate'
 import { useUIStore } from '../store/uiStore'
 import { flattenPath } from '../cam/pathFlattener'
 import { generateProfile } from '../cam/profile'
-import { generatePocket } from '../cam/raster'
+import { generatePocket, type PocketStrategy } from '../cam/pocket'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
 import { generateVCarve } from '../cam/vcarve'
@@ -108,6 +108,7 @@ interface ProfileFormState {
   depthMM: number
   stepDownMM: number
   direction: CuttingDirection
+  rampIn: boolean
 }
 
 export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?: ProfileOperation }) {
@@ -119,13 +120,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const defaultTool = tools[0]
   const [form, setForm] = useState<ProfileFormState>(() => editOp ? {
     toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM, direction: editOp.direction,
+    stepDownMM: editOp.stepDownMM, direction: editOp.direction, rampIn: editOp.rampIn ?? false,
   } : mergeWithDefaults(load('profile'), {
     toolId: defaultTool?.id ?? '',
     side: 'outside' as CutSide,
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    rampIn: false,
   }, tools))
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -154,11 +156,12 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       if (editOp) {
         updateOperation(editOp.id, {
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
-          stepDownMM: form.stepDownMM, direction: form.direction, status: 'generating',
+          stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, generateProfile(selectedPaths[0].d, selectedTool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
+            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            direction: form.direction, rampIn: form.rampIn,
           }))
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Generation failed'
@@ -177,11 +180,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             depthMM: form.depthMM,
             stepDownMM: form.stepDownMM,
             direction: form.direction,
+            rampIn: form.rampIn,
           })
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generateProfile(path.d, selectedTool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM, direction: form.direction,
+              side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              direction: form.direction, rampIn: form.rampIn,
             }))
           } catch (err) {
             deleteOperation(opId)
@@ -191,7 +196,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         }
       }
       setGenerating(false)
-      if (!failed) { save('profile', form); onClose() }
+      if (!failed) { save('profile', form) }
     }, 0)
   }
 
@@ -214,6 +219,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}
+          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="profile-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+        </label>
+      </div>
       {errorMsg && (
         <p className="text-body text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
@@ -233,11 +245,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
 interface PocketFormState {
   toolId: string
+  strategy: PocketStrategy
   depthMM: number
   stepDownMM: number
   stepoverPercent: number
   passAngleDeg: number
   direction: CuttingDirection
+  rampIn: boolean
 }
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
@@ -248,15 +262,19 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<PocketFormState>(() => editOp ? {
-    toolId: editOp.toolId, depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
-    stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg, direction: editOp.direction,
+    toolId: editOp.toolId, strategy: editOp.strategy ?? 'raster',
+    depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+    stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
+    direction: editOp.direction, rampIn: editOp.rampIn ?? false,
   } : mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
+    strategy: 'raster' as PocketStrategy,
     depthMM: defaultTool?.maxDepthMM ?? 10,
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
     passAngleDeg: 0,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    rampIn: false,
   }, tools))
   const [generating, setGenerating] = useState(false)
 
@@ -283,15 +301,17 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     setTimeout(() => {
       if (editOp && editBoundary) {
         updateOperation(editOp.id, {
-          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+          toolId: form.toolId, strategy: form.strategy,
+          depthMM: form.depthMM, stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
-          direction: form.direction, status: 'generating',
+          direction: form.direction, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, generatePocket(editBoundary.d, selectedTool, {
+            strategy: form.strategy,
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, direction: form.direction,
-            islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg,
+            islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
           }))
         } catch (err) {
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -302,6 +322,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             name: `Pocket: ${boundary.name} (${selectedTool.name})`,
             type: 'pocket',
             toolId: form.toolId,
+            strategy: form.strategy,
             pathId: boundary.id,
             islandIds: islands.map((p) => p.id),
             depthMM: form.depthMM,
@@ -309,13 +330,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             stepoverPercent: form.stepoverPercent,
             passAngleDeg: form.passAngleDeg,
             direction: form.direction,
+            rampIn: form.rampIn,
           })
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generatePocket(boundary.d, selectedTool, {
+              strategy: form.strategy,
               depthMM: form.depthMM, stepDownMM: form.stepDownMM,
               stepoverPercent: form.stepoverPercent, direction: form.direction,
-              islandDs: islands.map((p) => p.d), angle: form.passAngleDeg,
+              islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -324,7 +347,6 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       }
       setGenerating(false)
       save('pocket', form)
-      onClose()
     }, 0)
   }
 
@@ -348,6 +370,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
+      <ToggleRow label="Strategy" options={['raster', 'contour'] as PocketStrategy[]} value={form.strategy} onChange={(v) => up('strategy', v)} />
       {/* Stepover */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
@@ -360,21 +383,30 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           className="w-full accent-blue-500"
         />
       </div>
-      {/* Pass angle */}
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
-        </label>
-        <input
-          type="range" min={0} max={180} step={5}
-          value={form.passAngleDeg}
-          onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
-          className="w-full accent-blue-500"
-        />
-      </div>
+      {/* Pass angle — only relevant for raster strategy */}
+      {form.strategy !== 'contour' && (
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+            Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+          </label>
+          <input
+            type="range" min={0} max={180} step={5}
+            value={form.passAngleDeg}
+            onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
+            className="w-full accent-blue-500"
+          />
+        </div>
+      )}
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
+          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+        </label>
+      </div>
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
@@ -482,7 +514,6 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         }
         setGenerating(false)
         save('drill', form)
-        onClose()
       }, 0)
       return
     }
@@ -538,8 +569,6 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       setGenerating(false)
       save('drill', form)
       clearDrillPoints()
-      setActiveTool('select')
-      onClose()
     }, 0)
   }
 
@@ -846,7 +875,6 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       }
       setGenerating(false)
       save('vcarve', form)
-      onClose()
     }, 0)
   }
 
@@ -997,7 +1025,6 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         }
         setGenerating(false)
         save('inlay', form)
-        onClose()
       }, 0)
       return
     }
@@ -1034,7 +1061,6 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       }
       setGenerating(false)
       save('inlay', form)
-      onClose()
     }, 0)
   }
 
@@ -1306,7 +1332,6 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           setSegments(newOpId, segments)
         }
         save('profile3d', form)
-        onClose()
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed'
         setErrorMsg(msg)
@@ -1563,7 +1588,6 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         }
         setGenerating(false)
         save('surface', form)
-        onClose()
       }, 0)
       return
     }
@@ -1591,7 +1615,6 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       }
       setGenerating(false)
       save('surface', form)
-      onClose()
     }, 0)
   }
 
@@ -1680,7 +1703,6 @@ export function BooleanForm({ onClose }: { onClose: () => void }) {
     hidePathIds(selectedIds)
     usePathsStore.getState().setSelectedIds([newPath.id])
     save('boolean', form)
-    onClose()
   }
 
   return (
@@ -1750,7 +1772,6 @@ export function OffsetForm({ onClose }: { onClose: () => void }) {
     addPaths(newPaths)
     usePathsStore.getState().setSelectedIds(newPaths.map((p) => p.id))
     save('offset', form)
-    onClose()
   }
 
   const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
@@ -1846,7 +1867,6 @@ export function PatternForm({ onClose }: { onClose: () => void }) {
     pushHistoryBoth()
     addPaths(newPaths)
     save('pattern', form)
-    onClose()
   }
 
   const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
@@ -1926,7 +1946,7 @@ interface TabsFormState {
 }
 
 export function TabsForm({ onClose }: { onClose: () => void }) {
-  const { paths, selectedIds } = usePathsStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { tabs, applyTabs, deleteTab, deletePathTabs } = useTabStore()
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
@@ -1949,18 +1969,21 @@ export function TabsForm({ onClose }: { onClose: () => void }) {
 
   function handleApply() {
     if (!singlePath) return
+    pushHistoryBoth()
     applyTabs(singlePath.id, form.count, singlePath.d, form.lengthMM, form.heightMM)
     regenerateAffected(singlePath.id)
     save('tabs', form)
   }
 
   function handleDelete(id: string) {
+    pushHistoryBoth()
     deleteTab(id)
     if (singlePath) regenerateAffected(singlePath.id)
   }
 
   function handleClearAll() {
     if (!singlePath) return
+    pushHistoryBoth()
     deletePathTabs(singlePath.id)
     regenerateAffected(singlePath.id)
   }

@@ -1,4 +1,5 @@
-import { flattenPath, offsetPolygon, ensureWinding, hasSelfIntersection, resolveOffsetLoops, rotatePolylineNear, arcFitPolyline, type Pt2 } from './pathFlattener'
+import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, type Pt2 } from './pathFlattener'
+import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -10,6 +11,7 @@ export interface ProfileParams {
   stepDownMM: number
   direction: CuttingDirection
   startNear?: { x: number; y: number }
+  rampIn?: boolean
 }
 
 const SAFE_Z = 5.0  // mm above material surface
@@ -64,7 +66,6 @@ function designPathAtT(subpaths: Pt2[][], t: number): [number, number] | null {
 }
 
 // Project (tx, ty) onto a polyline and return the arc-length of the nearest point.
-// Used to map design-path tab positions onto the (possibly rotated, offset) toolpath.
 function nearestArcLen(pts: Pt2[], arcLens: number[], tx: number, ty: number): number {
   let bestDist = Infinity, bestLen = 0
   for (let i = 1; i < pts.length; i++) {
@@ -91,9 +92,19 @@ function arcLengths(pts: Pt2[]): { lens: number[]; total: number } {
   return { lens, total: lens[lens.length - 1] }
 }
 
+// Interpolate a point at arc-length s along a polyline.
+function interpPt(pts: Pt2[], lens: number[], s: number): Pt2 {
+  s = Math.max(0, Math.min(lens[lens.length - 1], s))
+  for (let i = 1; i < pts.length; i++) {
+    if (lens[i] >= s - 1e-10) {
+      const t = (lens[i] - lens[i - 1]) > 1e-10 ? (s - lens[i - 1]) / (lens[i] - lens[i - 1]) : 0
+      return [pts[i - 1][0] + t * (pts[i][0] - pts[i - 1][0]), pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1])]
+    }
+  }
+  return [pts[pts.length - 1][0], pts[pts.length - 1][1]]
+}
+
 // Generate segments for one polyline pass with tab support.
-// Tabs are arc-length ranges where Z is lifted to tabZ instead of cutting to zDepth.
-// Only call this when tabRanges are deeper than zDepth (i.e. zDepth < tr.tabZ for each range).
 function polylinePassWithTabs(
   pts: Pt2[],
   zDepth: number,
@@ -106,7 +117,6 @@ function polylinePassWithTabs(
 
   const total = arcLens[arcLens.length - 1]
 
-  // Interpolate XY position at arc-length s along the polyline.
   function interpXY(s: number): [number, number] {
     s = Math.max(0, Math.min(total, s))
     for (let i = 1; i < pts.length; i++) {
@@ -126,45 +136,48 @@ function polylinePassWithTabs(
 
   const segs: MotionSegment[] = []
   let curZ = zDepth
-  let ptIdx = 1  // next polyline point index to emit
+  let ptIdx = 1
 
   for (const tr of sorted) {
     const tabStart = Math.max(0, tr.start)
     const tabEnd = Math.min(total, tr.end)
     if (tabEnd <= tabStart) continue
 
-    // Emit polyline points before tab entry
     while (ptIdx < pts.length && arcLens[ptIdx] <= tabStart + 1e-6) {
       segs.push({ x: pts[ptIdx][0], y: pts[ptIdx][1], z: curZ, rapid: false })
       ptIdx++
     }
 
-    // Cut to exact tab entry at current depth, then lift Z in place
     const [ex, ey] = interpXY(tabStart)
     segs.push({ x: ex, y: ey, z: curZ, rapid: false })
     curZ = tr.tabZ
     segs.push({ x: ex, y: ey, z: curZ, rapid: false })
 
-    // Traverse interior polyline points at tab height
     while (ptIdx < pts.length && arcLens[ptIdx] < tabEnd - 1e-6) {
       segs.push({ x: pts[ptIdx][0], y: pts[ptIdx][1], z: curZ, rapid: false })
       ptIdx++
     }
 
-    // Move to exact tab exit at tab height, then plunge back to cut depth in place
     const [fx, fy] = interpXY(tabEnd)
     segs.push({ x: fx, y: fy, z: curZ, rapid: false })
     curZ = zDepth
     segs.push({ x: fx, y: fy, z: curZ, rapid: false })
   }
 
-  // Emit remaining points after all tabs
   while (ptIdx < pts.length) {
     segs.push({ x: pts[ptIdx][0], y: pts[ptIdx][1], z: curZ, rapid: false })
     ptIdx++
   }
 
   return segs
+}
+
+// Remove closing duplicate added by flattenPath's Z handler (last point === first point).
+function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
+  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6) {
+    return pts.slice(0, -1)
+  }
+  return pts
 }
 
 export function generateProfile(
@@ -183,18 +196,32 @@ export function generateProfile(
   const passes = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  for (const subpath of subpaths) {
-    const rawOffset = delta !== 0 ? offsetPolygon(subpath, delta) : subpath
-    if (rawOffset.length < 2) continue
-    const cleanOffset = (delta !== 0 && hasSelfIntersection(rawOffset))
-      ? resolveOffsetLoops(rawOffset, Math.abs(delta))
-      : rawOffset
-    if (cleanOffset.length < 3) continue
+  // Compute offset paths using Clipper2.
+  // Normalize inputs to CCW so positive delta = expand, negative = shrink.
+  // Clipper2 handles self-intersections automatically, eliminating the need for
+  // the manual resolveOffsetLoops pass.
+  let offsetPaths: Pt2[][]
+  if (delta !== 0) {
+    const inputPaths = subpaths
+      .map(sp => stripClosingDuplicate(sp))
+      .filter(sp => sp.length >= 3)
+      .map(sp => {
+        const ccw = signedArea(sp) >= 0 ? sp : [...sp].reverse()
+        return ccw.map(([x, y]) => ({ x, y }))
+      })
+    const result = inflatePathsD(inputPaths, delta, JoinType.Miter, EndType.Polygon, 4, 6)
+    offsetPaths = result
+      .map(p => stripClosingDuplicate(p.map(({ x, y }) => [x, y] as Pt2)))
+      .filter(p => p.length >= 3)
+  } else {
+    offsetPaths = subpaths.map(stripClosingDuplicate).filter(sp => sp.length >= 3)
+  }
 
-    const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
-    const offsetPts = ensureWinding(cleanOffset, wantCCW)
+  const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
 
-    const circle = fitCircle(offsetPts)
+  for (const rawPts of offsetPaths) {
+    const oriented = ensureWinding(rawPts, wantCCW)
+    const circle = fitCircle(oriented)
 
     if (circle) {
       // Circle pass — tabs not supported for arc output (rare edge case)
@@ -218,58 +245,93 @@ export function generateProfile(
       segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
     } else {
       const rotated = params.startNear
-        ? rotatePolylineNear(offsetPts, params.startNear.x, params.startNear.y)
-        : offsetPts
+        ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
+        : oriented
       const [sx, sy] = rotated[0]
 
-      // offsetPolygon returns an open polyline — the closing edge (last → first vertex)
-      // is implicit. Append the start point so the closing edge is a real segment.
-      // Without this, tabs placed on the closing edge are invisible to nearestArcLen
-      // and polylinePassWithTabs, and snap to the wrong location.
+      // Append start point so the closing edge is a real segment (needed for tab arc-length math).
       const closed: Pt2[] = [...rotated, rotated[0]]
 
-      // Build tab ranges in the closed offset path's arc-length space.
-      // Evaluate each tab's physical XY on the original design path, then project onto the
-      // closed offset path. This accounts for tool-radius offset, path rotation, and ensures
-      // the closing edge is reachable.
       const { lens } = arcLengths(closed)
-      const tabRanges: { start: number; end: number; tabZ: number }[] = []
-      if (tabs && tabs.length > 0) {
-        for (const tab of tabs) {
-          const pos = designPathAtT(subpaths, tab.t)
-          if (!pos) continue
-          const center = nearestArcLen(closed, lens, pos[0], pos[1])
-          // Extend by tool radius on each side so the lift starts before the leading
-          // edge of the cutter reaches the tab and ends after the trailing edge clears it.
-          const half = tab.lengthMM / 2 + tool.diameterMM / 2
-          tabRanges.push({
-            start: center - half,
-            end: center + half,
-            tabZ: Math.min(0, -params.depthMM + tab.heightMM),
-          })
-        }
-      }
 
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
-      for (const zDepth of passes) {
-        segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
-        // Only apply a tab range on passes that cut deeper than the tab top (zDepth < tabZ).
-        // Shallower passes are above the tab and need no lifting.
-        const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
-        if (activeRanges.length === 0) {
-          // No tabs — use arc fitting to emit G2/G3 for circular spans
-          const arcSegs = arcFitPolyline(closed, 0.1)
-          for (const s of arcSegs) {
-            segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+      if (params.rampIn) {
+        const rampLen = 2 * tool.diameterMM
+        const { lens: rampLens, total } = arcLengths(closed)
+        const rampDist = Math.min(rampLen, total * 0.45)
+        const [rampEndX, rampEndY] = interpPt(closed, rampLens, rampDist)
+
+        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        for (let pi = 0; pi < passes.length; pi++) {
+          const zDepth = passes[pi]
+          // Ramp starts at the material surface (Z=0) on first pass,
+          // or at the previous pass depth on subsequent passes.
+          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+
+          if (pi > 0) {
+            segs.push({ x: rampEndX, y: rampEndY, z: SAFE_Z, rapid: true })
+            segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
           }
-        } else {
-          const passSegs = polylinePassWithTabs(closed, zDepth, activeRanges, lens)
-          segs.push(...passSegs)
+          // Rapid down to ramp start (surface or previous cut depth)
+          segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
+
+          // Ramp in: descend from rampStartZ to zDepth while moving along path
+          const RAMP_STEPS = 12
+          for (let i = 1; i <= RAMP_STEPS; i++) {
+            const t = i / RAMP_STEPS
+            const [rx, ry] = interpPt(closed, rampLens, t * rampDist)
+            segs.push({ x: rx, y: ry, z: rampStartZ + (zDepth - rampStartZ) * t, rapid: false, feedScale: 0.5 })
+          }
+
+          // Cut from rampDist back to start (sx, sy)
+          for (let i = 1; i < closed.length; i++) {
+            if (rampLens[i] > rampDist + 1e-6) {
+              segs.push({ x: closed[i][0], y: closed[i][1], z: zDepth, rapid: false })
+            }
+          }
+
+          // Cleanup: continue past start to ramp endpoint to clear ramp-entry material
+          for (let i = 1; i < closed.length; i++) {
+            if (rampLens[i] > rampDist + 1e-6) {
+              segs.push({ x: rampEndX, y: rampEndY, z: zDepth, rapid: false })
+              break
+            }
+            segs.push({ x: closed[i][0], y: closed[i][1], z: zDepth, rapid: false })
+          }
         }
-        // Harmless duplicate return-to-start; keeps code consistent across both branches.
-        segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
+        segs.push({ x: rampEndX, y: rampEndY, z: SAFE_Z, rapid: true })
+      } else {
+        const tabRanges: { start: number; end: number; tabZ: number }[] = []
+        if (tabs && tabs.length > 0) {
+          for (const tab of tabs) {
+            const pos = designPathAtT(subpaths, tab.t)
+            if (!pos) continue
+            const center = nearestArcLen(closed, lens, pos[0], pos[1])
+            const half = tab.lengthMM / 2 + tool.diameterMM / 2
+            tabRanges.push({
+              start: center - half,
+              end: center + half,
+              tabZ: Math.min(0, -params.depthMM + tab.heightMM),
+            })
+          }
+        }
+
+        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        for (const zDepth of passes) {
+          segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
+          const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
+          if (activeRanges.length === 0) {
+            const arcSegs = arcFitPolyline(closed, 0.1)
+            for (const s of arcSegs) {
+              segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+            }
+          } else {
+            const passSegs = polylinePassWithTabs(closed, zDepth, activeRanges, lens)
+            segs.push(...passSegs)
+          }
+          segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
+        }
+        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
       }
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
     }
   }
 
