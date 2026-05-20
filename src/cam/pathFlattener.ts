@@ -225,7 +225,17 @@ export function arcFitPolyline(pts: Pt2[], tol: number): ArcFitSeg[] {
       const localC = circleFrom3Pts(pts[i + 1], pts[i + 2], pts[i + 3])
       const startOnArc = localC !== null &&
         Math.abs(Math.hypot(s[0] - localC.cx, s[1] - localC.cy) - localC.r) <= tol
-      if (sagitta > 0.05 && startOnArc) {
+      // Reject spans containing sharp corners (polygon vertices lying on circumscribed circle).
+      // Real flattened arcs have tiny per-segment direction changes; polygon corners are ≥60°.
+      let hasSharpCorner = false
+      for (let k = i + 1; k < bestJ; k++) {
+        const ax = pts[k][0] - pts[k - 1][0], ay = pts[k][1] - pts[k - 1][1]
+        const bx = pts[k + 1][0] - pts[k][0], by = pts[k + 1][1] - pts[k][1]
+        const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by)
+        if (la < 1e-10 || lb < 1e-10) continue
+        if ((ax * bx + ay * by) / (la * lb) < 0.707) { hasSharpCorner = true; break } // > 45°
+      }
+      if (sagitta > 0.05 && startOnArc && !hasSharpCorner) {
         // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
         const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
         result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw: triArea < 0 } })
