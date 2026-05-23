@@ -118,7 +118,9 @@ export function regenerateOperation(opId: string): Promise<void> {
       } else if (op.type === 'inlay') {
         const path = paths.find((p) => p.id === op.pathId)
         if (!path) throw new Error('Source path not found')
+        const vbitTool = tools.find((t) => t.id === op.vbitToolId)
         const pocketTool = tools.find((t) => t.id === op.pocketToolId)
+        if (!vbitTool) throw new Error('V-bit tool not found')
         if (!pocketTool) throw new Error('Pocket/profile tool not found')
         const islandDs = op.islandIds.flatMap((id) => {
           const p = paths.find((x) => x.id === id)
@@ -127,12 +129,19 @@ export function regenerateOperation(opId: string): Promise<void> {
         const inlayParams = {
           angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
           stepDownMM: op.stepDownMM, stepoverPercent: op.stepoverPercent,
-          glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM, islandDs,
+          glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM,
+          mirrorX: op.mirrorX, islandDs,
         }
-        if (op.role === 'female') {
-          setSegments(opId, await generateInlayFemale(path.d, pocketTool, tool, inlayParams))
-        } else {
-          setSegments(opId, await generateInlayMale(path.d, pocketTool, tool, inlayParams))
+        const result = op.role === 'female'
+          ? await generateInlayFemale(path.d, pocketTool, vbitTool, inlayParams)
+          : await generateInlayMale(path.d, pocketTool, vbitTool, inlayParams)
+        setSegments(opId, op.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
+        // Update the linked phase op with the complementary segments in the same pass.
+        if (op.linkedOpId) {
+          const linkedOp = useToolpathStore.getState().operations.find((o) => o.id === op.linkedOpId)
+          if (linkedOp?.type === 'inlay') {
+            setSegments(op.linkedOpId, op.phase === 'vbit' ? result.endmillSegs : result.vbitSegs)
+          }
         }
       }
     } catch (err) {

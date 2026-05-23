@@ -6,8 +6,9 @@ import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox, rotateAroundD } from '../canvas/selectionUtils'
 import type { ShapeParams } from '../shapes/shapeGenerators'
-import { AVAILABLE_FONTS, loadFont } from '../shapes/textGenerator'
+import { loadFont } from '../shapes/textGenerator'
 import { NumericInput } from '../components/NumericInput'
+import FontSelect from '../components/FontSelect'
 
 const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
 const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-5 flex-shrink-0'
@@ -180,10 +181,12 @@ function ShapeParamsEditor({ id, params, units }: { id: string; params: ShapePar
         <EditField label="Sz" valueMM={params.fontSize} units={u} min={0.1} onChange={(fontSize) => updateText({ ...params, fontSize })} />
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>Fnt</span>
-          <select value={params.fontFamily} onChange={(e) => updateText({ ...params, fontFamily: e.target.value })}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-1 py-0.5 text-body text-gray-800 dark:text-neutral-200 w-0 focus:outline-none focus:border-blue-500">
-            {AVAILABLE_FONTS.map((f) => <option key={f.family} value={f.family}>{f.label}</option>)}
-          </select>
+          <FontSelect
+            value={params.fontFamily}
+            previewText={params.text}
+            onChange={(family) => updateText({ ...params, fontFamily: family })}
+            className="flex-1 w-0"
+          />
         </div>
       </>)
     }

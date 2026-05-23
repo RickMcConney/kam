@@ -4,9 +4,10 @@ import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squi
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
-import { AVAILABLE_FONTS, loadFont, isFontLoaded } from '../../shapes/textGenerator'
+import { loadFont, isFontLoaded } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
+import FontSelect from '../../components/FontSelect'
 
 
 const LS_SHAPE_KEY = 'kam:lastShapeType'
@@ -130,10 +131,12 @@ function ShapeConfig({ type, config, onChange, units }: {
         <NumInput label="Size" valueMM={c.text.fontSize} units={u} min={0.1} onChange={(fontSize) => onChange({ ...c, text: { ...c.text, fontSize } })} />
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>Font</span>
-          <select value={c.text.fontFamily} onChange={(e) => onChange({ ...c, text: { ...c.text, fontFamily: e.target.value } })}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-1 py-0.5 text-body text-gray-800 dark:text-neutral-200 w-0">
-            {AVAILABLE_FONTS.map((f) => <option key={f.family} value={f.family}>{f.label}</option>)}
-          </select>
+          <FontSelect
+            value={c.text.fontFamily}
+            previewText={c.text.text}
+            onChange={(family) => onChange({ ...c, text: { ...c.text, fontFamily: family } })}
+            className="flex-1 w-0"
+          />
         </div>
       </div>)
   }

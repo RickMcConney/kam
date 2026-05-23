@@ -9,22 +9,17 @@ export interface TextParams {
   fontFamily: string
 }
 
+const BASE = import.meta.env.BASE_URL
+
 export const AVAILABLE_FONTS: { label: string; family: string; url: string }[] = [
-  {
-    label: 'Roboto',
-    family: 'Roboto',
-    url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto@4.5.8/files/roboto-latin-400-normal.woff',
-  },
-  {
-    label: 'Roboto Mono',
-    family: 'Roboto Mono',
-    url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@4.5.10/files/roboto-mono-latin-400-normal.woff',
-  },
-  {
-    label: 'Open Sans',
-    family: 'Open Sans',
-    url: 'https://cdn.jsdelivr.net/npm/@fontsource/open-sans@4.5.14/files/open-sans-latin-400-normal.woff',
-  },
+  { label: 'Roboto', family: 'Roboto', url: `${BASE}fonts/Roboto-Regular.ttf` },
+  { label: 'AV Hershey Complex Heavy', family: 'AV Hershey Complex Heavy', url: `${BASE}fonts/AVHersheyComplexHeavy.ttf` },
+  { label: 'AV Hershey Simplex Light', family: 'AV Hershey Simplex Light', url: `${BASE}fonts/AVHersheySimplexLight.ttf` },
+{ label: 'Comic Sans MS', family: 'Comic Sans MS', url: `${BASE}fonts/Comic%20Sans%20MS.ttf` },
+  { label: 'Courier New Bold', family: 'Courier New Bold', url: `${BASE}fonts/Courier%20New%20Bold.ttf` },
+  { label: 'Times New Roman', family: 'Times New Roman', url: `${BASE}fonts/Times%20New%20Roman.ttf` },
+  { label: 'Roboto Mono', family: 'Roboto Mono', url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@4.5.10/files/roboto-mono-latin-400-normal.woff' },
+  { label: 'Open Sans', family: 'Open Sans', url: 'https://cdn.jsdelivr.net/npm/@fontsource/open-sans@4.5.14/files/open-sans-latin-400-normal.woff' },
 ]
 
 export const DEFAULT_FONT_FAMILY = 'Roboto'
@@ -69,6 +64,11 @@ export async function loadFont(family: string): Promise<void> {
 
 export function isFontLoaded(family: string): boolean {
   return fontCache.has(family)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getFont(family: string): any | null {
+  return fontCache.get(family) ?? null
 }
 
 export function preloadFonts(): void {

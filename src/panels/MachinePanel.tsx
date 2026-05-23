@@ -5,7 +5,7 @@ import { ICON } from '../theme'
 import {
   AlertCircle, Loader2, Trash2,
   X, Circle, CircleDot, Target, Layers,
-  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box,
+  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, Combine,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation } from '../store/toolpathStore'
@@ -68,12 +68,21 @@ function groupPathsByContainment(
   for (const inner of selectedPaths) {
     const poly = getPoly(inner)
     if (poly.length < 1) continue
-    const [px, py] = poly[0]
+    const px = poly.reduce((s, p) => s + p[0], 0) / poly.length
+    const py = poly.reduce((s, p) => s + p[1], 0) / poly.length
     for (const outer of selectedPaths) {
       if (outer.id === inner.id) continue
       const outerPoly = getPoly(outer)
       if (outerPoly.length < 3) continue
       if (!ptInPoly(px, py, outerPoly)) continue
+      // Require inner's bbox to fit entirely within outer's bbox.
+      // Overlapping (non-nested) shapes each extend beyond the other's bbox, so
+      // neither qualifies as a child and no cycle is created.
+      const innerBBox = getBBox(inner.d)
+      const outerBBox = getBBox(outer.d)
+      if (!innerBBox || !outerBBox ||
+          innerBBox.minX < outerBBox.minX || innerBBox.maxX > outerBBox.maxX ||
+          innerBBox.minY < outerBBox.minY || innerBBox.maxY > outerBBox.maxY) continue
       // Prefer the smallest container (direct parent over grandparent)
       const existing = parentId.get(inner.id)
       if (!existing) {
@@ -949,12 +958,14 @@ interface InlayFormState {
   stepoverPercent: number
   glueLineMM: number
   clearanceMM: number
+  role: 'female' | 'male'
+  mirrorX: boolean
 }
 
 export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: InlayOperation }) {
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
@@ -963,10 +974,11 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const defaultEndmill = endmills[0] ?? tools[0]
 
   const [form, setForm] = useState<InlayFormState>(() => editOp ? {
-    vbitToolId: editOp.toolId, pocketToolId: editOp.pocketToolId,
+    vbitToolId: editOp.vbitToolId, pocketToolId: editOp.pocketToolId,
     angleDeg: editOp.angleDeg, pocketDepthMM: editOp.pocketDepthMM,
     stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
     glueLineMM: editOp.glueLineMM, clearanceMM: editOp.clearanceMM,
+    role: editOp.role, mirrorX: editOp.mirrorX ?? false,
   } : mergeWithDefaults(load('inlay'), {
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
@@ -976,6 +988,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     stepoverPercent: 40,
     glueLineMM: 0.2,
     clearanceMM: 0.1,
+    role: 'female' as const,
+    mirrorX: false,
   }, tools))
   const [generating, setGenerating] = useState(false)
 
@@ -983,45 +997,73 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const pocketTool = tools.find((t) => t.id === form.pocketToolId)
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
-  const boundaryPath = editOp ? editBoundary : paths.find((p) => p.id === selectedIds[0])
-  const islandPaths = editOp ? editIslands : paths.filter((p) => selectedIds.slice(1).includes(p.id))
+  const groups = editOp && editBoundary
+    ? [{ boundary: editBoundary, islands: editIslands }]
+    : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
 
   function up<K extends keyof InlayFormState>(k: K, v: InlayFormState[K]) {
     setForm((f) => ({ ...f, [k]: v }))
   }
 
   function handleGenerate() {
-    if (!boundaryPath || !vbitTool || !pocketTool) return
+    if (groups.length === 0 || !vbitTool || !pocketTool) return
     pushHistoryBoth()
     setGenerating(true)
 
-    const islandIds = islandPaths.map((p) => p.id)
-    const islandDs = islandPaths.map((p) => p.d)
-    const inlayParams = {
+    const baseParams = {
       angleDeg: form.angleDeg,
       pocketDepthMM: form.pocketDepthMM,
       stepDownMM: form.stepDownMM,
       stepoverPercent: form.stepoverPercent,
       glueLineMM: form.glueLineMM,
       clearanceMM: form.clearanceMM,
-      islandDs,
+      mirrorX: form.mirrorX,
+    }
+    const sharedOpFields = {
+      pocketToolId: form.pocketToolId,
+      vbitToolId: form.vbitToolId,
+      angleDeg: form.angleDeg,
+      pocketDepthMM: form.pocketDepthMM,
+      stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent,
+      glueLineMM: form.glueLineMM,
+      clearanceMM: form.clearanceMM,
+      mirrorX: form.mirrorX,
     }
 
-    if (editOp) {
-      updateOperation(editOp.id, {
-        toolId: form.vbitToolId, pocketToolId: form.pocketToolId,
-        angleDeg: form.angleDeg, pocketDepthMM: form.pocketDepthMM,
-        stepDownMM: form.stepDownMM, stepoverPercent: form.stepoverPercent,
-        glueLineMM: form.glueLineMM, clearanceMM: form.clearanceMM, status: 'generating',
-      } as Partial<AnyOperation>)
+    if (editOp && editBoundary) {
+      const inlayParams = { ...baseParams, islandDs: editIslands.map((p) => p.d) }
+      // Update both the edited op and its linked counterpart with new params.
+      const linkedOp = editOp.linkedOpId
+        ? (operations.find((o) => o.id === editOp.linkedOpId) as InlayOperation | undefined)
+        : undefined
+      const sharedUpdate = {
+        ...sharedOpFields,
+        toolId: editOp.phase === 'vbit' ? form.vbitToolId : form.pocketToolId,
+        status: 'generating' as const,
+      }
+      updateOperation(editOp.id, sharedUpdate as Partial<AnyOperation>)
+      if (linkedOp) {
+        updateOperation(linkedOp.id, {
+          ...sharedOpFields,
+          toolId: linkedOp.phase === 'vbit' ? form.vbitToolId : form.pocketToolId,
+          status: 'generating',
+        } as Partial<AnyOperation>)
+      }
       setTimeout(async () => {
         try {
-          const segs = editOp.role === 'female'
-            ? await generateInlayFemale(boundaryPath.d, pocketTool, vbitTool, inlayParams)
-            : await generateInlayMale(boundaryPath.d, pocketTool, vbitTool, inlayParams)
-          setSegments(editOp.id, segs)
+          const result = editOp.role === 'female'
+            ? await generateInlayFemale(editBoundary.d, pocketTool, vbitTool, inlayParams)
+            : await generateInlayMale(editBoundary.d, pocketTool, vbitTool, inlayParams)
+          setSegments(editOp.id, editOp.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
+          if (linkedOp) {
+            setSegments(linkedOp.id, editOp.phase === 'vbit' ? result.endmillSegs : result.vbitSegs)
+          }
+
         } catch (err) {
-          setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+          const msg = err instanceof Error ? err.message : 'Generation failed'
+          setError(editOp.id, msg)
+          if (linkedOp) setError(linkedOp.id, msg)
         }
         setGenerating(false)
         save('inlay', form)
@@ -1029,62 +1071,90 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       return
     }
 
-    const femaleId = addOperation({
-      name: `Inlay Female: ${boundaryPath.name}`,
-      type: 'inlay', role: 'female',
-      toolId: form.vbitToolId, pathId: boundaryPath.id, islandIds,
-      pocketToolId: form.pocketToolId, angleDeg: form.angleDeg,
-      pocketDepthMM: form.pocketDepthMM, stepDownMM: form.stepDownMM,
-      stepoverPercent: form.stepoverPercent, glueLineMM: form.glueLineMM, clearanceMM: form.clearanceMM,
+    // For new ops: create all first-phase ops first, then all second-phase ops, so
+    // the operations list naturally orders all vbit work before all endmill work.
+    // Female: endmill (pocket) runs before vbit (walls). Male: vbit runs before endmill.
+    const role = form.role
+    const firstPhase  = role === 'female' ? 'endmill' : 'vbit'   as 'vbit' | 'endmill'
+    const secondPhase = role === 'female' ? 'vbit'    : 'endmill' as 'vbit' | 'endmill'
+    const firstToolId  = firstPhase  === 'vbit' ? form.vbitToolId : form.pocketToolId
+    const secondToolId = secondPhase === 'vbit' ? form.vbitToolId : form.pocketToolId
+    const roleLabel = role === 'female' ? 'Female' : 'Male'
+    const phaseLabel = (phase: 'vbit' | 'endmill') => phase === 'vbit' ? 'V-bit' : 'End Mill'
+
+    const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
+
+    // Create all first-phase ops, then all second-phase ops.
+    const firstIds = groups.map(({ boundary, islands }) => {
+      const id = addOperation({ ...opBase, phase: firstPhase, toolId: firstToolId,
+        pathId: boundary.id, islandIds: islands.map((p) => p.id),
+        name: `Inlay ${roleLabel} (${phaseLabel(firstPhase)}): ${boundary.name}` })
+      updateOperation(id, { status: 'generating' })
+      return id
     })
-    const maleId = addOperation({
-      name: `Inlay Male: ${boundaryPath.name}`,
-      type: 'inlay', role: 'male',
-      toolId: form.vbitToolId, pathId: boundaryPath.id, islandIds,
-      pocketToolId: form.pocketToolId, angleDeg: form.angleDeg,
-      pocketDepthMM: form.pocketDepthMM, stepDownMM: form.stepDownMM,
-      stepoverPercent: form.stepoverPercent, glueLineMM: form.glueLineMM, clearanceMM: form.clearanceMM,
+    const secondIds = groups.map(({ boundary, islands }) => {
+      const id = addOperation({ ...opBase, phase: secondPhase, toolId: secondToolId,
+        pathId: boundary.id, islandIds: islands.map((p) => p.id),
+        name: `Inlay ${roleLabel} (${phaseLabel(secondPhase)}): ${boundary.name}` })
+      updateOperation(id, { status: 'generating' })
+      return id
     })
-    updateOperation(femaleId, { status: 'generating' })
-    updateOperation(maleId, { status: 'generating' })
+
+    // Link paired ops so edit/regenerate can update both together.
+    for (let i = 0; i < groups.length; i++) {
+      updateOperation(firstIds[i],  { linkedOpId: secondIds[i]  } as Partial<AnyOperation>)
+      updateOperation(secondIds[i], { linkedOpId: firstIds[i]   } as Partial<AnyOperation>)
+    }
 
     setTimeout(async () => {
-      try {
-        setSegments(femaleId, await generateInlayFemale(boundaryPath.d, pocketTool, vbitTool, inlayParams))
-      } catch (err) {
-        setError(femaleId, err instanceof Error ? err.message : 'Generation failed')
-      }
-      try {
-        setSegments(maleId, await generateInlayMale(boundaryPath.d, pocketTool, vbitTool, inlayParams))
-      } catch (err) {
-        setError(maleId, err instanceof Error ? err.message : 'Generation failed')
+      for (let i = 0; i < groups.length; i++) {
+        const { boundary, islands } = groups[i]
+        const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
+        try {
+          const result = role === 'female'
+            ? await generateInlayFemale(boundary.d, pocketTool, vbitTool, inlayParams)
+            : await generateInlayMale(boundary.d, pocketTool, vbitTool, inlayParams)
+          setSegments(firstIds[i],  firstPhase  === 'vbit' ? result.vbitSegs : result.endmillSegs)
+          setSegments(secondIds[i], secondPhase === 'vbit' ? result.vbitSegs : result.endmillSegs)
+
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Generation failed'
+          setError(firstIds[i], msg)
+          setError(secondIds[i], msg)
+        }
       }
       setGenerating(false)
       save('inlay', form)
     }, 0)
   }
 
-  const canGenerate = !!boundaryPath && !!vbitTool && !!pocketTool && !generating &&
+  const canGenerate = groups.length > 0 && !!vbitTool && !!pocketTool && !generating &&
     form.pocketDepthMM > 0 && vbitTool.type === 'vbit'
+  const isMale = editOp ? editOp.role === 'male' : form.role === 'male'
 
   return (
     <FormShell title={editOp ? `Edit Inlay (${editOp.role})` : 'New Inlay Operation'} onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
-        {boundaryPath ? (
-          <PathChip path={boundaryPath} label="inlay shape" />
-        ) : (
+        {groups.length === 0 ? (
           <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+        ) : (
+          <div className="space-y-1">
+            {groups.map(({ boundary, islands }, i) => (
+              <div key={boundary.id}>
+                {groups.length > 1 && (
+                  <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+                    Shape {i + 1}
+                  </label>
+                )}
+                <div className="space-y-0.5">
+                  <PathChip path={boundary} label="boundary" />
+                  {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
-      {islandPaths.length > 0 && (
-        <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Islands</label>
-          <div className="space-y-0.5">
-            {islandPaths.map((p) => <PathChip key={p.id} path={p} label="island" />)}
-          </div>
-        </div>
-      )}
       {/* V-bit */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">V-Bit (Finishing)</label>
@@ -1178,7 +1248,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Clearance</label>
           <div className="flex items-center gap-1">
-            <NumericInput value={form.clearanceMM} min={0} step={0.05}
+            <NumericInput value={form.clearanceMM} min={-1} max={1} step={0.05}
               onChange={(v) => up('clearanceMM', v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
@@ -1187,12 +1257,40 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         </div>
       </div>
       {!editOp && (
-        <p className="text-label text-gray-400 dark:text-neutral-500">
-          Generates Female (socket) + Male (plug) operations. Machine each on separate stock.
-        </p>
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Generate</label>
+          <div className="flex gap-1">
+            {(['female', 'male'] as const).map((r) => (
+              <button key={r} onClick={() => up('role', r)}
+                className={[
+                  'flex-1 py-1 text-body rounded border transition-colors capitalize',
+                  form.role === r
+                    ? 'bg-blue-600 border-blue-500 text-white'
+                    : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
+                ].join(' ')}>
+                {r === 'female' ? 'Female' : 'Male'}
+              </button>
+            ))}
+          </div>
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">
+            {form.role === 'female' ? 'Socket only — pocket + V-carved walls.' : 'Plug only — V-carved bevel + profile cutout.'}
+          </p>
+        </div>
+      )}
+      {/* Mirror option — male plug only */}
+      {isMale && (
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="inlay-mirror" checked={form.mirrorX}
+            onChange={(e) => up('mirrorX', e.target.checked)} className="accent-blue-500" />
+          <label htmlFor="inlay-mirror" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+            Mirror <span className="text-gray-500 dark:text-neutral-500 normal-case">(flip horizontally — for asymmetric shapes inserted reversed)</span>
+          </label>
+        </div>
       )}
       <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate}
-        label={editOp ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}` : 'Generate Toolpath'} />
+        label={editOp
+          ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}`
+          : `Generate ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * 2} ops)` : ''}`} />
     </FormShell>
   )
 }
@@ -2182,6 +2280,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
           ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
           ['vcarve', 'V-Carve', 'V-bit depth-varying carve', <Star size={ICON.md} />],
+          ['inlay', 'Inlay', 'V-carved sloped walls with flat pocket bottom', <Combine size={ICON.md} />],
           ['profile3d', '3D Profile', 'Follow STL relief surface with ball nose', <Box size={ICON.md} />],
         ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
           <button key={type} onClick={() => onSelect(type)} title={desc} className={opBtnCls}>

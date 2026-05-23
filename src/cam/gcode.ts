@@ -67,7 +67,7 @@ export function generateGcode(
     const finishTool = toolsById[op.toolId]
     if (!finishTool) continue
 
-    // For profile3d ops with a roughing tool, the first tool used is the roughing tool
+    // For profile3d ops with a roughing tool, the first tool is the roughing endmill.
     const roughingToolId = op.type === 'profile3d' ? op.roughingToolId : undefined
     const roughTool = roughingToolId ? toolsById[roughingToolId] : null
     const firstTool = roughTool || finishTool
@@ -115,8 +115,12 @@ export function generateGcode(
         const newTool = toolsById[seg.toolChange]
         if (newTool && seg.toolChange !== lastToolId) {
           if (profile.toolChangeGcode.trim()) lines.push(...profile.toolChangeGcode.split('\n'))
-          // Emit dia + tool type so sim parser updates to the finishing tool
+          // Emit dia + tool type so sim parser updates to the new tool
           c(`${newTool.name}  dia ${f(newTool.diameterMM)}mm`)
+          if (newTool.type === 'vbit') {
+            const vbitAngle = op.type === 'inlay' ? op.angleDeg : (newTool.vbitAngleDeg ?? 60)
+            c(`vbit-angle:${f(vbitAngle / 2)}`)
+          }
           if (newTool.type === 'ballnose') c(`ballnose`)
           if (profile.spindleOnTemplate.trim()) lines.push(sub(profile.spindleOnTemplate, { s: newTool.rpm }))
           currentTool = newTool

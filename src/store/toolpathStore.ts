@@ -86,15 +86,19 @@ export interface VCarveOperation extends BaseOperation {
 export interface InlayOperation extends BaseOperation {
   type: 'inlay'
   role: 'female' | 'male'
+  phase: 'vbit' | 'endmill'  // which tool phase this operation represents
   pathId: string
   islandIds: string[]
-  pocketToolId: string    // flat end mill for roughing (female) or profiling (male)
+  pocketToolId: string    // flat end mill ID (always the endmill, regardless of phase)
+  vbitToolId: string      // vbit ID (always the vbit, regardless of phase)
   angleDeg: number
   pocketDepthMM: number
   stepDownMM: number
   stepoverPercent: number
   glueLineMM: number
   clearanceMM: number
+  mirrorX?: boolean       // male only: mirror shape around vertical axis before cutting
+  linkedOpId?: string     // ID of the paired phase operation
 }
 
 export interface Profile3dOperation extends BaseOperation {

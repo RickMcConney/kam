@@ -1,30 +1,55 @@
 import { flattenPath, signedArea, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
-import { generateVCarve } from './vcarve'
+import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
+import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
 export interface InlayParams {
-  angleDeg: number           // V-bit full angle
+  angleDeg: number           // V-bit full included angle
   pocketDepthMM: number      // depth of the flat-bottom pocket / inlay
-  stepDownMM: number         // step-down for pocket roughing
-  stepoverPercent: number    // stepover for pocket roughing
-  glueLineMM: number         // extra gap added to socket (female) for glue
-  clearanceMM: number        // fit clearance (male plug is shrunk by this)
+  stepDownMM: number         // step-down for end mill roughing
+  stepoverPercent: number    // stepover % for end mill roughing
+  glueLineMM: number         // extra depth added to female pocket for glue space
+  clearanceMM: number        // reduction of male bevel offsets for fit clearance
   islandDs: string[]         // hole paths inside the shape
+  mirrorX?: boolean          // male only: mirror shape around vertical axis
 }
 
 const SAFE_Z = 5.0
 
-function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
-  let inside = false
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]
-    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
-      inside = !inside
-  }
-  return inside
+// Offset a path by deltaMM (positive = outward, negative = inward).
+// Returns an SVG path string, or null if the offset collapses the shape.
+function offsetPathD(d: string, deltaMM: number): string | null {
+  const subpaths = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  if (!subpaths.length) return null
+
+  const outer = subpaths.reduce((a, b) =>
+    Math.abs(signedArea(b)) > Math.abs(signedArea(a)) ? b : a
+  )
+  let pts: Pt2[] = [...outer]
+  // Strip closing duplicate
+  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6)
+    pts = pts.slice(0, -1)
+  // Clipper2 expects CCW winding for outer polygons
+  if (signedArea(pts) < 0) pts = [...pts].reverse()
+
+  const result = inflatePathsD(
+    [pts.map(([x, y]) => ({ x, y }))],
+    deltaMM, JoinType.Miter, EndType.Polygon, 4, 6,
+  )
+  if (!result.length) return null
+
+  const best = result.reduce((a, b) => b.length > a.length ? b : a)
+  if (best.length < 3) return null
+
+  const cmds = [`M${best[0].x.toFixed(4)} ${best[0].y.toFixed(4)}`]
+  for (let i = 1; i < best.length; i++) cmds.push(`L${best[i].x.toFixed(4)} ${best[i].y.toFixed(4)}`)
+  cmds.push('Z')
+  return cmds.join(' ')
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function ptsToD(pts: Pt2[]): string {
   if (pts.length < 2) return ''
@@ -34,37 +59,73 @@ function ptsToD(pts: Pt2[]): string {
   return p.join(' ')
 }
 
-// Offset polygon outward by delta using angle bisectors
-function offsetPoly(pts: Pt2[], delta: number): Pt2[] {
-  const n = pts.length
-  if (n < 3) return []
-  const area = (() => {
-    let a = 0
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n
-      a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]
-    }
-    return a / 2
-  })()
-  const ws = area >= 0 ? 1 : -1
-  const en: Pt2[] = []
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n
-    const dx = pts[j][0] - pts[i][0], dy = pts[j][1] - pts[i][1]
-    const len = Math.hypot(dx, dy)
-    en.push(len < 1e-10 ? [0, 0] : [dy * ws / len, -dx * ws / len])
+// Point-in-polygon (ray casting).
+function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j]
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+      inside = !inside
   }
-  return pts.map((p, i) => {
-    const prev = en[(i - 1 + n) % n], next = en[i]
-    const bx = prev[0] + next[0], by = prev[1] + next[1]
-    const blen = Math.hypot(bx, by)
-    if (blen < 1e-10) return [p[0] + next[0] * delta, p[1] + next[1] * delta] as Pt2
-    const nx = bx / blen, ny = by / blen
-    const dot = next[0] * nx + next[1] * ny
-    const scale = Math.abs(dot) > 0.25 ? delta / dot : delta * 4 * Math.sign(dot || 1)
-    return [p[0] + nx * scale, p[1] + ny * scale] as Pt2
-  })
+  return inside
 }
+
+// Split a multi-subpath d string into per-letter regions.
+// Each outer subpath is returned as { outerD, islandDs[] } where islandDs
+// are subpaths whose centroid falls inside that outer ring (intrinsic holes
+// like the counter of 'o' or 'a'). Single-subpath paths return [].
+function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
+  const subs = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  if (subs.length <= 1) return []
+
+  const sorted = [...subs].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)))
+  const usedAsHole = new Set<number>()
+  const regions: { outerD: string; islandDs: string[] }[] = []
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (usedAsHole.has(i)) continue
+    const outer = sorted[i]
+    const cx = outer.reduce((s, p) => s + p[0], 0) / outer.length
+    const cy = outer.reduce((s, p) => s + p[1], 0) / outer.length
+    // Skip subpaths whose centroid is inside an already-claimed outer (nested hole).
+    if (regions.some(r => {
+      const rSub = flattenPath(r.outerD, 0.05)[0]
+      return rSub && ptInPoly(cx, cy, rSub)
+    })) { usedAsHole.add(i); continue }
+
+    const holes: string[] = []
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (usedAsHole.has(j)) continue
+      const cand = sorted[j]
+      const hcx = cand.reduce((s, p) => s + p[0], 0) / cand.length
+      const hcy = cand.reduce((s, p) => s + p[1], 0) / cand.length
+      if (ptInPoly(hcx, hcy, outer)) {
+        holes.push(ptsToD(cand))
+        usedAsHole.add(j)
+      }
+    }
+    regions.push({ outerD: ptsToD(outer), islandDs: holes })
+  }
+  return regions
+}
+
+// Mirror a path string around its vertical (X) center axis.
+// Flattens to polylines so curves become linear approximations — fine for CAM.
+function mirrorPathD(d: string): string {
+  const subs = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  if (!subs.length) return d
+  let minX = Infinity, maxX = -Infinity
+  for (const sub of subs) for (const [x] of sub) {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+  }
+  const cx = (minX + maxX) / 2
+  // Mirror X around cx; reverse each subpath to restore CCW winding (mirror flips chirality)
+  return subs.map(sub =>
+    ptsToD([...sub].reverse().map(([x, y]) => [2 * cx - x, y] as Pt2))
+  ).join(' ')
+}
+
 
 function addContour(pts: Pt2[], z: number, segs: MotionSegment[]) {
   if (pts.length < 2) return
@@ -82,120 +143,384 @@ function getOuters(d: string): Pt2[][] {
   return outers.length > 0 ? outers : subs
 }
 
-/**
- * Female socket: pocket clearing + V-carve edges.
- * The socket boundary is enlarged by glueLineMM to accommodate glue.
- */
-export async function generateInlayFemale(
+// ─── Female socket ────────────────────────────────────────────────────────────
+
+// Compute the two inward offset paths for the female operation.
+// Exported so the UI can add them to the canvas as debug paths.
+export function computeInlayFemaleOffsets(
   d: string,
-  pocketTool: Tool,
-  vbitTool: Tool,
-  params: InlayParams
-): Promise<MotionSegment[]> {
-  if (vbitTool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
-
-  const outers = getOuters(d)
-  if (outers.length === 0) throw new Error('No geometry found')
-
-  const allSubsSubs = flattenPath(d, 0.05).filter(s => s.length >= 3)
-  const innerHoles = allSubsSubs.filter(s => signedArea(s) < 0)
-
-  const segs: MotionSegment[] = []
-
-  for (const outer of outers) {
-    const holes = innerHoles.filter(h => {
-      const cx = h.reduce((s, p) => s + p[0], 0) / h.length
-      const cy = h.reduce((s, p) => s + p[1], 0) / h.length
-      return ptInPoly(cx, cy, outer)
-    })
-
-    // Expand socket outward to include glue gap
-    const socket = offsetPoly(outer, params.glueLineMM)
-    if (socket.length < 3) continue
-
-    const socketD = ptsToD(socket)
-    const islandDs = [...params.islandDs, ...holes.map(ptsToD)]
-
-    // Step 1: pocket roughing — clears the flat bottom
-    try {
-      const pocketSegs = generatePocket(socketD, pocketTool, {
-        depthMM: params.pocketDepthMM,
-        stepDownMM: params.stepDownMM,
-        stepoverPercent: params.stepoverPercent,
-        direction: 'climb',
-        islandDs,
-        angle: 0,
-      })
-      segs.push(...pocketSegs)
-    } catch { /* continue even if pocket fails */ }
-
-    // Step 2: V-carve the socket perimeter — creates the angled entry edge
-    // We V-carve the EXPANDED socket boundary
-    try {
-      const vcSegs = await generateVCarve(socketD, vbitTool, {
-        angleDeg: params.angleDeg,
-        maxDepthMM: params.pocketDepthMM,
-        islandDs,
-      })
-      segs.push(...vcSegs)
-    } catch { /* continue */ }
+  params: Pick<InlayParams, 'angleDeg' | 'pocketDepthMM' | 'glueLineMM' | 'clearanceMM'>,
+): { pocketBoundaryD: string | null; vcarveIslandD: string | null } {
+  const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
+  const tanHalf = Math.tan(halfAngle)
+  if (tanHalf < 1e-6) return { pocketBoundaryD: null, vcarveIslandD: null }
+  // Offsets are computed for the total socket depth so the V-carved walls
+  // reach all the way to the pocket floor (glue gap included).
+  const totalDepthMM = params.pocketDepthMM + params.glueLineMM
+  const halfWidthMM = totalDepthMM * tanHalf
+  const fullWidthMM = halfWidthMM * 2
+  // Positive clearance expands the female socket: shift all offsets outward by c so the
+  // medial axis (and pocket boundary) stay perfectly aligned.
+  const c = params.clearanceMM
+  return {
+    pocketBoundaryD: offsetPathD(d, c - halfWidthMM),
+    vcarveIslandD:   offsetPathD(d, c - fullWidthMM * 1.5),
   }
-
-  if (segs.length === 0) throw new Error('Inlay socket is too small for the selected tools')
-  return segs
 }
 
 /**
- * Male plug: V-carve the plug perimeter + profile-cut to release from stock.
- * The plug is offset inward by clearanceMM so it fits the socket.
+ * Female socket: raster-pocket a flat bottom + V-carve the sloped walls.
+ *
+ * V-bit geometry at pocketDepthMM:
+ *   halfWidth = depth × tan(angleDeg/2) — half-width at full depth
+ *   fullWidth = 2 × halfWidth            — full width at full depth
+ *
+ * Step 1 — End mill clears a raster pocket bounded by (socketD inset halfWidth).
+ *           Everything inside that boundary is cleared flat to pocketDepthMM.
+ *
+ * Step 2 — V-carve the annular zone: outer = socketD, inner island = (socketD inset fullWidth).
+ *           The medial axis runs at halfWidth from the outer wall, exactly where the
+ *           V-bit tip reaches pocketDepthMM and is simultaneously tangent to both walls.
+ *           This produces the correct sloped entry from z=0 at the outer wall down to
+ *           z=−pocketDepthMM at the flat-bottom boundary.
+ */
+export async function generateInlayFemale(
+  d: string,
+  endmill: Tool,
+  vbit: Tool,
+  params: InlayParams
+): Promise<InlaySplitResult> {
+  if (vbit.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+
+  // Multi-subpath paths (text): plain VCarve on the whole path, max depth set by
+  // the V-bit's geometry (depth at full engagement = radius / tan(halfAngle)).
+  // No pocket — the VCarve alone defines the female socket for text inlays.
+  if (splitRegions(d).length > 0) {
+    const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
+    const tanHalf   = Math.tan(halfAngle)
+    if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
+    const maxDepthMM = (vbit.diameterMM / 2) / tanHalf
+    const vbitSegs = await generateVCarve(d, vbit, {
+      angleDeg: params.angleDeg,
+      maxDepthMM,
+      islandDs: params.islandDs,
+    })
+    if (!vbitSegs.length) throw new Error('Inlay socket is too small for the selected tools')
+    return { vbitSegs, endmillSegs: [] }
+  }
+
+  // Both offsets are inward from the original path d.
+  const { pocketBoundaryD, vcarveIslandD } = computeInlayFemaleOffsets(d, params)
+
+  // Precompute bevel widths so we can offset island boundaries correctly.
+  const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
+  const tanHalf = Math.tan(halfAngle)
+
+  // If either offset path collapsed (shape too small/thin for the tool geometry),
+  // fall back to the text strategy: plain VCarve on the whole path, no pocket.
+  if (!pocketBoundaryD || !vcarveIslandD) {
+    if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
+    const maxDepthMM = (vbit.diameterMM / 2) / tanHalf
+    const vbitSegs = await generateVCarve(d, vbit, {
+      angleDeg: params.angleDeg,
+      maxDepthMM,
+      islandDs: params.islandDs,
+    })
+    if (!vbitSegs.length) throw new Error('Inlay socket is too small for the selected tools')
+    return { vbitSegs, endmillSegs: [] }
+  }
+  const totalDepthMM = params.pocketDepthMM + params.glueLineMM
+  const halfWidthMM = totalDepthMM * tanHalf
+  const fullWidthMM = halfWidthMM * 2
+
+  const pocketSegs: MotionSegment[] = []
+  const vcarveSegs: MotionSegment[] = []
+
+  // Step 1: flat-bottom raster pocket (end mill, inside pocketBoundaryD).
+  // Cut glueLineMM deeper than the plug bevel depth to leave room for glue.
+  if (pocketBoundaryD) {
+    // Islands shrink their keep-out zone by clearanceMM so the pocket clears closer to
+    // the island edge, matching the expanded outer boundary.
+    const islandPocketDs = params.islandDs
+      .map(iD => offsetPathD(iD, halfWidthMM - params.clearanceMM))
+      .filter((s): s is string => s !== null)
+    try {
+      pocketSegs.push(...generatePocket(pocketBoundaryD, endmill, {
+        strategy: 'raster',
+        depthMM: params.pocketDepthMM + params.glueLineMM,
+        stepDownMM: params.stepDownMM,
+        stepoverPercent: params.stepoverPercent,
+        direction: 'climb',
+        islandDs: islandPocketDs,
+        angle: 0,
+      }))
+    } catch { /* shape too small for end mill — skip pocket */ }
+  }
+
+  // Step 2: V-carved sloped walls — outer boundary + one annular zone per island.
+  //
+  // Outer wall: between d and (d inset by fullWidth).
+  // Island wall: between (islandD outset by fullWidth) and islandD.
+  // Each island's annular zone is independent — call generateVCarve separately so
+  // the medial axis for each zone is clean (mixing them would corrupt both axes).
+  // V-carve outer wall expanded by clearanceMM so its medial axis aligns with the
+  // expanded pocket boundary and the bevel starts from the right surface position.
+  const dVCarve = params.clearanceMM !== 0 ? (offsetPathD(d, params.clearanceMM) ?? d) : d
+  if (vcarveIslandD) {
+    try {
+      vcarveSegs.push(...await generateVCarve(dVCarve, vbit, {
+        angleDeg: params.angleDeg,
+        maxDepthMM: 2.5 * (params.pocketDepthMM + params.glueLineMM),
+        islandDs: [vcarveIslandD],
+      }))
+    } catch { /* annular zone too narrow for this bit — skip vcarve */ }
+  }
+
+  for (const islandD of params.islandDs) {
+    const islandVCarveOuterD = offsetPathD(islandD, fullWidthMM - params.clearanceMM)
+    if (!islandVCarveOuterD) continue
+    // Shift the inner boundary by -clearanceMM too so both walls move together,
+    // keeping the zone width constant and giving the medial axis the full displacement.
+    const islandVCarveInnerD = params.clearanceMM !== 0
+      ? (offsetPathD(islandD, -params.clearanceMM) ?? islandD)
+      : islandD
+    try {
+      vcarveSegs.push(...await generateVCarve(islandVCarveOuterD, vbit, {
+        angleDeg: params.angleDeg,
+        maxDepthMM: params.pocketDepthMM + params.glueLineMM,
+        islandDs: [islandVCarveInnerD],
+      }))
+    } catch { /* island too small for this bit — skip */ }
+  }
+
+  if (pocketSegs.length === 0 && vcarveSegs.length === 0)
+    throw new Error('Inlay socket is too small for the selected tools')
+
+  return { endmillSegs: pocketSegs, vbitSegs: vcarveSegs }
+}
+
+// ─── Male plug ────────────────────────────────────────────────────────────────
+
+export interface InlaySplitResult {
+  vbitSegs: MotionSegment[]
+  endmillSegs: MotionSegment[]
+}
+
+/**
+ * Male text-plug algorithm — Virtual Z-Plane Shift.
+ *
+ * Called for multi-subpath paths (text, multi-letter shapes) where each letter
+ * subpath acts as a raised prism on the plug face.
+ *
+ * Core principle:
+ *   The V-carve runs on the INVERTED geometry — a bounding box with the letter
+ *   outlines as islands (holes). The Z-start offset forces the bit apex to sit at
+ *   −pocketDepthMM at every letter boundary instead of 0, producing continuous
+ *   raised prism walls. A flat-depth cap (pocketDepthMM + glueLineMM) limits how
+ *   deep the background is cut in wide open areas.
+ *
+ *   Z_raw  = pocketDepthMM + r / tan(θ/2)
+ *   Z_cut  = min(Z_raw, pocketDepthMM + glueLineMM)
+ *
+ * The end mill clears the recessed background (bbox minus letter regions) to
+ * pocketDepthMM and pockets any letter counters (e.g. inside of 'O').
+ * A perimeter profile cut frees the plug from the surrounding stock.
+ */
+async function generateInlayMaleText(
+  d: string,
+  profileTool: Tool,
+  vbitTool: Tool,
+  params: InlayParams,
+): Promise<InlaySplitResult> {
+  const workingD = params.mirrorX ? mirrorPathD(d) : d
+
+  const startDepthMM = 0  // Z_start: bit apex at surface; depth grows with stroke width
+
+  const halfAngle    = (params.angleDeg / 2) * (Math.PI / 180)
+  const tanHalfAngle = Math.tan(halfAngle)
+  if (tanHalfAngle < 1e-6) throw new Error('Invalid V-bit angle')
+
+  // Z_max: depth when the V-bit is fully engaged at its widest cutting radius.
+  const vbitMaxDepthMM = (vbitTool.diameterMM / 2) / tanHalfAngle
+
+  // Split into per-letter regions (outer ring + intrinsic counter-holes like 'O', 'A').
+  const regions = splitRegions(workingD)
+  if (regions.length === 0) throw new Error('Text path produced no letter regions')
+
+  const letterOuterDs  = regions.map(r => r.outerD)
+  const letterCounterDs = regions.flatMap(r => r.islandDs)
+
+  // Compute bounding box of all letter outer rings.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const od of letterOuterDs) {
+    for (const sub of flattenPath(od, 0.05)) {
+      for (const [x, y] of sub) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  if (!isFinite(minX)) throw new Error('Cannot compute bounding box for text path')
+
+  // Margin: wide enough for the V-bit at max engagement + end mill diameter clearance.
+  const margin = Math.max(vbitMaxDepthMM * tanHalfAngle * 2, profileTool.diameterMM, 2.0)
+  minX -= margin; minY -= margin; maxX += margin; maxY += margin
+
+  // Bounding box polygon (CCW in CNC Y-up).
+  const bboxPts: Pt2[] = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]]
+  const bboxD = ptsToD(bboxPts)
+
+  const vbitSegs: MotionSegment[] = []
+  const endmillSegs: MotionSegment[] = []
+
+  // ── V-bit pass ─────────────────────────────────────────────────────────────
+  // Profile each letter's boundary with the V-bit at depths set by the nearest
+  // MAT radius: Z = -(startDepth + r/tan(θ/2)).  This traces the letter outline
+  // (not the skeleton) so the cut creates the outward bevel on the raised prism.
+  for (const r of regions) {
+    try {
+      vbitSegs.push(...await generateMaleTextBoundaryVCarve(r.outerD, vbitTool, {
+        angleDeg:   params.angleDeg,
+        maxDepthMM: vbitMaxDepthMM,
+        zStartMM:   startDepthMM,
+        islandDs:   r.islandDs,
+      }))
+    } catch { /* letter too small — skip */ }
+  }
+
+  // ── End mill background pocket ──────────────────────────────────────────────
+  // Clear the background (inside bboxD, outside letter outer rings) to inlay depth.
+  // generatePocket automatically respects the tool radius when approaching islands.
+  try {
+    endmillSegs.push(...generatePocket(bboxD, profileTool, {
+      strategy:       'raster',
+      depthMM:        params.pocketDepthMM,
+      stepDownMM:     params.stepDownMM,
+      stepoverPercent: params.stepoverPercent,
+      direction:      'climb',
+      islandDs:       letterOuterDs,
+      angle:          0,
+    }))
+  } catch { /* background too small for end mill — skip */ }
+
+  // ── End mill counter pockets ────────────────────────────────────────────────
+  // Letter counters (e.g. the void inside 'O') must be recessed to inlay depth
+  // so they match the female socket's protruding counter islands.
+  for (const counterD of letterCounterDs) {
+    try {
+      endmillSegs.push(...generatePocket(counterD, profileTool, {
+        strategy:       'raster',
+        depthMM:        params.pocketDepthMM,
+        stepDownMM:     params.stepDownMM,
+        stepoverPercent: params.stepoverPercent,
+        direction:      'climb',
+        islandDs:       [],
+        angle:          0,
+      }))
+    } catch { /* counter too small — skip */ }
+  }
+
+  // ── Release profile ─────────────────────────────────────────────────────────
+  // Profile the bounding box perimeter to inlay depth to free the plug from stock.
+  const releaseOffset = profileTool.diameterMM / 2
+  const releaseD = offsetPathD(bboxD, releaseOffset)
+  if (releaseD) {
+    const depth = params.pocketDepthMM
+    const step  = Math.abs(params.stepDownMM)
+    const zPasses: number[] = []
+    let zr = -step
+    while (zr > -depth) { zPasses.push(zr); zr -= step }
+    zPasses.push(-depth)
+    for (const pts of getOuters(releaseD)) {
+      for (const zPass of zPasses) addContour(pts, zPass, endmillSegs)
+    }
+  }
+
+  if (vbitSegs.length === 0 && endmillSegs.length === 0)
+    throw new Error('Inlay text plug is too small for the selected tools')
+  return { vbitSegs, endmillSegs }
+}
+
+/**
+ * Male plug:
+ *   vbitSegs  — V-bit profiles the letter boundary and island edges (no offset, tip on path).
+ *   endmillSegs — End mill release profile (boundary outset by endmill_radius) + island pockets.
+ *
+ * For multi-subpath paths (text), uses the Virtual Z-Plane Shift algorithm
+ * (generateInlayMaleText) which treats letters as raised prisms cut from a bounding box.
+ * For single-subpath shapes the original step-down contour algorithm is used.
+ *
+ * Returns segments split by tool so callers can create one operation per tool, enabling
+ * all V-bit passes across all shapes to run before any end mill passes (one tool change total).
  */
 export async function generateInlayMale(
   d: string,
   profileTool: Tool,
   vbitTool: Tool,
   params: InlayParams
-): Promise<MotionSegment[]> {
+): Promise<InlaySplitResult> {
   if (vbitTool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
 
-  const outers = getOuters(d)
-  if (outers.length === 0) throw new Error('No geometry found')
+  // Multi-subpath paths (text): use the Virtual Z-Plane Shift algorithm which
+  // inverts the geometry into a bounding box and applies a MAT VCarve with a
+  // Z-start offset to produce proper raised-letter prisms.
+  const regions = splitRegions(d)
+  if (regions.length > 0) {
+    return generateInlayMaleText(d, profileTool, vbitTool, params)
+  }
 
-  const segs: MotionSegment[] = []
+  const workingD = params.mirrorX ? mirrorPathD(d) : d
 
-  for (const outer of outers) {
-    // Shrink plug inward by clearance so it fits the socket (which was enlarged by glueLine)
-    const totalOffset = -(params.clearanceMM)
-    const plug = totalOffset !== 0 ? offsetPoly(outer, totalOffset) : [...outer]
-    if (plug.length < 3) continue
+  const depth = Math.abs(params.pocketDepthMM)
+  const step = Math.abs(params.stepDownMM)
+  const zPasses: number[] = []
+  let z = -step
+  while (z > -depth) { zPasses.push(z); z -= step }
+  zPasses.push(-depth)
 
-    const plugD = ptsToD(plug)
+  const vbitSegs: MotionSegment[] = []
 
-    // Step 1: V-carve the plug perimeter — creates matching angled edge
-    try {
-      const vcSegs = await generateVCarve(plugD, vbitTool, {
-        angleDeg: params.angleDeg,
-        maxDepthMM: params.pocketDepthMM,
-        islandDs: params.islandDs,
-      })
-      segs.push(...vcSegs)
-    } catch { /* continue */ }
-
-    // Step 2: Profile cut outside the plug to release it from stock
-    const profileOffset = offsetPoly(plug, profileTool.diameterMM / 2)
-    if (profileOffset.length >= 3) {
-      const step = Math.abs(params.stepDownMM)
-      const zPasses: number[] = []
-      let z = -step
-      while (z > -params.pocketDepthMM) { zPasses.push(z); z -= step }
-      zPasses.push(-Math.abs(params.pocketDepthMM))
-
-      addContour(profileOffset, zPasses[0], segs)
-      for (let i = 1; i < zPasses.length; i++) {
-        addContour(profileOffset, zPasses[i], segs)
-      }
+  // V-bit profiles the letter boundary and island edges (tip on path, no offset).
+  for (const pts of getOuters(workingD)) {
+    for (const zPass of zPasses) addContour(pts, zPass, vbitSegs)
+  }
+  for (const rawIslandD of params.islandDs) {
+    const islandD = params.mirrorX ? mirrorPathD(rawIslandD) : rawIslandD
+    for (const sub of flattenPath(islandD, 0.05).filter(s => s.length >= 3)) {
+      for (const zPass of zPasses) addContour(sub, zPass, vbitSegs)
     }
   }
 
-  if (segs.length === 0) throw new Error('Inlay plug is too small for the selected tools')
-  return segs
+  const endmillSegs: MotionSegment[] = []
+
+  // End mill release profile: boundary outset by endmill_radius.
+  const releaseOffset = profileTool.diameterMM / 2
+  const releaseD = offsetPathD(workingD, releaseOffset)
+  if (releaseD) {
+    for (const outer of getOuters(releaseD)) {
+      for (const zPass of zPasses) addContour(outer, zPass, endmillSegs)
+    }
+  }
+
+  // End mill island pockets: clear to the island boundary with no offset.
+  for (const rawIslandD of params.islandDs) {
+    const islandD = params.mirrorX ? mirrorPathD(rawIslandD) : rawIslandD
+    try {
+      endmillSegs.push(...generatePocket(islandD, profileTool, {
+        strategy: 'raster',
+        depthMM: params.pocketDepthMM,
+        stepDownMM: params.stepDownMM,
+        stepoverPercent: params.stepoverPercent,
+        direction: 'climb',
+        islandDs: [],
+        angle: 0,
+      }))
+    } catch { /* island too small for end mill — skip */ }
+  }
+
+  if (vbitSegs.length === 0 && endmillSegs.length === 0)
+    throw new Error('Inlay plug is too small for the selected tools')
+  return { vbitSegs, endmillSegs }
 }

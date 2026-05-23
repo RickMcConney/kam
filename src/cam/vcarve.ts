@@ -28,6 +28,7 @@ export interface VCarveParams {
   maxDepthMM: number
   islandDs: string[]  // additional paths treated as holes
   startNear?: { x: number; y: number }  // CNC mm — where the tool is before this operation
+  zStartMM?: number   // male text inlay: shift the Z=0 plane down by this amount before computing depth
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -488,6 +489,8 @@ export async function generateVCarve(
   let curSX = (params.startNear?.x ?? 0) * SCALE
   let curSY = (params.startNear?.y ?? 0) * SCALE
 
+  const zStart = params.zStartMM ?? 0
+
   const segs: MotionSegment[] = []
 
   // flattenPath adds a closing duplicate for Z paths (first === last).
@@ -535,14 +538,14 @@ export async function generateVCarve(
     if (!toolpath.length) continue
 
     const first = toolpath[0]
-    const firstZ = -Math.min((first.r / SCALE) / tanHalfAngle, params.maxDepthMM)
+    const firstZ = -Math.min(zStart + (first.r / SCALE) / tanHalfAngle, params.maxDepthMM)
 
     segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: SAFE_Z, rapid: true })
     segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: firstZ, rapid: false })
 
     for (let i = 1; i < toolpath.length; i++) {
       const pt = toolpath[i]
-      const z = -Math.min((pt.r / SCALE) / tanHalfAngle, params.maxDepthMM)
+      const z = -Math.min(zStart + (pt.r / SCALE) / tanHalfAngle, params.maxDepthMM)
       segs.push({ x: pt.x / SCALE, y: pt.y / SCALE, z, rapid: false })
     }
 
@@ -556,5 +559,113 @@ export async function generateVCarve(
 
   if (!segs.length) throw new Error('Could not compute V-carve medial axis — check that the selected path is a closed shape')
 
+  return segs
+}
+
+// ─── Male text inlay — boundary VCarve ───────────────────────────────────────
+
+// Find the modal (most-frequent) radius across all MAT skeleton nodes by
+// binning into 20 buckets and returning the centre of the peak bucket.
+function findModalRadius(radii: number[]): number {
+  if (!radii.length) return 0
+  const min = Math.min(...radii)
+  const max = Math.max(...radii)
+  if (max - min < 1e-10) return radii[0]
+  const numBins = 20
+  const binSize = (max - min) / numBins
+  const counts = new Array<number>(numBins).fill(0)
+  for (const r of radii) counts[Math.min(Math.floor((r - min) / binSize), numBins - 1)]++
+  const peak = counts.indexOf(Math.max(...counts))
+  return min + (peak + 0.5) * binSize
+}
+
+/**
+ * Male inlay text plug: computes the MAT for each letter, finds the modal
+ * skeleton radius (representative stroke half-width), converts it to a fixed
+ * cut depth, then traces the letter boundary at that constant depth.
+ *
+ * Z = −min(zStartMM + modalRadius / tan(θ/2), maxDepthMM)
+ */
+export async function generateMaleTextBoundaryVCarve(
+  d: string,
+  tool: Tool,
+  params: {
+    angleDeg: number
+    maxDepthMM: number
+    zStartMM: number
+    islandDs: string[]
+  },
+): Promise<MotionSegment[]> {
+  if (tool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+
+  const halfAngle    = (params.angleDeg / 2) * (Math.PI / 180)
+  const tanHalfAngle = Math.tan(halfAngle)
+  if (tanHalfAngle < 1e-6) throw new Error('Invalid V-bit angle')
+
+  const maxRadiusScaled = params.maxDepthMM * tanHalfAngle * SCALE
+
+  const allPt2 = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  if (!allPt2.length) throw new Error('No geometry found in path')
+
+  const islandPt2: Pt2[][] = []
+  for (const iD of params.islandDs) {
+    for (const sub of flattenPath(iD, 0.05)) {
+      if (sub.length >= 3) islandPt2.push(sub)
+    }
+  }
+
+  const regions = classifySubpaths([...allPt2, ...islandPt2])
+
+  const stripClose = (pts: Pt2[]): Pt2[] => {
+    if (pts.length > 1 &&
+        Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6)
+      return pts.slice(0, -1)
+    return pts
+  }
+
+  const toScaled = (pts: Pt2[]): XY[] =>
+    stripClose(pts).map(([x, y]) => ({ x: x * SCALE, y: y * SCALE }))
+
+  const segs: MotionSegment[] = []
+
+  for (const { outer, holes } of regions) {
+    const scaledOuter = toScaled(outer)
+    const scaledHoles = holes.map(toScaled)
+    if (scaledOuter.length < 3) continue
+
+    let matSegs: Seg[] = []
+    try {
+      matSegs = JSPOLY.construct_medial_axis(scaledOuter, scaledHoles, 0.1, 2, 7 * Math.PI / 8)
+    } catch { continue }
+    if (!matSegs.length) continue
+
+    matSegs = pruneNoisyBranches(matSegs, scaledOuter, scaledHoles, maxRadiusScaled)
+    if (!matSegs.length) continue
+
+    // Collect all skeleton node radii and find the modal (most representative) value.
+    const radii: number[] = []
+    for (const seg of matSegs) { radii.push(seg.point0.radius, seg.point1.radius) }
+    const modalR = findModalRadius(radii)
+    const z = -Math.min(params.zStartMM + (modalR / SCALE) / tanHalfAngle, params.maxDepthMM)
+
+    // Trace the letter boundary (outer ring + counters) at the modal depth.
+    const traceContour = (pts: Pt2[]) => {
+      const ps = stripClose(pts)
+      if (ps.length < 2) return
+      const [sx, sy] = ps[0]
+      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true  })
+      segs.push({ x: sx, y: sy, z,         rapid: false })
+      for (let i = 1; i < ps.length; i++) {
+        segs.push({ x: ps[i][0], y: ps[i][1], z, rapid: false })
+      }
+      segs.push({ x: sx, y: sy, z,         rapid: false })
+      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true  })
+    }
+
+    traceContour(outer)
+    for (const hole of holes) traceContour(hole)
+  }
+
+  if (!segs.length) throw new Error('Could not generate boundary VCarve for letter')
   return segs
 }
