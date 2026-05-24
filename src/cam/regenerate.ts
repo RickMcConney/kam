@@ -75,9 +75,9 @@ export async function regenerateOperation(opId: string): Promise<void> {
       }
 
     } else if (op.type === 'surface') {
-      const { widthMM, heightMM, origin } = useWorkpieceStore.getState()
+      const { widthMM, heightMM } = useWorkpieceStore.getState()
       setSegments(opId, generateSurface(tool, {
-        widthMM, heightMM, origin,
+        widthMM, heightMM,
         depthMM: op.depthMM, stepDownMM: op.stepDownMM,
         stepoverPercent: op.stepoverPercent, passAngleDeg: op.passAngleDeg,
         safeHeightMM,

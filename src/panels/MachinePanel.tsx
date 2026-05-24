@@ -1704,7 +1704,7 @@ interface SurfaceFormState {
 
 export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?: SurfaceOperation }) {
   const { tools } = useToolStore()
-  const { widthMM, heightMM, origin, safeHeightMM } = useWorkpieceStore()
+  const { widthMM, heightMM, safeHeightMM } = useWorkpieceStore()
   const { pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
@@ -1745,7 +1745,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       setTimeout(() => {
         try {
           setSegments(editOp.id, generateSurface(selectedTool, {
-            widthMM, heightMM, origin,
+            widthMM, heightMM,
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
             safeHeightMM,
@@ -1771,7 +1771,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
     setTimeout(() => {
       try {
         setSegments(opId, generateSurface(selectedTool, {
-          widthMM, heightMM, origin,
+          widthMM, heightMM,
           depthMM: form.depthMM,
           stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent,

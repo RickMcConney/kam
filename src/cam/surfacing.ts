@@ -1,11 +1,9 @@
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
-import type { OriginPosition } from '../store/workpieceStore'
 
 export interface SurfaceParams {
   widthMM: number
   heightMM: number
-  origin: OriginPosition
   depthMM: number
   stepDownMM: number
   stepoverPercent: number
@@ -22,16 +20,8 @@ function zPasses(depthMM: number, stepDownMM: number): number[] {
   return passes
 }
 
-function workpieceBounds(widthMM: number, heightMM: number, origin: OriginPosition) {
-  const xOff =
-    origin.includes('left') ? 0 :
-    origin.includes('right') ? -widthMM :
-    -widthMM / 2
-  const yOff =
-    origin.includes('bottom') ? 0 :
-    origin.includes('top') ? -heightMM :
-    -heightMM / 2
-  return { minX: xOff, minY: yOff, maxX: xOff + widthMM, maxY: yOff + heightMM }
+function workpieceBounds(widthMM: number, heightMM: number) {
+  return { minX: 0, minY: 0, maxX: widthMM, maxY: heightMM }
 }
 
 // Clip a raster-space scanline at height ry to the CNC-space workpiece rectangle.
@@ -80,7 +70,7 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   if (stepoverMM < 0.001) throw new Error('Stepover too small')
 
-  const { minX, minY, maxX, maxY } = workpieceBounds(params.widthMM, params.heightMM, params.origin)
+  const { minX, minY, maxX, maxY } = workpieceBounds(params.widthMM, params.heightMM)
 
   const θ = (params.passAngleDeg * Math.PI) / 180
   const cosA = Math.cos(θ)
