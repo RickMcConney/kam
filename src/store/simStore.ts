@@ -31,7 +31,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
   segments: [],
   totalTimeS: 0,
   playing: false,
-  speed: 1,
+  speed: 20,
   elapsedTimeS: 0,
   gcodeViewerOpen: false,
 

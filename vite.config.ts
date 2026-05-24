@@ -17,8 +17,4 @@ export default defineConfig({
     },
     minify: 'esbuild',
   },
-  // Optional: Removes all console.log statements to save extra bytes
-  esbuild: {
-    drop: ['console', 'debugger'],
-  },
 })

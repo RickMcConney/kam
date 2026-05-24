@@ -46,20 +46,21 @@ function buildCNCAxes(size: number): THREE.LineSegments {
   return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }))
 }
 
+const MATERIAL_COLORS: Record<Material, number> = {
+  pine:     0xd4a86a,
+  oak:      0xb5803d,
+  maple:    0xe8c98d,
+  walnut:   0x6b3d1e,
+  cherry:   0x9c4a2e,
+  mdf:      0xc8b89a,
+  plywood:  0xc9a96a,
+  hdpe:     0xe0e0e0,
+  aluminum: 0xa8b4b8,
+  other:    0xc8c8c8,
+}
+
 function materialColor(mat: Material): number {
-  const map: Record<Material, number> = {
-    pine:     0xd4a86a,
-    oak:      0xb5803d,
-    maple:    0xe8c98d,
-    walnut:   0x6b3d1e,
-    cherry:   0x9c4a2e,
-    mdf:      0xc8b89a,
-    plywood:  0xc9a96a,
-    hdpe:     0xe0e0e0,
-    aluminum: 0xa8b4b8,
-    other:    0xc8c8c8,
-  }
-  return map[mat] ?? 0xc8c8c8
+  return MATERIAL_COLORS[mat] ?? 0xc8c8c8
 }
 
 // Builds a tool indicator mesh/group.
@@ -86,7 +87,7 @@ function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60): THREE.O
     // Shank cylinder sitting on top of the cone base
     const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
     shankGeo.translate(0, coneH + shankH / 2, 0)
-    group.add(new THREE.Mesh(shankGeo, mat.clone()))
+    group.add(new THREE.Mesh(shankGeo, mat))
 
     return group
   }
@@ -103,7 +104,7 @@ function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60): THREE.O
     // Shank cylinder from equator (Y=r) upward
     const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
     shankGeo.translate(0, r + shankH / 2, 0)
-    group.add(new THREE.Mesh(shankGeo, mat.clone()))
+    group.add(new THREE.Mesh(shankGeo, mat))
 
     return group
   }
@@ -127,10 +128,11 @@ function disposeObject3D(obj: THREE.Object3D) {
 
 // ─── voxel sync ──────────────────────────────────────────────────────────────
 
-const _m  = new THREE.Matrix4()
-const _mp = new THREE.Vector3()
-const _mr = new THREE.Quaternion()
-const _ms = new THREE.Vector3()
+const _m    = new THREE.Matrix4()
+const _mp   = new THREE.Vector3()
+const _mr   = new THREE.Quaternion()
+const _ms   = new THREE.Vector3()
+const _zero = new THREE.Matrix4().makeScale(0, 0, 0)
 
 const SYNC_BATCH = 200_000
 
@@ -142,48 +144,51 @@ function syncDirtyInstances(
   woodMesh: THREE.InstancedMesh,
   cutMesh: THREE.InstancedMesh,
 ): boolean {
-  let count = 0
+  const dl = voxelMat.dirtyList
+  if (dl.length === 0) return false
+
   const T = voxelMat.thicknessMM
-  const zero = new THREE.Matrix4().makeScale(0, 0, 0)
+  const { leaves } = voxelMat
+  let count = 0
 
-  for (const leaf of voxelMat.leaves) {
-    if (!leaf.dirty) continue
-
+  while (dl.length > 0 && count < SYNC_BATCH) {
+    const idx = dl.pop()!
+    const leaf = leaves[idx]
     const isCut = leaf.height < T - 0.001
 
     if (leaf.height < 0.001) {
-      woodMesh.setMatrixAt(leaf.instanceIdx, zero)
-      cutMesh.setMatrixAt(leaf.instanceIdx, zero)
+      woodMesh.setMatrixAt(idx, _zero)
+      cutMesh.setMatrixAt(idx, _zero)
     } else if (isCut) {
-      woodMesh.setMatrixAt(leaf.instanceIdx, zero)
+      woodMesh.setMatrixAt(idx, _zero)
       _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
       _ms.set(leaf.cw, leaf.height, leaf.ch)
       _m.compose(_mp, _mr, _ms)
-      cutMesh.setMatrixAt(leaf.instanceIdx, _m)
+      cutMesh.setMatrixAt(idx, _m)
     } else {
       _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
       _ms.set(leaf.cw, leaf.height, leaf.ch)
       _m.compose(_mp, _mr, _ms)
-      woodMesh.setMatrixAt(leaf.instanceIdx, _m)
-      cutMesh.setMatrixAt(leaf.instanceIdx, zero)
+      woodMesh.setMatrixAt(idx, _m)
+      cutMesh.setMatrixAt(idx, _zero)
     }
 
     leaf.dirty = false
-    if (++count >= SYNC_BATCH) break
+    count++
   }
 
-  if (count > 0) {
-    woodMesh.instanceMatrix.needsUpdate = true
-    cutMesh.instanceMatrix.needsUpdate  = true
-  }
-  return count > 0
+  woodMesh.instanceMatrix.needsUpdate = true
+  cutMesh.instanceMatrix.needsUpdate  = true
+  return true
 }
 
 // ─── scene refs ──────────────────────────────────────────────────────────────
 
 interface StlGeoCacheEntry {
-  geo: THREE.BufferGeometry  // raw parsed geometry, not modified
-  stlSrcLen: number          // detect changes by length
+  geo: THREE.BufferGeometry              // raw parsed geometry, not modified
+  stlSrcLen: number                      // detect changes by length
+  bakedGeo: THREE.BufferGeometry | null  // vertex-transformed geometry, keyed by bakedKey
+  bakedKey: string                       // `${path.d}|${T}` — invalidate on placement or thickness change
 }
 
 interface SceneRefs {
@@ -196,7 +201,7 @@ interface SceneRefs {
   shapesGroup: THREE.Group
   toolMesh: THREE.Object3D | null
   axesHelper: THREE.Object3D
-  gridHelper: THREE.GridHelper
+  gridHelper: THREE.LineSegments
   voxelWoodMesh: THREE.InstancedMesh | null  // uncut voxels, all-wood
   voxelCutMesh:  THREE.InstancedMesh | null  // carved voxels, yellow top/sides + wood bottom
   voxelMat: VoxelMaterial | null
@@ -206,6 +211,8 @@ interface SceneRefs {
   lastFrameTs: number
   renderNeeded: boolean
   activeToolKey: string  // encodes type+diam+angle; rebuild mesh when it changes
+  machineVoxelBudget: number  // 0 = uncalibrated; >0 = voxels/frame this machine can sustain at 30fps
+  fpsAdapted: boolean         // true after one adaptation for current gcode
 }
 
 // ─── component ───────────────────────────────────────────────────────────────
@@ -213,9 +220,10 @@ interface SceneRefs {
 export default function ThreeView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<SceneRefs | null>(null)
+  const fpsRef = useRef<HTMLSpanElement>(null)
 
-  const [showAxes, setShowAxes] = useState(true)
-  const [showToolpaths, setShowToolpaths] = useState(true)
+  const [showAxes, setShowAxes] = useState(false)
+  const [showToolpaths, setShowToolpaths] = useState(false)
   const [showWorkpiece, setShowWorkpiece] = useState(true)
   const [showTool, setShowTool] = useState(true)
   const [showShapes, setShowShapes] = useState(true)
@@ -273,7 +281,8 @@ export default function ThreeView() {
     const axesHelper = buildCNCAxes(40)
     scene.add(axesHelper)
 
-    const gridHelper = new THREE.GridHelper(600, 60, 0x333333, 0x292929)
+    const gridHelper = buildRectGrid(200, 200, 20)
+    gridHelper.position.y = -0.5
     scene.add(gridHelper)
 
     const refs: SceneRefs = {
@@ -291,6 +300,8 @@ export default function ThreeView() {
       lastFrameTs: 0,
       renderNeeded: true,
       activeToolKey: '',
+      machineVoxelBudget: 0,
+      fpsAdapted: false,
     }
     sceneRef.current = refs
 
@@ -318,6 +329,30 @@ export default function ThreeView() {
       if (dt > 0 && dt < 500) {
         refs.fpsSamples.push(1000 / dt)
         if (refs.fpsSamples.length > 30) refs.fpsSamples.shift()
+        if (refs.fpsSamples.length === 30 && fpsRef.current) {
+          const avg = refs.fpsSamples.reduce((a, b) => a + b, 0) / 30
+          fpsRef.current.textContent = `${Math.round(avg)} fps`
+          if (!refs.fpsAdapted && refs.voxelMat && useSimStore.getState().playing) {
+            refs.fpsAdapted = true
+            const measured = Math.floor(refs.voxelMat.leaves.length * avg / 30)
+            if (avg < 30) {
+              // Too slow — rebuild immediately at a lower budget.
+              refs.machineVoxelBudget = Math.max(1000, measured)
+              console.log(`[voxel] slow: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↓ ${refs.machineVoxelBudget}`)
+              refs.fpsSamples = []
+              rebuildVoxels(refs)
+              refs.renderNeeded = true
+            } else if (refs.machineVoxelBudget === 0) {
+              // First calibration — set from current measurement.
+              refs.machineVoxelBudget = measured
+              console.log(`[voxel] calibrated: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget → ${refs.machineVoxelBudget}`)
+            } else if (measured > refs.machineVoxelBudget) {
+              // Headroom available — grow budget (capped at 2×) for future jobs.
+              refs.machineVoxelBudget = Math.min(refs.machineVoxelBudget * 2, measured)
+              console.log(`[voxel] fast: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↑ ${refs.machineVoxelBudget}`)
+            }
+          }
+        }
       }
 
       const axVis = showAxesRef.current
@@ -411,6 +446,8 @@ export default function ThreeView() {
     })
     const unsubSim = useSimStore.subscribe((state, prev) => {
       if (state.gcode !== prev.gcode) {
+        refs.fpsAdapted = false
+        refs.fpsSamples = []
         rebuildVoxels(refs)
         buildToolIndicator(refs)
         refs.renderNeeded = true
@@ -427,7 +464,7 @@ export default function ThreeView() {
       if (refs.voxelWoodMesh) { refs.voxelWoodMesh.geometry.dispose(); (refs.voxelWoodMesh.material as THREE.Material).dispose() }
       if (refs.voxelCutMesh) { refs.voxelCutMesh.geometry.dispose(); (refs.voxelCutMesh.material as THREE.Material).dispose() }
       if (refs.toolMesh) disposeObject3D(refs.toolMesh)
-      for (const entry of refs.stlGeoCache.values()) entry.geo.dispose()
+      for (const entry of refs.stlGeoCache.values()) { entry.geo.dispose(); entry.bakedGeo?.dispose() }
       refs.stlGeoCache.clear()
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
@@ -437,6 +474,7 @@ export default function ThreeView() {
   return (
     <div ref={containerRef} className="w-full h-full relative overflow-hidden">
       <SimulationPlayer />
+      <span ref={fpsRef} className="absolute top-2 left-2 text-xs text-neutral-500 pointer-events-none select-none" />
 
       <div className="absolute top-2 right-2 z-10 flex flex-col gap-1">
         {([
@@ -467,10 +505,38 @@ export default function ThreeView() {
 
 // ─── scene builder helpers ───────────────────────────────────────────────────
 
+// Rounds a raw step to the nearest human-readable value (1, 2, 5, 10, 20, 50…)
+function niceStep(raw: number): number {
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)))
+  const n = raw / mag
+  if (n < 1.5) return mag
+  if (n < 3.5) return 2 * mag
+  if (n < 7.5) return 5 * mag
+  return 10 * mag
+}
+
+// Builds a rectangular grid (W×H workpiece, 1 step margin each side) as LineSegments.
+// Unlike GridHelper, this is not square so it fits non-square workpieces without
+// over-extending in the shorter dimension.
+function buildRectGrid(W: number, H: number, step: number): THREE.LineSegments {
+  const pts: number[] = []
+  const x0 = -step,    x1 = W + step
+  const z0 = -(H + step), z1 = step
+  for (let z = z0; z <= z1 + step * 1e-6; z += step) {
+    pts.push(x0, 0, z,  x1, 0, z)
+  }
+  for (let x = x0; x <= x1 + step * 1e-6; x += step) {
+    pts.push(x, 0, z0,  x, 0, z1)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3))
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x2a2a2a }))
+}
+
 function clearGroup(group: THREE.Group) {
   while (group.children.length) {
     const child = group.children[0] as THREE.Mesh
-    child.geometry?.dispose()
+    if (!child.userData.cachedGeo) child.geometry?.dispose()
     if (Array.isArray(child.material)) child.material.forEach(m => m.dispose())
     else (child.material as THREE.Material)?.dispose()
     group.remove(child)
@@ -489,10 +555,9 @@ function rebuildWorkpiece(refs: SceneRefs) {
   refs.scene.remove(refs.gridHelper)
   refs.gridHelper.geometry.dispose()
   ;(refs.gridHelper.material as THREE.Material).dispose()
-  const gridSize = Math.max(W, H) * 2
-  const gridDivs = Math.round(gridSize / 10)
-  refs.gridHelper = new THREE.GridHelper(gridSize, gridDivs, 0x333333, 0x292929)
-  refs.gridHelper.position.set(W / 2, 0, -H / 2)
+  const step = niceStep(Math.max(W, H) / 10)
+  refs.gridHelper = buildRectGrid(W, H, step)
+  refs.gridHelper.position.y = -0.5
   refs.scene.add(refs.gridHelper)
 
   rebuildVoxels(refs)
@@ -524,10 +589,12 @@ function rebuildVoxels(refs: SceneRefs) {
   // if the actual voxel count would exceed 2M.
   const hasAnyCut = segments.some(s => !s.rapid && (s.prevZ < 0 || s.z < 0))
   const minCellMM = hasAnyCut ? 0.01 : Math.min(W, H) / 8
+  const voxelBudget = refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget : undefined
 
-  const voxelMat = new VoxelMaterial(W, H, T, segments, org.x, org.y, minCellMM)
+  const voxelMat = new VoxelMaterial(W, H, T, segments, org.x, org.y, minCellMM, voxelBudget)
   refs.voxelMat  = voxelMat
   const N = voxelMat.leaves.length
+  console.log(`[voxel] built ${N.toLocaleString()} voxels @ ${voxelMat.effectiveCellMM.toFixed(3)}mm cell | machine budget: ${refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget.toLocaleString() : 'uncalibrated'}`)
 
   // Wood mesh: all faces wood — for uncut voxels
   const woodColor = materialColor(material)
@@ -540,14 +607,12 @@ function rebuildVoxels(refs: SceneRefs) {
   const cutMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), yellowMat, N)
   cutMesh.frustumCulled = false
 
-  const zero = new THREE.Matrix4().makeScale(0, 0, 0)
-
   for (const leaf of voxelMat.leaves) {
     _mp.set(leaf.cx, leaf.height / 2, -leaf.cy)
     _ms.set(leaf.cw, leaf.height, leaf.ch)
     _m.compose(_mp, _mr, _ms)
     woodMesh.setMatrixAt(leaf.instanceIdx, _m)
-    cutMesh.setMatrixAt(leaf.instanceIdx, zero)
+    cutMesh.setMatrixAt(leaf.instanceIdx, _zero)
     leaf.dirty = false
   }
   woodMesh.instanceMatrix.needsUpdate = true
@@ -615,6 +680,7 @@ function rebuildShapes(refs: SceneRefs) {
   for (const [id, entry] of refs.stlGeoCache) {
     if (!stlPathIds.has(id)) {
       entry.geo.dispose()
+      entry.bakedGeo?.dispose()
       refs.stlGeoCache.delete(id)
     }
   }
@@ -623,26 +689,37 @@ function rebuildShapes(refs: SceneRefs) {
     if (!path.visible) continue
 
     if (path.stlSrc && path.stlModelBounds) {
-      // Refresh raw geometry cache only when the STL data changes
       let cached = refs.stlGeoCache.get(path.id)
       if (!cached || cached.stlSrcLen !== path.stlSrc.length) {
         cached?.geo.dispose()
+        cached?.bakedGeo?.dispose()
         try {
           const buf = base64ToArrayBuffer(path.stlSrc)
           const geo = parseStlGeometry(buf)
-          cached = { geo, stlSrcLen: path.stlSrc.length }
+          cached = { geo, stlSrcLen: path.stlSrc.length, bakedGeo: null, bakedKey: '' }
           refs.stlGeoCache.set(path.id, cached)
         } catch {
           continue
         }
       }
-      const mesh = buildStlMesh(cached.geo, path.stlModelBounds, path.d, T, path.color)
-      if (mesh) refs.shapesGroup.add(mesh)
+      const bakedKey = `${path.d}|${T}`
+      if (!cached.bakedGeo || cached.bakedKey !== bakedKey) {
+        cached.bakedGeo?.dispose()
+        cached.bakedGeo = buildStlGeo(cached.geo, path.stlModelBounds, path.d, T)
+        cached.bakedKey = bakedKey
+      }
+      if (!cached.bakedGeo) continue
+      const mesh = new THREE.Mesh(cached.bakedGeo, new THREE.MeshLambertMaterial({
+        color: new THREE.Color(path.color),
+        side: THREE.DoubleSide,
+      }))
+      mesh.userData.cachedGeo = true
+      refs.shapesGroup.add(mesh)
       continue
     }
 
     const polylines = flattenPath(path.d, 0.3)
-    const color = new THREE.Color(path.color)
+    const lineMat = new THREE.LineBasicMaterial({ color: new THREE.Color(path.color) })
     for (const pts of polylines) {
       if (pts.length < 2) continue
       const positions = new Float32Array(pts.length * 3)
@@ -653,25 +730,23 @@ function rebuildShapes(refs: SceneRefs) {
       }
       const geo = new THREE.BufferGeometry()
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-      refs.shapesGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })))
+      refs.shapesGroup.add(new THREE.Line(geo, lineMat))
     }
   }
 
   refs.renderNeeded = true
 }
 
-// Build a Three.js mesh for an STL path, positioned and scaled to match the
-// 2D bounding rect (d string) in CNC space.
-//
-// Coordinate mapping (from CLAUDE.md): threeX = cncX, threeY = T + cncZ, threeZ = -cncY
-// STL space: X and Y are the horizontal footprint (→ CNC X and Y), Z is height (→ CNC Z).
-function buildStlMesh(
+// Bake an STL's raw geometry into Three.js coordinates, scaled to match the
+// 2D bounding rect (d string) in CNC space.  Result is cached; only rebuilt
+// when path.d or workpiece thickness changes.
+// Coordinate mapping: threeX = cncX, threeY = T + cncZ, threeZ = -cncY
+function buildStlGeo(
   rawGeo: THREE.BufferGeometry,
   bounds: StlModelBounds,
   d: string,
   T: number,
-  color: string,
-): THREE.Mesh | null {
+): THREE.BufferGeometry | null {
   const bbox = getBBox(d)
   if (!bbox) return null
 
@@ -681,7 +756,7 @@ function buildStlMesh(
 
   const scaleX = bbox.width / modelW
   const scaleY = bbox.height / modelH
-  const scaleZ = (scaleX + scaleY) / 2  // uniform Z scale preserves proportions
+  const scaleZ = (scaleX + scaleY) / 2
 
   const modelCX = (bounds.minX + bounds.maxX) / 2
   const modelCY = (bounds.minY + bounds.maxY) / 2
@@ -694,15 +769,9 @@ function buildStlMesh(
     const stlX = positions.getX(i)
     const stlY = positions.getY(i)
     const stlZ = positions.getZ(i)
-
-    // Map STL → CNC with scale and placement.
-    // Anchor maxZ (top of STL) to CNC Z=0 (workpiece top surface) so the model
-    // sits down into the material — the top of the relief flush with the stock.
     const cncX = (stlX - modelCX) * scaleX + bbox.cx
     const cncY = (stlY - modelCY) * scaleY + bbox.cy
     const cncZ = (stlZ - bounds.maxZ) * scaleZ
-
-    // CNC → Three.js
     newPos[i * 3]     = cncX
     newPos[i * 3 + 1] = T + cncZ
     newPos[i * 3 + 2] = -cncY
@@ -712,11 +781,7 @@ function buildStlMesh(
   geo.setAttribute('position', new THREE.BufferAttribute(newPos, 3))
   if (rawGeo.index) geo.setIndex(rawGeo.index.clone())
   geo.computeVertexNormals()
-
-  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
-    color: new THREE.Color(color),
-    side: THREE.DoubleSide,
-  }))
+  return geo
 }
 
 // Expands an arc segment to [x,y,z][] points for 3D display (step every 5°).
@@ -789,6 +854,9 @@ function fitCamera(refs: SceneRefs) {
   const cx   = W / 2
   const cz   = -H / 2
   const dist = Math.hypot(W, H) * 1.4
+  refs.camera.near = dist * 0.001
+  refs.camera.far  = dist * 10
+  refs.camera.updateProjectionMatrix()
   refs.camera.position.set(cx, dist * 0.55, dist * 0.85)
   refs.camera.lookAt(cx, T / 2, cz)
   refs.controls.target.set(cx, T / 2, cz)

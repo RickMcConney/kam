@@ -26,7 +26,7 @@ function TabContent({ tab, machineFormActive, shapesPanelOpen }: { tab: SidebarT
 }
 
 export default function Sidebar() {
-  const { sidebarTab, setSidebarTab } = useUIStore()
+  const { sidebarTab, setSidebarTab, setMachineFormActive, setShapesPanelOpen } = useUIStore()
   const selectedIds = usePathsStore((s) => s.selectedIds)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
   const hasGcode = useSimStore((s) => !!s.gcode)
@@ -82,7 +82,7 @@ export default function Sidebar() {
             {TABS.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setSidebarTab(tab.id)}
+                onClick={() => { setSidebarTab(tab.id); if (tab.id === 'draw') { setMachineFormActive(false); setShapesPanelOpen(false) } }}
                 title={tab.label}
                 className={[
                   'flex-1 flex flex-col items-center gap-0.5 py-2 text-body transition-colors border-b-2',

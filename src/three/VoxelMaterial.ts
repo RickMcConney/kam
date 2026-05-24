@@ -151,12 +151,14 @@ export class VoxelMaterial {
   private _lastPartialIdx = -1
   private _lastPartialT   = 0
   anyCarved = false
+  readonly dirtyList: number[] = []
 
   constructor(
     W: number, H: number, T: number,
     segments: SimSegment[],
     orgX: number, orgY: number,
     minCellMM = 2,
+    voxelBudget = MAX_VOXELS,
   ) {
     this.thicknessMM = T
     this.orgX = orgX
@@ -164,60 +166,39 @@ export class VoxelMaterial {
     this._W = W
     this._H = H
 
-    // Use capsule area (segLen × 2r) rather than bbox area — bbox is wildly
-    // conservative for diagonal/overlapping passes and causes the budget formula
-    // to pick a cell size much coarser than the 2M-voxel limit actually requires.
-    let totalCutArea = 0
-    for (const seg of segments) {
-      if (!isCuttingSeg(seg)) continue
-      const r = segMaxRadius(seg)
-      const segLen = Math.hypot(seg.x - seg.prevX, seg.y - seg.prevY)
-      totalCutArea += (segLen + 2 * r) * (2 * r)
-    }
-    const effectiveArea = totalCutArea > 0 ? Math.min(totalCutArea, W * H) : W * H
+    // Pilot build: a cheap coarse pass (~2000 voxels) to measure actual cut
+    // coverage. The quadtree only subdivides where segments overlap, so a pocket
+    // produces many more pilot voxels than a profile of the same workpiece size.
+    // This makes the voxel count estimate operation-type-aware without any
+    // geometric formula that would conflate the two.
+    const PILOT_VOXELS = 2000
+    const pilotCellMM = Math.max(minCellMM, Math.sqrt(W * H / PILOT_VOXELS))
+    const pilotLeaves = buildLeaves(W, H, T, segments, orgX, orgY, pilotCellMM)
 
-    let cellMM = Math.max(minCellMM, Math.sqrt(effectiveArea / MAX_VOXELS))
+    // Scale cellMM so the final build hits voxelBudget leaves.
+    // pilotCount × (pilotCellMM / cellMM)² = voxelBudget  →  cellMM = pilotCellMM × √(pilotCount / voxelBudget)
+    const cellMM = Math.max(minCellMM, pilotCellMM * Math.sqrt(pilotLeaves.length / voxelBudget))
 
-    // Build a first pass at the budget-formula cell size, then use the real
-    // voxel count to check whether we can afford minCellMM.  The area formula
-    // typically overestimates for sparse paths, so the first pass usually has
-    // far fewer voxels than MAX_VOXELS.
-    let leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
-    if (cellMM > minCellMM) {
-      // Estimate count at minCellMM; if it fits go there, else find finest that does.
-      const ratio = cellMM / minCellMM
-      const estimatedAtMin = leaves.length * ratio * ratio
-      const targetCell = Math.max(minCellMM,
-        estimatedAtMin <= MAX_VOXELS
-          ? minCellMM
-          : cellMM * Math.sqrt(leaves.length / MAX_VOXELS)
-      )
-      if (targetCell < cellMM - 1e-6) {
-        console.log(`[VoxelMaterial] refining ${cellMM.toFixed(3)} → ${targetCell.toFixed(3)} mm`)
-        cellMM = targetCell
-        leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
-        // Quadratic estimate can underestimate; correct with real count if we overshot.
-        if (leaves.length > MAX_VOXELS) {
-          const correctedCell = Math.max(minCellMM, cellMM * Math.sqrt(leaves.length / MAX_VOXELS))
-          console.log(`[VoxelMaterial] correcting ${cellMM.toFixed(3)} → ${correctedCell.toFixed(3)} mm (actual ${leaves.length.toLocaleString()} over budget)`)
-          cellMM = correctedCell
-          leaves = buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
-        }
-      }
-    }
+    // Reuse the pilot leaves if the computed cellMM is within 1% of the pilot
+    // (happens when budget > pilotCount but minCellMM is the binding constraint).
+    const leaves = Math.abs(cellMM - pilotCellMM) < pilotCellMM * 0.01
+      ? pilotLeaves
+      : buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
 
     this.effectiveCellMM = cellMM
     this.leaves = leaves
-    console.log(`[VoxelMaterial] ${this.leaves.length.toLocaleString()} voxels, cell size ${cellMM.toFixed(3)} mm`)
 
     this._grid  = buildGrid(this.leaves, W, H)
     this._dedup = new Uint32Array(this.leaves.length)
   }
 
   reset() {
-    for (const leaf of this.leaves) {
+    this.dirtyList.length = 0
+    for (let i = 0; i < this.leaves.length; i++) {
+      const leaf = this.leaves[i]
       leaf.height = this.thicknessMM
       leaf.dirty  = true
+      this.dirtyList.push(i)
     }
     this._lastFullIdx    = -1
     this._lastPartialIdx = -1
@@ -363,7 +344,10 @@ export class VoxelMaterial {
 
           if (leaf.height > newH) {
             leaf.height = newH
-            leaf.dirty  = true
+            if (!leaf.dirty) {
+              leaf.dirty = true
+              this.dirtyList.push(idx)
+            }
             this.anyCarved = true
           }
         }

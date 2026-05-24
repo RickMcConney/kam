@@ -1,4 +1,4 @@
-import { useEffect, lazy, Suspense, useLayoutEffect } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import { preloadFonts } from './shapes/textGenerator'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
@@ -26,8 +26,6 @@ const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
   { id: 'tools', label: 'Tool Library' },
   { id: 'postprocessor', label: 'Post-Processor' },
 ]
-
-const PLACEHOLDER: Record<string, { icon: string; label: string }> = {}
 
 function MainWorkspace() {
   const { workspaceTab, setWorkspaceTab } = useUIStore()
@@ -70,24 +68,6 @@ function MainWorkspace() {
           {workspaceTab === 'setup' && <WorkpiecePanel />}
           {workspaceTab === 'tools' && <ToolLibraryPanel />}
           {workspaceTab === 'postprocessor' && <PostProcessorPanel />}
-
-          {PLACEHOLDER[workspaceTab] && (
-            <div
-              className="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-neutral-500 select-none"
-              style={{
-                backgroundImage: [
-                  'linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px)',
-                  'linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)',
-                ].join(','),
-                backgroundSize: '20px 20px',
-              }}
-            >
-              <div className="text-center">
-                <div className="text-5xl mb-3">{PLACEHOLDER[workspaceTab].icon}</div>
-                <div className="text-sm">{PLACEHOLDER[workspaceTab].label}</div>
-              </div>
-            </div>
-          )}
         </div>
 
       </div>
@@ -174,7 +154,10 @@ export default function App() {
   useKeyboardShortcuts()
   useSurfaceWorkpieceSync()
   useDarkMode()
-  useLayoutEffect(() => { preloadFonts() }, [])
+  const activeTool = useUIStore(s => s.activeTool)
+  useEffect(() => {
+    if (activeTool === 'text') preloadFonts()
+  }, [activeTool])
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 overflow-hidden">
       <Toolbar />

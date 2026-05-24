@@ -1,5 +1,5 @@
 import { memo, Fragment } from 'react'
-import { Group, Line, Circle } from 'react-konva'
+import { Group, Shape, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useToolpathStore, type MotionSegment } from '../../store/toolpathStore'
 import { useToolStore } from '../../store/toolStore'
@@ -75,18 +75,24 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
 
         return (
           <Fragment key={op.id}>
-            {cutting.map((pts, i) => (
-              <Line
-                key={`${op.id}-c-${i}`}
-                points={pts}
-                stroke={op.color}
-                strokeWidth={1.5 / scale}
-                lineJoin="round"
-                lineCap="round"
-                opacity={0.9}
-                listening={false}
-              />
-            ))}
+            <Shape
+              key={`${op.id}-c`}
+              sceneFunc={(ctx, shape) => {
+                ctx.beginPath()
+                for (const pts of cutting) {
+                  if (pts.length < 4) continue
+                  ctx.moveTo(pts[0], pts[1])
+                  for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1])
+                }
+                ctx.strokeShape(shape)
+              }}
+              stroke={op.color}
+              strokeWidth={1.5 / scale}
+              lineJoin="round"
+              lineCap="round"
+              opacity={0.9}
+              listening={false}
+            />
 
             {op.type === 'drill'
               ? (() => {

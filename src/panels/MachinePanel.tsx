@@ -34,6 +34,15 @@ import type { ImportedPath } from '../store/pathsStore'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+const flattenCache = new Map<string, [number, number][]>()
+function flattenCached(d: string): [number, number][] {
+  if (!flattenCache.has(d)) {
+    const pts = flattenPath(d, 0.1)
+    flattenCache.set(d, (pts[0] ?? []) as [number, number][])
+  }
+  return flattenCache.get(d)!
+}
+
 // ─── Containment grouping ─────────────────────────────────────────────────────
 
 function ptInPoly(px: number, py: number, poly: [number, number][]): boolean {
@@ -54,13 +63,8 @@ function groupPathsByContainment(
   if (selectedPaths.length === 0) return []
   if (selectedPaths.length === 1) return [{ boundary: selectedPaths[0], islands: [] }]
 
-  const polyCache = new Map<string, [number, number][]>()
   function getPoly(p: ImportedPath): [number, number][] {
-    if (!polyCache.has(p.id)) {
-      const pts = flattenPath(p.d, 0.1)
-      polyCache.set(p.id, (pts[0] ?? []) as [number, number][])
-    }
-    return polyCache.get(p.id)!
+    return flattenCached(p.d)
   }
 
   // For each path find its smallest (most direct) containing path among the selection
@@ -1309,11 +1313,12 @@ interface Profile3dFormState {
   roughingStepoverPercent: number
   roughingStepDownMM: number
   roughingStockAllowanceMM: number
+  roughingRasterAngleDeg: number | ''  // '' = auto (finishing angle + 90)
 }
 
 export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp?: Profile3dOperation }) {
   const { tools } = useToolStore()
-  const { paths } = usePathsStore()
+  const { paths, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
 
@@ -1331,6 +1336,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     roughingStepoverPercent: editOp.roughingStepoverPercent ?? 60,
     roughingStepDownMM: editOp.roughingStepDownMM ?? 2,
     roughingStockAllowanceMM: editOp.roughingStockAllowanceMM ?? 0.3,
+    roughingRasterAngleDeg: editOp.roughingRasterAngleDeg ?? '',
   } : mergeWithDefaults(load('profile3d'), {
     toolId: defaultTool?.id ?? '',
     stepoverPercent: 20,
@@ -1341,6 +1347,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     roughingStepoverPercent: 60,
     roughingStepDownMM: 2,
     roughingStockAllowanceMM: 0.3,
+    roughingRasterAngleDeg: '' as number | '',
   }, tools))
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -1370,6 +1377,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
   function handleGenerate() {
     if (!selectedTool || !selectedPath || !selectedPath.stlSrc || !selectedPath.stlModelBounds) return
+    pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
 
@@ -1391,6 +1399,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           roughingStepoverPercent: hasRoughing ? form.roughingStepoverPercent : undefined,
           roughingStepDownMM: hasRoughing ? form.roughingStepDownMM : undefined,
           roughingStockAllowanceMM: hasRoughing ? form.roughingStockAllowanceMM : undefined,
+          roughingRasterAngleDeg: hasRoughing && form.roughingRasterAngleDeg !== '' ? form.roughingRasterAngleDeg : undefined,
           roughingToolId: hasRoughing ? form.roughingToolId : undefined,
           finishingToolId: form.toolId,
         }
@@ -1400,6 +1409,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           ? `3D Profile: ${selectedPath.name} (rough: ${roughingTool?.name ?? ''} / finish: ${selectedTool.name})`
           : `3D Profile: ${selectedPath.name} (${selectedTool.name})`
 
+        const roughingRasterAngle = hasRoughing && form.roughingRasterAngleDeg !== '' ? form.roughingRasterAngleDeg : undefined
         if (editOp) {
           updateOperation(editOp.id, {
             toolId: form.toolId,
@@ -1409,6 +1419,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
             roughingStepoverPercent: hasRoughing ? form.roughingStepoverPercent : undefined,
             roughingStepDownMM: hasRoughing ? form.roughingStepDownMM : undefined,
             roughingStockAllowanceMM: hasRoughing ? form.roughingStockAllowanceMM : undefined,
+            roughingRasterAngleDeg: roughingRasterAngle,
             name: opName, status: 'generating',
           } as Partial<AnyOperation>)
           setSegments(editOp.id, segments)
@@ -1425,6 +1436,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
             roughingStepoverPercent: hasRoughing ? form.roughingStepoverPercent : undefined,
             roughingStepDownMM: hasRoughing ? form.roughingStepDownMM : undefined,
             roughingStockAllowanceMM: hasRoughing ? form.roughingStockAllowanceMM : undefined,
+            roughingRasterAngleDeg: roughingRasterAngle,
           })
           updateOperation(newOpId, { status: 'generating' })
           setSegments(newOpId, segments)
@@ -1516,6 +1528,22 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                   className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
                 <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+                Roughing Angle
+              </label>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  value={form.roughingRasterAngleDeg === '' ? '' : form.roughingRasterAngleDeg}
+                  min={-180} max={180} step={15}
+                  placeholder={`auto (${form.rasterAngleDeg + 90}°)`}
+                  onChange={(e) => up('roughingRasterAngleDeg', e.target.value === '' ? '' : Number(e.target.value))}
+                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+                />
+                <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
               </div>
             </div>
             <div>
@@ -2311,11 +2339,12 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export default function MachinePanel({ fill = false }: { fill?: boolean }) {
-  const { setMachineFormActive, setActiveTool, setTabsFormActive } = useUIStore()
+  const { machineFormActive, setMachineFormActive, setActiveTool, setTabsFormActive } = useUIStore()
   const [activeForm, setActiveForm] = useState<FormState>('menu')
 
   useEffect(() => () => { setMachineFormActive(false); setTabsFormActive(false) }, [setMachineFormActive, setTabsFormActive])
   useEffect(() => { setTabsFormActive(activeForm === 'tabs') }, [activeForm, setTabsFormActive])
+  useEffect(() => { if (!machineFormActive) setActiveForm('menu') }, [machineFormActive])
 
   const openForm = (t: FormState) => { setActiveForm(t); setMachineFormActive(true); setActiveTool('select') }
   const closeForm = () => { setActiveForm('menu'); setMachineFormActive(false) }

@@ -13,6 +13,7 @@ export interface Profile3dParams {
   roughingStepoverPercent?: number   // stepover % for roughing pass (XY spacing)
   roughingStepDownMM?: number        // axial depth per roughing pass
   roughingStockAllowanceMM?: number  // how much material to leave for finishing (default 0.3)
+  roughingRasterAngleDeg?: number    // scan angle for roughing (defaults to rasterAngleDeg + 90)
   roughingToolId?: string            // toolId used in the toolChange segment marker
   finishingToolId?: string           // toolId used in the toolChange segment marker
 }
@@ -222,11 +223,18 @@ function generateStepDownPasses(
   maxDepthMM: number,
   stockAllowanceMM: number,
   rasterAngleDeg: number,
+  rawMaxDepthMM?: number,  // raw surface max depth — avoids inflated pass count from dilation
 ): MotionSegment[] {
-  // Find the actual deepest surface point so we don't make pointless extra passes.
-  let surfaceMaxDepth = 0
-  for (let i = 0; i < grid.length; i++) {
-    if (grid[i] !== -Infinity && -grid[i] > surfaceMaxDepth) surfaceMaxDepth = -grid[i]
+  // Use raw surface depth when provided (avoids counting dilation artefacts as extra passes).
+  // Fall back to scanning the effective grid only if the raw depth isn't available.
+  let surfaceMaxDepth: number
+  if (rawMaxDepthMM !== undefined) {
+    surfaceMaxDepth = rawMaxDepthMM
+  } else {
+    surfaceMaxDepth = 0
+    for (let i = 0; i < grid.length; i++) {
+      if (grid[i] !== -Infinity && -grid[i] > surfaceMaxDepth) surfaceMaxDepth = -grid[i]
+    }
   }
   const effectiveMaxDepth = Math.min(surfaceMaxDepth, maxDepthMM)
   const numPasses = Math.ceil(effectiveMaxDepth / stepDownMM)
@@ -385,14 +393,24 @@ export function generateProfile3d(
     : roughRadius * 0.75
   const roughStockMM = params.roughingStockAllowanceMM ?? 0.3
 
+  // Compute raw surface max depth before dilation so pass count is based on actual model depth.
+  let rawMaxDepth = 0
+  for (let i = 0; i < grid.length; i++) {
+    const v = grid[i]
+    if (v !== -Infinity && -v > rawMaxDepth) rawMaxDepth = -v
+  }
+
   const roughSurface = computeToolSurface(grid, nx, ny, bbox, roughRadius, 350)
   console.log(`[profile3d] roughSurface ${roughSurface.nx}×${roughSurface.ny} R=${roughRadius}mm stock=${roughStockMM}mm | finishSurface ${finishSurface.nx}×${finishSurface.ny} R=${ballRadius}mm`)
+
+  const roughAngleDeg = params.roughingRasterAngleDeg ?? (params.rasterAngleDeg + 90)
 
   const roughingSegs = generateStepDownPasses(
     roughSurface.grid, roughSurface.nx, roughSurface.ny,
     bbox, roughSurface.cellX, roughSurface.cellY,
     roughRadius, roughStepMM, roughStepDownMM, params.maxDepthMM,
-    roughStockMM, params.rasterAngleDeg,
+    roughStockMM, roughAngleDeg,
+    rawMaxDepth,
   )
 
   const finishingSegs = generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,

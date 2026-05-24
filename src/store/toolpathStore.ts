@@ -111,6 +111,7 @@ export interface Profile3dOperation extends BaseOperation {
   roughingStepoverPercent?: number
   roughingStepDownMM?: number
   roughingStockAllowanceMM?: number
+  roughingRasterAngleDeg?: number
 }
 
 export interface GcodeOperation extends BaseOperation {
