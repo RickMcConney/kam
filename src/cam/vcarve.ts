@@ -18,7 +18,6 @@ import { flattenPath, signedArea, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
-const SAFE_Z = 5.0
 const SCALE = 100 // 1 mm → 100 integer units; gives 0.01 mm precision for JSPoly
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -29,6 +28,7 @@ export interface VCarveParams {
   islandDs: string[]  // additional paths treated as holes
   startNear?: { x: number; y: number }  // CNC mm — where the tool is before this operation
   zStartMM?: number   // male text inlay: shift the Z=0 plane down by this amount before computing depth
+  safeHeightMM?: number
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -490,6 +490,7 @@ export async function generateVCarve(
   let curSY = (params.startNear?.y ?? 0) * SCALE
 
   const zStart = params.zStartMM ?? 0
+  const safeZ = params.safeHeightMM ?? 5
 
   const segs: MotionSegment[] = []
 
@@ -540,7 +541,7 @@ export async function generateVCarve(
     const first = toolpath[0]
     const firstZ = -Math.min(zStart + (first.r / SCALE) / tanHalfAngle, params.maxDepthMM)
 
-    segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: SAFE_Z, rapid: true })
+    segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: safeZ, rapid: true })
     segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: firstZ, rapid: false })
 
     for (let i = 1; i < toolpath.length; i++) {
@@ -550,7 +551,7 @@ export async function generateVCarve(
     }
 
     const last = toolpath[toolpath.length - 1]
-    segs.push({ x: last.x / SCALE, y: last.y / SCALE, z: SAFE_Z, rapid: true })
+    segs.push({ x: last.x / SCALE, y: last.y / SCALE, z: safeZ, rapid: true })
 
     // Update current position to this region's exit for the next region's start selection
     curSX = last.x
@@ -594,6 +595,7 @@ export async function generateMaleTextBoundaryVCarve(
     maxDepthMM: number
     zStartMM: number
     islandDs: string[]
+    safeHeightMM?: number
   },
 ): Promise<MotionSegment[]> {
   if (tool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
@@ -626,6 +628,7 @@ export async function generateMaleTextBoundaryVCarve(
   const toScaled = (pts: Pt2[]): XY[] =>
     stripClose(pts).map(([x, y]) => ({ x: x * SCALE, y: y * SCALE }))
 
+  const safeZ = params.safeHeightMM ?? 5
   const segs: MotionSegment[] = []
 
   for (const { outer, holes } of regions) {
@@ -653,13 +656,13 @@ export async function generateMaleTextBoundaryVCarve(
       const ps = stripClose(pts)
       if (ps.length < 2) return
       const [sx, sy] = ps[0]
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true  })
+      segs.push({ x: sx, y: sy, z: safeZ, rapid: true  })
       segs.push({ x: sx, y: sy, z,         rapid: false })
       for (let i = 1; i < ps.length; i++) {
         segs.push({ x: ps[i][0], y: ps[i][1], z, rapid: false })
       }
       segs.push({ x: sx, y: sy, z,         rapid: false })
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true  })
+      segs.push({ x: sx, y: sy, z: safeZ, rapid: true  })
     }
 
     traceContour(outer)

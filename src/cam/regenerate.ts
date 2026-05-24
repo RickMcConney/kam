@@ -14,6 +14,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
   const { paths } = usePathsStore.getState()
   const { tools } = useToolStore.getState()
+  const { safeHeightMM } = useWorkpieceStore.getState()
 
   const op = operations.find((o) => o.id === opId)
   if (!op) return
@@ -29,7 +30,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const pathTabs = useTabStore.getState().getPathTabs(op.pathId)
       setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
         side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM, direction: op.direction,
-        startNear: op.entryHint, rampIn: op.rampIn,
+        startNear: op.entryHint, rampIn: op.rampIn, safeHeightMM,
       }, pathTabs.length > 0 ? pathTabs : undefined))
 
     } else if (op.type === 'pocket') {
@@ -44,6 +45,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         depthMM: op.depthMM, stepDownMM: op.stepDownMM,
         stepoverPercent: op.stepoverPercent, direction: op.direction,
         islandDs, angle: op.passAngleDeg, startNear: op.entryHint, rampIn: op.rampIn,
+        safeHeightMM,
       }))
 
     } else if (op.type === 'drill') {
@@ -64,11 +66,11 @@ export async function regenerateOperation(opId: string): Promise<void> {
           }
         }
         setSegments(opId, generateHelicalDrill(cx, cy, r, tool, {
-          depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+          depthMM: op.depthMM, stepDownMM: op.stepDownMM, safeHeightMM,
         }))
       } else {
         setSegments(opId, generatePeckDrill(op.points, tool, {
-          depthMM: op.depthMM, stepDownMM: op.stepDownMM, startNear: op.entryHint,
+          depthMM: op.depthMM, stepDownMM: op.stepDownMM, startNear: op.entryHint, safeHeightMM,
         }))
       }
 
@@ -78,6 +80,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         widthMM, heightMM, origin,
         depthMM: op.depthMM, stepDownMM: op.stepDownMM,
         stepoverPercent: op.stepoverPercent, passAngleDeg: op.passAngleDeg,
+        safeHeightMM,
       }))
 
     } else if (op.type === 'vcarve') {
@@ -89,7 +92,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       })
       setSegments(opId, await runInWorker('generateVCarve', path.d, tool, {
         angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
-        startNear: op.entryHint,
+        startNear: op.entryHint, safeHeightMM,
       }))
 
     } else if (op.type === 'profile3d') {
@@ -115,6 +118,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         roughingRasterAngleDeg: op.roughingRasterAngleDeg,
         roughingToolId: op.roughingToolId,
         finishingToolId: op.toolId,
+        safeHeightMM,
       }))
 
     } else if (op.type === 'inlay') {
@@ -132,7 +136,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
         stepDownMM: op.stepDownMM, stepoverPercent: op.stepoverPercent,
         glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM,
-        mirrorX: op.mirrorX, islandDs,
+        mirrorX: op.mirrorX, islandDs, safeHeightMM,
       }
       const result = op.role === 'female'
         ? await runInWorker('generateInlayFemale', path.d, pocketTool, vbitTool, inlayParams)

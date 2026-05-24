@@ -10,9 +10,8 @@ export interface SurfaceParams {
   stepDownMM: number
   stepoverPercent: number
   passAngleDeg: number
+  safeHeightMM?: number
 }
-
-const SAFE_Z = 5.0
 
 function zPasses(depthMM: number, stepDownMM: number): number[] {
   const passes: number[] = []
@@ -77,6 +76,7 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
   if (tool.type !== 'endmill' && tool.type !== 'ballnose') {
     throw new Error('Surfacing requires an end mill or ball nose tool')
   }
+  const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   if (stepoverMM < 0.001) throw new Error('Stepover too small')
 
@@ -98,7 +98,7 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
 
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
-  segs.push({ x: minX, y: minY, z: SAFE_Z, rapid: true })
+  segs.push({ x: minX, y: minY, z: safeZ, rapid: true })
 
   for (const zDepth of zLevels) {
     let firstInLevel = true
@@ -123,7 +123,7 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
       const ey = endRX * sinA + clampedRY * cosA
 
       if (firstInLevel) {
-        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
         firstInLevel = false
       } else {
@@ -136,7 +136,7 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
     }
 
     if (!firstInLevel) {
-      segs.push({ x: lastX, y: lastY, z: SAFE_Z, rapid: true })
+      segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
     }
   }
 

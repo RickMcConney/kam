@@ -146,7 +146,9 @@ export function generateGcode(
         // Arc move (G2/G3). I/J are offsets from the arc START point to the center.
         const ii = f(toOut(seg.arc.cx - prevX, profile), coordDecimals)
         const jj = f(toOut(seg.arc.cy - prevY, profile), coordDecimals)
-        const feed = Math.round(toOut(currentTool.xyFeedMmMin, profile))
+        const isHelical = seg.z !== prevZ
+        const feedMm = (isHelical || currentTool.xyFeedMmMin === 0) ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
+        const feed = Math.round(toOut(feedMm, profile))
         const template = seg.arc.cw ? profile.arcCWTemplate : profile.arcCCWTemplate
         lines.push(sub(template, { x, y, z, i: ii, j: jj, f: feed }))
       } else if (seg.arc) {

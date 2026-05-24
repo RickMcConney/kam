@@ -14,9 +14,8 @@ export interface InlayParams {
   clearanceMM: number        // reduction of male bevel offsets for fit clearance
   islandDs: string[]         // hole paths inside the shape
   mirrorX?: boolean          // male only: mirror shape around vertical axis
+  safeHeightMM?: number
 }
-
-const SAFE_Z = 5.0
 
 // Offset a path by deltaMM (positive = outward, negative = inward).
 // Returns an SVG path string, or null if the offset collapses the shape.
@@ -127,14 +126,14 @@ function mirrorPathD(d: string): string {
 }
 
 
-function addContour(pts: Pt2[], z: number, segs: MotionSegment[]) {
+function addContour(pts: Pt2[], z: number, segs: MotionSegment[], safeZ = 5) {
   if (pts.length < 2) return
   const [sx, sy] = pts[0]
-  segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+  segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
   segs.push({ x: sx, y: sy, z, rapid: false })
   for (let i = 1; i < pts.length; i++) segs.push({ x: pts[i][0], y: pts[i][1], z, rapid: false })
   segs.push({ x: sx, y: sy, z, rapid: false })
-  segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+  segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
 }
 
 function getOuters(d: string): Pt2[][] {
@@ -204,6 +203,7 @@ export async function generateInlayFemale(
       angleDeg: params.angleDeg,
       maxDepthMM,
       islandDs: params.islandDs,
+      safeHeightMM: params.safeHeightMM,
     })
     if (!vbitSegs.length) throw new Error('Inlay socket is too small for the selected tools')
     return { vbitSegs, endmillSegs: [] }
@@ -225,6 +225,7 @@ export async function generateInlayFemale(
       angleDeg: params.angleDeg,
       maxDepthMM,
       islandDs: params.islandDs,
+      safeHeightMM: params.safeHeightMM,
     })
     if (!vbitSegs.length) throw new Error('Inlay socket is too small for the selected tools')
     return { vbitSegs, endmillSegs: [] }
@@ -253,6 +254,7 @@ export async function generateInlayFemale(
         direction: 'climb',
         islandDs: islandPocketDs,
         angle: 0,
+        safeHeightMM: params.safeHeightMM,
       }))
     } catch { /* shape too small for end mill — skip pocket */ }
   }
@@ -272,6 +274,7 @@ export async function generateInlayFemale(
         angleDeg: params.angleDeg,
         maxDepthMM: 2.5 * (params.pocketDepthMM + params.glueLineMM),
         islandDs: [vcarveIslandD],
+        safeHeightMM: params.safeHeightMM,
       }))
     } catch { /* annular zone too narrow for this bit — skip vcarve */ }
   }
@@ -289,6 +292,7 @@ export async function generateInlayFemale(
         angleDeg: params.angleDeg,
         maxDepthMM: params.pocketDepthMM + params.glueLineMM,
         islandDs: [islandVCarveInnerD],
+        safeHeightMM: params.safeHeightMM,
       }))
     } catch { /* island too small for this bit — skip */ }
   }
@@ -332,6 +336,7 @@ async function generateInlayMaleText(
   vbitTool: Tool,
   params: InlayParams,
 ): Promise<InlaySplitResult> {
+  const safeZ = params.safeHeightMM ?? 5
   const workingD = params.mirrorX ? mirrorPathD(d) : d
 
   const startDepthMM = 0  // Z_start: bit apex at surface; depth grows with stroke width
@@ -386,6 +391,7 @@ async function generateInlayMaleText(
         maxDepthMM: vbitMaxDepthMM,
         zStartMM:   startDepthMM,
         islandDs:   r.islandDs,
+        safeHeightMM: params.safeHeightMM,
       }))
     } catch { /* letter too small — skip */ }
   }
@@ -402,6 +408,7 @@ async function generateInlayMaleText(
       direction:      'climb',
       islandDs:       letterOuterDs,
       angle:          0,
+      safeHeightMM:   params.safeHeightMM,
     }))
   } catch { /* background too small for end mill — skip */ }
 
@@ -418,6 +425,7 @@ async function generateInlayMaleText(
         direction:      'climb',
         islandDs:       [],
         angle:          0,
+        safeHeightMM:   params.safeHeightMM,
       }))
     } catch { /* counter too small — skip */ }
   }
@@ -434,7 +442,7 @@ async function generateInlayMaleText(
     while (zr > -depth) { zPasses.push(zr); zr -= step }
     zPasses.push(-depth)
     for (const pts of getOuters(releaseD)) {
-      for (const zPass of zPasses) addContour(pts, zPass, endmillSegs)
+      for (const zPass of zPasses) addContour(pts, zPass, endmillSegs, safeZ)
     }
   }
 
@@ -462,6 +470,7 @@ export async function generateInlayMale(
   params: InlayParams
 ): Promise<InlaySplitResult> {
   if (vbitTool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+  const safeZ = params.safeHeightMM ?? 5
 
   // Multi-subpath paths (text): use the Virtual Z-Plane Shift algorithm which
   // inverts the geometry into a bounding box and applies a MAT VCarve with a
@@ -484,12 +493,12 @@ export async function generateInlayMale(
 
   // V-bit profiles the letter boundary and island edges (tip on path, no offset).
   for (const pts of getOuters(workingD)) {
-    for (const zPass of zPasses) addContour(pts, zPass, vbitSegs)
+    for (const zPass of zPasses) addContour(pts, zPass, vbitSegs, safeZ)
   }
   for (const rawIslandD of params.islandDs) {
     const islandD = params.mirrorX ? mirrorPathD(rawIslandD) : rawIslandD
     for (const sub of flattenPath(islandD, 0.05).filter(s => s.length >= 3)) {
-      for (const zPass of zPasses) addContour(sub, zPass, vbitSegs)
+      for (const zPass of zPasses) addContour(sub, zPass, vbitSegs, safeZ)
     }
   }
 
@@ -500,7 +509,7 @@ export async function generateInlayMale(
   const releaseD = offsetPathD(workingD, releaseOffset)
   if (releaseD) {
     for (const outer of getOuters(releaseD)) {
-      for (const zPass of zPasses) addContour(outer, zPass, endmillSegs)
+      for (const zPass of zPasses) addContour(outer, zPass, endmillSegs, safeZ)
     }
   }
 
@@ -516,6 +525,7 @@ export async function generateInlayMale(
         direction: 'climb',
         islandDs: [],
         angle: 0,
+        safeHeightMM: params.safeHeightMM,
       }))
     } catch { /* island too small for end mill — skip */ }
   }

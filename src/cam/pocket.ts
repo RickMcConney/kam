@@ -15,9 +15,8 @@ export interface PocketParams {
   angle: number
   startNear?: { x: number; y: number }
   rampIn?: boolean
+  safeHeightMM?: number
 }
-
-const SAFE_Z = 5.0
 
 // ─── Shared utilities ──────────────────────────────────────────────────────────
 
@@ -185,6 +184,7 @@ function buildRasterPath(
   zDepth: number,
   rampDistMM?: number,
   prevZ = 0,
+  safeZ = 5,
 ): MotionSegment[] {
   if (scanlines.length === 0) return []
   const segs: MotionSegment[] = []
@@ -210,7 +210,7 @@ function buildRasterPath(
     const start: Pt2 = bestReversed ? seg.p2 : seg.p1
     const end: Pt2   = bestReversed ? seg.p1 : seg.p2
     if (bestNeedsLift) {
-      if (current !== null) segs.push({ x: current[0], y: current[1], z: SAFE_Z, rapid: true })
+      if (current !== null) segs.push({ x: current[0], y: current[1], z: safeZ, rapid: true })
       if (rampDistMM !== undefined) {
         // Position rampDist forward along the scanline, then ramp backwards to start.
         // When the tool reaches start it is at full depth; the forward cut to end
@@ -222,7 +222,7 @@ function buildRasterPath(
         const ny = lineLen > 1e-6 ? dy / lineLen : 0
         const rex = start[0] + nx * rampOnLine
         const rey = start[1] + ny * rampOnLine
-        segs.push({ x: rex, y: rey, z: SAFE_Z, rapid: true })
+        segs.push({ x: rex, y: rey, z: safeZ, rapid: true })
         segs.push({ x: rex, y: rey, z: prevZ, rapid: true })
         const RAMP_STEPS = 8
         for (let ri = 1; ri <= RAMP_STEPS; ri++) {
@@ -236,7 +236,7 @@ function buildRasterPath(
         }
         // Tool is now at (start, zDepth); fall through to cut forward to end
       } else {
-        segs.push({ x: start[0], y: start[1], z: SAFE_Z, rapid: true })
+        segs.push({ x: start[0], y: start[1], z: safeZ, rapid: true })
         segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
       }
     } else {
@@ -245,7 +245,7 @@ function buildRasterPath(
     segs.push({ x: end[0], y: end[1], z: zDepth, rapid: false })
     current = end
   }
-  if (current !== null) segs.push({ x: current[0], y: current[1], z: SAFE_Z, rapid: true })
+  if (current !== null) segs.push({ x: current[0], y: current[1], z: safeZ, rapid: true })
   return segs
 }
 
@@ -278,6 +278,7 @@ function emitLinkedContourRings(
   startNear?: { x: number; y: number },
   rampDistMM?: number,
   prevZ = 0,
+  safeZ = 5,
 ) {
   if (rings.length === 0) return
   let lastPos: Pt2 | null = null
@@ -305,8 +306,8 @@ function emitLinkedContourRings(
         const rampStartS = total - rampDist
         const [rampStartX, rampStartY] = interpPt(closed, lens, rampStartS)
 
-        if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: SAFE_Z, rapid: true })
-        segs.push({ x: rampStartX, y: rampStartY, z: SAFE_Z, rapid: true })
+        if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+        segs.push({ x: rampStartX, y: rampStartY, z: safeZ, rapid: true })
         segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: true })
 
         const RAMP_STEPS = 12
@@ -326,8 +327,8 @@ function emitLinkedContourRings(
       lastPos = [sx, sy]
     } else {
       if (lastPos === null || !travelIsSafe(lastPos, [sx, sy], obstacles)) {
-        if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: SAFE_Z, rapid: true })
-        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z, rapid: false })
       } else {
         segs.push({ x: sx, y: sy, z, rapid: false })
@@ -339,7 +340,7 @@ function emitLinkedContourRings(
     }
   }
 
-  if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: SAFE_Z, rapid: true })
+  if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
 }
 
 
@@ -359,6 +360,7 @@ export function generateTrochoidalRow(
   wantCCW: boolean,
   z: number,
   segs: MotionSegment[],
+  safeZ = 5,
 ) {
   const dx = end[0] - start[0], dy = end[1] - start[1]
   const len = Math.hypot(dx, dy)
@@ -380,7 +382,7 @@ export function generateTrochoidalRow(
   const startX = start[0] - loopRadius * px
   const startY = start[1] - loopRadius * py
 
-  segs.push({ x: startX, y: startY, z: SAFE_Z, rapid: true })
+  segs.push({ x: startX, y: startY, z: safeZ, rapid: true })
   segs.push({ x: startX, y: startY, z, rapid: false })
 
   let lastX = startX, lastY = startY
@@ -392,7 +394,7 @@ export function generateTrochoidalRow(
     lastY = start[1] + advance * uy + offset * py
     segs.push({ x: lastX, y: lastY, z, rapid: false })
   }
-  segs.push({ x: lastX, y: lastY, z: SAFE_Z, rapid: true })
+  segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
 }
 
 // ─── Strategy implementations ──────────────────────────────────────────────────
@@ -406,6 +408,7 @@ function rasterPocket(
   segs: MotionSegment[],
   prevZ = 0,
 ) {
+  const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
   const wantCCW = params.direction === 'conventional'
@@ -441,7 +444,7 @@ function rasterPocket(
 
   // Use islandExclusions (not actual island polygons) so doesSegmentCrossBorder
   // correctly blocks at-depth travel through the uncut ring around each island.
-  segs.push(...buildRasterPath(clippedScanlines, [boundary, ...islandExclusions], zDepth, rampDist, prevZ))
+  segs.push(...buildRasterPath(clippedScanlines, [boundary, ...islandExclusions], zDepth, rampDist, prevZ, safeZ))
 
   // Finishing contours: island rings then boundary ring, linked without lifts when safe.
   const finishRing = insetRing(boundary, toolRadius)
@@ -453,7 +456,7 @@ function rasterPocket(
     ...(finishRing.length >= 3 ? [finishRing] : []),
     ...islandExclusions,
   ]
-  emitLinkedContourRings(finishingRings, zDepth, finishObstacles, segs, params.startNear, rampDist, prevZ)
+  emitLinkedContourRings(finishingRings, zDepth, finishObstacles, segs, params.startNear, rampDist, prevZ, safeZ)
 }
 
 function contourPocket(
@@ -465,6 +468,7 @@ function contourPocket(
   segs: MotionSegment[],
   prevZ = 0,
 ) {
+  const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
   const wantCCW = params.direction === 'conventional'
@@ -516,7 +520,7 @@ function contourPocket(
   const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
   const obstacles = [...finishingLevel, ...islandObstacles]
 
-  emitLinkedContourRings(allRings, zDepth, obstacles, segs, params.startNear, rampDist, prevZ)
+  emitLinkedContourRings(allRings, zDepth, obstacles, segs, params.startNear, rampDist, prevZ, safeZ)
 }
 
 

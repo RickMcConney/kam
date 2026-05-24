@@ -12,9 +12,8 @@ export interface ProfileParams {
   direction: CuttingDirection
   startNear?: { x: number; y: number }
   rampIn?: boolean
+  safeHeightMM?: number
 }
-
-const SAFE_Z = 5.0  // mm above material surface
 
 function fitCircle(pts: Pt2[]): { cx: number; cy: number; r: number } | null {
   if (pts.length < 8) return null
@@ -189,6 +188,8 @@ export function generateProfile(
   const subpaths = flattenPath(d, 0.05)
   if (subpaths.length === 0) throw new Error('No geometry found in path')
 
+  const safeZ = params.safeHeightMM ?? 5
+
   const delta =
     params.side === 'outside' ? tool.diameterMM / 2 :
     params.side === 'inside' ? -tool.diameterMM / 2 : 0
@@ -237,12 +238,12 @@ export function generateProfile(
       }
       const cw = !wantCCW
 
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+      segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
       for (const zDepth of passes) {
         segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
         segs.push({ x: sx, y: sy, z: zDepth, rapid: false, arc: { cx, cy, cw } })
       }
-      segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+      segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
     } else {
       const rotated = params.startNear
         ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
@@ -254,24 +255,62 @@ export function generateProfile(
 
       const { lens } = arcLengths(closed)
 
+      // Compute tab ranges over the full closed path (used by both ramp and non-ramp branches)
+      const tabRanges: { start: number; end: number; tabZ: number }[] = []
+      if (tabs && tabs.length > 0) {
+        for (const tab of tabs) {
+          const pos = designPathAtT(subpaths, tab.t)
+          if (!pos) continue
+          const center = nearestArcLen(closed, lens, pos[0], pos[1])
+          const half = tab.lengthMM / 2 + tool.diameterMM / 2
+          tabRanges.push({
+            start: center - half,
+            end: center + half,
+            tabZ: Math.min(0, -params.depthMM + tab.heightMM),
+          })
+        }
+      }
+
       if (params.rampIn) {
         const rampLen = 2 * tool.diameterMM
         const { lens: rampLens, total } = arcLengths(closed)
         const rampDist = Math.min(rampLen, total * 0.45)
         const [rampEndX, rampEndY] = interpPt(closed, rampLens, rampDist)
 
-        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        // Main cut sub-polyline: rampEnd → sx,sy (arc lengths offset by rampDist)
+        const mainPts: Pt2[] = [[rampEndX, rampEndY]]
+        const mainLens: number[] = [0]
+        for (let i = 1; i < closed.length; i++) {
+          if (rampLens[i] > rampDist + 1e-6) {
+            mainPts.push(closed[i])
+            mainLens.push(rampLens[i] - rampDist)
+          }
+        }
+        const mainTotal = total - rampDist
+
+        // Cleanup sub-polyline: sx,sy → rampEnd (covers the ramp entry zone)
+        const cleanPts: Pt2[] = [[sx, sy]]
+        const cleanLens: number[] = [0]
+        for (let i = 1; i < closed.length; i++) {
+          if (rampLens[i] <= rampDist - 1e-6) {
+            cleanPts.push(closed[i])
+            cleanLens.push(rampLens[i])
+          } else {
+            break
+          }
+        }
+        cleanPts.push([rampEndX, rampEndY])
+        cleanLens.push(rampDist)
+
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         for (let pi = 0; pi < passes.length; pi++) {
           const zDepth = passes[pi]
-          // Ramp starts at the material surface (Z=0) on first pass,
-          // or at the previous pass depth on subsequent passes.
           const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
 
           if (pi > 0) {
-            segs.push({ x: rampEndX, y: rampEndY, z: SAFE_Z, rapid: true })
-            segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+            segs.push({ x: rampEndX, y: rampEndY, z: safeZ, rapid: true })
+            segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
           }
-          // Rapid down to ramp start (surface or previous cut depth)
           segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
 
           // Ramp in: descend from rampStartZ to zDepth while moving along path
@@ -282,40 +321,21 @@ export function generateProfile(
             segs.push({ x: rx, y: ry, z: rampStartZ + (zDepth - rampStartZ) * t, rapid: false, feedScale: 0.5 })
           }
 
-          // Cut from rampDist back to start (sx, sy)
-          for (let i = 1; i < closed.length; i++) {
-            if (rampLens[i] > rampDist + 1e-6) {
-              segs.push({ x: closed[i][0], y: closed[i][1], z: zDepth, rapid: false })
-            }
-          }
+          const activeRanges = tabRanges.filter(tr => zDepth < tr.tabZ)
 
-          // Cleanup: continue past start to ramp endpoint to clear ramp-entry material
-          for (let i = 1; i < closed.length; i++) {
-            if (rampLens[i] > rampDist + 1e-6) {
-              segs.push({ x: rampEndX, y: rampEndY, z: zDepth, rapid: false })
-              break
-            }
-            segs.push({ x: closed[i][0], y: closed[i][1], z: zDepth, rapid: false })
-          }
+          // Main cut with tab avoidance (tab arc-lengths are offset by rampDist)
+          const mainTabRanges = activeRanges
+            .map(tr => ({ start: tr.start - rampDist, end: tr.end - rampDist, tabZ: tr.tabZ }))
+            .filter(tr => tr.end > 0 && tr.start < mainTotal)
+          segs.push(...polylinePassWithTabs(mainPts, zDepth, mainTabRanges, mainLens))
+
+          // Cleanup pass with tab avoidance (ramp entry zone, arc-lengths unchanged)
+          const cleanTabRanges = activeRanges.filter(tr => tr.end > 0 && tr.start < rampDist)
+          segs.push(...polylinePassWithTabs(cleanPts, zDepth, cleanTabRanges, cleanLens))
         }
-        segs.push({ x: rampEndX, y: rampEndY, z: SAFE_Z, rapid: true })
+        segs.push({ x: rampEndX, y: rampEndY, z: safeZ, rapid: true })
       } else {
-        const tabRanges: { start: number; end: number; tabZ: number }[] = []
-        if (tabs && tabs.length > 0) {
-          for (const tab of tabs) {
-            const pos = designPathAtT(subpaths, tab.t)
-            if (!pos) continue
-            const center = nearestArcLen(closed, lens, pos[0], pos[1])
-            const half = tab.lengthMM / 2 + tool.diameterMM / 2
-            tabRanges.push({
-              start: center - half,
-              end: center + half,
-              tabZ: Math.min(0, -params.depthMM + tab.heightMM),
-            })
-          }
-        }
-
-        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         for (const zDepth of passes) {
           segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
           const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
@@ -330,7 +350,7 @@ export function generateProfile(
           }
           segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
         }
-        segs.push({ x: sx, y: sy, z: SAFE_Z, rapid: true })
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
       }
     }
   }

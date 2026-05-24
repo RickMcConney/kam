@@ -135,9 +135,9 @@ const MATERIALS: { value: Material; label: string }[] = [
 export default function WorkpiecePanel() {
   const {
     widthMM, heightMM, thicknessMM, units, origin, material,
-    tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
+    tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM, safeHeightMM,
     setWidth, setHeight, setThickness, setOrigin, setMaterial,
-    setTableLimitWidth, setTableLimitHeight, setTableLimitDepth,
+    setTableLimitWidth, setTableLimitHeight, setTableLimitDepth, setSafeHeight,
   } = useWorkpieceStore()
 
   return (
@@ -190,6 +190,13 @@ export default function WorkpiecePanel() {
           valueMM={tableLimitDepthMM}
           units={units}
           onChange={setTableLimitDepth}
+        />
+        <DimInput
+          label="Safe Height"
+          valueMM={safeHeightMM}
+          units={units}
+          onChange={setSafeHeight}
+          min={0.1}
         />
       </Section>
     </div>

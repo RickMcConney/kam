@@ -16,9 +16,8 @@ export interface Profile3dParams {
   roughingRasterAngleDeg?: number    // scan angle for roughing (defaults to rasterAngleDeg + 90)
   roughingToolId?: string            // toolId used in the toolChange segment marker
   finishingToolId?: string           // toolId used in the toolChange segment marker
+  safeHeightMM?: number
 }
-
-const SAFE_Z = 5.0
 
 // ─── Height map ───────────────────────────────────────────────────────────────
 //
@@ -224,6 +223,7 @@ function generateStepDownPasses(
   stockAllowanceMM: number,
   rasterAngleDeg: number,
   rawMaxDepthMM?: number,  // raw surface max depth — avoids inflated pass count from dilation
+  safeZ = 5,
 ): MotionSegment[] {
   // Use raw surface depth when provided (avoids counting dilation artefacts as extra passes).
   // Fall back to scanning the effective grid only if the raw depth isn't available.
@@ -246,7 +246,7 @@ function generateStepDownPasses(
     const passDepth   = Math.min(n * stepDownMM, effectiveMaxDepth)
     const prevDepthMM = (n - 1) * stepDownMM   // skip areas already cut in previous pass
     segs.push(...generateRaster(grid, nx, ny, bbox, cellX, cellY,
-      stepoverMM, rasterAngleDeg, passDepth, roughRadius, stockAllowanceMM, prevDepthMM))
+      stepoverMM, rasterAngleDeg, passDepth, roughRadius, stockAllowanceMM, prevDepthMM, safeZ))
   }
 
   return segs
@@ -269,6 +269,7 @@ function generateRaster(
   maxDepthMM: number, ballRadius: number,
   stockAllowanceMM = 0,   // lift tool above surface (roughing clearance); 0 = finishing
   prevPassDepthMM  = 0,   // skip points already cut at this depth in a prior pass
+  safeZ = 5,
 ): MotionSegment[] {
   const segs: MotionSegment[] = []
   const θ  = (rasterAngleDeg * Math.PI) / 180
@@ -292,15 +293,15 @@ function generateRaster(
   let pass = 0
 
   const beginGroup = (x: number, y: number, z: number) => {
-    if (hasCut) segs.push({ x: lastX, y: lastY, z: SAFE_Z, rapid: true })
-    segs.push({ x, y, z: SAFE_Z, rapid: true })
+    if (hasCut) segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
+    segs.push({ x, y, z: safeZ, rapid: true })
     segs.push({ x, y, z, rapid: false })
     hasCut = true; inGroup = true; lastX = x; lastY = y
   }
 
   const endGroup = () => {
     if (inGroup) {
-      segs.push({ x: lastX, y: lastY, z: SAFE_Z, rapid: true })
+      segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
       inGroup = false
     }
   }
@@ -361,6 +362,7 @@ export function generateProfile3d(
     throw new Error('STL path has zero dimensions')
   }
 
+  const safeZ = params.safeHeightMM ?? 5
   const ballRadius = tool.diameterMM / 2
   const stepoverMM = Math.max(0.01, tool.diameterMM * params.stepoverPercent / 100)
 
@@ -381,7 +383,7 @@ export function generateProfile3d(
   if (!hasRoughing) {
     return generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,
       bbox, finishSurface.cellX, finishSurface.cellY,
-      stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius)
+      stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius, 0, 0, safeZ)
   }
 
   // ── Two-pass: roughing + rest-machining finish ────────────────────────────
@@ -410,12 +412,12 @@ export function generateProfile3d(
     bbox, roughSurface.cellX, roughSurface.cellY,
     roughRadius, roughStepMM, roughStepDownMM, params.maxDepthMM,
     roughStockMM, roughAngleDeg,
-    rawMaxDepth,
+    rawMaxDepth, safeZ,
   )
 
   const finishingSegs = generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,
     bbox, finishSurface.cellX, finishSurface.cellY,
-    stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius)
+    stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius, 0, 0, safeZ)
 
   // Stitch together: roughing → tool-change marker → finishing
   const lastRough = roughingSegs[roughingSegs.length - 1]
@@ -424,7 +426,7 @@ export function generateProfile3d(
   const toolChangeSeg: MotionSegment = {
     x:    lastRough?.x ?? 0,
     y:    lastRough?.y ?? 0,
-    z:    SAFE_Z,
+    z:    safeZ,
     rapid: true,
     toolChange: finishingToolId,
   }

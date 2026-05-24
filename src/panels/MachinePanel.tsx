@@ -5,7 +5,7 @@ import { ICON } from '../theme'
 import {
   AlertCircle, Loader2, Trash2,
   X, Circle, CircleDot, Target, Layers,
-  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, Combine,
+  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
 import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation } from '../store/toolpathStore'
@@ -31,6 +31,13 @@ import { generateProfile3d } from '../cam/profile3d'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
+
+const InlayIcon = ({ size = 24 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 1h20a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-6v2H8V8H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" />
+    <path d="M2 14h6v2h8v-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z" />
+  </svg>
+)
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,6 +136,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<ProfileFormState>(() => editOp ? {
@@ -152,7 +160,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, depthMM: t.maxDepthMM, stepDownMM: t.stepDownMM, direction: t.direction }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM, direction: t.direction }))
   }
 
   function up<K extends keyof ProfileFormState>(k: K, v: ProfileFormState[K]) {
@@ -174,7 +182,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         try {
           setSegments(editOp.id, generateProfile(selectedPaths[0].d, selectedTool, {
             side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
-            direction: form.direction, rampIn: form.rampIn,
+            direction: form.direction, rampIn: form.rampIn, safeHeightMM,
           }))
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Generation failed'
@@ -199,7 +207,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           try {
             setSegments(opId, generateProfile(path.d, selectedTool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
-              direction: form.direction, rampIn: form.rampIn,
+              direction: form.direction, rampIn: form.rampIn, safeHeightMM,
             }))
           } catch (err) {
             deleteOperation(opId)
@@ -230,7 +238,8 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
-        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
+        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
+        maxDepthMM={selectedTool?.maxDepthMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="flex items-center gap-2">
         <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}
@@ -272,6 +281,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<PocketFormState>(() => editOp ? {
@@ -300,7 +310,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, depthMM: t.maxDepthMM, stepDownMM: t.stepDownMM, direction: t.direction }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM, direction: t.direction }))
   }
 
   function up<K extends keyof PocketFormState>(k: K, v: PocketFormState[K]) {
@@ -325,6 +335,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, direction: form.direction,
             islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
+            safeHeightMM,
           }))
         } catch (err) {
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -352,6 +363,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               depthMM: form.depthMM, stepDownMM: form.stepDownMM,
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
+              safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -411,7 +423,8 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
-        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
+        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
+        maxDepthMM={selectedTool?.maxDepthMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="flex items-center gap-2">
         <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
@@ -445,6 +458,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<DrillFormState>(() => editOp ? {
@@ -488,7 +502,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, depthMM: t.maxDepthMM, stepDownMM: t.stepDownMM }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM }))
   }
 
   function up<K extends keyof DrillFormState>(k: K, v: DrillFormState[K]) {
@@ -514,11 +528,11 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           let segs
           if (editOp.drillMode === 'helical' && editHelicalInfo) {
             segs = generateHelicalDrill(editHelicalInfo.cx, editHelicalInfo.cy, editHelicalInfo.radius, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
             })
           } else {
             segs = generatePeckDrill(editOp.points, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
             })
           }
           setSegments(editOp.id, segs)
@@ -554,7 +568,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generateHelicalDrill(circle.cx, circle.cy, r, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -573,7 +587,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         updateOperation(opId, { status: 'generating' })
         try {
           setSegments(opId, generatePeckDrill(pendingDrillPoints, selectedTool, {
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
           }))
         } catch (err) {
           setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -590,7 +604,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const peckReady = editOp ? editOp.points.length > 0 : pendingDrillPoints.length > 0
   const helicalReady = editOp ? !!editHelicalInfo : selectedCircles.length > 0
   const canGenerate = !!selectedTool && !generating && form.depthMM > 0 &&
-    ((form.drillMode === 'peck' && peckReady) || (form.drillMode === 'helical' && helicalReady))
+    ((form.drillMode === 'peck' && peckReady) || (form.drillMode === 'helical' && helicalReady && !isDrillTool))
 
   return (
     <FormShell title={editOp ? 'Edit Drill' : 'New Drill Operation'} onClose={handleClose}>
@@ -685,7 +699,8 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
-        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)} />
+        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
+        maxDepthMM={selectedTool?.maxDepthMM} />
       <GenerateBtn
         disabled={!canGenerate}
         generating={generating}
@@ -770,10 +785,12 @@ function ToggleRow<T extends string>({ label, options, value, onChange }: {
 
 
 
-function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
+function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM }: {
   depthMM: number; stepDownMM: number
   onDepth: (v: number) => void; onStep: (v: number) => void
+  maxDepthMM?: number
 }) {
+  const depthExceeds = maxDepthMM != null && depthMM > maxDepthMM
   return (
     <div className="grid grid-cols-2 gap-2">
       {([
@@ -789,6 +806,12 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep }: {
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
           </div>
+          {lbl === 'Depth' && depthExceeds && (
+            <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+              <AlertCircle size={10} className="shrink-0" />
+              Exceeds tool max ({maxDepthMM} mm)
+            </p>
+          )}
         </div>
       ))}
     </div>
@@ -818,6 +841,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
@@ -840,7 +864,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, maxDepthMM: t.maxDepthMM, angleDeg: t.vbitAngleDeg ?? f.angleDeg }))
+    if (t) setForm((f) => ({ ...f, toolId, angleDeg: t.vbitAngleDeg ?? f.angleDeg }))
   }
 
   function up<K extends keyof VCarveFormState>(k: K, v: VCarveFormState[K]) {
@@ -859,7 +883,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         try {
           setSegments(editOp.id, await generateVCarve(editBoundary.d, selectedTool, {
             angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
-            islandDs: editIslands.map((p) => p.d),
+            islandDs: editIslands.map((p) => p.d), safeHeightMM,
           }))
         } catch (err) {
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -879,7 +903,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           try {
             setSegments(opId, await generateVCarve(boundary.d, selectedTool, {
               angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
-              islandDs: islands.map((p) => p.d),
+              islandDs: islands.map((p) => p.d), safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -937,6 +961,12 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
         </div>
+        {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
+          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+            <AlertCircle size={10} className="shrink-0" />
+            Exceeds tool max ({selectedTool.maxDepthMM} mm)
+          </p>
+        )}
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
           Bit cuts at most {((form.maxDepthMM) * Math.tan((form.angleDeg / 2) * Math.PI / 180) * 2).toFixed(2)} mm wide at full depth.
         </p>
@@ -971,6 +1001,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const endmills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
@@ -1022,6 +1053,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       glueLineMM: form.glueLineMM,
       clearanceMM: form.clearanceMM,
       mirrorX: form.mirrorX,
+      safeHeightMM,
     }
     const sharedOpFields = {
       pocketToolId: form.pocketToolId,
@@ -1321,6 +1353,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const { paths, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
 
   const ballNoseTools = tools.filter((t) => t.type === 'ballnose')
   const defaultTool = ballNoseTools[0] ?? tools[0]
@@ -1368,7 +1401,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, maxDepthMM: t.maxDepthMM }))
+    if (t) setForm((f) => ({ ...f, toolId }))
   }
 
   function up<K extends keyof Profile3dFormState>(k: K, v: Profile3dFormState[K]) {
@@ -1402,6 +1435,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           roughingRasterAngleDeg: hasRoughing && form.roughingRasterAngleDeg !== '' ? form.roughingRasterAngleDeg : undefined,
           roughingToolId: hasRoughing ? form.roughingToolId : undefined,
           finishingToolId: form.toolId,
+          safeHeightMM,
         }
         const segments = generateProfile3d(positions, indices, selectedPath.stlModelBounds!, cncBbox, selectedTool, params)
 
@@ -1635,6 +1669,12 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
         </div>
+        {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
+          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+            <AlertCircle size={10} className="shrink-0" />
+            Exceeds tool max ({selectedTool.maxDepthMM} mm)
+          </p>
+        )}
       </div>
 
       {errorMsg && (
@@ -1664,7 +1704,7 @@ interface SurfaceFormState {
 
 export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?: SurfaceOperation }) {
   const { tools } = useToolStore()
-  const { widthMM, heightMM, origin } = useWorkpieceStore()
+  const { widthMM, heightMM, origin, safeHeightMM } = useWorkpieceStore()
   const { pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
@@ -1686,7 +1726,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, depthMM: t.stepDownMM, stepDownMM: t.stepDownMM }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM }))
   }
 
   function up<K extends keyof SurfaceFormState>(k: K, v: SurfaceFormState[K]) {
@@ -1708,6 +1748,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
             widthMM, heightMM, origin,
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
+            safeHeightMM,
           }))
         } catch (err) {
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -1735,6 +1776,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
           stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent,
           passAngleDeg: form.passAngleDeg,
+          safeHeightMM,
         }))
       } catch (err) {
         setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -1781,6 +1823,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)}
         onStep={(v) => up('stepDownMM', v)}
+        maxDepthMM={selectedTool?.maxDepthMM}
       />
       <GenerateBtn
         disabled={!selectedTool || generating || form.depthMM <= 0}
@@ -2308,7 +2351,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
           ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
           ['vcarve', 'V-Carve', 'V-bit depth-varying carve', <Star size={ICON.md} />],
-          ['inlay', 'Inlay', 'V-carved sloped walls with flat pocket bottom', <Combine size={ICON.md} />],
+          ['inlay', 'Inlay', 'V-carved sloped walls with flat pocket bottom', <InlayIcon size={ICON.md} />],
           ['profile3d', '3D Profile', 'Follow STL relief surface with ball nose', <Box size={ICON.md} />],
         ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
           <button key={type} onClick={() => onSelect(type)} title={desc} className={opBtnCls}>

@@ -30,6 +30,7 @@ interface WorkpieceState {
   tableLimitWidthMM: number
   tableLimitHeightMM: number
   tableLimitDepthMM: number
+  safeHeightMM: number
   setWidth: (mm: number) => void
   setHeight: (mm: number) => void
   setThickness: (mm: number) => void
@@ -39,6 +40,7 @@ interface WorkpieceState {
   setTableLimitWidth: (mm: number) => void
   setTableLimitHeight: (mm: number) => void
   setTableLimitDepth: (mm: number) => void
+  setSafeHeight: (mm: number) => void
 }
 
 export const useWorkpieceStore = create<WorkpieceState>()(
@@ -53,6 +55,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       tableLimitWidthMM: 800,
       tableLimitHeightMM: 600,
       tableLimitDepthMM: 70,
+      safeHeightMM: 5,
       setWidth: (mm) => set({ widthMM: mm }),
       setHeight: (mm) => set({ heightMM: mm }),
       setThickness: (mm) => set({ thicknessMM: mm }),
@@ -62,6 +65,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       setTableLimitWidth: (mm) => set({ tableLimitWidthMM: mm }),
       setTableLimitHeight: (mm) => set({ tableLimitHeightMM: mm }),
       setTableLimitDepth: (mm) => set({ tableLimitDepthMM: mm }),
+      setSafeHeight: (mm) => set({ safeHeightMM: mm }),
     }),
     { name: 'freazykam-workpiece' }
   )

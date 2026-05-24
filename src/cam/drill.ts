@@ -10,6 +10,7 @@ export interface DrillParams {
   depthMM: number
   stepDownMM: number
   startNear?: { x: number; y: number }
+  safeHeightMM?: number
 }
 
 function nearestNeighbourOrder(pts: DrillPoint[], startX: number, startY: number): DrillPoint[] {
@@ -29,8 +30,6 @@ function nearestNeighbourOrder(pts: DrillPoint[], startX: number, startY: number
   return ordered
 }
 
-const SAFE_Z = 5.0
-
 function zPasses(depthMM: number, stepDownMM: number): number[] {
   const passes: number[] = []
   const step = Math.abs(stepDownMM)
@@ -46,6 +45,7 @@ export function generatePeckDrill(
   params: DrillParams
 ): MotionSegment[] {
   if (points.length === 0) throw new Error('No drill points specified')
+  const safeZ = params.safeHeightMM ?? 5
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
@@ -54,10 +54,10 @@ export function generatePeckDrill(
     : points
 
   for (const pt of ordered) {
-    segs.push({ x: pt.x, y: pt.y, z: SAFE_Z, rapid: true })
+    segs.push({ x: pt.x, y: pt.y, z: safeZ, rapid: true })
     for (const zDepth of zLevels) {
       segs.push({ x: pt.x, y: pt.y, z: zDepth, rapid: false })
-      segs.push({ x: pt.x, y: pt.y, z: SAFE_Z, rapid: true })
+      segs.push({ x: pt.x, y: pt.y, z: safeZ, rapid: true })
     }
   }
 
@@ -79,6 +79,7 @@ export function generateHelicalDrill(
     return generatePeckDrill([{ x: centerX, y: centerY }], tool, params)
   }
 
+  const safeZ = params.safeHeightMM ?? 5
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const stepoverMM = tool.diameterMM * 0.4
 
@@ -91,9 +92,9 @@ export function generateHelicalDrill(
   const sx = centerX + helicalRadius
 
   const segs: MotionSegment[] = []
-  segs.push({ x: sx, y: centerY, z: SAFE_Z, rapid: true })
+  segs.push({ x: sx, y: centerY, z: safeZ, rapid: true })
 
-  let prevZ = SAFE_Z
+  let prevZ = safeZ
   let firstPass = true
 
   for (const zDepth of zLevels) {
@@ -125,7 +126,7 @@ export function generateHelicalDrill(
   }
 
   // Retract from center
-  segs.push({ x: centerX, y: centerY, z: SAFE_Z, rapid: true })
+  segs.push({ x: centerX, y: centerY, z: safeZ, rapid: true })
 
   return segs
 }
