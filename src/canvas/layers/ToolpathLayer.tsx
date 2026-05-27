@@ -11,7 +11,16 @@ interface Props {
 interface SegmentGroups {
   cutting: number[][]
   rapid: number[][]
+  travel: number[][]
   firstCut: [number, number] | null
+}
+
+type SegType = 'cutting' | 'rapid' | 'travel'
+
+function segType(seg: MotionSegment): SegType {
+  if (seg.rapid) return 'rapid'
+  if (seg.travel) return 'travel'
+  return 'cutting'
 }
 
 // Expands an arc MotionSegment to flat [x,y,...] polyline points starting after the given prev position.
@@ -37,28 +46,38 @@ function arcToPolyPts(px: number, py: number, seg: MotionSegment): number[] {
 function groupSegments(segments: MotionSegment[]): SegmentGroups {
   const cutting: number[][] = []
   const rapid: number[][] = []
+  const travel: number[][] = []
   let cur: number[] = []
-  let isRapid = segments[0]?.rapid ?? true
+  let curType: SegType = segType(segments[0] ?? { rapid: true, x: 0, y: 0, z: 0 })
   let firstCut: [number, number] | null = null
   let prevX = segments[0]?.x ?? 0
   let prevY = segments[0]?.y ?? 0
 
+  const pushCur = (t: SegType) => {
+    if (cur.length >= 4) {
+      if (t === 'rapid') rapid.push(cur)
+      else if (t === 'travel') travel.push(cur)
+      else cutting.push(cur)
+    }
+  }
+
   for (const seg of segments) {
     const pts = seg.arc ? arcToPolyPts(prevX, prevY, seg) : [seg.x, seg.y]
+    const st = segType(seg)
 
-    if (seg.rapid !== isRapid) {
-      if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
+    if (st !== curType) {
+      pushCur(curType)
       cur = cur.length >= 2 ? [cur[cur.length - 2], cur[cur.length - 1], ...pts] : [...pts]
-      isRapid = seg.rapid
+      curType = st
     } else {
       cur.push(...pts)
     }
-    if (!seg.rapid && firstCut === null) firstCut = [pts[0], pts[1]]
+    if (st === 'cutting' && firstCut === null) firstCut = [pts[0], pts[1]]
     prevX = seg.x; prevY = seg.y
   }
-  if (cur.length >= 4) (isRapid ? rapid : cutting).push(cur)
+  pushCur(curType)
 
-  return { cutting, rapid, firstCut }
+  return { cutting, rapid, travel, firstCut }
 }
 
 export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
@@ -71,7 +90,8 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
   return (
     <Group>
       {visible.map((op) => {
-        const { cutting, firstCut } = groupSegments(op.segments)
+        const { cutting, rapid, travel, firstCut } = groupSegments(op.segments)
+        const dashScale = 1 / scale
 
         return (
           <Fragment key={op.id}>
@@ -93,6 +113,52 @@ export const ToolpathLayer = memo(function ToolpathLayer({ viewport }: Props) {
               opacity={0.9}
               listening={false}
             />
+
+            {rapid.length > 0 && (
+              <Shape
+                key={`${op.id}-r`}
+                sceneFunc={(ctx, shape) => {
+                  ctx.beginPath()
+                  ;(ctx as unknown as CanvasRenderingContext2D).setLineDash([5 * dashScale, 4 * dashScale])
+                  for (const pts of rapid) {
+                    if (pts.length < 4) continue
+                    ctx.moveTo(pts[0], pts[1])
+                    for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1])
+                  }
+                  ctx.strokeShape(shape)
+                  ;(ctx as unknown as CanvasRenderingContext2D).setLineDash([])
+                }}
+                stroke="#e53e3e"
+                strokeWidth={1.2 / scale}
+                lineJoin="round"
+                lineCap="round"
+                opacity={0.75}
+                listening={false}
+              />
+            )}
+
+            {travel.length > 0 && (
+              <Shape
+                key={`${op.id}-t`}
+                sceneFunc={(ctx, shape) => {
+                  ctx.beginPath()
+                  ;(ctx as unknown as CanvasRenderingContext2D).setLineDash([4 * dashScale, 3 * dashScale])
+                  for (const pts of travel) {
+                    if (pts.length < 4) continue
+                    ctx.moveTo(pts[0], pts[1])
+                    for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1])
+                  }
+                  ctx.strokeShape(shape)
+                  ;(ctx as unknown as CanvasRenderingContext2D).setLineDash([])
+                }}
+                stroke="#38a169"
+                strokeWidth={1.2 / scale}
+                lineJoin="round"
+                lineCap="round"
+                opacity={0.75}
+                listening={false}
+              />
+            )}
 
             {op.type === 'drill'
               ? (() => {

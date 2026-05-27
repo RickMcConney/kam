@@ -50,7 +50,8 @@ function arcFlat(
   rx: number, ry: number, phi: number,
   largeArc: number, sweep: number,
   x1: number, y1: number,
-  pts: Pt2[]
+  pts: Pt2[],
+  tol: number
 ) {
   if (Math.hypot(x0 - x1, y0 - y1) < 1e-10) return
   const sinP = Math.sin(phi * Math.PI / 180)
@@ -74,7 +75,12 @@ function arcFlat(
   let dTheta = Math.atan2(vy * ux - vx * uy, ux * vx + uy * vy)
   if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI
   if (sweep && dTheta < 0) dTheta += 2 * Math.PI
-  const steps = Math.max(4, Math.ceil(Math.abs(dTheta) * Math.max(rxA, ryA) / 0.25))
+  // Chord-error formula: thetaPerStep = 2*acos(1 − tol/r) where r = max radius.
+  // Using max(rxA, ryA) is conservative — guarantees chord error ≤ tol everywhere
+  // on the arc, including the gentlest (largest-radius) part of an ellipse.
+  const r = Math.max(rxA, ryA)
+  const thetaPerStep = 2 * Math.acos(Math.max(-1, 1 - tol / r))
+  const steps = Math.max(4, Math.ceil(Math.abs(dTheta) / Math.max(thetaPerStep, 1e-3)))
   for (let i = 1; i <= steps; i++) {
     const theta = theta1 + (i / steps) * dTheta
     const cosT = Math.cos(theta), sinT = Math.sin(theta)
@@ -158,7 +164,7 @@ export function flattenPath(d: string, tolerance = 0.1): Pt2[][] {
       }
       case 'A': {
         for (let i = 0; i < n.length; i += 7) {
-          arcFlat(cx, cy, n[i], n[i+1], n[i+2], n[i+3], n[i+4], n[i+5], n[i+6], current)
+          arcFlat(cx, cy, n[i], n[i+1], n[i+2], n[i+3], n[i+4], n[i+5], n[i+6], current, tolerance)
           cx = n[i+5]; cy = n[i+6]
         }
         prevIsC = false; prevIsQ = false; break

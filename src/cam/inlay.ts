@@ -72,6 +72,11 @@ function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
 // are subpaths whose centroid falls inside that outer ring (intrinsic holes
 // like the counter of 'o' or 'a'). Single-subpath paths return [].
 function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
+  // A self-intersecting single path has exactly one M command. splitSelfIntersecting
+  // will split it into multiple loops, but those are sub-rings of one shape — not
+  // separate letters. Only treat as multi-region when the path has multiple explicit
+  // subpaths (multiple M commands), i.e. text or intentionally compound shapes.
+  if ((d.match(/M/g) ?? []).length <= 1) return []
   const subs = splitSelfIntersecting(flattenPath(d, 0.05))
   if (subs.length <= 1) return []
 
@@ -495,7 +500,7 @@ export async function generateInlayMale(
   }
   for (const rawIslandD of params.islandDs) {
     const islandD = params.mirrorX ? mirrorPathD(rawIslandD) : rawIslandD
-    for (const sub of flattenPath(islandD, 0.05).filter(s => s.length >= 3)) {
+    for (const sub of splitSelfIntersecting(flattenPath(islandD, 0.05)).filter(s => s.length >= 3)) {
       for (const zPass of zPasses) addContour(sub, zPass, vbitSegs, safeZ)
     }
   }

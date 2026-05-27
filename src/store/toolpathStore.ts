@@ -10,6 +10,7 @@ export interface MotionSegment {
   y: number
   z: number
   rapid: boolean
+  travel?: boolean      // stay-down micro-lift transition (not cutting, not full safe-height rapid)
   arc?: { cx: number; cy: number; cw: boolean }  // absolute arc center + direction; G2=cw, G3=ccw
   toolChange?: string  // toolId: emit tool-change gcode at this point, no movement
   feedScale?: number   // multiplier applied to computed feed rate (default 1.0)

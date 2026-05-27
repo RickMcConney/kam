@@ -88,9 +88,18 @@ function addUniqueParam(params: number[], t: number) {
 }
 
 function transitionCrossesPolygonEdge(from: Pt2, to: Pt2, poly: Pt2[]): boolean {
+  const ftMinX = Math.min(from[0], to[0])
+  const ftMaxX = Math.max(from[0], to[0])
+  const ftMinY = Math.min(from[1], to[1])
+  const ftMaxY = Math.max(from[1], to[1])
   for (let i = 0; i < poly.length; i++) {
     const edgeStart = poly[i]
     const edgeEnd = poly[(i + 1) % poly.length]
+    // Reject edges whose bounding box can't overlap the travel segment's bounding box.
+    if (Math.max(edgeStart[0], edgeEnd[0]) < ftMinX ||
+        Math.min(edgeStart[0], edgeEnd[0]) > ftMaxX ||
+        Math.max(edgeStart[1], edgeEnd[1]) < ftMinY ||
+        Math.min(edgeStart[1], edgeEnd[1]) > ftMaxY) continue
     for (const t of segmentEdgeIntersectionParams(from, to, edgeStart, edgeEnd)) {
       if (t <= 1e-6 || t >= 1 - 1e-6) continue
       const p: Pt2 = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
@@ -101,9 +110,18 @@ function transitionCrossesPolygonEdge(from: Pt2, to: Pt2, poly: Pt2[]): boolean 
 }
 
 function transitionEntersSolidPolygon(from: Pt2, to: Pt2, poly: Pt2[]): boolean {
+  const ftMinX = Math.min(from[0], to[0])
+  const ftMaxX = Math.max(from[0], to[0])
+  const ftMinY = Math.min(from[1], to[1])
+  const ftMaxY = Math.max(from[1], to[1])
   const params = [0, 1]
   for (let i = 0; i < poly.length; i++) {
-    for (const t of segmentEdgeIntersectionParams(from, to, poly[i], poly[(i + 1) % poly.length])) {
+    const a = poly[i], b = poly[(i + 1) % poly.length]
+    if (Math.max(a[0], b[0]) < ftMinX ||
+        Math.min(a[0], b[0]) > ftMaxX ||
+        Math.max(a[1], b[1]) < ftMinY ||
+        Math.min(a[1], b[1]) > ftMaxY) continue
+    for (const t of segmentEdgeIntersectionParams(from, to, a, b)) {
       addUniqueParam(params, t)
     }
   }
@@ -185,6 +203,25 @@ function growRing(pts: Pt2[], delta: number): Pt2[] {
   return offsetRing(pts, delta)
 }
 
+// Offset multiple island rings together as a compound shape. This is important
+// for sub-rings produced by splitSelfIntersecting (e.g. a figure-8 island) —
+// offsetting them as a unit avoids miter spikes at shared crossing vertices that
+// would otherwise make the finishing contour cut through the original island.
+function growIslands(islands: Pt2[][], delta: number): Pt2[][] {
+  if (islands.length === 0) return []
+  const result = inflatePathsD(
+    islands.map(isl => {
+      const clean = stripClosingDuplicate(isl)
+      const ccw = signedArea(clean) >= 0 ? clean : [...clean].reverse()
+      return ccw.map(([x, y]) => ({ x, y }))
+    }),
+    delta, JoinType.Miter, EndType.Polygon, 4, 6,
+  )
+  return result
+    .map(r => stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2)))
+    .filter(r => r.length >= 3)
+}
+
 function emitCutTransition(
   segs: MotionSegment[],
   from: Pt2,
@@ -196,8 +233,8 @@ function emitCutTransition(
   const dist = Math.hypot(to[0] - from[0], to[1] - from[1])
   if (dist > toolDiameterMM * 2) {
     const liftZ = Math.min(safeZ, z + MICRO_LIFT_MM)
-    segs.push({ x: from[0], y: from[1], z: liftZ, rapid: false })
-    segs.push({ x: to[0], y: to[1], z: liftZ, rapid: false })
+    segs.push({ x: from[0], y: from[1], z: liftZ, rapid: false, travel: true })
+    segs.push({ x: to[0], y: to[1], z: liftZ, rapid: false, travel: true })
     segs.push({ x: to[0], y: to[1], z, rapid: false })
   } else {
     segs.push({ x: to[0], y: to[1], z, rapid: false })
@@ -419,43 +456,47 @@ function rotateRingAt(pts: Pt2[], index: number): Pt2[] {
   return index === 0 ? pts : [...pts.slice(index), ...pts.slice(0, index)]
 }
 
-function contourEntryPoint(ring: Pt2[], rampDistMM?: number): Pt2 {
-  void rampDistMM
-  return ring[0]
-}
 
 function chooseNextContourRing(
   rings: Pt2[][],
   lastPos: Pt2 | null,
   startNear: { x: number; y: number } | undefined,
   travelObstacles: TravelSafetyObstacles,
-  rampDistMM?: number,
 ): { index: number; ring: Pt2[] } {
   if (lastPos === null && startNear === undefined) return { index: 0, ring: rings[0] }
 
   const target: Pt2 = lastPos ?? [startNear!.x, startNear!.y]
-  let bestIndex = 0
-  let bestRing = rings[0]
-  let bestNeedsLift = true
-  let bestDist = Infinity
 
+  // Flatten all (ring, vertex) pairs and sort by distance to target.
+  // Walking nearest-first lets us stop at the first safe vertex, reducing
+  // isTravelSafe calls from O(total_vertices) to O(1) in the typical case.
+  type Candidate = { ri: number; vi: number; distSq: number }
+  const candidates: Candidate[] = []
   for (let ri = 0; ri < rings.length; ri++) {
     const raw = rings[ri]
     for (let vi = 0; vi < raw.length; vi++) {
-      const ring = rotateRingAt(raw, vi)
-      const entry = contourEntryPoint(ring, rampDistMM)
-      const needsLift = lastPos !== null && !isTravelSafe(lastPos, entry, travelObstacles)
-      const dist = Math.hypot(entry[0] - target[0], entry[1] - target[1])
-      if ((!needsLift && bestNeedsLift) || (needsLift === bestNeedsLift && dist < bestDist)) {
-        bestIndex = ri
-        bestRing = ring
-        bestNeedsLift = needsLift
-        bestDist = dist
-      }
+      const dx = raw[vi][0] - target[0], dy = raw[vi][1] - target[1]
+      candidates.push({ ri, vi, distSq: dx * dx + dy * dy })
+    }
+  }
+  candidates.sort((a, b) => a.distSq - b.distSq)
+
+  const fallback = candidates[0]
+
+  if (lastPos === null) {
+    // No travel safety to check — nearest vertex wins.
+    return { index: fallback.ri, ring: rotateRingAt(rings[fallback.ri], fallback.vi) }
+  }
+
+  // First candidate reachable without a lift is the best choice.
+  for (const c of candidates) {
+    if (isTravelSafe(lastPos, rings[c.ri][c.vi], travelObstacles)) {
+      return { index: c.ri, ring: rotateRingAt(rings[c.ri], c.vi) }
     }
   }
 
-  return { index: bestIndex, ring: bestRing }
+  // Every entry requires a lift — return the nearest vertex overall.
+  return { index: fallback.ri, ring: rotateRingAt(rings[fallback.ri], fallback.vi) }
 }
 
 // Emit a sequence of closed contour rings at depth `z`, linking consecutive rings
@@ -481,7 +522,7 @@ function emitLinkedContourRings(
   let emittedCount = 0
 
   while (pending.length > 0) {
-    const next = chooseNextContourRing(pending, lastPos, startNear, travelObstacles, rampDistMM)
+    const next = chooseNextContourRing(pending, lastPos, startNear, travelObstacles)
     pending.splice(next.index, 1)
     const ring = next.ring
     const [sx, sy]: Pt2 = ring[0]
@@ -619,10 +660,12 @@ function rasterPocket(
   const wantCCW = params.direction === 'conventional'
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
-  // Island obstacles: tool centre must stay a full diameter from island edge so
-  // the finishing contour around each island is handled separately.
-  const islandExclusions = islands.map(isl => growRing(isl, tool.diameterMM)).filter(e => e.length >= 3)
-  const islandFinish = islands.map(isl => growRing(isl, toolRadius)).filter(c => c.length >= 3)
+  // Island obstacles: offset ALL island rings together so that sub-rings from a
+  // split self-intersecting path are treated as one compound shape — avoids miter
+  // spikes at shared crossing vertices that would otherwise make the finishing
+  // contour cut through the original island material.
+  const islandExclusions = growIslands(islands, tool.diameterMM)
+  const islandFinish = growIslands(islands, toolRadius)
 
   // Raster fill: tool centre stays one full diameter inside the boundary wall;
   // the finishing contour covers the remaining tool-radius margin.
@@ -834,7 +877,7 @@ export function generatePocket(
 
   const islands: Pt2[][] = []
   for (const islandD of params.islandDs) {
-    for (const ip of flattenPath(islandD, 0.05)) {
+    for (const ip of splitSelfIntersecting(flattenPath(islandD, 0.05))) {
       if (ip.length >= 3) islands.push(ip)
     }
   }
@@ -851,9 +894,19 @@ export function generatePocket(
 
   let lastPos: Pt2 | null = null
   for (const boundary of boundaries) {
+    // Only pass islands whose centroid lies inside this boundary sub-ring.
+    // When both the boundary and island paths are self-intersecting they each
+    // split into multiple sub-rings; passing a sub-ring from the wrong boundary
+    // region as a CW hole corrupts the Clipper compound polygon used by contour
+    // and adaptive (stray CW holes outside the CCW boundary create phantom filled
+    // regions that offset incorrectly).
+    const localIslands = islands.filter(isl => {
+      const [cx, cy] = centroidOfRing(isl)
+      return pointInPolygon(cx, cy, boundary)
+    })
     for (let zi = 0; zi < zLevels.length; zi++) {
       const prevZ = zi === 0 ? 0 : zLevels[zi - 1]
-      lastPos = strategyFn(boundary, islands, tool, params, zLevels[zi], segs, prevZ, lastPos)
+      lastPos = strategyFn(boundary, localIslands, tool, params, zLevels[zi], segs, prevZ, lastPos)
     }
   }
 

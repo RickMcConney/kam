@@ -477,7 +477,7 @@ export async function generateVCarve(
 
   const islandPt2: Pt2[][] = []
   for (const iD of params.islandDs) {
-    for (const sub of flattenPath(iD, 0.05)) {
+    for (const sub of splitSelfIntersecting(flattenPath(iD, 0.05))) {
       if (sub.length >= 3) islandPt2.push(sub)
     }
   }
@@ -612,7 +612,7 @@ export async function generateMaleTextBoundaryVCarve(
 
   const islandPt2: Pt2[][] = []
   for (const iD of params.islandDs) {
-    for (const sub of flattenPath(iD, 0.05)) {
+    for (const sub of splitSelfIntersecting(flattenPath(iD, 0.05))) {
       if (sub.length >= 3) islandPt2.push(sub)
     }
   }
