@@ -55,7 +55,7 @@ const FEATURES = [
   },
   {
     title: 'Pen tool',
-    desc: 'Click for corner points, click+drag to pull out Bezier handles. Click near the first node to close the path, or press Escape to finish an open path (2+ nodes required).',
+    desc: 'Click to place nodes. In Bezier mode, drag to pull out curve handles. In all other modes curves are computed automatically from node positions. Hold Alt while clicking to make the incoming segment a straight line. Click near the first node to close the path, or press Escape to finish an open path (2+ nodes required). Ctrl+Z to undo the last placed node.',
   },
   {
     title: 'Point edit',

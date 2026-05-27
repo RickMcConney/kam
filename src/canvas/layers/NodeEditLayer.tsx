@@ -5,11 +5,26 @@ import type { Viewport } from '../CanvasStage'
 import type { PathNode } from '../nodeUtils'
 import { nodesToD, nearestSegmentOnPath, nearestPointOnSegment, segmentMidpoint } from '../nodeUtils'
 
+export type CrossPathEntry = {
+  pathId: string
+  nodeIdx: number
+  x: number
+  y: number
+  nodes: PathNode[]
+  closed: boolean
+}
+
 interface Props {
   viewport: Viewport
   nodes: PathNode[]
   closed: boolean
   hoveredNodeIdx: number | null
+  weldTargetIdx?: number | null
+  crossPathCandidates?: CrossPathEntry[]
+  crossPathWeldTarget?: CrossPathEntry | null
+  connectSourceIdx?: number | null
+  connectPreviewTo?: { x: number; y: number } | null
+  connectSnapTargetIdx?: number | null
   onNodeMouseDown: (nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => void
   onSegmentMouseDown: (segIdx: number, cncX: number, cncY: number) => void
   onHoveredNodeChange: (idx: number | null) => void
@@ -21,6 +36,8 @@ const HANDLE_R = 5
 const STROKE_COLOR = '#38bdf8'
 const HANDLE_COLOR = '#94a3b8'
 const HOVERED_COLOR = '#ef4444'
+const WELD_COLOR = '#22c55e'
+const CONNECT_COLOR = '#f59e0b'
 const INSERT_COLOR = '#38bdf8'
 const INSERT_CENTER_COLOR = '#f59e0b'
 const INSERT_THRESHOLD_PX = 8
@@ -33,6 +50,12 @@ export function NodeEditLayer({
   nodes,
   closed,
   hoveredNodeIdx,
+  weldTargetIdx,
+  crossPathCandidates,
+  crossPathWeldTarget,
+  connectSourceIdx,
+  connectPreviewTo,
+  connectSnapTargetIdx,
   onNodeMouseDown,
   onSegmentMouseDown,
   onHoveredNodeChange,
@@ -139,22 +162,42 @@ export function NodeEditLayer({
         />
       ))}
 
-      {/* Anchor circles (rendered last = on top) */}
-      {nodes.map((node, i) => (
-        <Circle
-          key={i}
-          x={node.x}
-          y={node.y}
-          radius={ANCHOR_R / s}
-          fill={hoveredNodeIdx === i ? HOVERED_COLOR : i === 0 ? '#0f172a' : '#1e293b'}
-          stroke={hoveredNodeIdx === i ? HOVERED_COLOR : i === 0 ? '#ffffff' : STROKE_COLOR}
+      {/* Connect mode preview line */}
+      {connectSourceIdx != null && connectPreviewTo && nodes[connectSourceIdx] && (
+        <Line
+          points={[nodes[connectSourceIdx].x, nodes[connectSourceIdx].y, connectPreviewTo.x, connectPreviewTo.y]}
+          stroke={CONNECT_COLOR}
           strokeWidth={1.5 / s}
-          listening
-          onMouseEnter={() => onHoveredNodeChange(i)}
-          onMouseLeave={() => onHoveredNodeChange(null)}
-          onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(i, 'anchor', e) }}
+          dash={[4 / s, 3 / s]}
+          listening={false}
         />
-      ))}
+      )}
+
+      {/* Anchor circles (rendered last = on top) */}
+      {nodes.map((node, i) => {
+        const isWeldTarget = weldTargetIdx === i
+        const isConnectSrc = connectSourceIdx === i
+        const isConnectSnap = connectSnapTargetIdx === i
+        const isHovered = hoveredNodeIdx === i
+        const fill = isWeldTarget ? WELD_COLOR : isConnectSrc ? CONNECT_COLOR : isConnectSnap ? CONNECT_COLOR : isHovered ? HOVERED_COLOR : i === 0 ? '#0f172a' : '#1e293b'
+        const stroke = isWeldTarget ? WELD_COLOR : isConnectSrc ? CONNECT_COLOR : isConnectSnap ? CONNECT_COLOR : isHovered ? HOVERED_COLOR : i === 0 ? '#ffffff' : STROKE_COLOR
+        const r = (isWeldTarget || isConnectSrc || isConnectSnap) ? (ANCHOR_R + 3) / s : ANCHOR_R / s
+        return (
+          <Circle
+            key={i}
+            x={node.x}
+            y={node.y}
+            radius={r}
+            fill={fill}
+            stroke={stroke}
+            strokeWidth={1.5 / s}
+            listening
+            onMouseEnter={() => onHoveredNodeChange(i)}
+            onMouseLeave={() => onHoveredNodeChange(null)}
+            onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(i, 'anchor', e) }}
+          />
+        )
+      })}
 
       {/* Insert preview point */}
       {hoverInsert && (
@@ -169,6 +212,25 @@ export function NodeEditLayer({
           listening={false}
         />
       )}
+
+      {/* Cross-path weld candidates (faint rings shown during endpoint drag) */}
+      {crossPathCandidates?.map((c, i) => {
+        const isTarget = crossPathWeldTarget?.pathId === c.pathId && crossPathWeldTarget?.nodeIdx === c.nodeIdx
+        return (
+          <Circle
+            key={`cp-${c.pathId}-${c.nodeIdx}-${i}`}
+            x={c.x}
+            y={c.y}
+            radius={isTarget ? (ANCHOR_R + 3) / s : ANCHOR_R / s}
+            fill={isTarget ? WELD_COLOR : 'transparent'}
+            stroke={WELD_COLOR}
+            strokeWidth={isTarget ? 1.5 / s : c.closed ? 1 / s : 1.5 / s}
+            dash={c.closed && !isTarget ? [3 / s, 2 / s] : undefined}
+            opacity={isTarget ? 1 : 0.5}
+            listening={false}
+          />
+        )
+      })}
     </Group>
   )
 }

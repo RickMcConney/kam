@@ -154,7 +154,7 @@ const toolBtnCls = (active: boolean) =>
 // ─── Main ShapePanel ──────────────────────────────────────────────────────────
 
 export default function ShapePanel({ fill = false }: { fill?: boolean }) {
-  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen } = useUIStore()
+  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, penCurveType, setPenCurveType } = useUIStore()
   const { units } = useWorkpieceStore()
   const isShapeTool = activeTool !== 'select' && activeTool !== 'pen' && activeTool !== 'text'
 
@@ -273,6 +273,30 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Text defaults</p>
           {!fontReady && <p className="text-label text-yellow-500">Loading font…</p>}
           <ShapeConfig type="text" config={shapeToolConfig} onChange={updateConfig} units={units} />
+        </div>
+      )}
+
+      {activeTool === 'pen' && (
+        <div className="space-y-1.5 pt-0.5">
+          <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Curve type</p>
+          <div className="grid grid-cols-3 gap-1">
+            {([
+              ['linear',       'Linear' ],
+              ['bezier',       'Bezier' ],
+              ['catmull-rom',  'C-Rom'  ],
+              ['cubic-spline', 'Spline' ],
+              ['arc-fit',      'Arc'    ],
+            ] as const).map(([type, label]) => (
+              <button
+                key={type}
+                onClick={() => setPenCurveType(type)}
+                className={toolBtnCls(penCurveType === type)}
+              >
+                <span className="text-label">{label}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-label text-gray-400 dark:text-neutral-500">Alt: toggle linear / curve</p>
         </div>
       )}
     </div>

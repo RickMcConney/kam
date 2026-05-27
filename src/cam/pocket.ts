@@ -1,9 +1,9 @@
-import { flattenPath, signedArea, ensureWinding, rotatePolylineNear, type Pt2 } from './pathFlattener'
+import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
-export type PocketStrategy = 'raster' | 'contour'
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -17,6 +17,13 @@ export interface PocketParams {
   rampIn?: boolean
   safeHeightMM?: number
 }
+
+interface TravelSafetyObstacles {
+  edgeObstacles: Pt2[][]
+  solidObstacles?: Pt2[][]
+}
+
+const MICRO_LIFT_MM = 0.5
 
 // ─── Shared utilities ──────────────────────────────────────────────────────────
 
@@ -37,6 +44,93 @@ function pointInPolygon(px: number, py: number, poly: Pt2[]): boolean {
     if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
   }
   return inside
+}
+
+function pointOnSegment(p: Pt2, a: Pt2, b: Pt2, eps = 1e-6): boolean {
+  const cross = (p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])
+  if (Math.abs(cross) > eps) return false
+  const dot = (p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])
+  if (dot < -eps) return false
+  const lenSq = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
+  return dot <= lenSq + eps
+}
+
+function segmentEdgeIntersectionParams(a: Pt2, b: Pt2, c: Pt2, d: Pt2): number[] {
+  const r: Pt2 = [b[0] - a[0], b[1] - a[1]]
+  const s: Pt2 = [d[0] - c[0], d[1] - c[1]]
+  const denom = r[0] * s[1] - r[1] * s[0]
+  const qmp: Pt2 = [c[0] - a[0], c[1] - a[1]]
+  const eps = 1e-8
+
+  if (Math.abs(denom) > eps) {
+    const t = (qmp[0] * s[1] - qmp[1] * s[0]) / denom
+    const u = (qmp[0] * r[1] - qmp[1] * r[0]) / denom
+    return t >= -eps && t <= 1 + eps && u >= -eps && u <= 1 + eps
+      ? [Math.max(0, Math.min(1, t))]
+      : []
+  }
+
+  const collinear = Math.abs(qmp[0] * r[1] - qmp[1] * r[0]) <= eps
+  if (!collinear) return []
+
+  const lenSq = r[0] ** 2 + r[1] ** 2
+  if (lenSq <= eps) return []
+  const t0 = ((c[0] - a[0]) * r[0] + (c[1] - a[1]) * r[1]) / lenSq
+  const t1 = ((d[0] - a[0]) * r[0] + (d[1] - a[1]) * r[1]) / lenSq
+  const lo = Math.max(0, Math.min(t0, t1))
+  const hi = Math.min(1, Math.max(t0, t1))
+  return lo <= hi + eps ? [lo, hi] : []
+}
+
+function addUniqueParam(params: number[], t: number) {
+  if (t <= 1e-6 || t >= 1 - 1e-6) return
+  if (!params.some(existing => Math.abs(existing - t) < 1e-5)) params.push(t)
+}
+
+function transitionCrossesPolygonEdge(from: Pt2, to: Pt2, poly: Pt2[]): boolean {
+  for (let i = 0; i < poly.length; i++) {
+    const edgeStart = poly[i]
+    const edgeEnd = poly[(i + 1) % poly.length]
+    for (const t of segmentEdgeIntersectionParams(from, to, edgeStart, edgeEnd)) {
+      if (t <= 1e-6 || t >= 1 - 1e-6) continue
+      const p: Pt2 = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+      if (pointOnSegment(p, edgeStart, edgeEnd)) return true
+    }
+  }
+  return false
+}
+
+function transitionEntersSolidPolygon(from: Pt2, to: Pt2, poly: Pt2[]): boolean {
+  const params = [0, 1]
+  for (let i = 0; i < poly.length; i++) {
+    for (const t of segmentEdgeIntersectionParams(from, to, poly[i], poly[(i + 1) % poly.length])) {
+      addUniqueParam(params, t)
+    }
+  }
+  params.sort((a, b) => a - b)
+
+  for (let i = 0; i + 1 < params.length; i++) {
+    const lo = params[i], hi = params[i + 1]
+    if (hi - lo < 1e-5) continue
+    const t = (lo + hi) / 2
+    const p: Pt2 = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+    if (pointInPolygon(p[0], p[1], poly)) return true
+  }
+  return false
+}
+
+function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacles): boolean {
+  if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 1e-6) return true
+
+  for (const poly of obstacles.edgeObstacles) {
+    if (transitionCrossesPolygonEdge(from, to, poly)) return false
+  }
+
+  for (const poly of obstacles.solidObstacles ?? []) {
+    if (transitionEntersSolidPolygon(from, to, poly)) return false
+  }
+
+  return true
 }
 
 function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
@@ -89,6 +183,73 @@ function insetRing(pts: Pt2[], delta: number): Pt2[] {
 
 function growRing(pts: Pt2[], delta: number): Pt2[] {
   return offsetRing(pts, delta)
+}
+
+function emitCutTransition(
+  segs: MotionSegment[],
+  from: Pt2,
+  to: Pt2,
+  z: number,
+  toolDiameterMM: number,
+  safeZ: number,
+) {
+  const dist = Math.hypot(to[0] - from[0], to[1] - from[1])
+  if (dist > toolDiameterMM * 2) {
+    const liftZ = Math.min(safeZ, z + MICRO_LIFT_MM)
+    segs.push({ x: from[0], y: from[1], z: liftZ, rapid: false })
+    segs.push({ x: to[0], y: to[1], z: liftZ, rapid: false })
+    segs.push({ x: to[0], y: to[1], z, rapid: false })
+  } else {
+    segs.push({ x: to[0], y: to[1], z, rapid: false })
+  }
+}
+
+function centroidOfRing(pts: Pt2[]): Pt2 {
+  let area2 = 0
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i]
+    const [x1, y1] = pts[(i + 1) % pts.length]
+    const cross = x0 * y1 - x1 * y0
+    area2 += cross
+    cx += (x0 + x1) * cross
+    cy += (y0 + y1) * cross
+  }
+  if (Math.abs(area2) < 1e-8) {
+    const sum = pts.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]] as Pt2, [0, 0])
+    return [sum[0] / pts.length, sum[1] / pts.length]
+  }
+  return [cx / (3 * area2), cy / (3 * area2)]
+}
+
+function emitHelicalRamp(
+  center: Pt2,
+  radius: number,
+  fromZ: number,
+  toZ: number,
+  wantCCW: boolean,
+  segs: MotionSegment[],
+  safeZ = 5,
+): Pt2 {
+  const turns = Math.max(1, Math.ceil(Math.abs(toZ - fromZ) / 1.5))
+  const stepsPerTurn = 28
+  const totalSteps = turns * stepsPerTurn
+  const dir = wantCCW ? 1 : -1
+  const start: Pt2 = [center[0] + radius, center[1]]
+
+  segs.push({ x: start[0], y: start[1], z: safeZ, rapid: true })
+  segs.push({ x: start[0], y: start[1], z: fromZ, rapid: true })
+
+  let last: Pt2 = start
+  for (let i = 1; i <= totalSteps; i++) {
+    const t = i / totalSteps
+    const a = dir * t * turns * 2 * Math.PI
+    last = [center[0] + Math.cos(a) * radius, center[1] + Math.sin(a) * radius]
+    segs.push({ x: last[0], y: last[1], z: fromZ + (toZ - fromZ) * t, rapid: false, feedScale: 0.45 })
+  }
+
+  return last
 }
 
 // ─── Raster utilities ──────────────────────────────────────────────────────────
@@ -180,28 +341,31 @@ export function doesSegmentCrossBorder(p1: Pt2, p2: Pt2, paths: Pt2[][]): boolea
 
 function buildRasterPath(
   scanlines: { p1: Pt2; p2: Pt2 }[],
-  boundaries: Pt2[][],
+  travelObstacles: TravelSafetyObstacles,
   zDepth: number,
+  segs: MotionSegment[],
+  incomingPos: Pt2 | null,
   rampDistMM?: number,
   prevZ = 0,
   safeZ = 5,
-): MotionSegment[] {
-  if (scanlines.length === 0) return []
-  const segs: MotionSegment[] = []
+  toolDiameterMM = 0,
+): Pt2 | null {
+  if (scanlines.length === 0) return incomingPos
   const used = new Array(scanlines.length).fill(false)
-  let current: Pt2 | null = null
+  let current: Pt2 | null = incomingPos
 
   for (let remaining = scanlines.length; remaining > 0; remaining--) {
-    let bestIdx = -1, bestDist = Infinity, bestReversed = false, bestNeedsLift = true
+    let bestIdx = -1, bestScore = Infinity, bestDist = Infinity, bestReversed = false, bestNeedsLift = true
     for (let i = 0; i < scanlines.length; i++) {
       if (used[i]) continue
       const seg = scanlines[i]
       for (let r = 0; r < 2; r++) {
         const start: Pt2 = r === 0 ? seg.p1 : seg.p2
-        const needsLift = current === null || doesSegmentCrossBorder(current, start, boundaries)
+        const needsLift = current === null || !isTravelSafe(current, start, travelObstacles)
         const dist = current ? Math.hypot(start[0] - current[0], start[1] - current[1]) : 0
-        if (bestIdx === -1 || (!needsLift && bestNeedsLift) || (needsLift === bestNeedsLift && dist < bestDist)) {
-          bestIdx = i; bestDist = dist; bestReversed = r === 1; bestNeedsLift = needsLift
+        const score = needsLift ? dist * 1.25 : dist
+        if (bestIdx === -1 || score < bestScore || (Math.abs(score - bestScore) < 1e-6 && dist < bestDist)) {
+          bestIdx = i; bestScore = score; bestDist = dist; bestReversed = r === 1; bestNeedsLift = needsLift
         }
       }
     }
@@ -240,29 +404,58 @@ function buildRasterPath(
         segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
       }
     } else {
-      segs.push({ x: start[0], y: start[1], z: zDepth, rapid: true })
+      if (current) emitCutTransition(segs, current, start, zDepth, toolDiameterMM, safeZ)
+      else segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
     }
     segs.push({ x: end[0], y: end[1], z: zDepth, rapid: false })
     current = end
   }
-  if (current !== null) segs.push({ x: current[0], y: current[1], z: safeZ, rapid: true })
-  return segs
+  return current
 }
 
 // ─── Contour utilities ─────────────────────────────────────────────────────────
 
-// True if the straight-line path from `from` to `to` does not cross any edge of
-// any obstacle polygon. Obstacles should be the tool-radius-inset finishing ring
-// and tool-radius-grown island exclusion zones — both already encode tool radius,
-// so a crossing here means the tool body would violate a boundary.
-function travelIsSafe(from: Pt2, to: Pt2, obstacles: Pt2[][]): boolean {
-  for (const obs of obstacles) {
-    const n = obs.length
-    for (let i = 0; i < n; i++) {
-      if (segmentsIntersect(from, to, obs[i], obs[(i + 1) % n])) return false
+function rotateRingAt(pts: Pt2[], index: number): Pt2[] {
+  return index === 0 ? pts : [...pts.slice(index), ...pts.slice(0, index)]
+}
+
+function contourEntryPoint(ring: Pt2[], rampDistMM?: number): Pt2 {
+  void rampDistMM
+  return ring[0]
+}
+
+function chooseNextContourRing(
+  rings: Pt2[][],
+  lastPos: Pt2 | null,
+  startNear: { x: number; y: number } | undefined,
+  travelObstacles: TravelSafetyObstacles,
+  rampDistMM?: number,
+): { index: number; ring: Pt2[] } {
+  if (lastPos === null && startNear === undefined) return { index: 0, ring: rings[0] }
+
+  const target: Pt2 = lastPos ?? [startNear!.x, startNear!.y]
+  let bestIndex = 0
+  let bestRing = rings[0]
+  let bestNeedsLift = true
+  let bestDist = Infinity
+
+  for (let ri = 0; ri < rings.length; ri++) {
+    const raw = rings[ri]
+    for (let vi = 0; vi < raw.length; vi++) {
+      const ring = rotateRingAt(raw, vi)
+      const entry = contourEntryPoint(ring, rampDistMM)
+      const needsLift = lastPos !== null && !isTravelSafe(lastPos, entry, travelObstacles)
+      const dist = Math.hypot(entry[0] - target[0], entry[1] - target[1])
+      if ((!needsLift && bestNeedsLift) || (needsLift === bestNeedsLift && dist < bestDist)) {
+        bestIndex = ri
+        bestRing = ring
+        bestNeedsLift = needsLift
+        bestDist = dist
+      }
     }
   }
-  return true
+
+  return { index: bestIndex, ring: bestRing }
 }
 
 // Emit a sequence of closed contour rings at depth `z`, linking consecutive rings
@@ -273,42 +466,50 @@ function travelIsSafe(from: Pt2, to: Pt2, obstacles: Pt2[][]): boolean {
 function emitLinkedContourRings(
   rings: Pt2[][],
   z: number,
-  obstacles: Pt2[][],
+  travelObstacles: TravelSafetyObstacles,
   segs: MotionSegment[],
   startNear?: { x: number; y: number },
   rampDistMM?: number,
   prevZ = 0,
   safeZ = 5,
-) {
-  if (rings.length === 0) return
-  let lastPos: Pt2 | null = null
+  toolDiameterMM = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  if (rings.length === 0) return incomingPos
+  let lastPos: Pt2 | null = incomingPos
+  const pending = [...rings]
+  let emittedCount = 0
 
-  for (const raw of rings) {
-    // Rotate start vertex to minimise travel from where the tool currently is.
-    const ring: Pt2[] = lastPos !== null
-      ? rotatePolylineNear(raw, lastPos[0], lastPos[1])
-      : startNear !== undefined
-        ? rotatePolylineNear(raw, startNear.x, startNear.y)
-        : raw
+  while (pending.length > 0) {
+    const next = chooseNextContourRing(pending, lastPos, startNear, travelObstacles, rampDistMM)
+    pending.splice(next.index, 1)
+    const ring = next.ring
     const [sx, sy]: Pt2 = ring[0]
 
     if (rampDistMM !== undefined) {
       // Ramp starts rampDist BEFORE the ring's start vertex and cuts toward it,
-      // arriving at full depth exactly at (sx, sy). The subsequent full-perimeter
-      // pass then cleans the ramp groove — no separate cleanup needed.
-      // Only lift+ramp when travel from the last position is not safe; if it is
-      // safe the tool is already at depth and can rapid directly to the ring start.
-      const rampNeeded = lastPos === null || !travelIsSafe(lastPos, [sx, sy], obstacles)
-      if (rampNeeded) {
-        const closed: Pt2[] = [...ring, ring[0]]
-        const { lens, total } = arcLengths(closed)
-        const rampDist = Math.min(rampDistMM, total * 0.45)
-        const rampStartS = total - rampDist
-        const [rampStartX, rampStartY] = interpPt(closed, lens, rampStartS)
+      // arriving at full depth exactly at (sx, sy). The first ring of every depth
+      // level must ramp from prevZ to z even when linked from the prior level.
+      const closed: Pt2[] = [...ring, ring[0]]
+      const { lens, total } = arcLengths(closed)
+      const rampDist = Math.min(rampDistMM, total * 0.45)
+      const rampStartS = total - rampDist
+      const [rampStartX, rampStartY] = interpPt(closed, lens, rampStartS)
+      const firstRingAtDepth = emittedCount === 0 && Math.abs(z - prevZ) > 1e-6
+      const canTravelAtDepth = lastPos !== null && isTravelSafe(lastPos, [sx, sy], travelObstacles)
+      const rampNeeded = firstRingAtDepth || !canTravelAtDepth
 
-        if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
-        segs.push({ x: rampStartX, y: rampStartY, z: safeZ, rapid: true })
-        segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: true })
+      if (rampNeeded) {
+        if (lastPos !== null && !canTravelAtDepth) {
+          segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+          segs.push({ x: rampStartX, y: rampStartY, z: safeZ, rapid: true })
+          segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: true })
+        } else if (lastPos === null) {
+          segs.push({ x: rampStartX, y: rampStartY, z: safeZ, rapid: true })
+          segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: true })
+        } else {
+          segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: false })
+        }
 
         const RAMP_STEPS = 12
         for (let i = 1; i <= RAMP_STEPS; i++) {
@@ -317,7 +518,8 @@ function emitLinkedContourRings(
           segs.push({ x: rx, y: ry, z: prevZ + (z - prevZ) * t, rapid: false, feedScale: 0.5 })
         }
       } else {
-        segs.push({ x: sx, y: sy, z, rapid: false })
+        if (lastPos) emitCutTransition(segs, lastPos, [sx, sy], z, toolDiameterMM, safeZ)
+        else segs.push({ x: sx, y: sy, z, rapid: false })
       }
       // Tool is now at (sx, sy, z) — cut full perimeter; this also re-cuts the ramp
       // groove section at full depth, leaving a clean finish.
@@ -326,21 +528,23 @@ function emitLinkedContourRings(
 
       lastPos = [sx, sy]
     } else {
-      if (lastPos === null || !travelIsSafe(lastPos, [sx, sy], obstacles)) {
+      if (lastPos === null || !isTravelSafe(lastPos, [sx, sy], travelObstacles)) {
         if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z, rapid: false })
       } else {
-        segs.push({ x: sx, y: sy, z, rapid: false })
+        if (lastPos) emitCutTransition(segs, lastPos, [sx, sy], z, toolDiameterMM, safeZ)
+        else segs.push({ x: sx, y: sy, z, rapid: false })
       }
 
       for (let j = 1; j < ring.length; j++) segs.push({ x: ring[j][0], y: ring[j][1], z, rapid: false })
       segs.push({ x: sx, y: sy, z, rapid: false })
       lastPos = [sx, sy]
     }
+    emittedCount++
   }
 
-  if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+  return lastPos
 }
 
 
@@ -407,7 +611,8 @@ function rasterPocket(
   zDepth: number,
   segs: MotionSegment[],
   prevZ = 0,
-) {
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
@@ -442,11 +647,16 @@ function rasterPocket(
     }))
   })
 
-  // Use islandExclusions (not actual island polygons) so doesSegmentCrossBorder
-  // correctly blocks at-depth travel through the uncut ring around each island.
-  segs.push(...buildRasterPath(clippedScanlines, [boundary, ...islandExclusions], zDepth, rampDist, prevZ, safeZ))
+  // Raster scanlines avoid a full-diameter exclusion so the finishing contour has
+  // stock to clean up. Linking moves only need the true tool-center keep-out
+  // around each island: island offset by tool radius.
+  const rasterEnd = buildRasterPath(
+    clippedScanlines,
+    { edgeObstacles: [boundary, ...islandFinish], solidObstacles: islandFinish },
+    zDepth, segs, incomingPos, rampDist, prevZ, safeZ, tool.diameterMM,
+  )
 
-  // Finishing contours: island rings then boundary ring, linked without lifts when safe.
+  // Finishing contours: linked without lifts when safe.
   const finishRing = insetRing(boundary, toolRadius)
   const finishingRings = [
     ...islandFinish,
@@ -456,7 +666,12 @@ function rasterPocket(
     ...(finishRing.length >= 3 ? [finishRing] : []),
     ...islandExclusions,
   ]
-  emitLinkedContourRings(finishingRings, zDepth, finishObstacles, segs, params.startNear, rampDist, prevZ, safeZ)
+  const finishPrevZ = clippedScanlines.length > 0 ? zDepth : prevZ
+  return emitLinkedContourRings(
+    finishingRings, zDepth,
+    { edgeObstacles: finishObstacles, solidObstacles: islandFinish },
+    segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, rasterEnd,
+  )
 }
 
 function contourPocket(
@@ -467,7 +682,8 @@ function contourPocket(
   zDepth: number,
   segs: MotionSegment[],
   prevZ = 0,
-) {
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
@@ -509,18 +725,97 @@ function contourPocket(
     delta = stepoverMM
   }
 
-  if (levels.length === 0) return
+  if (levels.length === 0) return incomingPos
 
   // Cut innermost rings first, finishing ring last for a clean wall finish.
   const finishingLevel = levels[0]
   const innerLevels = levels.slice(1).reverse()
-  const allRings = [...innerLevels.flat(), ...finishingLevel]
+  const innerRings = innerLevels.flat()
 
   // Obstacles for travel-safety checks: the finishing rings bound the tool zone.
   const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
   const obstacles = [...finishingLevel, ...islandObstacles]
 
-  emitLinkedContourRings(allRings, zDepth, obstacles, segs, params.startNear, rampDist, prevZ, safeZ)
+  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+  const roughEnd = emitLinkedContourRings(innerRings, zDepth, travelObstacles, segs, params.startNear, rampDist, prevZ, safeZ, tool.diameterMM, incomingPos)
+  const finishPrevZ = innerRings.length > 0 ? zDepth : prevZ
+  return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, roughEnd)
+}
+
+function adaptivePocket(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  zDepth: number,
+  segs: MotionSegment[],
+  prevZ = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  const safeZ = params.safeHeightMM ?? 5
+  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
+  const toolRadius = tool.diameterMM / 2
+  const wantCCW = params.direction === 'conventional'
+
+  const toCP = (pts: Pt2[]) => pts.map(([x, y]) => ({ x, y }))
+  const fromCP = (r: { x: number; y: number }[]) =>
+    stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2))
+
+  const subject = [
+    toCP(ensureWinding(boundary, true)),
+    ...islands.map(isl => toCP(ensureWinding(isl, false))),
+  ]
+
+  const maxPasses = Math.ceil((Math.sqrt(Math.abs(signedArea(boundary))) / stepoverMM) * 2) + 80
+  const levels: Pt2[][][] = []
+  let current = subject
+  let delta = toolRadius
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const result = inflatePathsD(current, -delta, JoinType.Miter, EndType.Polygon, 4, 6)
+    if (result.length === 0) break
+    const level = result
+      .map(r => fromCP(r))
+      .filter(pts => pts.length >= 3 && Math.abs(signedArea(pts)) > 0.01)
+      .map(pts => ensureWinding(pts, wantCCW))
+    if (level.length === 0) break
+    levels.push(level)
+    current = result
+    delta = stepoverMM
+  }
+
+  if (levels.length === 0) return incomingPos
+
+  const finishingLevel = levels[0]
+  const innerLevels = levels.slice(1).reverse()
+  const allLevels = innerLevels.length > 0 ? [...innerLevels, finishingLevel] : [finishingLevel]
+  const firstRing = allLevels[0][0]
+  const helixCenter = centroidOfRing(firstRing)
+  const helixRadius = Math.max(0.05, Math.min(toolRadius * 0.6, stepoverMM * 1.25))
+  if (incomingPos) segs.push({ x: incomingPos[0], y: incomingPos[1], z: safeZ, rapid: true })
+  const helixEnd = emitHelicalRamp(helixCenter, helixRadius, prevZ, zDepth, wantCCW, segs, safeZ)
+
+  const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
+  const obstacles = [...finishingLevel, ...islandObstacles]
+  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+
+  let lastPos: Pt2 | null = helixEnd
+  for (const level of allLevels) {
+    lastPos = emitLinkedContourRings(
+      level,
+      zDepth,
+      travelObstacles,
+      segs,
+      params.startNear,
+      undefined,
+      zDepth,
+      safeZ,
+      tool.diameterMM,
+      lastPos,
+    )
+  }
+
+  return lastPos
 }
 
 
@@ -531,10 +826,8 @@ export function generatePocket(
   tool: Tool,
   params: PocketParams,
 ): MotionSegment[] {
-  const subpaths = flattenPath(boundaryD, 0.05)
-  if (subpaths.length === 0) throw new Error('No geometry found in boundary path')
-  const boundary = subpaths[0]
-  if (boundary.length < 3) throw new Error('Boundary path must be a closed polygon')
+  const boundaries = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
+  if (boundaries.length === 0) throw new Error('No geometry found in boundary path')
 
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   if (stepoverMM < 0.01) throw new Error('Stepover too small')
@@ -550,15 +843,26 @@ export function generatePocket(
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  const strategyFn = strategy === 'contour' ? contourPocket : rasterPocket
+  const strategyFn = strategy === 'contour'
+    ? contourPocket
+    : strategy === 'adaptive'
+      ? adaptivePocket
+      : rasterPocket
 
-  for (let zi = 0; zi < zLevels.length; zi++) {
-    // prevZ is the surface (0) for the first pass, or the previous cut depth after that.
-    const prevZ = zi === 0 ? 0 : zLevels[zi - 1]
-    strategyFn(boundary, islands, tool, params, zLevels[zi], segs, prevZ)
+  let lastPos: Pt2 | null = null
+  for (const boundary of boundaries) {
+    for (let zi = 0; zi < zLevels.length; zi++) {
+      const prevZ = zi === 0 ? 0 : zLevels[zi - 1]
+      lastPos = strategyFn(boundary, islands, tool, params, zLevels[zi], segs, prevZ, lastPos)
+    }
   }
 
   if (segs.length === 0) throw new Error('Pocket area is too small for the selected tool diameter')
+
+  // Single retract at the end after all depth levels.
+  const safeZ = params.safeHeightMM ?? 5
+  if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+
   return segs
 }
 

@@ -1,5 +1,9 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
+import type { PenCurveType } from '../cam/penCurves'
+
+export type { PenCurveType }
 
 export type SidebarTab = 'draw' | 'paths'
 export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor' | 'setup'
@@ -10,6 +14,7 @@ export type PenNode = {
   y: number
   outHandle?: { x: number; y: number }
   inHandle?: { x: number; y: number }
+  corner?: boolean
 }
 
 interface UIState {
@@ -20,6 +25,7 @@ interface UIState {
   shapeToolConfig: ShapeToolConfig
   pendingDrillPoints: { x: number; y: number }[]
   penNodes: PenNode[]
+  penCurveType: PenCurveType
   nodeEditPathId: string | null
   darkMode: boolean
   machineFormActive: boolean
@@ -44,7 +50,9 @@ interface UIState {
   addDrillPoint: (pt: { x: number; y: number }) => void
   setDrillPoints: (pts: { x: number; y: number }[]) => void
   clearDrillPoints: () => void
+  setPenCurveType: (type: PenCurveType) => void
   addPenNode: (node: PenNode) => void
+  setPenNodes: (nodes: PenNode[]) => void
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
   toggleDarkMode: () => void
@@ -52,7 +60,9 @@ interface UIState {
   setNodeEditHistoryFlags: (canUndo: boolean, canRedo: boolean) => void
 }
 
-export const useUIStore = create<UIState>()((set) => ({
+export const useUIStore = create<UIState>()(
+  persist(
+    (set) => ({
   sidebarTab: 'draw',
   workspaceTab: '2d',
   snapEnabled: true,
@@ -60,6 +70,7 @@ export const useUIStore = create<UIState>()((set) => ({
   shapeToolConfig: DEFAULT_SHAPE_CONFIG,
   pendingDrillPoints: [],
   penNodes: [],
+  penCurveType: 'catmull-rom',
   nodeEditPathId: null,
   darkMode: true,
   machineFormActive: false,
@@ -83,10 +94,18 @@ export const useUIStore = create<UIState>()((set) => ({
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),
   clearDrillPoints: () => set({ pendingDrillPoints: [] }),
+  setPenCurveType: (type) => set({ penCurveType: type }),
   addPenNode: (node) => set((s) => ({ penNodes: [...s.penNodes, node] })),
+  setPenNodes: (nodes) => set({ penNodes: nodes }),
   clearPenNodes: () => set({ penNodes: [] }),
   setNodeEditPathId: (id) => set({ nodeEditPathId: id }),
   toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
   setNodeEditUndoRedo: (undo, redo) => set({ nodeEditUndo: undo, nodeEditRedo: redo, nodeEditCanUndo: false, nodeEditCanRedo: false }),
   setNodeEditHistoryFlags: (canUndo, canRedo) => set({ nodeEditCanUndo: canUndo, nodeEditCanRedo: canRedo }),
-}))
+    }),
+    {
+      name: 'freazykam-ui',
+      partialize: (s) => ({ penCurveType: s.penCurveType }),
+    }
+  )
+)

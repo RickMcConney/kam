@@ -76,6 +76,7 @@ const ImagePath = memo(function ImagePath({
 
   let nodeX = 0, nodeY = 0, nodeScaleX = 1, nodeScaleY = 1
   let nodeOffsetX = 0, nodeOffsetY = 0, nodeRotation = 0
+  let nodeSkewX = 0, nodeSkewY = 0
   if (lt) {
     if (lt.kind === 'translate') {
       nodeX = lt.dx; nodeY = lt.dy
@@ -87,6 +88,10 @@ const ImagePath = memo(function ImagePath({
       nodeOffsetX = lt.cx; nodeOffsetY = lt.cy
       nodeX = lt.cx; nodeY = lt.cy
       nodeRotation = lt.angle
+    } else if (lt.kind === 'skew') {
+      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
+      nodeX = lt.ax; nodeY = lt.ay
+      nodeSkewX = lt.kx; nodeSkewY = lt.ky
     }
   }
 
@@ -103,6 +108,7 @@ const ImagePath = memo(function ImagePath({
       scaleX={nodeScaleX} scaleY={nodeScaleY}
       offsetX={nodeOffsetX} offsetY={nodeOffsetY}
       rotation={nodeRotation}
+      skewX={nodeSkewX} skewY={nodeSkewY}
       listening={false}
     >
       {/* Image: sits at p0, rotated along the first edge, Y-un-flipped */}
@@ -206,6 +212,7 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
 
   let nodeX = 0, nodeY = 0, nodeScaleX = 1, nodeScaleY = 1
   let nodeOffsetX = 0, nodeOffsetY = 0, nodeRotation = 0
+  let nodeSkewX = 0, nodeSkewY = 0
   if (lt) {
     if (lt.kind === 'translate') {
       nodeX = lt.dx; nodeY = lt.dy
@@ -217,6 +224,10 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
       nodeOffsetX = lt.cx; nodeOffsetY = lt.cy
       nodeX = lt.cx; nodeY = lt.cy
       nodeRotation = lt.angle
+    } else if (lt.kind === 'skew') {
+      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
+      nodeX = lt.ax; nodeY = lt.ay
+      nodeSkewX = lt.kx; nodeSkewY = lt.ky
     }
   }
 
@@ -234,6 +245,7 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
       scaleX={nodeScaleX} scaleY={nodeScaleY}
       offsetX={nodeOffsetX} offsetY={nodeOffsetY}
       rotation={nodeRotation}
+      skewX={nodeSkewX} skewY={nodeSkewY}
       listening={false}
     >
       {/* Height map image — same Y-flip placement as ImagePath */}
@@ -326,6 +338,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
         let nodeScaleX = 1, nodeScaleY = 1
         let nodeOffsetX = 0, nodeOffsetY = 0
         let nodeRotation = 0
+        let nodeSkewX = 0, nodeSkewY = 0
 
         if (lt) {
           if (lt.kind === 'translate') {
@@ -344,6 +357,13 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
             nodeX = lt.cx
             nodeY = lt.cy
             nodeRotation = lt.angle
+          } else if (lt.kind === 'skew') {
+            nodeOffsetX = lt.ax
+            nodeOffsetY = lt.ay
+            nodeX = lt.ax
+            nodeY = lt.ay
+            nodeSkewX = lt.kx
+            nodeSkewY = lt.ky
           }
         }
 
@@ -366,6 +386,8 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
             offsetX={nodeOffsetX}
             offsetY={nodeOffsetY}
             rotation={nodeRotation}
+            skewX={nodeSkewX}
+            skewY={nodeSkewY}
           />
         )
       })}

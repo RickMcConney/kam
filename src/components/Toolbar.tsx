@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { ICON } from '../theme'
 import {
   FilePlus, FolderOpen, Save, Import, FileCog,
-  Undo2, Redo2, Magnet, Settings, HelpCircle, Play, Sun, Moon,
+  Undo2, Redo2, Magnet, HelpCircle, Play, Sun, Moon,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { useUIStore } from '../store/uiStore'
@@ -414,7 +414,6 @@ export default function Toolbar() {
             label={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
             onClick={toggleDarkMode}
           />
-          <ToolbarButton icon={<Settings size={ICON.md} />} label="Options" />
           <ToolbarButton icon={<HelpCircle size={ICON.md} />} label="Help" onClick={() => setHelpOpen(true)} />
         </div>
       </div>

@@ -23,6 +23,7 @@ export interface ParsedGcode {
 }
 
 const RAPID_MM_PER_MIN = 5000
+const MM_PER_INCH = 25.4
 
 function parseWords(line: string): Array<[string, number]> {
   const clean = line.replace(/;.*$/, '').replace(/\([^)]*\)/g, '').trim()
@@ -98,6 +99,7 @@ export function parseGcode(text: string): ParsedGcode {
 
   let cx = 0, cy = 0, cz = 5
   let feedRate = 1000
+  let unitScale = 1
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3
   let toolDiameterMM = 3.0
   let toolVbitHalfAngleTan: number | undefined
@@ -127,24 +129,31 @@ export function parseGcode(text: string): ParsedGcode {
     if (pairs.length === 0) continue
 
     const get = (key: string) => pairs.find(([k]) => k === key)?.[1]
+    const gWords = pairs.filter(([k]) => k === 'G').map(([, v]) => v)
+
+    if (gWords.some((v) => Math.abs(v - 20) < 0.001)) unitScale = MM_PER_INCH
+    if (gWords.some((v) => Math.abs(v - 21) < 0.001)) unitScale = 1
 
     // G0-G3 motion mode
-    const gm = pairs.filter(([k]) => k === 'G').map(([, v]) => v).find((v) => v >= 0 && v <= 3)
+    const gm = gWords.find((v) => v >= 0 && v <= 3)
     if (gm !== undefined) motionMode = gm
 
     const f = get('F')
-    if (f !== undefined) feedRate = f
+    if (f !== undefined) feedRate = f * unitScale
 
     const hasX = get('X') !== undefined
     const hasY = get('Y') !== undefined
     const hasZ = get('Z') !== undefined
     if (!hasX && !hasY && !hasZ) continue
 
-    const nx = get('X') ?? cx
-    const ny = get('Y') ?? cy
-    const nz = get('Z') ?? cz
-    const ii = get('I') ?? 0
-    const jj = get('J') ?? 0
+    const toMM = (value: number | undefined, fallback: number) =>
+      value === undefined ? fallback : value * unitScale
+
+    const nx = toMM(get('X'), cx)
+    const ny = toMM(get('Y'), cy)
+    const nz = toMM(get('Z'), cz)
+    const ii = (get('I') ?? 0) * unitScale
+    const jj = (get('J') ?? 0) * unitScale
 
     if (motionMode === 0) {
       const dist = Math.hypot(nx - cx, ny - cy, nz - cz)

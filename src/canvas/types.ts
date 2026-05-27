@@ -4,3 +4,4 @@ export type LiveTransform =
   | { kind: 'translate'; pathIds: Set<string>; dx: number; dy: number }
   | { kind: 'scale'; pathIds: Set<string>; sx: number; sy: number; ax: number; ay: number }
   | { kind: 'rotate'; pathIds: Set<string>; angle: number; cx: number; cy: number }
+  | { kind: 'skew'; pathIds: Set<string>; kx: number; ky: number; ax: number; ay: number }

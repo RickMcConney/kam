@@ -305,3 +305,82 @@ export function ensureWinding(pts: Pt2[], wantCCW: boolean): Pt2[] {
   return isCCW === wantCCW ? pts : [...pts].reverse()
 }
 
+// ─── Self-intersection splitting ──────────────────────────────────────────────
+// Used by VCarve, Profile, and Pocket to decompose self-touching or self-crossing
+// polygons (e.g. letter K, figure-8) into simple loops before passing to JSPoly
+// or Clipper2, both of which expect non-self-intersecting input.
+
+export function sharesVertex(a: Pt2[], b: Pt2[], tol = 0.01): boolean {
+  for (const pa of a) {
+    for (const pb of b) {
+      if (Math.abs(pa[0] - pb[0]) < tol && Math.abs(pa[1] - pb[1]) < tol) return true
+    }
+  }
+  return false
+}
+
+export function splitSelfTouching(pts: Pt2[], tol = 0.01): Pt2[][] {
+  const n = pts.length
+  const checkLen = (n > 1 &&
+    Math.abs(pts[0][0] - pts[n-1][0]) < tol &&
+    Math.abs(pts[0][1] - pts[n-1][1]) < tol) ? n - 1 : n
+  for (let i = 0; i < checkLen - 2; i++) {
+    for (let j = i + 2; j < checkLen; j++) {
+      if (Math.abs(pts[i][0] - pts[j][0]) < tol && Math.abs(pts[i][1] - pts[j][1]) < tol) {
+        const loop1 = pts.slice(i, j + 1)
+        const loop2 = [...pts.slice(j, checkLen), ...pts.slice(0, i + 1)]
+        return [...splitSelfTouching(loop1, tol), ...splitSelfTouching(loop2, tol)]
+      }
+    }
+  }
+  return [pts]
+}
+
+function segIntersect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number,
+): Pt2 | null {
+  const denom = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx)
+  if (Math.abs(denom) < 1e-10) return null
+  const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denom
+  const s = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / denom
+  if (t <= 1e-9 || t >= 1 - 1e-9 || s <= 1e-9 || s >= 1 - 1e-9) return null
+  return [ax + t * (bx - ax), ay + t * (by - ay)]
+}
+
+export function splitAtIntersections(pts: Pt2[], tol = 0.01): Pt2[][] {
+  const n = pts.length
+  const isClosedDup = n > 1 &&
+    Math.abs(pts[0][0] - pts[n-1][0]) < tol &&
+    Math.abs(pts[0][1] - pts[n-1][1]) < tol
+  const poly = isClosedDup ? pts.slice(0, -1) : pts
+  const m = poly.length
+  if (m < 4) return [pts]
+  for (let i = 0; i < m; i++) {
+    const i1 = (i + 1) % m
+    for (let j = i + 2; j < m; j++) {
+      const j1 = (j + 1) % m
+      if (j1 === i) continue
+      const X = segIntersect(
+        poly[i][0], poly[i][1], poly[i1][0], poly[i1][1],
+        poly[j][0], poly[j][1], poly[j1][0], poly[j1][1],
+      )
+      if (!X) continue
+      const loop1: Pt2[] = [X, ...poly.slice(i1, j + 1), X]
+      const loop2: Pt2[] = [...poly.slice(0, i1), X, ...(j1 > 0 ? poly.slice(j1) : []), poly[0]]
+      return [...splitAtIntersections(loop1, tol), ...splitAtIntersections(loop2, tol)]
+    }
+  }
+  return [pts]
+}
+
+// Convenience: split any self-touching or self-crossing subpaths into simple loops.
+export function splitSelfIntersecting(subpaths: Pt2[][]): Pt2[][] {
+  return subpaths
+    .filter(s => s.length >= 3)
+    .flatMap(s => splitSelfTouching(s))
+    .filter(s => s.length >= 3)
+    .flatMap(s => splitAtIntersections(s))
+    .filter(s => s.length >= 3)
+}
+

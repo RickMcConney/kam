@@ -230,6 +230,45 @@ export function removeNode(nodes: PathNode[], idx: number): PathNode[] {
   return nodes.filter((_, i) => i !== idx)
 }
 
+export function toggleNodeCurvature(nodes: PathNode[], idx: number, closed: boolean): PathNode[] {
+  const n = nodes.length
+  if (idx < 0 || idx >= n) return nodes
+
+  const node = nodes[idx]
+  const result = [...nodes]
+
+  if (node.handleIn || node.handleOut) {
+    result[idx] = { x: node.x, y: node.y }
+    return result
+  }
+
+  const prev = idx > 0 ? nodes[idx - 1] : closed ? nodes[n - 1] : null
+  const next = idx < n - 1 ? nodes[idx + 1] : closed ? nodes[0] : null
+
+  let handleIn: PathNode['handleIn']
+  let handleOut: PathNode['handleOut']
+
+  if (prev && next) {
+    const dx = (next.x - prev.x) / 6
+    const dy = (next.y - prev.y) / 6
+    handleIn = { x: node.x - dx, y: node.y - dy }
+    handleOut = { x: node.x + dx, y: node.y + dy }
+  } else if (next) {
+    handleOut = {
+      x: node.x + (next.x - node.x) / 3,
+      y: node.y + (next.y - node.y) / 3,
+    }
+  } else if (prev) {
+    handleIn = {
+      x: node.x + (prev.x - node.x) / 3,
+      y: node.y + (prev.y - node.y) / 3,
+    }
+  }
+
+  result[idx] = { ...node, handleIn, handleOut }
+  return result
+}
+
 function splitCubicAt(
   p0: { x: number; y: number },
   c1: { x: number; y: number },
@@ -288,6 +327,234 @@ export function insertNodeOnSegment(
   result[toIdx] = { ...to, handleIn: hasCurve ? split.rightIn : undefined }
   result.splice(segIdx + 1, 0, newNode)
   return result
+}
+
+function reverseNodes(nodes: PathNode[]): PathNode[] {
+  return nodes.slice().reverse().map(n => ({
+    x: n.x,
+    y: n.y,
+    handleIn: n.handleOut ? { ...n.handleOut } : undefined,
+    handleOut: n.handleIn ? { ...n.handleIn } : undefined,
+  }))
+}
+
+// Connect an open path's endpoint to one of its own interior nodes without merging.
+// Slices into a closed loop (src→…→tgt) and an open remainder (tgt→…→other_end).
+// The target node is duplicated so both pieces are valid; no nodes are deleted.
+export function connectEndpointToInterior(
+  nodes: PathNode[],
+  srcIdx: number,  // must be 0 or nodes.length-1
+  tgtIdx: number,  // must be interior (not 0 or last)
+): { loopNodes: PathNode[]; remainNodes: PathNode[] } | null {
+  const n = nodes.length
+  if (srcIdx !== 0 && srcIdx !== n - 1) return null
+  if (tgtIdx <= 0 || tgtIdx >= n - 1) return null
+
+  if (srcIdx === 0) {
+    // Loop: [src, …, tgt] closed.  Clear tgt.handleOut — it pointed to B0 (remain side).
+    const loop = nodes.slice(0, tgtIdx + 1).map((nd, i, arr) =>
+      i === arr.length - 1 ? { ...nd, handleOut: undefined } : nd
+    )
+    // Remain: [tgt_dup, …, last].  Clear tgt.handleIn — it pointed inward from A side.
+    const remain = [{ ...nodes[tgtIdx], handleIn: undefined }, ...nodes.slice(tgtIdx + 1)]
+    return { loopNodes: loop, remainNodes: remain }
+  } else {
+    // Loop: [tgt, …, src] closed.  Clear tgt.handleIn — it pointed to A2 (remain side).
+    const loop = nodes.slice(tgtIdx).map((nd, i) =>
+      i === 0 ? { ...nd, handleIn: undefined } : nd
+    )
+    // Remain: [first, …, tgt_dup].  Clear tgt.handleOut — it pointed inward to B side.
+    const remain = [...nodes.slice(0, tgtIdx), { ...nodes[tgtIdx], handleOut: undefined }]
+    return { loopNodes: loop, remainNodes: remain }
+  }
+}
+
+// Join paths by concatenation — both junction nodes keep their original positions.
+// Use this for connect-click mode where nodes are at different positions.
+// (joinPaths merges the two junction nodes into one; use that for drag-weld instead.)
+export function joinPathsConnect(
+  nodesA: PathNode[], srcIdx: number,
+  nodesB: PathNode[], tgtIdx: number, closedB: boolean,
+): PathNode[] | null {
+  if (nodesA.length < 2 || nodesB.length < 2) return null
+  if (srcIdx !== 0 && srcIdx !== nodesA.length - 1) return null
+  if (!closedB && tgtIdx !== 0 && tgtIdx !== nodesB.length - 1) return null
+
+  const A = srcIdx === 0 ? reverseNodes(nodesA) : nodesA
+
+  let B: PathNode[]
+  if (closedB) {
+    const reordered = [...nodesB.slice(tgtIdx), ...nodesB.slice(0, tgtIdx)]
+    const tail: PathNode = { x: reordered[0].x, y: reordered[0].y, handleIn: reordered[0].handleIn, handleOut: undefined }
+    B = [...reordered, tail]
+  } else {
+    B = tgtIdx === nodesB.length - 1 ? reverseNodes(nodesB) : nodesB
+  }
+
+  // Simple concatenation — no merging, A's endpoint and B's target both stay at their positions
+  return [...A, ...B]
+}
+
+// Join an open path A (at endpoint srcIdx) to path B (at any node tgtIdx).
+// For open B, tgtIdx must be 0 or B.length-1.
+// For closed B, tgtIdx may be any index — the closed path is opened at that node.
+export function joinPaths(
+  nodesA: PathNode[], srcIdx: number, closedA: boolean,
+  nodesB: PathNode[], tgtIdx: number, closedB: boolean,
+): PathNode[] | null {
+  if (closedA) return null
+  if (nodesA.length < 2 || nodesB.length < 2) return null
+  if (srcIdx !== 0 && srcIdx !== nodesA.length - 1) return null
+  if (!closedB && tgtIdx !== 0 && tgtIdx !== nodesB.length - 1) return null
+
+  // Normalize A: src should be the last node
+  const A = srcIdx === 0 ? reverseNodes(nodesA) : nodesA
+
+  let B: PathNode[]
+  if (closedB) {
+    // Reorder B so the target node is first, then append a copy of it at the end.
+    // This preserves every segment of the closed path — the closing segment (last→first)
+    // becomes the last segment of the combined open path. The user can then trim whichever
+    // seam segment they don't want rather than having one silently deleted here.
+    const reordered = [...nodesB.slice(tgtIdx), ...nodesB.slice(0, tgtIdx)]
+    const tail: PathNode = { x: reordered[0].x, y: reordered[0].y, handleIn: reordered[0].handleIn, handleOut: undefined }
+    B = [...reordered, tail]
+  } else {
+    B = tgtIdx === nodesB.length - 1 ? reverseNodes(nodesB) : nodesB
+  }
+
+  const aLast = A[A.length - 1]
+  const bFirst = B[0]
+  const merged: PathNode = {
+    x: bFirst.x,
+    y: bFirst.y,
+    handleIn: aLast.handleIn,
+    handleOut: bFirst.handleOut,
+  }
+  return [...A.slice(0, -1), merged, ...B.slice(1)]
+}
+
+// Weld an open path's endpoint to one of its own interior (non-endpoint) nodes.
+// Creates a closed loop from the endpoint through the midpoint, and leaves the
+// remainder as a separate open path. Returns null for degenerate cases.
+export function endpointToMidpointWeld(
+  nodes: PathNode[],
+  srcIdx: number, // must be 0 or nodes.length-1
+  tgtIdx: number, // must not be 0 or nodes.length-1
+): { loopNodes: PathNode[]; remainNodes: PathNode[] } | null {
+  const n = nodes.length
+  if (srcIdx !== 0 && srcIdx !== n - 1) return null
+  if (tgtIdx === 0 || tgtIdx === n - 1) return null
+
+  const src = nodes[srcIdx]
+  const tgt = nodes[tgtIdx]
+
+  if (srcIdx === 0) {
+    // Front loop: [merged, n1 .. n[tgtIdx-1]] closed
+    // The loop covers the n0→…→n[tgtIdx] round-trip
+    if (tgtIdx < 2) return null // loop would have < 2 nodes
+    const loopFirst: PathNode = {
+      x: tgt.x, y: tgt.y,
+      handleIn: tgt.handleIn,  // controls the closing segment (n[tgtIdx-1]→merged) end
+      handleOut: src.handleOut, // controls the first segment (merged→n1) start
+    }
+    const loopNodes = [loopFirst, ...nodes.slice(1, tgtIdx)]
+    // Remainder: n[tgtIdx] onward, tgt.handleIn cleared (now a new open start)
+    const remainNodes = [{ ...tgt, handleIn: undefined }, ...nodes.slice(tgtIdx + 1)]
+    return { loopNodes, remainNodes }
+  } else {
+    // Back loop: [merged, n[tgtIdx+1] .. n[n-2]] closed
+    if (n - 1 - tgtIdx < 2) return null // loop would have < 2 nodes
+    const loopFirst: PathNode = {
+      x: tgt.x, y: tgt.y,
+      handleIn: src.handleIn,   // controls the closing segment (n[n-2]→merged) end
+      handleOut: tgt.handleOut, // controls the first segment (merged→n[tgtIdx+1]) start
+    }
+    const loopNodes = [loopFirst, ...nodes.slice(tgtIdx + 1, n - 1)]
+    // Remainder: up to n[tgtIdx], tgt.handleOut cleared (now a new open end)
+    const remainNodes = [...nodes.slice(0, tgtIdx), { ...tgt, handleOut: undefined }]
+    return { loopNodes, remainNodes }
+  }
+}
+
+export function weldNodes(
+  nodes: PathNode[],
+  srcIdx: number,
+  tgtIdx: number,
+  closed: boolean,
+): { nodes: PathNode[]; closed: boolean } {
+  const src = nodes[srcIdx]
+  const tgt = nodes[tgtIdx]
+  const n = nodes.length
+
+  // Merged node at tgt's position; src's handleIn becomes the incoming handle,
+  // tgt's handleOut becomes the outgoing handle (handles for the deleted segment are dropped).
+  const merged: PathNode = {
+    x: tgt.x,
+    y: tgt.y,
+    handleIn: src.handleIn ?? tgt.handleIn,
+    handleOut: tgt.handleOut ?? src.handleOut,
+  }
+
+  let newNodes = nodes.map((node, i) => {
+    if (i === tgtIdx) return merged
+    return node
+  }).filter((_, i) => i !== srcIdx)
+
+  // Close the path when welding the two endpoints of an open path
+  const isEndpointWeld =
+    !closed &&
+    ((srcIdx === 0 && tgtIdx === n - 1) || (srcIdx === n - 1 && tgtIdx === 0))
+  const resultClosed = isEndpointWeld || closed
+
+  // When an endpoint is removed and the result is still open, the node that becomes
+  // the new first/last endpoint inherits a phantom handle from the deleted segment.
+  // Clear it so it doesn't render a dangling handle arm.
+  if (!resultClosed && !closed) {
+    if (srcIdx === 0 && newNodes.length > 0) {
+      newNodes[0] = { ...newNodes[0], handleIn: undefined }
+    } else if (srcIdx === n - 1 && newNodes.length > 0) {
+      newNodes[newNodes.length - 1] = { ...newNodes[newNodes.length - 1], handleOut: undefined }
+    }
+  }
+
+  return { nodes: newNodes, closed: resultClosed }
+}
+
+export function deleteSegment(
+  nodes: PathNode[],
+  segIdx: number,
+  closed: boolean,
+): { nodes: PathNode[]; closed: boolean; secondPath: PathNode[] | null } {
+  const n = nodes.length
+  const toIdx = (segIdx + 1) % n
+
+  // Clear the handles that were part of the deleted segment
+  const updated = nodes.map((node, i) => {
+    if (i === segIdx) return { ...node, handleOut: undefined }
+    if (i === toIdx) return { ...node, handleIn: undefined }
+    return node
+  })
+
+  if (closed) {
+    // Open the path: reorder so the new start is nodes[toIdx]
+    const reordered = [...updated.slice(toIdx), ...updated.slice(0, toIdx)]
+    return { nodes: reordered, closed: false, secondPath: null }
+  }
+
+  // Open path: split into two subpaths at the deleted segment
+  const first = updated.slice(0, segIdx + 1)
+  const second = updated.slice(toIdx)
+  const firstValid = first.length >= 2
+  const secondValid = second.length >= 2
+  if (!firstValid && secondValid) {
+    return { nodes: second, closed: false, secondPath: null }
+  }
+  return {
+    nodes: firstValid ? first : [],
+    closed: false,
+    secondPath: secondValid ? second : null,
+  }
 }
 
 export function segmentMidpoint(

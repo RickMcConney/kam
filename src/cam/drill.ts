@@ -55,9 +55,10 @@ export function generatePeckDrill(
 
   for (const pt of ordered) {
     segs.push({ x: pt.x, y: pt.y, z: safeZ, rapid: true })
-    for (const zDepth of zLevels) {
-      segs.push({ x: pt.x, y: pt.y, z: zDepth, rapid: false })
-      segs.push({ x: pt.x, y: pt.y, z: safeZ, rapid: true })
+    for (let i = 0; i < zLevels.length; i++) {
+      segs.push({ x: pt.x, y: pt.y, z: zLevels[i], rapid: false })
+      const retractZ = i < zLevels.length - 1 ? 0 : safeZ
+      segs.push({ x: pt.x, y: pt.y, z: retractZ, rapid: true })
     }
   }
 

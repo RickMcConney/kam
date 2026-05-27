@@ -4,7 +4,7 @@ import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffected } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
-import { getMultiBBox, rotateAroundD } from '../canvas/selectionUtils'
+import { getMultiBBox, rotateAroundD, mirrorD } from '../canvas/selectionUtils'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont } from '../shapes/textGenerator'
 import { NumericInput } from '../components/NumericInput'
@@ -222,6 +222,21 @@ export default function PropertiesPanel() {
     }
   }
 
+  function applyMirror(axis: 'x' | 'y') {
+    if (!bbox) return
+    const cx = (bbox.minX + bbox.maxX) / 2
+    const cy = (bbox.minY + bbox.maxY) / 2
+    const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+    const updates = selectedPaths
+      .map((p) => allPaths.find((ap) => ap.id === p.id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map((p) => ({ id: p.id, d: mirrorD(p.d, axis, cx, cy), shapeParams: null as null }))
+    if (updates.length) {
+      batchUpdatePaths(updates)
+      for (const { id } of selectedPaths) regenerateAffected(id)
+    }
+  }
+
   return (
     <div className="border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0">
       <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">
@@ -243,6 +258,23 @@ export default function PropertiesPanel() {
 
       <div className="mt-1.5">
         <RotationField liveAngle={liveRotationAngle} onApply={applyRotation} />
+      </div>
+
+      <div className="mt-1.5 flex gap-1.5">
+        <button
+          onClick={() => applyMirror('x')}
+          title="Mirror horizontally (flip left/right)"
+          className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+        >
+          ↔ Mirror X
+        </button>
+        <button
+          onClick={() => applyMirror('y')}
+          title="Mirror vertically (flip up/down)"
+          className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+        >
+          ↕ Mirror Y
+        </button>
       </div>
 
       {selectedPaths.length === 1 && (() => {

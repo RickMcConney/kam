@@ -1,63 +1,27 @@
 import { Group, Path, Line, Circle } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import type { PenNode } from '../../store/uiStore'
+import { penNodesToPathD, liveSegmentD, type PenCurveType } from '../../cam/penCurves'
 import { useCanvasStore } from '../../store/canvasStore'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { majorStepMM, minorStepMM } from '../gridUtils'
 import { originWorldXY } from './WorkpieceLayer'
 
-export function penNodesToPathD(nodes: PenNode[], closed?: boolean): string {
-  if (nodes.length < 1) return ''
-  let d = `M ${nodes[0].x} ${nodes[0].y}`
-  for (let i = 1; i < nodes.length; i++) {
-    const prev = nodes[i - 1]
-    const curr = nodes[i]
-    const cp1 = prev.outHandle
-    const cp2 = curr.inHandle
-    if (!cp1 && !cp2) {
-      d += ` L ${curr.x} ${curr.y}`
-    } else {
-      d += ` C ${cp1?.x ?? prev.x} ${cp1?.y ?? prev.y} ${cp2?.x ?? curr.x} ${cp2?.y ?? curr.y} ${curr.x} ${curr.y}`
-    }
-  }
-  if (closed && nodes.length >= 2) {
-    const prev = nodes[nodes.length - 1]
-    const curr = nodes[0]
-    const cp1 = prev.outHandle
-    const cp2 = curr.inHandle
-    if (!cp1 && !cp2) {
-      d += ' Z'
-    } else {
-      d += ` C ${cp1?.x ?? prev.x} ${cp1?.y ?? prev.y} ${cp2?.x ?? curr.x} ${cp2?.y ?? curr.y} ${curr.x} ${curr.y} Z`
-    }
-  }
-  return d
-}
-
-function liveSegmentD(
-  from: PenNode,
-  to: { x: number; y: number },
-  toInHandle?: { x: number; y: number }
-): string {
-  const cp1 = from.outHandle
-  const cp2 = toInHandle
-  if (!cp1 && !cp2) {
-    return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
-  }
-  return `M ${from.x} ${from.y} C ${cp1?.x ?? from.x} ${cp1?.y ?? from.y} ${cp2?.x ?? to.x} ${cp2?.y ?? to.y} ${to.x} ${to.y}`
-}
+export { penNodesToPathD }
 
 interface Props {
   viewport: Viewport
   penNodes: PenNode[]
   livePen: { anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null
   penClosing: boolean
+  curveType: PenCurveType
 }
 
-export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
+export function PenLayer({ viewport, penNodes, livePen, penClosing, curveType }: Props) {
   const rawCursorCNC = useCanvasStore((s) => s.cursorMM)
   const snapEnabled = useUIStore((s) => s.snapEnabled)
+  const penCurveType = useUIStore((s) => s.penCurveType)
   const { units, origin, widthMM, heightMM } = useWorkpieceStore()
   const { scale: s } = viewport
 
@@ -74,28 +38,41 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
   }
 
   const last = penNodes.length > 0 ? penNodes[penNodes.length - 1] : null
-  const first = penNodes.length > 0 ? penNodes[0] : null
+  const cursorMovedFromLast =
+    !!last &&
+    !!cursorCNC &&
+    Math.hypot(cursorCNC.x - last.x, cursorCNC.y - last.y) * s >= 8
 
-  const committedD = penNodesToPathD(penNodes)
+  // When hovering over the first node to close, show the full closed path so the
+  // preview matches exactly what committing will produce (auto-curve algorithms
+  // reshape segment 0 when closed because pPrev changes from a ghost to the last node).
+  const showAsClosed = penClosing && penNodes.length >= 2
+  // Pass cursor as lookahead so auto-curve modes (catmull-rom, cubic-spline) use it
+  // as p3 for the last committed segment — the preview then exactly matches what
+  // placing the next node will produce (no reshape-on-commit surprise).
+  const lookahead = (!showAsClosed && cursorCNC && cursorMovedFromLast) ? cursorCNC : undefined
+  const committedD = penNodesToPathD(penNodes, showAsClosed, penCurveType, lookahead)
 
   let previewD: string | null = null
-  if (last) {
+  if (last && !showAsClosed) {
     if (livePen) {
-      const inH = livePen.handle
-        ? {
-            x: livePen.anchor.x - (livePen.handle.x - livePen.anchor.x),
-            y: livePen.anchor.y - (livePen.handle.y - livePen.anchor.y),
-          }
-        : undefined
-      previewD = liveSegmentD(last, livePen.anchor, inH)
-    } else if (cursorCNC && penClosing && first) {
-      previewD = liveSegmentD(last, first)
-    } else if (cursorCNC && !penClosing) {
-      previewD = liveSegmentD(last, cursorCNC)
+      // bezier mode shows the incoming reflected handle; other modes pass undefined
+      const inH =
+        curveType === 'bezier' && livePen.handle
+          ? {
+              x: livePen.anchor.x - (livePen.handle.x - livePen.anchor.x),
+              y: livePen.anchor.y - (livePen.handle.y - livePen.anchor.y),
+            }
+          : undefined
+      previewD = liveSegmentD(penNodes, livePen.anchor, inH, curveType)
+    } else if (cursorCNC && cursorMovedFromLast) {
+      previewD = liveSegmentD(penNodes, cursorCNC, undefined, curveType)
     }
   }
 
   if (penNodes.length === 0 && !livePen) return null
+
+  const isBezier = penCurveType === 'bezier'
 
   return (
     <Group listening={false}>
@@ -117,8 +94,8 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
         />
       )}
 
-      {/* Outgoing handle of last committed node */}
-      {last?.outHandle && (
+      {/* Outgoing handle of last committed node — bezier mode only */}
+      {isBezier && last?.outHandle && (
         <>
           <Line
             points={[last.x, last.y, last.outHandle.x, last.outHandle.y]}
@@ -130,8 +107,8 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
         </>
       )}
 
-      {/* Live handle lines during drag to set curve */}
-      {livePen?.handle && (
+      {/* Live handle lines during drag — bezier mode only */}
+      {isBezier && livePen?.handle && (
         <>
           <Line
             points={[livePen.anchor.x, livePen.anchor.y, livePen.handle.x, livePen.handle.y]}
@@ -161,7 +138,7 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
         </>
       )}
 
-      {/* Committed anchor point circles */}
+      {/* Committed anchor point circles — corner nodes are orange */}
       {penNodes.map((node, i) => (
         <Circle
           key={i}
@@ -169,7 +146,11 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing }: Props) {
           y={node.y}
           radius={4 / s}
           fill={i === 0 && penClosing ? '#38bdf8' : '#1e293b'}
-          stroke={i === 0 && penClosing ? '#ffffff' : '#38bdf8'}
+          stroke={
+            i === 0 && penClosing ? '#ffffff'
+            : node.corner ? '#f97316'
+            : '#38bdf8'
+          }
           strokeWidth={1.5 / s}
           listening={false}
         />

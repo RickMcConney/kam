@@ -20,12 +20,13 @@ import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
-import { PenLayer, penNodesToPathD } from './layers/PenLayer'
+import { PenLayer } from './layers/PenLayer'
+import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
 import { SimulationLayer } from './layers/SimulationLayer'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { useSimStore } from '../store/simStore'
 import type { HandleType, LiveTransform } from './types'
-import { getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD } from './selectionUtils'
+import { getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD, skewAroundD } from './selectionUtils'
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
@@ -39,8 +40,9 @@ import {
 import type { PenNode } from '../store/uiStore'
 import { NodeEditLayer } from './layers/NodeEditLayer'
 import { TabLayer } from './layers/TabLayer'
-import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath } from './nodeUtils'
+import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath, weldNodes, deleteSegment, joinPaths, joinPathsConnect, endpointToMidpointWeld, connectEndpointToInterior, toggleNodeCurvature } from './nodeUtils'
 import type { PathNode } from './nodeUtils'
+import type { CrossPathEntry } from './layers/NodeEditLayer'
 
 export interface Viewport {
   x: number
@@ -248,6 +250,8 @@ export default function CanvasStage() {
   const [livePen, setLivePen] = useState<{ anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null>(null)
   const penClosingRef = useRef(false)
   const [penClosing, setPenClosing] = useState(false)
+  const altDownRef = useRef(false)
+  const [altDown, setAltDown] = useState(false)
   const didDragRef = useRef(false)
   const flatCache = useRef(new Map<string, [number, number][][]>())
 
@@ -261,7 +265,11 @@ export default function CanvasStage() {
   const setSidebarTab = useUIStore((s) => s.setSidebarTab)
   const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
   const penNodes = useUIStore((s) => s.penNodes)
+  const penCurveType = useUIStore((s) => s.penCurveType)
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+  const effectiveCurveType: PenCurveType = altDown
+    ? (penCurveType === 'linear' ? 'catmull-rom' : 'linear')
+    : penCurveType
 
   // Node edit state — live editable copy of the path's nodes
   const [editNodes, setEditNodes] = useState<PathNode[]>([])
@@ -277,9 +285,22 @@ export default function CanvasStage() {
   const [hoveredEditNode, setHoveredEditNode] = useState<number | null>(null)
   const [dragNodeIdx, setDragNodeIdx] = useState<number | null>(null)
   const [hoverSegIdx, setHoverSegIdx] = useState<number | null>(null)
+  const hoverSegIdxRef = useRef<number | null>(null)
+  const [weldTargetIdx, setWeldTargetIdx] = useState<number | null>(null)
+  const weldTargetIdxRef = useRef<number | null>(null)
+  const [connectSource, setConnectSource] = useState<number | null>(null)
+  const connectSourceRef = useRef<number | null>(null)
+  const [connectPreviewTo, setConnectPreviewTo] = useState<{ x: number; y: number } | null>(null)
+  const [connectSnapTargetIdx, setConnectSnapTargetIdx] = useState<number | null>(null)
+  const crossPathEntriesRef = useRef<CrossPathEntry[]>([])
+  const [crossPathCandidates, setCrossPathCandidates] = useState<CrossPathEntry[]>([])
+  const [crossPathWeldTarget, setCrossPathWeldTarget] = useState<CrossPathEntry | null>(null)
+  const crossPathWeldTargetRef = useRef<CrossPathEntry | null>(null)
   const localPast = useRef<PathNode[][]>([])
   const localFuture = useRef<PathNode[][]>([])
   const drillPast = useRef<{ x: number; y: number }[][]>([])
+  const penPast = useRef<PenNode[][]>([])
+  const penFuture = useRef<PenNode[][]>([])
 
   const pushLocalUndo = useCallback((snapshot: PathNode[]) => {
     localPast.current = [...localPast.current, snapshot]
@@ -312,6 +333,24 @@ export default function CanvasStage() {
     const prev = drillPast.current[drillPast.current.length - 1]
     drillPast.current = drillPast.current.slice(0, -1)
     useUIStore.getState().setDrillPoints(prev)
+  }, [])
+
+  const penUndoFn = useCallback(() => {
+    if (penPast.current.length === 0) return
+    const prev = penPast.current[penPast.current.length - 1]
+    penFuture.current = [useUIStore.getState().penNodes, ...penFuture.current]
+    penPast.current = penPast.current.slice(0, -1)
+    useUIStore.getState().setPenNodes(prev)
+    useUIStore.getState().setNodeEditHistoryFlags(penPast.current.length > 0, true)
+  }, [])
+
+  const penRedoFn = useCallback(() => {
+    if (penFuture.current.length === 0) return
+    const next = penFuture.current[0]
+    penPast.current = [...penPast.current, useUIStore.getState().penNodes]
+    penFuture.current = penFuture.current.slice(1)
+    useUIStore.getState().setPenNodes(next)
+    useUIStore.getState().setNodeEditHistoryFlags(true, penFuture.current.length > 0)
   }, [])
 
   const setMode2 = useCallback((m: CanvasMode) => {
@@ -410,7 +449,11 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
   }, [size, widthMM, heightMM, setViewport])
 
   const commitEditNodes = useCallback((pid: string, nodes: PathNode[]) => {
-    if (!pid || nodes.length < 2) return
+    if (!pid) return
+    if (nodes.length < 2) {
+      usePathsStore.getState().deletePath(pid)
+      return
+    }
     const d = nodesToD(nodes, editClosedRef.current)
     usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
     regenerateAffected(pid)
@@ -428,33 +471,83 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return
       if (e.code === 'Space' && !useSimStore.getState().gcode) { e.preventDefault(); spaceHeldRef.current = true }
       if (e.shiftKey) shiftHeldRef.current = true
-      if ((e.key === 'Delete' || e.key === 'Backspace') && hoveredEditNodeRef.current !== null) {
+      if (e.key === 'Alt') {
+        if (useUIStore.getState().activeTool === 'pen') e.preventDefault()
+        altDownRef.current = true
+        setAltDown(true)
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         const { nodeEditPathId: pid } = useUIStore.getState()
         if (pid) {
-          e.stopImmediatePropagation()
-          e.preventDefault()
-          const idx = hoveredEditNodeRef.current
-          setEditNodes((prev) => {
-            pushLocalUndo(prev)
-            const next = removeNode(prev, idx)
+          if (hoveredEditNodeRef.current !== null) {
+            // Delete hovered node
+            e.stopImmediatePropagation()
+            e.preventDefault()
+            const idx = hoveredEditNodeRef.current
+            pushLocalUndo(editNodesRef.current)
+            const next = removeNode(editNodesRef.current, idx)
             editNodesRef.current = next
-            return next
-          })
-          hoveredEditNodeRef.current = null
-          setHoveredEditNode(null)
+            setEditNodes(next)
+            hoveredEditNodeRef.current = null
+            setHoveredEditNode(null)
+          } else if (hoverSegIdxRef.current !== null) {
+            // Trim hovered segment
+            e.stopImmediatePropagation()
+            e.preventDefault()
+            const segIdx = hoverSegIdxRef.current
+            const old = editNodesRef.current
+            pushLocalUndo(old)
+            const result = deleteSegment(old, segIdx, editClosedRef.current)
+            setEditNodes(result.nodes)
+            editNodesRef.current = result.nodes
+            if (result.closed !== editClosedRef.current) {
+              editClosedRef.current = result.closed
+              setEditClosed(result.closed)
+            }
+            if (result.secondPath) {
+              // Split: create a new path for the second segment
+              const { nodeEditPathId: currentPid } = useUIStore.getState()
+              const secondD = nodesToD(result.secondPath, false)
+              if (secondD && currentPid) {
+                const newId = `trim-${Date.now()}`
+                const { paths: allPaths } = usePathsStore.getState()
+                const srcPath = allPaths.find((p) => p.id === currentPid)
+                usePathsStore.getState().addPaths([{
+                  id: newId,
+                  name: srcPath?.name ?? 'Path',
+                  d: secondD,
+                  visible: true,
+                  color: srcPath?.color ?? nextPathColor(),
+                }])
+              }
+            }
+            setHoverSegIdx(null)
+            hoverSegIdxRef.current = null
+          }
         }
       }
 
       if (e.code === 'Escape') {
         const { nodeEditPathId: neid } = useUIStore.getState()
         if (neid) {
-          exitNodeEdit()
+          if (connectSourceRef.current !== null) {
+            connectSourceRef.current = null
+            setConnectSource(null)
+            setConnectPreviewTo(null)
+            setConnectSnapTargetIdx(null)
+            crossPathWeldTargetRef.current = null
+            setCrossPathWeldTarget(null)
+            setCrossPathCandidates([])
+            crossPathEntriesRef.current = []
+          } else {
+            exitNodeEdit()
+          }
           return
         }
-        const { activeTool, setActiveTool, clearDrillPoints, penNodes: nodes, clearPenNodes } = useUIStore.getState()
+        const { activeTool, setActiveTool, clearDrillPoints, penNodes: nodes, clearPenNodes, penCurveType: ct } = useUIStore.getState()
         if (activeTool === 'pen') {
           if (nodes.length >= 2) {
-            const d = penNodesToPathD(nodes, false)
+            const d = penNodesToPathD(nodes, false, ct)
             if (d) {
               const id = `pen-${Date.now()}`
               usePathsStore.getState().addPaths([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
@@ -478,6 +571,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     const onUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') spaceHeldRef.current = false
       if (!e.shiftKey) shiftHeldRef.current = false
+      if (e.key === 'Alt') { altDownRef.current = false; setAltDown(false) }
     }
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
@@ -545,9 +639,17 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     localFuture.current = []
     if (!nodeEditPathId) {
       // Commit using the captured id — nodeEditPathId is already null in the store at this point
-      if (prevId && editNodesRef.current.length >= 2) commitEditNodes(prevId, editNodesRef.current)
+      if (prevId) commitEditNodes(prevId, editNodesRef.current)
       setEditNodes([])
       setEditClosed(false)
+      connectSourceRef.current = null
+      setConnectSource(null)
+      setConnectPreviewTo(null)
+      setConnectSnapTargetIdx(null)
+      crossPathWeldTargetRef.current = null
+      setCrossPathWeldTarget(null)
+      setCrossPathCandidates([])
+      crossPathEntriesRef.current = []
       useUIStore.getState().setNodeEditUndoRedo(null, null)
       useUIStore.getState().setNodeEditHistoryFlags(false, false)
       return
@@ -577,7 +679,32 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     }
   }, [activeTool, pendingDrillPoints.length, drillUndo])
 
+  useEffect(() => {
+    if (activeTool === 'pen') {
+      useUIStore.getState().setNodeEditUndoRedo(penUndoFn, penRedoFn)
+      useUIStore.getState().setNodeEditHistoryFlags(false, false)
+    } else {
+      penPast.current = []
+      penFuture.current = []
+      if (useUIStore.getState().nodeEditUndo === penUndoFn) {
+        useUIStore.getState().setNodeEditUndoRedo(null, null)
+        useUIStore.getState().setNodeEditHistoryFlags(false, false)
+      }
+    }
+  }, [activeTool, penUndoFn, penRedoFn])
+
   const handleNodeMouseDown = useCallback((nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (kind === 'anchor' && (e.evt.altKey || altDownRef.current)) {
+      e.cancelBubble = true
+      e.evt.preventDefault()
+      const old = editNodesRef.current
+      const next = toggleNodeCurvature(old, nodeIdx, editClosedRef.current)
+      pushLocalUndo(old)
+      setEditNodes(next)
+      editNodesRef.current = next
+      return
+    }
+
     const vp = viewportRef.current
     const pointer = e.target.getStage()?.getPointerPosition()
     if (!pointer) return
@@ -594,6 +721,39 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     didDragRef.current = false
     setMode2({ type: 'nodedit-drag', nodeIdx, kind })
     setDragNodeIdx(kind === 'anchor' ? nodeIdx : null)
+
+    // Gather cross-path weld candidates when dragging an endpoint of an open path
+    crossPathEntriesRef.current = []
+    crossPathWeldTargetRef.current = null
+    setCrossPathWeldTarget(null)
+    if (kind === 'anchor' && !editClosedRef.current) {
+      const curNodes = editNodesRef.current
+      if (nodeIdx === 0 || nodeIdx === curNodes.length - 1) {
+        const { nodeEditPathId: pid } = useUIStore.getState()
+        const { paths: allPaths } = usePathsStore.getState()
+        const entries: CrossPathEntry[] = []
+        for (const p of allPaths) {
+          if (p.id === pid || !p.visible) continue
+          const parsed = parseDToNodes(p.d)
+          if (parsed.nodes.length < 2) continue
+          if (parsed.closed) {
+            // All nodes of a closed path are valid weld targets
+            for (let j = 0; j < parsed.nodes.length; j++) {
+              entries.push({ pathId: p.id, nodeIdx: j, x: parsed.nodes[j].x, y: parsed.nodes[j].y, nodes: parsed.nodes, closed: true })
+            }
+          } else {
+            // Only the two endpoints of an open path
+            entries.push({ pathId: p.id, nodeIdx: 0, x: parsed.nodes[0].x, y: parsed.nodes[0].y, nodes: parsed.nodes, closed: false })
+            const last = parsed.nodes.length - 1
+            entries.push({ pathId: p.id, nodeIdx: last, x: parsed.nodes[last].x, y: parsed.nodes[last].y, nodes: parsed.nodes, closed: false })
+          }
+        }
+        crossPathEntriesRef.current = entries
+        setCrossPathCandidates(entries)
+      }
+    } else {
+      setCrossPathCandidates([])
+    }
   }, [setMode2])
 
   const handleSegmentMouseDown = useCallback((segIdx: number, cncX: number, cncY: number) => {
@@ -699,6 +859,21 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
   const panStartRef = useRef({ mouseX: 0, mouseY: 0, vpX: 0, vpY: 0 })
 
   const handleStageMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (connectSourceRef.current !== null) {
+      if (crossPathWeldTargetRef.current !== null) {
+        // Snapped to a cross-path node — let mouseup complete the connection
+        didDragRef.current = false
+        return
+      }
+      connectSourceRef.current = null
+      setConnectSource(null)
+      setConnectPreviewTo(null)
+      setConnectSnapTargetIdx(null)
+      crossPathWeldTargetRef.current = null
+      setCrossPathWeldTarget(null)
+      setCrossPathCandidates([])
+      crossPathEntriesRef.current = []
+    }
     if (e.evt.button === 1 || spaceHeldRef.current) {
       e.evt.preventDefault()
       const vp = viewportRef.current
@@ -812,6 +987,17 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       const newHx = snappedMouse.x - anchor.x
       const newHy = snappedMouse.y - anchor.y
 
+      // Alt + corner handle = skew (shear) instead of scale
+      const isCorner = handle === 'tl' || handle === 'tr' || handle === 'bl' || handle === 'br'
+      if ((altDownRef.current || e.evt.altKey) && isCorner) {
+        const dx = newHx - dhx
+        const dy = newHy - dhy
+        const kx = Math.abs(dx) >= Math.abs(dy) && dhy !== 0 ? dx / dhy : 0
+        const ky = Math.abs(dy) >  Math.abs(dx) && dhx !== 0 ? dy / dhx : 0
+        setLiveTransform({ kind: 'skew', pathIds: new Set(pathIds), kx, ky, ax: anchor.x, ay: anchor.y })
+        return
+      }
+
       let sx = dhx !== 0 ? newHx / dhx : 1
       let sy = dhy !== 0 ? newHy / dhy : 1
 
@@ -883,6 +1069,44 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       }
     }
 
+    // Connect mode preview: show dashed line from source to nearest snappable node
+    if (m.type === 'idle' && connectSourceRef.current !== null) {
+      const srcIdx = connectSourceRef.current
+      const nodes = editNodesRef.current
+      if (nodes[srcIdx]) {
+        const snapMM = 16 / vp.scale
+        let bestDist = snapMM
+        let snapSameIdx: number | null = null
+        let snapCrossEntry: CrossPathEntry | null = null
+        let snapPos = cncMouse
+
+        for (let j = 0; j < nodes.length; j++) {
+          if (j === srcIdx) continue
+          const dist = Math.hypot(cncMouse.x - nodes[j].x, cncMouse.y - nodes[j].y)
+          if (dist < bestDist) {
+            bestDist = dist
+            snapSameIdx = j
+            snapPos = { x: nodes[j].x, y: nodes[j].y }
+          }
+        }
+
+        for (const entry of crossPathEntriesRef.current) {
+          const dist = Math.hypot(cncMouse.x - entry.x, cncMouse.y - entry.y)
+          if (dist < bestDist) {
+            bestDist = dist
+            snapCrossEntry = entry
+            snapSameIdx = null
+            snapPos = { x: entry.x, y: entry.y }
+          }
+        }
+
+        setConnectPreviewTo(snapPos)
+        setConnectSnapTargetIdx(snapSameIdx)
+        crossPathWeldTargetRef.current = snapCrossEntry
+        setCrossPathWeldTarget(snapCrossEntry)
+      }
+    }
+
     if (m.type === 'pendraw') {
       const asx = vp.x + m.anchorCNC.x * vp.scale
       const asy = vp.y - m.anchorCNC.y * vp.scale
@@ -890,7 +1114,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         didDragRef.current = true
       }
       if (didDragRef.current && !m.closing) {
-        setLivePen({ anchor: m.anchorCNC, handle: cncMouse })
+        // Only track drag handles in bezier mode; other modes auto-compute curves
+        if (useUIStore.getState().penCurveType === 'bezier') {
+          setLivePen({ anchor: m.anchorCNC, handle: cncMouse })
+        }
       }
     }
 
@@ -899,12 +1126,43 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       const init = editDragInitRef.current
       const dx = cncMouse.x - init.startCNC.x
       const dy = cncMouse.y - init.startCNC.y
-      setEditNodes(init.initialNodes.map((n, i) => {
+      const WELD_THRESHOLD_MM = 16 / viewportRef.current.scale
+      let newWeldTarget: number | null = null
+      let newCrossTarget: CrossPathEntry | null = null
+      const updatedNodes = init.initialNodes.map((n, i) => {
         if (i !== m.nodeIdx) return n
         if (m.kind === 'anchor') {
           const snapped = snapCNC({ x: n.x + dx, y: n.y + dy })
           const sdx = snapped.x - n.x
           const sdy = snapped.y - n.y
+          // Check for same-path weld snap first
+          for (let j = 0; j < init.initialNodes.length; j++) {
+            if (j === m.nodeIdx) continue
+            const other = init.initialNodes[j]
+            const distSq = (snapped.x - other.x) ** 2 + (snapped.y - other.y) ** 2
+            if (distSq < WELD_THRESHOLD_MM ** 2) {
+              newWeldTarget = j
+              const wdx = other.x - n.x
+              const wdy = other.y - n.y
+              return { ...n, x: other.x, y: other.y,
+                handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
+                handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
+              }
+            }
+          }
+          // Check for cross-path weld snap (only available for endpoints of open paths)
+          for (const entry of crossPathEntriesRef.current) {
+            const distSq = (snapped.x - entry.x) ** 2 + (snapped.y - entry.y) ** 2
+            if (distSq < WELD_THRESHOLD_MM ** 2) {
+              newCrossTarget = entry
+              const wdx = entry.x - n.x
+              const wdy = entry.y - n.y
+              return { ...n, x: entry.x, y: entry.y,
+                handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
+                handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
+              }
+            }
+          }
           return {
             ...n,
             x: snapped.x,
@@ -914,16 +1172,63 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           }
         }
         if (m.kind === 'handle-in') {
-          return { ...n, handleIn: { x: (n.handleIn?.x ?? n.x) + dx, y: (n.handleIn?.y ?? n.y) + dy } }
+          const handleIn = { x: (n.handleIn?.x ?? n.x) + dx, y: (n.handleIn?.y ?? n.y) + dy }
+          const handleOut = (altDownRef.current || e.evt.altKey) && n.handleOut
+            ? { x: 2 * n.x - handleIn.x, y: 2 * n.y - handleIn.y }
+            : n.handleOut
+          return { ...n, handleIn, handleOut }
         }
-        return { ...n, handleOut: { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy } }
-      }))
+        const handleOut = { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy }
+        const handleIn = (altDownRef.current || e.evt.altKey) && n.handleIn
+          ? { x: 2 * n.x - handleOut.x, y: 2 * n.y - handleOut.y }
+          : n.handleIn
+        return { ...n, handleIn, handleOut }
+      })
+      weldTargetIdxRef.current = newWeldTarget
+      setWeldTargetIdx(newWeldTarget)
+      crossPathWeldTargetRef.current = newCrossTarget
+      setCrossPathWeldTarget(newCrossTarget)
+      setEditNodes(updatedNodes)
     }
   }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC])
 
   const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
     const m = modeRef.current
     const vp = viewportRef.current
+
+    // Complete cross-path connection from connect mode (user clicked while snapped to other-path node)
+    if (connectSourceRef.current !== null && crossPathWeldTargetRef.current !== null && m.type === 'idle') {
+      const cs = connectSourceRef.current
+      const crossTarget = crossPathWeldTargetRef.current
+      const nodes = editNodesRef.current
+      pushLocalUndo(nodes)
+      const joined = joinPathsConnect(
+        nodes, cs,
+        crossTarget.nodes, crossTarget.nodeIdx, crossTarget.closed,
+      )
+      if (joined) {
+        const newD = nodesToD(joined, false)
+        const { nodeEditPathId: pid } = useUIStore.getState()
+        if (pid && newD) {
+          usePathsStore.getState().batchUpdatePaths([{ id: pid, d: newD }])
+          usePathsStore.getState().deletePath(crossTarget.pathId)
+          regenerateAffected(pid)
+          setEditNodes(joined)
+          editNodesRef.current = joined
+          editClosedRef.current = false
+          setEditClosed(false)
+        }
+      }
+      connectSourceRef.current = null
+      setConnectSource(null)
+      setConnectPreviewTo(null)
+      setConnectSnapTargetIdx(null)
+      crossPathWeldTargetRef.current = null
+      setCrossPathWeldTarget(null)
+      setCrossPathCandidates([])
+      crossPathEntriesRef.current = []
+      return
+    }
 
     if (m.type === 'pan') {
       setMode2({ type: 'idle' })
@@ -969,6 +1274,15 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           const typeChanged = newShapeParams && path.shapeParams && newShapeParams.type !== path.shapeParams.type
           const name = typeChanged ? shapeDisplayName(newShapeParams!.type) : undefined
           return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams, name }]
+        })
+        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
+      } else if (lt && lt.kind === 'skew') {
+        const { kx, ky, ax, ay } = lt
+        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+        const updates = m.pathIds.flatMap((id) => {
+          const path = allPaths.find((p) => p.id === id)
+          if (!path) return []
+          return [{ id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null as null }]
         })
         if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
@@ -1063,7 +1377,173 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       const initSnap = editDragInitRef.current?.initialNodes
       editDragInitRef.current = null
       setDragNodeIdx(null)
-      if (initSnap && didDragRef.current) pushLocalUndo(initSnap)
+      setCrossPathCandidates([])
+      crossPathEntriesRef.current = []
+      const crossTgt = crossPathWeldTargetRef.current
+      crossPathWeldTargetRef.current = null
+      setCrossPathWeldTarget(null)
+      const tgt = weldTargetIdxRef.current
+      weldTargetIdxRef.current = null
+      setWeldTargetIdx(null)
+
+      if (crossTgt !== null && didDragRef.current) {
+        // Cross-path join: merge the current path with another path at their endpoints
+        if (initSnap) pushLocalUndo(initSnap)
+        const joined = joinPaths(
+          editNodesRef.current, m.nodeIdx, editClosedRef.current,
+          crossTgt.nodes, crossTgt.nodeIdx, crossTgt.closed,
+        )
+        if (joined) {
+          const newD = nodesToD(joined, false)
+          const { nodeEditPathId: pid } = useUIStore.getState()
+          if (pid && newD) {
+            usePathsStore.getState().batchUpdatePaths([{ id: pid, d: newD }])
+            usePathsStore.getState().deletePath(crossTgt.pathId)
+            regenerateAffected(pid)
+            setEditNodes(joined)
+            editNodesRef.current = joined
+            editClosedRef.current = false
+            setEditClosed(false)
+          }
+        }
+      } else if (tgt !== null && didDragRef.current) {
+        if (initSnap) pushLocalUndo(initSnap)
+        const curNodes = editNodesRef.current
+        const curClosed = editClosedRef.current
+        const n = curNodes.length
+        const srcIsEndpoint = !curClosed && (m.nodeIdx === 0 || m.nodeIdx === n - 1)
+        const tgtIsEndpoint = tgt === 0 || tgt === n - 1
+        const lollipop = srcIsEndpoint && !tgtIsEndpoint
+          ? endpointToMidpointWeld(curNodes, m.nodeIdx, tgt) : null
+
+        if (lollipop) {
+          // Endpoint-to-midpoint: create a closed loop and keep the remainder
+          const { loopNodes, remainNodes } = lollipop
+          const loopD = nodesToD(loopNodes, true)
+          const remainD = nodesToD(remainNodes, false)
+          const { nodeEditPathId: pid } = useUIStore.getState()
+          if (pid && remainD) {
+            const { paths: allPaths } = usePathsStore.getState()
+            const srcPath = allPaths.find((p) => p.id === pid)
+            usePathsStore.getState().batchUpdatePaths([{ id: pid, d: remainD }])
+            if (loopD) {
+              usePathsStore.getState().addPaths([{
+                id: `weld-loop-${Date.now()}`,
+                name: srcPath?.name ?? 'Path',
+                d: loopD,
+                visible: true,
+                color: srcPath?.color ?? nextPathColor(),
+              }])
+            }
+            regenerateAffected(pid)
+            setEditNodes(remainNodes)
+            editNodesRef.current = remainNodes
+            editClosedRef.current = false
+            setEditClosed(false)
+          }
+        } else {
+          // Standard same-path weld (endpoint→endpoint close, or mid→any merge)
+          const result = weldNodes(curNodes, m.nodeIdx, tgt, curClosed)
+          setEditNodes(result.nodes)
+          editNodesRef.current = result.nodes
+          if (result.closed !== curClosed) {
+            editClosedRef.current = result.closed
+            setEditClosed(result.closed)
+          }
+        }
+      } else if (initSnap && didDragRef.current) {
+        pushLocalUndo(initSnap)
+      }
+
+      // No-drag on an anchor: toggle connect mode or complete connection
+      if (!didDragRef.current && m.kind === 'anchor') {
+        const cs = connectSourceRef.current
+        const nodes = editNodesRef.current
+        const closed = editClosedRef.current
+        const n = nodes.length
+        const mIsEndpoint = !closed && (m.nodeIdx === 0 || m.nodeIdx === n - 1)
+
+        const clearConnect = () => {
+          connectSourceRef.current = null
+          setConnectSource(null)
+          setConnectPreviewTo(null)
+          setConnectSnapTargetIdx(null)
+          crossPathWeldTargetRef.current = null
+          setCrossPathWeldTarget(null)
+          setCrossPathCandidates([])
+          crossPathEntriesRef.current = []
+        }
+
+        if (cs !== null && cs !== m.nodeIdx) {
+          if (mIsEndpoint) {
+            // Connect source endpoint to other endpoint → close path
+            pushLocalUndo(nodes)
+            editClosedRef.current = true
+            setEditClosed(true)
+            clearConnect()
+          } else {
+            // Connect source endpoint to interior node — split into closed loop + open remainder,
+            // both nodes preserved (no merging, no deletion)
+            const result = connectEndpointToInterior(nodes, cs, m.nodeIdx)
+            if (result) {
+              pushLocalUndo(nodes)
+              const { loopNodes, remainNodes } = result
+              const loopD = nodesToD(loopNodes, true)
+              const remainD = nodesToD(remainNodes, false)
+              const { nodeEditPathId: pid } = useUIStore.getState()
+              if (pid && remainD) {
+                const { paths: allPaths } = usePathsStore.getState()
+                const srcPath = allPaths.find((p) => p.id === pid)
+                usePathsStore.getState().batchUpdatePaths([{ id: pid, d: remainD }])
+                if (loopD) {
+                  usePathsStore.getState().addPaths([{
+                    id: `connect-loop-${Date.now()}`,
+                    name: srcPath?.name ?? 'Path',
+                    d: loopD,
+                    visible: true,
+                    color: srcPath?.color ?? nextPathColor(),
+                  }])
+                }
+                regenerateAffected(pid)
+                setEditNodes(remainNodes)
+                editNodesRef.current = remainNodes
+                editClosedRef.current = false
+                setEditClosed(false)
+              }
+              clearConnect()
+            }
+            // else: degenerate (adjacent endpoints only, nothing to split) — stay in connect mode
+          }
+        } else if (cs === m.nodeIdx) {
+          // Cancel: click source again
+          clearConnect()
+        } else if (cs === null && mIsEndpoint) {
+          // Enter connect mode — populate cross-path candidates
+          connectSourceRef.current = m.nodeIdx
+          setConnectSource(m.nodeIdx)
+          const { nodeEditPathId: pid } = useUIStore.getState()
+          const { paths: allPaths } = usePathsStore.getState()
+          const entries: CrossPathEntry[] = []
+          for (const p of allPaths) {
+            if (p.id === pid || !p.visible) continue
+            const parsed = parseDToNodes(p.d)
+            if (parsed.nodes.length < 2) continue
+            if (parsed.closed) {
+              for (let j = 0; j < parsed.nodes.length; j++) {
+                entries.push({ pathId: p.id, nodeIdx: j, x: parsed.nodes[j].x, y: parsed.nodes[j].y, nodes: parsed.nodes, closed: true })
+              }
+            } else {
+              entries.push({ pathId: p.id, nodeIdx: 0, x: parsed.nodes[0].x, y: parsed.nodes[0].y, nodes: parsed.nodes, closed: false })
+              const last = parsed.nodes.length - 1
+              entries.push({ pathId: p.id, nodeIdx: last, x: parsed.nodes[last].x, y: parsed.nodes[last].y, nodes: parsed.nodes, closed: false })
+            }
+          }
+          crossPathEntriesRef.current = entries
+          setCrossPathCandidates(entries)
+        }
+        // else: non-endpoint click with no connect mode active → do nothing
+      }
+
       return
     }
 
@@ -1071,9 +1551,12 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       setMode2({ type: 'idle' })
 
       if (m.closing) {
-        const { penNodes: nodes, clearPenNodes } = useUIStore.getState()
+        const { penNodes: nodes, clearPenNodes, penCurveType: ct } = useUIStore.getState()
         if (nodes.length >= 2) {
-          const d = penNodesToPathD(nodes, true)
+          const closeNodes = altDownRef.current
+            ? [{ ...nodes[0], corner: true }, ...nodes.slice(1)]
+            : nodes
+          const d = penNodesToPathD(closeNodes, true, ct)
           if (d) {
             const id = `pen-${Date.now()}`
             const { addPaths: add, selectPath: sel } = usePathsStore.getState()
@@ -1089,15 +1572,22 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         return
       }
 
-      const { addPenNode } = useUIStore.getState()
+      const { addPenNode, penCurveType: ct } = useUIStore.getState()
       const newNode: PenNode = { x: m.anchorCNC.x, y: m.anchorCNC.y }
-      if (didDragRef.current && livePen?.handle) {
+      if (ct === 'bezier' && didDragRef.current && livePen?.handle) {
         const dx = livePen.handle.x - m.anchorCNC.x
         const dy = livePen.handle.y - m.anchorCNC.y
         newNode.outHandle = livePen.handle
         newNode.inHandle = { x: m.anchorCNC.x - dx, y: m.anchorCNC.y - dy }
+      } else if (ct !== 'linear' && altDownRef.current) {
+        // Alt held: mark incoming segment as linear (corner). Only affects the segment
+        // ending at this node — the outgoing segment uses normal curve logic.
+        newNode.corner = true
       }
+      penPast.current = [...penPast.current, [...useUIStore.getState().penNodes]]
+      penFuture.current = []
       addPenNode(newNode)
+      useUIStore.getState().setNodeEditHistoryFlags(true, false)
       setLivePen(null)
       return
     }
@@ -1181,7 +1671,13 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
               onNodeMouseDown={handleNodeMouseDown}
               onSegmentMouseDown={handleSegmentMouseDown}
               onHoveredNodeChange={handleHoveredNodeChange}
-              onHoverSegChange={setHoverSegIdx}
+              onHoverSegChange={(idx) => { hoverSegIdxRef.current = idx; setHoverSegIdx(idx) }}
+              weldTargetIdx={weldTargetIdx}
+              crossPathCandidates={crossPathCandidates}
+              crossPathWeldTarget={crossPathWeldTarget}
+              connectSourceIdx={connectSource}
+              connectPreviewTo={connectPreviewTo}
+              connectSnapTargetIdx={connectSnapTargetIdx}
             />
           )}
           <ToolpathLayer viewport={viewport} />
@@ -1189,7 +1685,15 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           <SimulationLayer viewport={viewport} />
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
           {activeTool === 'pen' && (
-            <PenLayer viewport={viewport} penNodes={penNodes} livePen={livePen} penClosing={penClosing} />
+            <PenLayer
+              viewport={viewport}
+              penNodes={penClosing && altDown && penNodes.length >= 1
+                ? [{ ...penNodes[0], corner: true }, ...penNodes.slice(1)]
+                : penNodes}
+              livePen={livePen}
+              penClosing={penClosing}
+              curveType={effectiveCurveType}
+            />
           )}
           {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
             <Group listening={false}>
@@ -1251,9 +1755,13 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       {/* Node edit indicator */}
       {nodeEditPathId && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-700/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
-          {hoveredEditNode !== null
-            ? 'Delete key to remove point'
-            : 'Drag points or handles · Click segment to insert · Esc to finish'}
+          {connectSource !== null
+            ? 'Click any node to connect · Esc to cancel'
+            : hoveredEditNode !== null
+              ? 'Delete key to remove point'
+              : hoverSegIdx !== null
+                ? 'Click to insert point · Delete key to delete segment'
+              : 'Drag points or handles · Alt-click node to toggle curve · Click segment to insert · Esc to finish'}
         </div>
       )}
 
@@ -1268,8 +1776,12 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           {penClosing
             ? 'Click to close path'
             : penNodes.length === 0
-              ? 'Pen Tool — click to start, drag to curve'
-              : 'Click to add point, drag to curve, click first point to close, Esc to finish'}
+              ? penCurveType === 'bezier'
+                ? 'Pen Tool — click for corner, drag to curve'
+                : 'Pen Tool — click to place nodes'
+              : penCurveType === 'bezier'
+                ? 'Click to add point, drag to curve, Alt for straight segment, click first point to close, Esc to finish'
+                : 'Click to add point, Alt for straight segment, click first point to close, Esc to finish'}
         </div>
       )}
       {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (

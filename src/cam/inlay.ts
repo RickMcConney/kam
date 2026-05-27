@@ -1,4 +1,4 @@
-import { flattenPath, signedArea, type Pt2 } from './pathFlattener'
+import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
 import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
@@ -18,34 +18,32 @@ export interface InlayParams {
 }
 
 // Offset a path by deltaMM (positive = outward, negative = inward).
-// Returns an SVG path string, or null if the offset collapses the shape.
+// Returns an SVG path string containing all result loops, or null if the offset
+// collapses all loops. Self-intersecting input paths are split into simple loops
+// first so Clipper2 receives well-formed polygons.
 function offsetPathD(d: string, deltaMM: number): string | null {
-  const subpaths = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  const subpaths = splitSelfIntersecting(flattenPath(d, 0.05))
   if (!subpaths.length) return null
 
-  const outer = subpaths.reduce((a, b) =>
-    Math.abs(signedArea(b)) > Math.abs(signedArea(a)) ? b : a
-  )
-  let pts: Pt2[] = [...outer]
-  // Strip closing duplicate
-  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6)
-    pts = pts.slice(0, -1)
-  // Clipper2 expects CCW winding for outer polygons
-  if (signedArea(pts) < 0) pts = [...pts].reverse()
+  const inputPaths = subpaths.map(sp => {
+    let pts = [...sp]
+    if (pts.length > 1 && Math.hypot(pts[pts.length-1][0]-pts[0][0], pts[pts.length-1][1]-pts[0][1]) < 1e-6)
+      pts = pts.slice(0, -1)
+    if (signedArea(pts) < 0) pts = [...pts].reverse()
+    return pts.map(([x, y]) => ({ x, y }))
+  })
 
-  const result = inflatePathsD(
-    [pts.map(([x, y]) => ({ x, y }))],
-    deltaMM, JoinType.Miter, EndType.Polygon, 4, 6,
-  )
+  const result = inflatePathsD(inputPaths, deltaMM, JoinType.Miter, EndType.Polygon, 4, 6)
   if (!result.length) return null
 
-  const best = result.reduce((a, b) => b.length > a.length ? b : a)
-  if (best.length < 3) return null
-
-  const cmds = [`M${best[0].x.toFixed(4)} ${best[0].y.toFixed(4)}`]
-  for (let i = 1; i < best.length; i++) cmds.push(`L${best[i].x.toFixed(4)} ${best[i].y.toFixed(4)}`)
-  cmds.push('Z')
-  return cmds.join(' ')
+  const cmds: string[] = []
+  for (const loop of result) {
+    if (loop.length < 3) continue
+    cmds.push(`M${loop[0].x.toFixed(4)} ${loop[0].y.toFixed(4)}`)
+    for (let i = 1; i < loop.length; i++) cmds.push(`L${loop[i].x.toFixed(4)} ${loop[i].y.toFixed(4)}`)
+    cmds.push('Z')
+  }
+  return cmds.length ? cmds.join(' ') : null
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -74,7 +72,7 @@ function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
 // are subpaths whose centroid falls inside that outer ring (intrinsic holes
 // like the counter of 'o' or 'a'). Single-subpath paths return [].
 function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
-  const subs = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  const subs = splitSelfIntersecting(flattenPath(d, 0.05))
   if (subs.length <= 1) return []
 
   const sorted = [...subs].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)))
@@ -86,7 +84,6 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
     const outer = sorted[i]
     const cx = outer.reduce((s, p) => s + p[0], 0) / outer.length
     const cy = outer.reduce((s, p) => s + p[1], 0) / outer.length
-    // Skip subpaths whose centroid is inside an already-claimed outer (nested hole).
     if (regions.some(r => {
       const rSub = flattenPath(r.outerD, 0.05)[0]
       return rSub && ptInPoly(cx, cy, rSub)
@@ -98,7 +95,8 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
       const cand = sorted[j]
       const hcx = cand.reduce((s, p) => s + p[0], 0) / cand.length
       const hcy = cand.reduce((s, p) => s + p[1], 0) / cand.length
-      if (ptInPoly(hcx, hcy, outer)) {
+      // Touching loops (shared vertex) are siblings, not holes.
+      if (!sharesVertex(cand, outer) && ptInPoly(hcx, hcy, outer)) {
         holes.push(ptsToD(cand))
         usedAsHole.add(j)
       }

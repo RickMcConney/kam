@@ -51,7 +51,7 @@ export interface PocketOperation extends BaseOperation {
   stepoverPercent: number
   passAngleDeg: number
   direction: CuttingDirection
-  strategy: 'raster' | 'contour'
+  strategy: 'raster' | 'contour' | 'adaptive'
   rampIn: boolean
 }
 

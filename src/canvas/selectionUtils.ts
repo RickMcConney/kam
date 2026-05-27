@@ -51,12 +51,24 @@ export function rotateAroundD(d: string, cx: number, cy: number, angleDeg: numbe
   return stringifyD(applyMat(parseD(d), mat))
 }
 
+// axis 'x' negates X (horizontal flip); axis 'y' negates Y (vertical flip)
+export function mirrorD(d: string, axis: 'x' | 'y', cx: number, cy: number): string {
+  return scaleAroundD(d, cx, cy, axis === 'x' ? -1 : 1, axis === 'y' ? -1 : 1)
+}
+
+// kx = horizontal shear (X shift per unit Y), ky = vertical shear (Y shift per unit X), both around (ax, ay)
+export function skewAroundD(d: string, kx: number, ky: number, ax: number, ay: number): string {
+  const mat: Mat6 = [1, ky, kx, 1, -kx * ay, -ky * ax]
+  return stringifyD(applyMat(parseD(d), mat))
+}
+
 // Apply a live transform to a single CNC-space point
 export function transformPoint(
   x: number, y: number,
   transform: { kind: 'translate'; dx: number; dy: number }
            | { kind: 'scale'; sx: number; sy: number; ax: number; ay: number }
            | { kind: 'rotate'; angle: number; cx: number; cy: number }
+           | { kind: 'skew'; kx: number; ky: number; ax: number; ay: number }
 ): { x: number; y: number } {
   switch (transform.kind) {
     case 'translate':
@@ -69,6 +81,11 @@ export function transformPoint(
       const dx = x - transform.cx, dy = y - transform.cy
       return { x: transform.cx + cos * dx - sin * dy, y: transform.cy + sin * dx + cos * dy }
     }
+    case 'skew':
+      return {
+        x: x + transform.kx * (y - transform.ay),
+        y: transform.ky * (x - transform.ax) + y,
+      }
   }
 }
 

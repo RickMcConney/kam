@@ -1,4 +1,4 @@
-import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, type Pt2 } from './pathFlattener'
+import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
@@ -185,7 +185,7 @@ export function generateProfile(
   params: ProfileParams,
   tabs?: Tab[]
 ): MotionSegment[] {
-  const subpaths = flattenPath(d, 0.05)
+  const subpaths = splitSelfIntersecting(flattenPath(d, 0.05))
   if (subpaths.length === 0) throw new Error('No geometry found in path')
 
   const safeZ = params.safeHeightMM ?? 5
@@ -201,7 +201,8 @@ export function generateProfile(
   // Normalize inputs to CCW so positive delta = expand, negative = shrink.
   // Clipper2 handles self-intersections automatically, eliminating the need for
   // the manual resolveOffsetLoops pass.
-  let offsetPaths: Pt2[][]
+  interface OffsetPath { pts: Pt2[]; isOpen: boolean }
+  let offsetPaths: OffsetPath[]
   if (delta !== 0) {
     const inputPaths = subpaths
       .map(sp => stripClosingDuplicate(sp))
@@ -214,13 +215,167 @@ export function generateProfile(
     offsetPaths = result
       .map(p => stripClosingDuplicate(p.map(({ x, y }) => [x, y] as Pt2)))
       .filter(p => p.length >= 3)
+      .map(pts => ({ pts, isOpen: false }))
   } else {
-    offsetPaths = subpaths.map(stripClosingDuplicate).filter(sp => sp.length >= 3)
+    // Detect open paths before stripping the closing duplicate so we can tell them apart.
+    offsetPaths = subpaths
+      .map(sp => {
+        const isOpen = sp.length < 2 ||
+          Math.hypot(sp[sp.length - 1][0] - sp[0][0], sp[sp.length - 1][1] - sp[0][1]) >= 1e-6
+        return { pts: isOpen ? sp : stripClosingDuplicate(sp), isOpen }
+      })
+      .filter(({ pts }) => pts.length >= 2)
   }
 
   const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
 
-  for (const rawPts of offsetPaths) {
+  for (const { pts: rawPts, isOpen } of offsetPaths) {
+    if (isOpen) {
+      // Open path (centerline only): cut start → end, no winding or closing needed.
+      const [sx, sy] = rawPts[0]
+      const [ex, ey] = rawPts[rawPts.length - 1]
+      const { lens: pathLens, total: pathTotal } = arcLengths(rawPts)
+
+      const tabRanges: { start: number; end: number; tabZ: number }[] = []
+      if (tabs && tabs.length > 0) {
+        for (const tab of tabs) {
+          const pos = designPathAtT(subpaths, tab.t)
+          if (!pos) continue
+          const center = nearestArcLen(rawPts, pathLens, pos[0], pos[1])
+          const half = tab.lengthMM / 2 + tool.diameterMM / 2
+          tabRanges.push({ start: center - half, end: center + half, tabZ: Math.min(0, -params.depthMM + tab.heightMM) })
+        }
+      }
+
+      if (params.rampIn) {
+        // Ramp forward from the pass start on every pass (no backtrack to ramp entry).
+        // Intermediate passes: ramp then cut rampEnd → far end; the next opposite-direction
+        // pass returns to the start and naturally clears the ramp zone.
+        // Last pass only: ramp, cleanup (rampEnd → start), then full cut start → far end.
+        const rampDist = Math.min(2 * tool.diameterMM, pathTotal * 0.45)
+        const RAMP_STEPS = 12
+        const reversedPts = [...rawPts].reverse()
+        const { lens: reversedLens } = arcLengths(reversedPts)
+        const rampEndFwd = interpPt(rawPts, pathLens, rampDist)
+        const rampEndBwd = interpPt(reversedPts, reversedLens, rampDist)
+        const mainTotal = pathTotal - rampDist
+
+        // Intermediate main sub-polylines: rampEnd → far end (arc-lengths offset by rampDist)
+        const mainFwdPts: Pt2[] = [rampEndFwd]
+        const mainFwdLens: number[] = [0]
+        for (let i = 1; i < rawPts.length; i++) {
+          if (pathLens[i] > rampDist + 1e-6) { mainFwdPts.push(rawPts[i]); mainFwdLens.push(pathLens[i] - rampDist) }
+        }
+        const mainBwdPts: Pt2[] = [rampEndBwd]
+        const mainBwdLens: number[] = [0]
+        for (let i = 1; i < reversedPts.length; i++) {
+          if (reversedLens[i] > rampDist + 1e-6) { mainBwdPts.push(reversedPts[i]); mainBwdLens.push(reversedLens[i] - rampDist) }
+        }
+
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+        segs.push({ x: sx, y: sy, z: 0, rapid: true })
+
+        for (let pi = 0; pi < passes.length; pi++) {
+          const zDepth = passes[pi]
+          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+          const forward = pi % 2 === 0
+          const pts = forward ? rawPts : reversedPts
+          const lens = forward ? pathLens : reversedLens
+          const rampEnd = forward ? rampEndFwd : rampEndBwd
+          const isLast = pi === passes.length - 1
+          const activeRanges = tabRanges.filter(tr => zDepth < tr.tabZ)
+
+          // Ramp forward from pts[0] to rampEnd, descending from rampStartZ to zDepth
+          for (let i = 1; i <= RAMP_STEPS; i++) {
+            const t = i / RAMP_STEPS
+            const [rx, ry] = interpPt(pts, lens, t * rampDist)
+            segs.push({ x: rx, y: ry, z: rampStartZ + (zDepth - rampStartZ) * t, rapid: false, feedScale: 0.5 })
+          }
+          // Now at rampEnd at zDepth
+
+          if (isLast) {
+            // Cleanup: rampEnd → pts[0] at full depth to clear the ramp zone
+            const cleanPts: Pt2[] = [rampEnd]
+            const cleanLens: number[] = [0]
+            for (let ci = pts.length - 1; ci >= 0; ci--) {
+              if (lens[ci] < rampDist - 1e-6) {
+                const prev = cleanPts[cleanPts.length - 1]
+                cleanLens.push(cleanLens[cleanLens.length - 1] + Math.hypot(pts[ci][0] - prev[0], pts[ci][1] - prev[1]))
+                cleanPts.push(pts[ci])
+              }
+            }
+            const lastClean = cleanPts[cleanPts.length - 1]
+            if (Math.hypot(lastClean[0] - pts[0][0], lastClean[1] - pts[0][1]) > 1e-6) {
+              cleanLens.push(cleanLens[cleanLens.length - 1] + Math.hypot(lastClean[0] - pts[0][0], lastClean[1] - pts[0][1]))
+              cleanPts.push(pts[0])
+            }
+            segs.push(...polylinePassWithTabs(cleanPts, zDepth, [], cleanLens))
+            // Full cut from pts[0] to far end
+            if (activeRanges.length === 0) {
+              const arcSegs = arcFitPolyline(pts, 0.1)
+              for (const s of arcSegs) {
+                segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+              }
+            } else {
+              const effectiveRanges = forward
+                ? activeRanges
+                : activeRanges.map(tr => ({ start: pathTotal - tr.end, end: pathTotal - tr.start, tabZ: tr.tabZ }))
+              segs.push(...polylinePassWithTabs(pts, zDepth, effectiveRanges, lens))
+            }
+          } else {
+            // Intermediate: cut rampEnd → far end; ramp zone cleared by next opposite pass
+            const mainPts = forward ? mainFwdPts : mainBwdPts
+            const mainLens = forward ? mainFwdLens : mainBwdLens
+            if (activeRanges.length === 0) {
+              const arcSegs = arcFitPolyline(mainPts, 0.1)
+              for (const s of arcSegs) {
+                segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+              }
+            } else {
+              const mainTabRanges = forward
+                ? activeRanges.map(tr => ({ start: tr.start - rampDist, end: tr.end - rampDist, tabZ: tr.tabZ })).filter(tr => tr.end > 0 && tr.start < mainTotal)
+                : activeRanges.map(tr => ({ start: pathTotal - tr.end - rampDist, end: pathTotal - tr.start - rampDist, tabZ: tr.tabZ })).filter(tr => tr.end > 0 && tr.start < mainTotal)
+              segs.push(...polylinePassWithTabs(mainPts, zDepth, mainTabRanges, mainLens))
+            }
+          }
+        }
+
+        const [retractX, retractY] = passes.length % 2 === 1 ? [ex, ey] : [sx, sy]
+        segs.push({ x: retractX, y: retractY, z: safeZ, rapid: true })
+      } else {
+        // Bidirectional passes: alternate direction each depth level so the tool
+        // feed-plunges in place at each pass end instead of retracting to safe height.
+        const reversedPts = [...rawPts].reverse()
+        const { lens: reversedLens } = arcLengths(reversedPts)
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+        for (let pi = 0; pi < passes.length; pi++) {
+          const zDepth = passes[pi]
+          const forward = pi % 2 === 0
+          const pts = forward ? rawPts : reversedPts
+          const lens = forward ? pathLens : reversedLens
+          // Feed-plunge at current position (already here from end of previous pass; first pass descends from safeZ)
+          segs.push({ x: pts[0][0], y: pts[0][1], z: zDepth, rapid: false })
+          const activeRanges = tabRanges.filter(tr => zDepth < tr.tabZ)
+          if (activeRanges.length === 0) {
+            const arcSegs = arcFitPolyline(pts, 0.1)
+            for (const s of arcSegs) {
+              segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+            }
+          } else {
+            // For backward passes, mirror tab arc-length positions relative to path total
+            const effectiveRanges = forward
+              ? activeRanges
+              : activeRanges.map(tr => ({ start: pathTotal - tr.end, end: pathTotal - tr.start, tabZ: tr.tabZ }))
+            segs.push(...polylinePassWithTabs(pts, zDepth, effectiveRanges, lens))
+          }
+        }
+        // Retract from wherever the final pass ended
+        const [retractX, retractY] = passes.length % 2 === 1 ? [ex, ey] : [sx, sy]
+        segs.push({ x: retractX, y: retractY, z: safeZ, rapid: true })
+      }
+      continue
+    }
+
     const oriented = ensureWinding(rawPts, wantCCW)
     const circle = fitCircle(oriented)
 
@@ -307,10 +462,7 @@ export function generateProfile(
           const zDepth = passes[pi]
           const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
 
-          if (pi > 0) {
-            segs.push({ x: rampEndX, y: rampEndY, z: safeZ, rapid: true })
-            segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
-          }
+          // pi === 0: lower from safe height to surface; pi > 0: rapid at current depth to ramp start (no lift)
           segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
 
           // Ramp in: descend from rampStartZ to zDepth while moving along path
@@ -329,9 +481,12 @@ export function generateProfile(
             .filter(tr => tr.end > 0 && tr.start < mainTotal)
           segs.push(...polylinePassWithTabs(mainPts, zDepth, mainTabRanges, mainLens))
 
-          // Cleanup pass with tab avoidance (ramp entry zone, arc-lengths unchanged)
-          const cleanTabRanges = activeRanges.filter(tr => tr.end > 0 && tr.start < rampDist)
-          segs.push(...polylinePassWithTabs(cleanPts, zDepth, cleanTabRanges, cleanLens))
+          // Cleanup pass: only on the final depth pass to clear the ramp entry zone.
+          // Intermediate passes skip it — the next ramp descends through the same groove anyway.
+          if (pi === passes.length - 1) {
+            const cleanTabRanges = activeRanges.filter(tr => tr.end > 0 && tr.start < rampDist)
+            segs.push(...polylinePassWithTabs(cleanPts, zDepth, cleanTabRanges, cleanLens))
+          }
         }
         segs.push({ x: rampEndX, y: rampEndY, z: safeZ, rapid: true })
       } else {

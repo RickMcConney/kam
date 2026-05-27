@@ -313,6 +313,16 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM, direction: t.direction }))
   }
 
+  function handleStrategyChange(strategy: PocketStrategy) {
+    setForm((f) => ({
+      ...f,
+      strategy,
+      stepoverPercent: strategy === 'adaptive'
+        ? Math.min(Math.max(f.stepoverPercent, 5), 40)
+        : Math.min(Math.max(f.stepoverPercent, 10), 90),
+    }))
+  }
+
   function up<K extends keyof PocketFormState>(k: K, v: PocketFormState[K]) {
     setForm((f) => ({ ...f, [k]: v }))
   }
@@ -395,21 +405,20 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
-      <ToggleRow label="Strategy" options={['raster', 'contour'] as PocketStrategy[]} value={form.strategy} onChange={(v) => up('strategy', v)} />
-      {/* Stepover */}
+      <ToggleRow label="Strategy" options={['raster', 'contour', 'adaptive'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+          {form.strategy === 'adaptive' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
-          type="range" min={10} max={90} step={5}
+          type="range" min={form.strategy === 'adaptive' ? 5 : 10} max={form.strategy === 'adaptive' ? 40 : 90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
           className="w-full accent-blue-500"
         />
       </div>
       {/* Pass angle — only relevant for raster strategy */}
-      {form.strategy !== 'contour' && (
+      {form.strategy === 'raster' && (
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
             Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
@@ -426,13 +435,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
-      <div className="flex items-center gap-2">
-        <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
-          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
-        <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
-        </label>
-      </div>
+      {form.strategy !== 'adaptive' && (
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
+            onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+          <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+            Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+          </label>
+        </div>
+      )}
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}

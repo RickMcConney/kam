@@ -14,7 +14,7 @@ import { jspoly as JSPOLY } from './lib/jspoly.js'
 // jspoly.js's internal methods reference `JSPoly` as a bare global (written for <script> context).
 // In ES module scope it's never defined, so we pin it on globalThis once at import time.
 ;(globalThis as any).JSPoly = JSPOLY
-import { flattenPath, signedArea, type Pt2 } from './pathFlattener'
+import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -443,7 +443,8 @@ function classifySubpaths(subpaths: Pt2[][]): Region[] {
     for (let j = i + 1; j < sorted.length; j++) {
       if (usedAsHole.has(j)) continue
       const candidate = sorted[j]
-      if (ptInPoly(centroidX(candidate), centroidY(candidate), outer)) {
+      // Loops touching at a vertex are siblings (e.g. letter K arms), not holes.
+      if (!sharesVertex(candidate, outer) && ptInPoly(centroidX(candidate), centroidY(candidate), outer)) {
         holes.push(candidate)
         usedAsHole.add(j)
       }
@@ -471,7 +472,7 @@ export async function generateVCarve(
   // Maximum tool radius in scaled units (used for pruning thresholds)
   const maxRadiusScaled = params.maxDepthMM * tanHalfAngle * SCALE
 
-  const allSubpathsPt2 = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  const allSubpathsPt2 = splitSelfIntersecting(flattenPath(d, 0.05))
   if (!allSubpathsPt2.length) throw new Error('No geometry found in path')
 
   const islandPt2: Pt2[][] = []
@@ -606,7 +607,7 @@ export async function generateMaleTextBoundaryVCarve(
 
   const maxRadiusScaled = params.maxDepthMM * tanHalfAngle * SCALE
 
-  const allPt2 = flattenPath(d, 0.05).filter(s => s.length >= 3)
+  const allPt2 = splitSelfIntersecting(flattenPath(d, 0.05))
   if (!allPt2.length) throw new Error('No geometry found in path')
 
   const islandPt2: Pt2[][] = []

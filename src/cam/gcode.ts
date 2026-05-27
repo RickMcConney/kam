@@ -130,7 +130,6 @@ export function generateGcode(
         continue
       }
 
-      const prevSeg = i > 0 ? op.segments[i - 1] : null
       const posChanged = seg.x !== prevX || seg.y !== prevY || seg.z !== prevZ
       // Arc segments (full circle) have start == end, so posChanged is false — never skip them.
       if (!posChanged && !seg.arc) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
@@ -172,9 +171,8 @@ export function generateGcode(
           lines.push(sub(profile.cutTemplate, { x: ax, y: ay, z: az, f: feed }))
         }
       } else {
-        const zChanged = seg.z !== prevZ
         const xyChanged = seg.x !== prevX || seg.y !== prevY
-        const isPlunge = zChanged && prevSeg && !prevSeg.rapid && !xyChanged
+        const isPlunge = !xyChanged && seg.z < prevZ
         const feedMm = isPlunge ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
         const feed = Math.round(toOut(feedMm * (seg.feedScale ?? 1), profile))
         lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
