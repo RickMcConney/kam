@@ -121,6 +121,15 @@ export async function regenerateOperation(opId: string): Promise<void> {
         safeHeightMM,
       }))
 
+    } else if (op.type === 'trochoidal') {
+      const path = paths.find((p) => p.id === op.pathId)
+      if (!path) throw new Error('Source path not found')
+      setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
+        side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+        direction: op.direction, trochStepMM: op.trochStepMM, trochRadiusMM: op.trochRadiusMM,
+        finishingPass: op.finishingPass, rampIn: op.rampIn, startNear: op.entryHint, safeHeightMM,
+      }))
+
     } else if (op.type === 'inlay') {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
@@ -155,7 +164,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
 }
 
 function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, pathId: string): boolean {
-  if (op.type === 'profile' || op.type === 'drill' || op.type === 'profile3d') return op.pathId === pathId
+  if (op.type === 'profile' || op.type === 'trochoidal' || op.type === 'drill' || op.type === 'profile3d') return op.pathId === pathId
   if (op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') {
     return op.pathId === pathId || (op.islandIds?.includes(pathId) ?? false)
   }

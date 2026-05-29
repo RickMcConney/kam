@@ -2,6 +2,7 @@ import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 
 import { generatePocket } from './pocket'
 import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
+import { applyCornerTreatment } from '../tools/cornerTreatment'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -44,6 +45,194 @@ function offsetPathD(d: string, deltaMM: number): string | null {
     cmds.push('Z')
   }
   return cmds.length ? cmds.join(' ') : null
+}
+
+// Like offsetPathD but uses Round joins — produces smooth circular arcs at corners.
+function offsetPathRound(d: string, deltaMM: number): string | null {
+  const subpaths = splitSelfIntersecting(flattenPath(d, 0.05))
+  if (!subpaths.length) return null
+  const inputPaths = subpaths.map(sp => {
+    let pts = [...sp]
+    if (pts.length > 1 && Math.hypot(pts[pts.length-1][0]-pts[0][0], pts[pts.length-1][1]-pts[0][1]) < 1e-6)
+      pts = pts.slice(0, -1)
+    if (signedArea(pts) < 0) pts = [...pts].reverse()
+    return pts.map(([x, y]) => ({ x, y }))
+  })
+  const result = inflatePathsD(inputPaths, deltaMM, JoinType.Round, EndType.Polygon, 4, 2)
+  if (!result.length) return null
+  const cmds: string[] = []
+  for (const loop of result) {
+    if (loop.length < 3) continue
+    cmds.push(`M${loop[0].x.toFixed(4)} ${loop[0].y.toFixed(4)}`)
+    for (let i = 1; i < loop.length; i++) cmds.push(`L${loop[i].x.toFixed(4)} ${loop[i].y.toFixed(4)}`)
+    cmds.push('Z')
+  }
+  return cmds.length ? cmds.join(' ') : null
+}
+
+// Round all convex (outer) corners of path d to radius r using the corner tool.
+export function roundCornersForEndmill(d: string, r: number): string {
+  if (r <= 0.001) return d
+  return applyCornerTreatment(d, { type: 'outerRound', radiusMM: r })
+}
+
+// ─── End Mill Inlay ──────────────────────────────────────────────────────────
+
+const CORNER_ROUND_EXTRA_MM = 1
+
+// Female socket for flat (end mill) inlay.
+//
+// Algorithm:
+//   1. Round all corners of the design path to the finish-bit radius.
+//   2. Inset the rounded path by (finishR + clearance) — this is the finish-tool
+//      centre path and the outer boundary for the roughing pocket.
+//   3. Pocket everything inside that boundary with the roughing bit.
+//   4. Profile the boundary with the finishing bit (step-down contour passes).
+//
+// The gap between the male wall (at roundedD) and the female wall
+// (at roundedD inset by clearance) is exactly clearanceMM.
+async function generateInlayFemaleEndmill(
+  d: string,
+  endmill: Tool,
+  finishTool: Tool,
+  params: InlayParams
+): Promise<InlaySplitResult> {
+  const safeZ = params.safeHeightMM ?? 5
+  const finishR = finishTool.diameterMM / 2
+  const c = params.clearanceMM
+  const totalDepth = params.pocketDepthMM + params.glueLineMM
+  const step = Math.abs(params.stepDownMM)
+
+  // Round corners so the finish tool can reach every convex corner cleanly.
+  // Pass roundedD directly to generatePocket — it handles the tool-radius offset
+  // internally. Pre-insetting here causes a double-offset that collapses narrow
+  // concave features like the notch between K's legs.
+  const roundedD = roundCornersForEndmill(d, finishTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+
+  // Finish-tool centre path: used for the explicit contour pass after roughing.
+  const femaleContourD = offsetPathRound(roundedD, -(finishR - c))
+  if (!femaleContourD)
+    throw new Error('Inlay socket is too small for the selected tools')
+
+  const zPasses: number[] = []
+  let z = -step
+  while (z > -totalDepth) { zPasses.push(z); z -= step }
+  zPasses.push(-totalDepth)
+
+  // Islands: round corners and expand by clearance for the pocket keep-out boundary.
+  const pocketIslandDs: string[] = []
+  const islandFinishDs: string[] = []
+  for (const rawIslandD of params.islandDs) {
+    const roundedIsland = roundCornersForEndmill(rawIslandD, finishTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+    const pillar = c !== 0 ? (offsetPathRound(roundedIsland, -c) ?? roundedIsland) : roundedIsland
+    pocketIslandDs.push(pillar)
+    const contour = offsetPathRound(pillar, finishR)
+    if (contour) islandFinishDs.push(contour)
+  }
+
+  // Pocket the rounded path directly — no pre-inset.
+  const endmillSegs: MotionSegment[] = []
+  try {
+    endmillSegs.push(...generatePocket(roundedD, endmill, {
+      strategy: 'raster',
+      depthMM: totalDepth,
+      stepDownMM: params.stepDownMM,
+      stepoverPercent: params.stepoverPercent,
+      direction: 'climb',
+      islandDs: pocketIslandDs,
+      angle: 0,
+      safeHeightMM: params.safeHeightMM,
+    }))
+  } catch { /* shape too small for end mill */ }
+
+  if (endmillSegs.length === 0)
+    throw new Error('Inlay socket is too small for the selected tools')
+
+  // Step 4: profile the socket wall (and each island wall) with the finishing bit.
+  const vbitSegs: MotionSegment[] = []
+  for (const pts of getOuters(femaleContourD)) {
+    for (const zPass of zPasses) addContour(pts, zPass, vbitSegs, safeZ)
+  }
+  for (const islandD of islandFinishDs) {
+    for (const pts of getOuters(islandD)) {
+      for (const zPass of zPasses) addContour(pts, zPass, vbitSegs, safeZ)
+    }
+  }
+
+  return { endmillSegs, vbitSegs }
+}
+
+// Male plug for flat (end mill) inlay.
+//
+// Algorithm:
+//   1. Round all convex corners of the design path to the finish-bit radius.
+//   2. Offset the rounded path outward by clearanceMM — release-cut boundary.
+//   3. Outside profile that path with the finishing bit (step-down contour passes).
+//   4. Pocket any islands with the roughing bit.
+async function generateInlayMaleEndmill(
+  d: string,
+  profileTool: Tool,
+  finishTool: Tool,
+  params: InlayParams
+): Promise<InlaySplitResult> {
+  const safeZ = params.safeHeightMM ?? 5
+  const workingD = params.mirrorX ? mirrorPathD(d) : d
+  const finishR = finishTool.diameterMM / 2
+  const depth = Math.abs(params.pocketDepthMM)
+  const step = Math.abs(params.stepDownMM)
+
+  const zPasses: number[] = []
+  let z = -step
+  while (z > -depth) { zPasses.push(z); z -= step }
+  zPasses.push(-depth)
+
+  // Step 1: round convex corners to finish-bit radius.
+  const roundedD = roundCornersForEndmill(workingD, finishTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+
+  // Step 2: offset by clearance to get the plug boundary.
+  const plugBoundaryD = params.clearanceMM > 0
+    ? (offsetPathRound(roundedD, -params.clearanceMM) ?? roundedD)
+    : roundedD
+
+  // Step 3: outside profile — tool center runs finishR outside the plug boundary.
+  const outsideProfileD = offsetPathRound(plugBoundaryD, finishR)
+  const vbitSegs: MotionSegment[] = []
+  if (outsideProfileD) {
+    for (const outer of getOuters(outsideProfileD)) {
+      for (const zPass of zPasses) addContour(outer, zPass, vbitSegs, safeZ)
+    }
+  }
+
+  if (vbitSegs.length === 0)
+    throw new Error('Inlay plug is too small for the selected tools')
+
+  // Step 4: pocket islands with roughing bit + inside profile with finishing bit.
+  const endmillSegs: MotionSegment[] = []
+  for (const rawIslandD of params.islandDs) {
+    const islandD = params.mirrorX ? mirrorPathD(rawIslandD) : rawIslandD
+    const roundedIsland = roundCornersForEndmill(islandD, profileTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+    try {
+      endmillSegs.push(...generatePocket(roundedIsland, profileTool, {
+        strategy: 'raster',
+        depthMM: params.pocketDepthMM,
+        stepDownMM: params.stepDownMM,
+        stepoverPercent: params.stepoverPercent,
+        direction: 'climb',
+        islandDs: [],
+        angle: 0,
+        safeHeightMM: params.safeHeightMM,
+      }))
+    } catch { /* island too small */ }
+    // Inside profile — tool center runs finishR inside the island wall.
+    const insideProfileD = offsetPathRound(roundedIsland, -finishR)
+    if (insideProfileD) {
+      for (const pts of getOuters(insideProfileD)) {
+        for (const zPass of zPasses) addContour(pts, zPass, vbitSegs, safeZ)
+      }
+    }
+  }
+
+  return { vbitSegs, endmillSegs }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -161,8 +350,6 @@ export function computeInlayFemaleOffsets(
   const totalDepthMM = params.pocketDepthMM + params.glueLineMM
   const halfWidthMM = totalDepthMM * tanHalf
   const fullWidthMM = halfWidthMM * 2
-  // Positive clearance expands the female socket: shift all offsets outward by c so the
-  // medial axis (and pocket boundary) stay perfectly aligned.
   const c = params.clearanceMM
   return {
     pocketBoundaryD: offsetPathD(d, c - halfWidthMM),
@@ -192,7 +379,7 @@ export async function generateInlayFemale(
   vbit: Tool,
   params: InlayParams
 ): Promise<InlaySplitResult> {
-  if (vbit.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+  if (vbit.type !== 'vbit') return generateInlayFemaleEndmill(d, endmill, vbit, params)
 
   // Multi-subpath paths (text): plain VCarve on the whole path, max depth set by
   // the V-bit's geometry (depth at full engagement = radius / tan(halfAngle)).
@@ -243,8 +430,6 @@ export async function generateInlayFemale(
   // Step 1: flat-bottom raster pocket (end mill, inside pocketBoundaryD).
   // Cut glueLineMM deeper than the plug bevel depth to leave room for glue.
   if (pocketBoundaryD) {
-    // Islands shrink their keep-out zone by clearanceMM so the pocket clears closer to
-    // the island edge, matching the expanded outer boundary.
     const islandPocketDs = params.islandDs
       .map(iD => offsetPathD(iD, halfWidthMM - params.clearanceMM))
       .filter((s): s is string => s !== null)
@@ -268,8 +453,6 @@ export async function generateInlayFemale(
   // Island wall: between (islandD outset by fullWidth) and islandD.
   // Each island's annular zone is independent — call generateVCarve separately so
   // the medial axis for each zone is clean (mixing them would corrupt both axes).
-  // V-carve outer wall expanded by clearanceMM so its medial axis aligns with the
-  // expanded pocket boundary and the bevel starts from the right surface position.
   const dVCarve = params.clearanceMM !== 0 ? (offsetPathD(d, params.clearanceMM) ?? d) : d
   if (vcarveIslandD) {
     try {
@@ -285,8 +468,6 @@ export async function generateInlayFemale(
   for (const islandD of params.islandDs) {
     const islandVCarveOuterD = offsetPathD(islandD, fullWidthMM - params.clearanceMM)
     if (!islandVCarveOuterD) continue
-    // Shift the inner boundary by -clearanceMM too so both walls move together,
-    // keeping the zone width constant and giving the medial axis the full displacement.
     const islandVCarveInnerD = params.clearanceMM !== 0
       ? (offsetPathD(islandD, -params.clearanceMM) ?? islandD)
       : islandD
@@ -472,7 +653,7 @@ export async function generateInlayMale(
   vbitTool: Tool,
   params: InlayParams
 ): Promise<InlaySplitResult> {
-  if (vbitTool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+  if (vbitTool.type !== 'vbit') return generateInlayMaleEndmill(d, profileTool, vbitTool, params)
   const safeZ = params.safeHeightMM ?? 5
 
   // Multi-subpath paths (text): use the Virtual Z-Plane Shift algorithm which

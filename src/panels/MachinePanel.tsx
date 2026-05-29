@@ -5,10 +5,10 @@ import { ICON } from '../theme'
 import {
   AlertCircle, Loader2, Trash2,
   X, Circle, CircleDot, Target, Layers,
-  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box,
+  Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, RefreshCw,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
-import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation } from '../store/toolpathStore'
+import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation, type TrochoidalOperation } from '../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../store/formDefaultsStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
@@ -22,6 +22,7 @@ import { regenerateAffected } from '../cam/regenerate'
 import { useUIStore } from '../store/uiStore'
 import { flattenPath } from '../cam/pathFlattener'
 import { generateProfile } from '../cam/profile'
+import { generateTrochoidal } from '../cam/trochoidal'
 import { generatePocket, type PocketStrategy } from '../cam/pocket'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
@@ -246,6 +247,204 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="profile-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
           Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+        </label>
+      </div>
+      {errorMsg && (
+        <p className="text-body text-red-400 flex items-start gap-1.5">
+          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
+        </p>
+      )}
+      <GenerateBtn
+        disabled={selectedPaths.length === 0 || !selectedTool || generating || form.depthMM <= 0}
+        generating={generating}
+        onClick={handleGenerate}
+        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+      />
+    </FormShell>
+  )
+}
+
+// ─── Trochoidal form ──────────────────────────────────────────────────────────
+
+interface TrochoidalFormState {
+  toolId: string
+  side: CutSide
+  depthMM: number
+  stepDownMM: number
+  direction: CuttingDirection
+  trochStepMM: number
+  trochRadiusMM: number
+  finishingPass: boolean
+  rampIn: boolean
+}
+
+export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editOp?: TrochoidalOperation }) {
+  const { tools } = useToolStore()
+  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
+  const { load, save } = useFormDefaultsStore()
+  const { safeHeightMM } = useWorkpieceStore()
+
+  const defaultTool = tools[0]
+  const [form, setForm] = useState<TrochoidalFormState>(() => editOp ? {
+    toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
+    stepDownMM: editOp.stepDownMM, direction: editOp.direction,
+    trochStepMM: editOp.trochStepMM, trochRadiusMM: editOp.trochRadiusMM,
+    finishingPass: editOp.finishingPass, rampIn: editOp.rampIn ?? false,
+  } : mergeWithDefaults(load('trochoidal'), {
+    toolId: defaultTool?.id ?? '',
+    side: 'outside' as CutSide,
+    depthMM: defaultTool?.maxDepthMM ?? 10,
+    stepDownMM: defaultTool?.stepDownMM ?? 3,
+    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    trochStepMM: (defaultTool?.diameterMM ?? 6) * 0.15,
+    trochRadiusMM: (defaultTool?.diameterMM ?? 6) * 0.5,
+    finishingPass: true,
+    rampIn: false,
+  }, tools))
+  const [generating, setGenerating] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  const selectedPaths = editOp
+    ? paths.filter((p) => p.id === editOp.pathId)
+    : paths.filter((p) => selectedIds.includes(p.id))
+  const selectedTool = tools.find((t) => t.id === form.toolId)
+
+  function handleToolChange(toolId: string) {
+    const t = tools.find((x) => x.id === toolId)
+    if (t) setForm((f) => ({
+      ...f, toolId,
+      stepDownMM: t.stepDownMM,
+      direction: t.direction,
+      trochStepMM: parseFloat((t.diameterMM * 0.15).toFixed(3)),
+      trochRadiusMM: parseFloat((t.diameterMM * 0.5).toFixed(3)),
+    }))
+  }
+
+  function up<K extends keyof TrochoidalFormState>(k: K, v: TrochoidalFormState[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  function handleGenerate() {
+    if (selectedPaths.length === 0 || !selectedTool) return
+    pushHistoryBoth()
+    setGenerating(true)
+    setErrorMsg(null)
+    setTimeout(() => {
+      let failed = false
+      if (editOp) {
+        updateOperation(editOp.id, {
+          toolId: form.toolId, side: form.side, depthMM: form.depthMM,
+          stepDownMM: form.stepDownMM, direction: form.direction,
+          trochStepMM: form.trochStepMM, trochRadiusMM: form.trochRadiusMM,
+          finishingPass: form.finishingPass, rampIn: form.rampIn, status: 'generating',
+        } as Partial<AnyOperation>)
+        try {
+          setSegments(editOp.id, generateTrochoidal(selectedPaths[0].d, selectedTool, {
+            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            direction: form.direction, trochStepMM: form.trochStepMM,
+            trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
+            rampIn: form.rampIn, safeHeightMM,
+          }))
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Generation failed'
+          setError(editOp.id, msg)
+          setErrorMsg(msg)
+          failed = true
+        }
+      } else {
+        for (const path of selectedPaths) {
+          const opId = addOperation({
+            name: `Trochoidal: ${path.name} (${selectedTool.name})`,
+            type: 'trochoidal',
+            toolId: form.toolId,
+            pathId: path.id,
+            side: form.side,
+            depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM,
+            direction: form.direction,
+            trochStepMM: form.trochStepMM,
+            trochRadiusMM: form.trochRadiusMM,
+            finishingPass: form.finishingPass,
+            rampIn: form.rampIn,
+          })
+          updateOperation(opId, { status: 'generating' })
+          try {
+            setSegments(opId, generateTrochoidal(path.d, selectedTool, {
+              side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              direction: form.direction, trochStepMM: form.trochStepMM,
+              trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
+              rampIn: form.rampIn, safeHeightMM,
+            }))
+          } catch (err) {
+            deleteOperation(opId)
+            setErrorMsg(err instanceof Error ? err.message : 'Generation failed')
+            failed = true
+          }
+        }
+      }
+      setGenerating(false)
+      if (!failed) { save('trochoidal', form) }
+    }, 0)
+  }
+
+  return (
+    <FormShell title={editOp ? 'Edit Trochoidal' : 'New Trochoidal Operation'} onClose={onClose}>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Paths {!editOp && selectedPaths.length > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedPaths.length} selected — one operation each)</span>}
+        </label>
+        {selectedPaths.length > 0 ? (
+          <div className="space-y-0.5">
+            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
+        )}
+      </div>
+      <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
+      <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
+      <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
+        onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
+        maxDepthMM={selectedTool?.maxDepthMM} />
+      <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Loop Amplitude</label>
+          <div className="flex items-center gap-1">
+            <NumericInput value={form.trochRadiusMM} min={0.1} step={0.1}
+              onChange={(v) => up('trochRadiusMM', v)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step / Loop</label>
+          <div className="flex items-center gap-1">
+            <NumericInput value={form.trochStepMM} min={0.01} step={0.05}
+              onChange={(v) => up('trochStepMM', v)}
+              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </div>
+        </div>
+      </div>
+      <p className="text-label text-gray-400 dark:text-neutral-500 -mt-1">
+        Cuts {(form.trochRadiusMM * 2).toFixed(2)} mm wide · {selectedTool ? Math.round(form.trochStepMM / selectedTool.diameterMM * 100) : '—'}% tool dia per loop
+      </p>
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="troch-ramp-in" checked={form.rampIn}
+          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="troch-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(spiral down over 2× dia, 50% feed)</span>
+        </label>
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="troch-finishing" checked={form.finishingPass}
+          onChange={(e) => up('finishingPass', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="troch-finishing" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Finishing pass <span className="text-gray-500 dark:text-neutral-500 normal-case">(clean sweep after loops)</span>
         </label>
       </div>
       {errorMsg && (
@@ -997,7 +1196,6 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
 interface InlayFormState {
   vbitToolId: string
   pocketToolId: string
-  angleDeg: number
   pocketDepthMM: number
   stepDownMM: number
   stepoverPercent: number
@@ -1021,14 +1219,13 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
   const [form, setForm] = useState<InlayFormState>(() => editOp ? {
     vbitToolId: editOp.vbitToolId, pocketToolId: editOp.pocketToolId,
-    angleDeg: editOp.angleDeg, pocketDepthMM: editOp.pocketDepthMM,
+    pocketDepthMM: editOp.pocketDepthMM,
     stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
     glueLineMM: editOp.glueLineMM, clearanceMM: editOp.clearanceMM,
     role: editOp.role, mirrorX: editOp.mirrorX ?? false,
   } : mergeWithDefaults(load('inlay'), {
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
-    angleDeg: defaultVbit?.vbitAngleDeg ?? 60,
     pocketDepthMM: 5,
     stepDownMM: defaultEndmill?.stepDownMM ?? 3,
     stepoverPercent: 40,
@@ -1056,8 +1253,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     pushHistoryBoth()
     setGenerating(true)
 
+    const angleDeg = vbitTool?.vbitAngleDeg ?? 60
     const baseParams = {
-      angleDeg: form.angleDeg,
+      angleDeg,
       pocketDepthMM: form.pocketDepthMM,
       stepDownMM: form.stepDownMM,
       stepoverPercent: form.stepoverPercent,
@@ -1069,7 +1267,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     const sharedOpFields = {
       pocketToolId: form.pocketToolId,
       vbitToolId: form.vbitToolId,
-      angleDeg: form.angleDeg,
+      angleDeg,
       pocketDepthMM: form.pocketDepthMM,
       stepDownMM: form.stepDownMM,
       stepoverPercent: form.stepoverPercent,
@@ -1119,11 +1317,14 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     }
 
     // For new ops: create all first-phase ops first, then all second-phase ops, so
-    // the operations list naturally orders all vbit work before all endmill work.
-    // Female: endmill (pocket) runs before vbit (walls). Male: vbit runs before endmill.
+    // the operations list naturally orders roughing before finishing.
+    // Female (any): endmill (roughing pocket) first, vbit/finish (walls) second.
+    // Male V-bit: vbit (bevel profile) first, endmill (release cut) second.
+    // Male endmill-only: endmill (roughing release) first, vbit/finish (release) second.
     const role = form.role
-    const firstPhase  = role === 'female' ? 'endmill' : 'vbit'   as 'vbit' | 'endmill'
-    const secondPhase = role === 'female' ? 'vbit'    : 'endmill' as 'vbit' | 'endmill'
+    const isEndmillOnly = vbitTool?.type !== 'vbit'
+    const firstPhase  = (role === 'female' || isEndmillOnly) ? 'endmill' : 'vbit'   as 'vbit' | 'endmill'
+    const secondPhase = (role === 'female' || isEndmillOnly) ? 'vbit'    : 'endmill' as 'vbit' | 'endmill'
     const firstToolId  = firstPhase  === 'vbit' ? form.vbitToolId : form.pocketToolId
     const secondToolId = secondPhase === 'vbit' ? form.vbitToolId : form.pocketToolId
     const roleLabel = role === 'female' ? 'Female' : 'Male'
@@ -1175,8 +1376,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     }, 0)
   }
 
-  const canGenerate = groups.length > 0 && !!vbitTool && !!pocketTool && !generating &&
-    form.pocketDepthMM > 0 && vbitTool.type === 'vbit'
+  const isEndmillMode = !!vbitTool && vbitTool.type !== 'vbit'
+  const canGenerate = groups.length > 0 && !!vbitTool && !!pocketTool && !generating && form.pocketDepthMM > 0
   const isMale = editOp ? editOp.role === 'male' : form.role === 'male'
 
   return (
@@ -1202,22 +1403,23 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           </div>
         )}
       </div>
-      {/* V-bit */}
+      {/* Finish tool */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">V-Bit (Finishing)</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finish Tool</label>
         <select
           value={form.vbitToolId}
           onChange={(e) => up('vbitToolId', e.target.value)}
           className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
         >
-          {(vbits.length > 0 ? vbits : tools).map((t) => (
+          {tools.map((t) => (
             <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
           ))}
         </select>
-        {vbitTool?.type !== 'vbit' && (
-          <p className="text-label text-amber-400 mt-0.5 flex items-center gap-1">
-            <AlertCircle size={ICON.xs} /> Select a V-bit tool.
-          </p>
+        {vbitTool?.type === 'vbit' && (
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">V-bit — sloped bevel walls</p>
+        )}
+        {vbitTool && vbitTool.type !== 'vbit' && (
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{vbitTool.diameterMM}mm</p>
         )}
       </div>
       {/* Pocket tool */}
@@ -1237,16 +1439,11 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           ))}
         </select>
       </div>
-      {/* V-bit angle */}
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          V-Bit Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.angleDeg}°</span>
-        </label>
-        <input type="range" min={10} max={120} step={5} value={form.angleDeg}
-          onChange={(e) => up('angleDeg', parseInt(e.target.value))}
-          className="w-full accent-blue-500"
-        />
-      </div>
+      {vbitTool?.type === 'vbit' && (
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          V-bit angle: {vbitTool.vbitAngleDeg ?? 60}° (set on tool)
+        </p>
+      )}
       {/* Depth */}
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -1320,7 +1517,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
             ))}
           </div>
           <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">
-            {form.role === 'female' ? 'Socket only — pocket + V-carved walls.' : 'Plug only — V-carved bevel + profile cutout.'}
+            {isEndmillMode
+              ? (form.role === 'female' ? 'Socket only — flat pocket, corners rounded to bit radius.' : 'Plug only — flat-sided plug, corners rounded to bit radius.')
+              : (form.role === 'female' ? 'Socket only — pocket + V-carved walls.' : 'Plug only — V-carved bevel + profile cutout.')}
           </p>
         </div>
       )}
@@ -2346,7 +2545,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
 
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
+type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
 type FormState = null | 'menu' | OpType
 
 const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500'
@@ -2358,6 +2557,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
       <div className="grid grid-cols-3 gap-1">
         {([
           ['profile', 'Profile', 'Cut along path edge', <Circle size={ICON.md} />],
+          ['trochoidal', 'Trochoidal', 'Looping cuts along path — reduces engagement, ideal for hard materials', <RefreshCw size={ICON.md} />],
           ['pocket', 'Pocket', 'Clear inside boundary', <Target size={ICON.md} />],
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
           ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
@@ -2409,6 +2609,8 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
         <AddOperationMenu onSelect={openForm} />
       ) : activeForm === 'profile' ? (
         <ProfileForm onClose={closeForm} />
+      ) : activeForm === 'trochoidal' ? (
+        <TrochoidalForm onClose={closeForm} />
       ) : activeForm === 'pocket' ? (
         <PocketForm onClose={closeForm} />
       ) : activeForm === 'drill' ? (

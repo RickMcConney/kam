@@ -3,10 +3,10 @@ import { ICON } from '../theme'
 import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown, Image, Box } from 'lucide-react'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore, GCODE_IMPORT_TOOL_ID } from '../store/toolpathStore'
-import type { AnyOperation, GcodeOperation, Profile3dOperation } from '../store/toolpathStore'
+import type { AnyOperation, GcodeOperation, Profile3dOperation, TrochoidalOperation } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { OP_TYPE_COLORS } from '../colors'
-import { ProfileForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './MachinePanel'
+import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './MachinePanel'
 
 const STATUS_ICON = {
   pending: <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-neutral-600 flex-shrink-0" />,
@@ -17,14 +17,15 @@ const STATUS_ICON = {
 }
 
 const OP_TYPE_LABELS: Record<string, string> = {
-  profile:   'Profile',
-  pocket:    'Pocket',
-  drill:     'Drill',
-  surface:   'Surface',
-  vcarve:    'V-Carve',
-  inlay:     'Inlay',
-  profile3d: '3D Profile',
-  gcode:     'G-code',
+  profile:    'Profile',
+  trochoidal: 'Trochoidal',
+  pocket:     'Pocket',
+  drill:      'Drill',
+  surface:    'Surface',
+  vcarve:     'V-Carve',
+  inlay:      'Inlay',
+  profile3d:  '3D Profile',
+  gcode:      'G-code',
 }
 
 function GcodeInfo({ op, onClose }: { op: GcodeOperation; onClose: () => void }) {
@@ -47,6 +48,7 @@ function GcodeInfo({ op, onClose }: { op: GcodeOperation; onClose: () => void })
 
 function OperationEditForm({ op, onClose }: { op: AnyOperation; onClose: () => void }) {
   if (op.type === 'profile') return <ProfileForm onClose={onClose} editOp={op} />
+  if (op.type === 'trochoidal') return <TrochoidalForm onClose={onClose} editOp={op as TrochoidalOperation} />
   if (op.type === 'pocket') return <PocketForm onClose={onClose} editOp={op} />
   if (op.type === 'drill') return <DrillForm onClose={onClose} editOp={op} />
   if (op.type === 'surface') return <SurfaceForm onClose={onClose} editOp={op} />

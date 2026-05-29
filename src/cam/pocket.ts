@@ -88,6 +88,7 @@ function addUniqueParam(params: number[], t: number) {
 }
 
 function transitionCrossesPolygonEdge(from: Pt2, to: Pt2, poly: Pt2[]): boolean {
+  const tDX = to[0] - from[0], tDY = to[1] - from[1]
   const ftMinX = Math.min(from[0], to[0])
   const ftMaxX = Math.max(from[0], to[0])
   const ftMinY = Math.min(from[1], to[1])
@@ -100,6 +101,10 @@ function transitionCrossesPolygonEdge(from: Pt2, to: Pt2, poly: Pt2[]): boolean 
         Math.min(edgeStart[0], edgeEnd[0]) > ftMaxX ||
         Math.max(edgeStart[1], edgeEnd[1]) < ftMinY ||
         Math.min(edgeStart[1], edgeEnd[1]) > ftMaxY) continue
+    // Skip collinear/parallel edges: travel along (or parallel to) an edge is not a
+    // transversal crossing — collinear slides along a boundary are always safe.
+    const eDX = edgeEnd[0] - edgeStart[0], eDY = edgeEnd[1] - edgeStart[1]
+    if (Math.abs(tDX * eDY - tDY * eDX) < 1e-8) continue
     for (const t of segmentEdgeIntersectionParams(from, to, edgeStart, edgeEnd)) {
       if (t <= 1e-6 || t >= 1 - 1e-6) continue
       const p: Pt2 = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
@@ -690,17 +695,20 @@ function rasterPocket(
     }))
   })
 
-  // Raster scanlines avoid a full-diameter exclusion so the finishing contour has
-  // stock to clean up. Linking moves only need the true tool-center keep-out
-  // around each island: island offset by tool radius.
+  // Use the finishing ring (inset by tool radius) as the raster travel-safety edge.
+  // The raster boundary (inset by full diameter) eliminates narrow concave passages
+  // like star inner corners, so micro-lifts through those areas aren't caught as
+  // unsafe. The finishing ring (inset by only tool radius) preserves those concave
+  // edges, correctly blocking transitions that would cut through uncleared wall material.
+  const finishRing = insetRing(boundary, toolRadius)
+  const rasterTravelEdge = finishRing.length >= 3 ? finishRing : boundary
   const rasterEnd = buildRasterPath(
     clippedScanlines,
-    { edgeObstacles: [boundary, ...islandFinish], solidObstacles: islandFinish },
+    { edgeObstacles: [rasterTravelEdge, ...islandFinish], solidObstacles: islandFinish },
     zDepth, segs, incomingPos, rampDist, prevZ, safeZ, tool.diameterMM,
   )
 
   // Finishing contours: linked without lifts when safe.
-  const finishRing = insetRing(boundary, toolRadius)
   const finishingRings = [
     ...islandFinish,
     ...(finishRing.length >= 3 ? [finishRing] : []),

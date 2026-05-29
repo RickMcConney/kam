@@ -3,6 +3,7 @@ import { generatePocket } from '../cam/pocket'
 import { generateVCarve } from '../cam/vcarve'
 import { generateProfile3d } from '../cam/profile3d'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
+import { generateTrochoidal } from '../cam/trochoidal'
 
 const handlers = {
   generateProfile,
@@ -11,6 +12,7 @@ const handlers = {
   generateProfile3d,
   generateInlayFemale,
   generateInlayMale,
+  generateTrochoidal,
 } as const
 
 export type WorkerHandlers = typeof handlers

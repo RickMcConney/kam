@@ -11,7 +11,8 @@ export const OP_TYPE_COLORS: Record<string, string> = {
   surface:  '#8b5cf6',  // violet-500
   vcarve:   '#ec4899',  // pink-500
   inlay:    '#eab308',  // yellow-500
-  profile3d: '#34d399', // emerald-400
+  profile3d:  '#34d399', // emerald-400
+  trochoidal: '#fb923c', // orange-400
   boolean:  '#38bdf8',  // sky-400
   offset:   '#4ade80',  // green-400
   pattern:  '#c084fc',  // purple-400
