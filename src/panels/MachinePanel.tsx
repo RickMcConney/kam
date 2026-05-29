@@ -473,6 +473,7 @@ interface PocketFormState {
   passAngleDeg: number
   direction: CuttingDirection
   rampIn: boolean
+  allowanceMM: number
 }
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
@@ -488,6 +489,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
     stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
     direction: editOp.direction, rampIn: editOp.rampIn ?? false,
+    allowanceMM: editOp.allowanceMM ?? 0,
   } : mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     strategy: 'raster' as PocketStrategy,
@@ -497,6 +499,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     passAngleDeg: 0,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
     rampIn: false,
+    allowanceMM: 0,
   }, tools))
   const [generating, setGenerating] = useState(false)
 
@@ -536,7 +539,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           toolId: form.toolId, strategy: form.strategy,
           depthMM: form.depthMM, stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
-          direction: form.direction, rampIn: form.rampIn, status: 'generating',
+          direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, generatePocket(editBoundary.d, selectedTool, {
@@ -544,6 +547,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, direction: form.direction,
             islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
+            finishAllowanceMM: form.allowanceMM,
             safeHeightMM,
           }))
         } catch (err) {
@@ -564,6 +568,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             passAngleDeg: form.passAngleDeg,
             direction: form.direction,
             rampIn: form.rampIn,
+            allowanceMM: form.allowanceMM,
           })
           updateOperation(opId, { status: 'generating' })
           try {
@@ -572,6 +577,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               depthMM: form.depthMM, stepDownMM: form.stepDownMM,
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
+              finishAllowanceMM: form.allowanceMM,
               safeHeightMM,
             }))
           } catch (err) {
@@ -634,6 +640,17 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Allowance</label>
+        <div className="flex items-center gap-1">
+          <NumericInput value={form.allowanceMM} min={-5} max={5} step={0.05}
+            onChange={(v) => up('allowanceMM', v)}
+            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+          />
+          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+        </div>
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Stock left on walls; negative grows the pocket.</p>
+      </div>
       {form.strategy !== 'adaptive' && (
         <div className="flex items-center gap-2">
           <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}

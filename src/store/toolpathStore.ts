@@ -54,6 +54,7 @@ export interface PocketOperation extends BaseOperation {
   direction: CuttingDirection
   strategy: 'raster' | 'contour' | 'adaptive'
   rampIn: boolean
+  allowanceMM?: number   // finish allowance: stock left on all walls (negative grows the pocket)
 }
 
 export interface DrillOperation extends BaseOperation {

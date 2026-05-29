@@ -45,6 +45,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         depthMM: op.depthMM, stepDownMM: op.stepDownMM,
         stepoverPercent: op.stepoverPercent, direction: op.direction,
         islandDs, angle: op.passAngleDeg, startNear: op.entryHint, rampIn: op.rampIn,
+        finishAllowanceMM: op.allowanceMM,
         safeHeightMM,
       }))
 

@@ -16,6 +16,12 @@ export interface PocketParams {
   startNear?: { x: number; y: number }
   rampIn?: boolean
   safeHeightMM?: number
+  // Finish allowance: stock left on every wall. Positive insets the boundary and grows
+  // islands (leaves stock for a finish pass); negative does the reverse and grows the
+  // pocket. Applied per resolved sub-ring, so self-intersecting boundaries keep all
+  // their regions. Inlay sockets pass −clearanceMM here instead of pre-offsetting the
+  // (possibly self-intersecting) path, which would merge its loops.
+  finishAllowanceMM?: number
 }
 
 interface TravelSafetyObstacles {
@@ -877,17 +883,27 @@ export function generatePocket(
   tool: Tool,
   params: PocketParams,
 ): MotionSegment[] {
-  const boundaries = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
+  let boundaries = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
   if (boundaries.length === 0) throw new Error('No geometry found in boundary path')
 
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   if (stepoverMM < 0.01) throw new Error('Stepover too small')
 
-  const islands: Pt2[][] = []
+  let islands: Pt2[][] = []
   for (const islandD of params.islandDs) {
     for (const ip of splitSelfIntersecting(flattenPath(islandD, 0.05))) {
       if (ip.length >= 3) islands.push(ip)
     }
+  }
+
+  // Finish allowance applied per resolved ring (positive insets the boundary + grows
+  // islands; negative grows the pocket). Per-ring keeps self-intersecting regions
+  // separate, unlike offsetting the raw path as one unit.
+  const allowance = params.finishAllowanceMM ?? 0
+  if (allowance !== 0) {
+    boundaries = boundaries.flatMap(b => { const r = offsetRing(b, -allowance); return r.length >= 3 ? [r] : [] })
+    islands = islands.flatMap(isl => { const r = offsetRing(isl, allowance); return r.length >= 3 ? [r] : [] })
+    if (boundaries.length === 0) throw new Error('Pocket allowance collapsed the boundary')
   }
 
   const strategy = params.strategy ?? 'raster'
