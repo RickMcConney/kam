@@ -47,8 +47,18 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 | Inlay | Female socket (pocket + V-carved walls) and male plug generation |
 | 3D Profile | Raster surface following from imported STL with optional roughing pass |
 
+### Feeds, Speeds & Step-Down
+- **Auto feed & speeds** — cutting feed, plunge feed, spindle RPM, and step-down computed automatically from material, tool geometry, and machine rigidity
+- **Material library** — each material carries a hardness factor that drives the chip-load target
+- **Machine rigidity** (1–5) — scales the feed and depth of cut for your machine, from light hobby gantry to rigid industrial
+- **Smart spindle RPM** — when the machine can't feed fast enough to hold the target chip load, the spindle is slowed instead of overloading the tool (with a warning emitted in the G-code if you have no spindle control)
+- **Whole-division step-down** — depth of cut is snapped to an even division of the total cut depth, capped by tool diameter
+- **Max feed ceiling** — a hard limit that generated feeds never exceed, honored even when auto is off
+- Toggle off to use each tool's own stored feeds and speeds instead
+
 ### Preview & Simulation
 - **2D simulation** — play, pause, stop, speed control, seek slider, current G-code line, Z depth, elapsed/total time
+- **Chip-load gauge** — live feed-per-tooth readout during steady cutting, color-banded against the target for your machine rigidity, with feed/RPM/flute suggestions to hit the sweet spot
 - **3D view** — orbit, pan, zoom; workpiece box with material appearance; toolpath visualization; material removal animation
 - **G-code viewer** — line-synchronized highlight during simulation
 
