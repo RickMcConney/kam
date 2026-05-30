@@ -24,6 +24,11 @@ interface SavedWorkpiece {
   tableLimitWidthMM: number
   tableLimitHeightMM: number
   tableLimitDepthMM: number
+  machineRigidity?: number
+  maxFeedMmMin?: number
+  minSpindleRpm?: number
+  maxSpindleRpm?: number
+  autoFeedEnabled?: boolean
 }
 
 interface ProjectData {
@@ -52,6 +57,11 @@ export function loadProject(data: ProjectData) {
   wps.setTableLimitWidth(wp.tableLimitWidthMM ?? 800)
   wps.setTableLimitHeight(wp.tableLimitHeightMM ?? 600)
   wps.setTableLimitDepth(wp.tableLimitDepthMM ?? 70)
+  wps.setMachineRigidity(wp.machineRigidity ?? 3)
+  wps.setMaxFeed(wp.maxFeedMmMin ?? 3000)
+  wps.setMinSpindleRpm(wp.minSpindleRpm ?? 8000)
+  wps.setMaxSpindleRpm(wp.maxSpindleRpm ?? 24000)
+  wps.setAutoFeedEnabled(wp.autoFeedEnabled ?? false)
 
   if (Array.isArray(data.tools) && data.tools.length > 0) {
     useToolStore.getState().setTools(data.tools)

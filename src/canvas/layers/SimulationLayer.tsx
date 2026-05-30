@@ -4,7 +4,7 @@ import { Group, Circle, Line, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { getCurrentSegIdx, interpolatePos, type SimSegment } from '../../sim/gcodeParser'
+import { getCurrentSegIdx, interpolatePos, segTool, type SimSegment, type ToolState } from '../../sim/gcodeParser'
 import { originWorldXY } from '../layers/WorkpieceLayer'
 
 interface Props {
@@ -12,11 +12,12 @@ interface Props {
 }
 
 // For V-bit segments, cut width = 2 * |z| * tan(halfAngle), capped at tool diameter.
-function effectiveCutWidthAt(seg: SimSegment, z: number): number {
-  if (seg.toolVbitHalfAngleTan !== undefined) {
-    return Math.min(2 * Math.abs(z) * seg.toolVbitHalfAngleTan, seg.toolDiameterMM)
+function effectiveCutWidthAt(seg: SimSegment, z: number, toolStates: ToolState[]): number {
+  const ts = segTool(seg, toolStates)
+  if (ts.toolVbitHalfAngleTan !== undefined) {
+    return Math.min(2 * Math.abs(z) * ts.toolVbitHalfAngleTan, ts.toolDiameterMM)
   }
-  return seg.toolDiameterMM
+  return ts.toolDiameterMM
 }
 
 function roundWidth(w: number): number {
@@ -41,6 +42,7 @@ function computeTrail(
   upToIdx: number,
   ox: number,
   oy: number,
+  toolStates: ToolState[],
 ): TrailResult {
   const lineSections: { points: number[]; width: number }[] = []
   const frustumSegs: FrustumSeg[] = []
@@ -57,8 +59,8 @@ function computeTrail(
     const seg = segments[i]
     if (seg.rapid || (seg.prevZ >= -0.001 && seg.z >= -0.001)) { flushLine(); continue }
 
-    const w0 = effectiveCutWidthAt(seg, seg.prevZ)
-    const w1 = effectiveCutWidthAt(seg, seg.z)
+    const w0 = effectiveCutWidthAt(seg, seg.prevZ, toolStates)
+    const w1 = effectiveCutWidthAt(seg, seg.z, toolStates)
     const x0 = seg.prevX + ox, y0 = seg.prevY + oy
     const x1 = seg.x + ox,    y1 = seg.y + oy
 
@@ -126,11 +128,12 @@ interface CompletedTrailProps {
   upToIdx: number
   ox: number
   oy: number
+  toolStates: ToolState[]
 }
-const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy }: CompletedTrailProps) {
+const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy, toolStates }: CompletedTrailProps) {
   const trail = useMemo(
-    () => computeTrail(segments, upToIdx, ox, oy),
-    [segments, upToIdx, ox, oy],
+    () => computeTrail(segments, upToIdx, ox, oy, toolStates),
+    [segments, upToIdx, ox, oy, toolStates],
   )
   const frustumFn = useMemo(() => makeFrustumSceneFunc(trail.frustumSegs), [trail.frustumSegs])
 
@@ -163,6 +166,7 @@ const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy 
 
 export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props) {
   const segments = useSimStore((s) => s.segments)
+  const toolStates = useSimStore((s) => s.toolStates)
   const elapsedTimeS = useSimStore((s) => s.elapsedTimeS)
   const gcode = useSimStore((s) => s.gcode)
   const { scale } = viewport
@@ -187,17 +191,17 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   // Always a Shape so the element type stays stable across frames (no React remounting).
   const activeFrustum: FrustumSeg | null = curSeg && isCutting ? {
     x0: curSeg.prevX + ox, y0: curSeg.prevY + oy,
-    w0: effectiveCutWidthAt(curSeg, curSeg.prevZ),
+    w0: effectiveCutWidthAt(curSeg, curSeg.prevZ, toolStates),
     x1: tx, y1: ty,
-    w1: effectiveCutWidthAt(curSeg, pos.z),
+    w1: effectiveCutWidthAt(curSeg, pos.z, toolStates),
   } : null
 
-  const activeCutWidth = activeFrustum ? activeFrustum.w1 : (curSeg?.toolDiameterMM ?? 0)
+  const activeCutWidth = activeFrustum ? activeFrustum.w1 : (curSeg ? segTool(curSeg, toolStates).toolDiameterMM : 0)
   const toolRadius = Math.max(activeCutWidth / 2, 1.5 / scale)
 
   return (
     <Group listening={false}>
-      <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} />
+      <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} toolStates={toolStates} />
 
       {/* Active partial segment — 60fps updates */}
       {activeFrustum && (() => {

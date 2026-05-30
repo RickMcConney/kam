@@ -9,6 +9,7 @@ import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
+import { effectiveStepDownMM } from './feeds'
 
 export async function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
@@ -29,7 +30,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       if (!path) throw new Error('Source path not found')
       const pathTabs = useTabStore.getState().getPathTabs(op.pathId)
       setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
-        side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM, direction: op.direction,
+        side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), direction: op.direction,
         startNear: op.entryHint, rampIn: op.rampIn, safeHeightMM,
       }, pathTabs.length > 0 ? pathTabs : undefined))
 
@@ -42,7 +43,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       })
       setSegments(opId, await runInWorker('generatePocket', boundary.d, tool, {
         strategy: op.strategy ?? 'raster',
-        depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+        depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, direction: op.direction,
         islandDs, angle: op.passAngleDeg, startNear: op.entryHint, rampIn: op.rampIn,
         finishAllowanceMM: op.allowanceMM,
@@ -67,11 +68,11 @@ export async function regenerateOperation(opId: string): Promise<void> {
           }
         }
         setSegments(opId, generateHelicalDrill(cx, cy, r, tool, {
-          depthMM: op.depthMM, stepDownMM: op.stepDownMM, safeHeightMM,
+          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), safeHeightMM,
         }))
       } else {
         setSegments(opId, generatePeckDrill(op.points, tool, {
-          depthMM: op.depthMM, stepDownMM: op.stepDownMM, startNear: op.entryHint, safeHeightMM,
+          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), startNear: op.entryHint, safeHeightMM,
         }))
       }
 
@@ -79,7 +80,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const { widthMM, heightMM } = useWorkpieceStore.getState()
       setSegments(opId, generateSurface(tool, {
         widthMM, heightMM,
-        depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+        depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, passAngleDeg: op.passAngleDeg,
         safeHeightMM,
       }))
@@ -114,7 +115,9 @@ export async function regenerateOperation(opId: string): Promise<void> {
         maxDepthMM: op.maxDepthMM,
         roughingBallRadius: roughingTool?.type === 'ballnose' ? roughingTool.diameterMM / 2 : undefined,
         roughingStepoverPercent: op.roughingStepoverPercent,
-        roughingStepDownMM: op.roughingStepDownMM,
+        roughingStepDownMM: roughingTool != null && op.roughingStepDownMM != null
+          ? effectiveStepDownMM(roughingTool, op.roughingStepDownMM, op.maxDepthMM)
+          : op.roughingStepDownMM,
         roughingStockAllowanceMM: op.roughingStockAllowanceMM,
         roughingRasterAngleDeg: op.roughingRasterAngleDeg,
         roughingToolId: op.roughingToolId,
@@ -126,7 +129,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
       setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
-        side: op.side, depthMM: op.depthMM, stepDownMM: op.stepDownMM,
+        side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         direction: op.direction, trochStepMM: op.trochStepMM, trochRadiusMM: op.trochRadiusMM,
         finishingPass: op.finishingPass, rampIn: op.rampIn, startNear: op.entryHint, safeHeightMM,
       }))
@@ -144,7 +147,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       })
       const inlayParams = {
         angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
-        stepDownMM: op.stepDownMM, stepoverPercent: op.stepoverPercent,
+        stepDownMM: effectiveStepDownMM(pocketTool, op.stepDownMM, op.pocketDepthMM), stepoverPercent: op.stepoverPercent,
         glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM,
         mirrorX: op.mirrorX, islandDs, safeHeightMM,
       }

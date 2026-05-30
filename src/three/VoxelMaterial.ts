@@ -1,4 +1,4 @@
-import type { SimSegment } from '../sim/gcodeParser'
+import { segTool, type SimSegment, type ToolState } from '../sim/gcodeParser'
 
 export interface VoxelLeaf {
   readonly x0: number; readonly y0: number
@@ -78,15 +78,16 @@ function isCuttingSeg(seg: SimSegment): boolean {
   return !seg.rapid && (seg.prevZ < 0 || seg.z < 0)
 }
 
-function segMaxRadius(seg: SimSegment): number {
-  const vbitTan = seg.toolVbitHalfAngleTan
-  if (vbitTan) return Math.max(Math.abs(seg.prevZ), Math.abs(seg.z)) * vbitTan
-  return seg.toolDiameterMM / 2
+function segMaxRadius(seg: SimSegment, toolStates: ToolState[]): number {
+  const ts = segTool(seg, toolStates)
+  if (ts.toolVbitHalfAngleTan) return Math.max(Math.abs(seg.prevZ), Math.abs(seg.z)) * ts.toolVbitHalfAngleTan
+  return ts.toolDiameterMM / 2
 }
 
 function buildLeaves(
   W: number, H: number, T: number,
   segments: SimSegment[],
+  toolStates: ToolState[],
   orgX: number, orgY: number,
   minCellMM: number,
 ): VoxelLeaf[] {
@@ -95,7 +96,7 @@ function buildLeaves(
     if (!isCuttingSeg(seg)) continue
     const ax = seg.prevX + orgX, ay = seg.prevY + orgY
     const bx = seg.x + orgX,    by = seg.y + orgY
-    const r = segMaxRadius(seg)
+    const r = segMaxRadius(seg, toolStates)
     // Discard segments whose capsule bbox is entirely outside the workpiece
     if (Math.max(ax, bx) + r > 0 && Math.min(ax, bx) - r < W &&
         Math.max(ay, by) + r > 0 && Math.min(ay, by) - r < H) {
@@ -140,6 +141,7 @@ export class VoxelMaterial {
   readonly orgX: number
   readonly orgY: number
   readonly effectiveCellMM: number
+  private readonly _toolStates: ToolState[]
 
   private readonly _W: number
   private readonly _H: number
@@ -156,6 +158,7 @@ export class VoxelMaterial {
   constructor(
     W: number, H: number, T: number,
     segments: SimSegment[],
+    toolStates: ToolState[],
     orgX: number, orgY: number,
     minCellMM = 2,
     voxelBudget = MAX_VOXELS,
@@ -165,6 +168,7 @@ export class VoxelMaterial {
     this.orgY = orgY
     this._W = W
     this._H = H
+    this._toolStates = toolStates
 
     // Pilot build: a cheap coarse pass (~2000 voxels) to measure actual cut
     // coverage. The quadtree only subdivides where segments overlap, so a pocket
@@ -173,7 +177,7 @@ export class VoxelMaterial {
     // geometric formula that would conflate the two.
     const PILOT_VOXELS = 2000
     const pilotCellMM = Math.max(minCellMM, Math.sqrt(W * H / PILOT_VOXELS))
-    const pilotLeaves = buildLeaves(W, H, T, segments, orgX, orgY, pilotCellMM)
+    const pilotLeaves = buildLeaves(W, H, T, segments, toolStates, orgX, orgY, pilotCellMM)
 
     // Scale cellMM so the final build hits voxelBudget leaves.
     // pilotCount × (pilotCellMM / cellMM)² = voxelBudget  →  cellMM = pilotCellMM × √(pilotCount / voxelBudget)
@@ -183,7 +187,7 @@ export class VoxelMaterial {
     // (happens when budget > pilotCount but minCellMM is the binding constraint).
     const leaves = Math.abs(cellMM - pilotCellMM) < pilotCellMM * 0.01
       ? pilotLeaves
-      : buildLeaves(W, H, T, segments, orgX, orgY, cellMM)
+      : buildLeaves(W, H, T, segments, toolStates, orgX, orgY, cellMM)
 
     this.effectiveCellMM = cellMM
     this.leaves = leaves
@@ -219,7 +223,8 @@ export class VoxelMaterial {
     for (let i = this._lastFullIdx + 1; i < segIdx && i < segments.length; i++) {
       const s = segments[i]
       if (isCuttingSeg(s)) {
-        this._carveFromTo(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, s.toolVbitHalfAngleTan, s.toolBallNose, s.toolDiameterMM)
+        const ts = segTool(s, this._toolStates)
+        this._carveFromTo(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
         carved = true
       }
     }
@@ -235,7 +240,8 @@ export class VoxelMaterial {
         const y1 = seg.prevY + (seg.y - seg.prevY) * t
         const pz0 = seg.prevZ + (seg.z - seg.prevZ) * startT
         const pz1 = seg.prevZ + (seg.z - seg.prevZ) * t
-        this._carveFromTo(x0, y0, x1, y1, pz0, pz1, seg.toolVbitHalfAngleTan, seg.toolBallNose, seg.toolDiameterMM)
+        const ts = segTool(seg, this._toolStates)
+        this._carveFromTo(x0, y0, x1, y1, pz0, pz1, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
         carved = true
       }
     }

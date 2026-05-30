@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { parseGcode, getCurrentSegIdx, type SimSegment } from '../sim/gcodeParser'
+import { parseGcode, getCurrentSegIdx, type SimSegment, type ToolState } from '../sim/gcodeParser'
 
 export type SimSpeed = 1 | 5 | 20 | 100
 
@@ -7,6 +7,7 @@ interface SimState {
   gcode: string
   gcodeLines: string[]
   segments: SimSegment[]
+  toolStates: ToolState[]
   totalTimeS: number
   playing: boolean
   speed: SimSpeed
@@ -29,6 +30,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
   gcode: '',
   gcodeLines: [],
   segments: [],
+  toolStates: [],
   totalTimeS: 0,
   playing: false,
   speed: 20,
@@ -41,6 +43,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
       gcode: text,
       gcodeLines: parsed.lines,
       segments: parsed.segments,
+      toolStates: parsed.toolStates,
       totalTimeS: parsed.totalTimeS,
       elapsedTimeS: 0,
       playing: false,
@@ -67,7 +70,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
   toggleGcodeViewer: () => set((s) => ({ gcodeViewerOpen: !s.gcodeViewerOpen })),
 
   clearSim: () =>
-    set({ gcode: '', gcodeLines: [], segments: [], totalTimeS: 0, elapsedTimeS: 0, playing: false }),
+    set({ gcode: '', gcodeLines: [], segments: [], toolStates: [], totalTimeS: 0, elapsedTimeS: 0, playing: false }),
 
   currentLineIdx: () => {
     const { segments, elapsedTimeS } = get()

@@ -2,9 +2,28 @@ import { useEffect } from 'react'
 import { ICON } from '../theme'
 import { Play, Pause, Square, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
-import { getCurrentSegIdx, interpolatePos, formatSimTime } from './gcodeParser'
+import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
+import type { ToolType } from '../store/toolStore'
+import { targetChipLoad, rigidityFeedFactor } from '../cam/feeds'
+import { getCurrentSegIdx, interpolatePos, segTool, formatSimTime } from './gcodeParser'
 
 const SPEEDS: SimSpeed[] = [1, 5, 20, 100]
+
+// Chip-load bands: actual / target ratio → color + meaning.
+const CHIP_STATUS = {
+  rubbing: { color: '#ef4444', label: 'rubbing · too hot' },   // too low
+  good:    { color: '#22c55e', label: 'sweet spot' },
+  heavy:   { color: '#3b82f6', label: 'chips too large' },     // too high
+  none:    { color: '#9ca3af', label: '' },
+} as const
+
+function chipStatus(actual: number | null, target: number): keyof typeof CHIP_STATUS {
+  if (actual === null || target <= 0) return 'none'
+  const r = actual / target
+  if (r < 0.75) return 'rubbing'
+  if (r > 1.4) return 'heavy'
+  return 'good'
+}
 
 export default function SimulationPlayer() {
   const playing = useSimStore((s) => s.playing)
@@ -12,8 +31,11 @@ export default function SimulationPlayer() {
   const elapsedTimeS = useSimStore((s) => s.elapsedTimeS)
   const totalTimeS = useSimStore((s) => s.totalTimeS)
   const segments = useSimStore((s) => s.segments)
+  const toolStates = useSimStore((s) => s.toolStates)
   const gcode = useSimStore((s) => s.gcode)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
+  const material = useWorkpieceStore((s) => s.material)
+  const machineRigidity = useWorkpieceStore((s) => s.machineRigidity)
   const { play, pause, stop, seekToTime, setSpeed, toggleGcodeViewer, clearSim } = useSimStore()
 
   // Animation loop — reads fresh store state each frame to avoid stale closures
@@ -44,6 +66,33 @@ export default function SimulationPlayer() {
   const curSeg = segIdx >= 0 ? segments[segIdx] : null
   const pos = interpolatePos(segments, elapsedTimeS)
   const currentLineNum = curSeg ? curSeg.lineIdx + 1 : 0
+
+  // Spindle speed (read from the G-code) + chip-load feedback for the current move.
+  const ts = curSeg ? segTool(curSeg, toolStates) : null
+  const spindleRpm = ts?.spindleRpm ?? 0
+  const toolType: ToolType = ts?.toolBallNose ? 'ballnose'
+    : ts?.toolVbitHalfAngleTan !== undefined ? 'vbit' : 'endmill'
+  const targetFz = ts ? targetChipLoad(toolType, ts.toolDiameterMM, MATERIAL_INFO[material].hardness) : 0
+  // Chip-load color applies only to steady side-cutting: the tip must be below the
+  // material top (z < 0, not cutting air) AND not descending. Descending moves —
+  // ramp-in, plunges, helical entries — run a deliberately reduced feed and have
+  // light engagement, so judging them as steady-state would falsely read "rubbing".
+  const descending = !!curSeg && curSeg.z < curSeg.prevZ - 1e-3
+  const cutting = !!curSeg && !curSeg.rapid && !!pos && pos.z < -0.001 && !descending
+  const actualFz = ts && cutting && spindleRpm > 0 && ts.fluteCount > 0
+    ? curSeg!.feedRateMmMin / (spindleRpm * ts.fluteCount)
+    : null
+  // Display the intrinsic target, but judge the color against the rigidity-adjusted
+  // aim — so a hobby machine running its lighter feed still reads "sweet spot".
+  const aimFz = targetFz * rigidityFeedFactor(machineRigidity)
+  const status = chipStatus(actualFz, aimFz)
+  const chip = CHIP_STATUS[status]
+  // For manual feeds, suggest the feed that puts chip load in the sweet spot at the
+  // current spindle & flute count, with the RPM direction as an alternative lever.
+  const sweetFeed = ts ? Math.round(aimFz * spindleRpm * ts.fluteCount) : 0
+  const suggestion =
+    status === 'rubbing' && sweetFeed > 0 ? `raise feed to ~${sweetFeed} mm/min (or lower RPM / fewer flutes)` :
+    status === 'heavy'   && sweetFeed > 0 ? `lower feed to ~${sweetFeed} mm/min (or raise RPM / more flutes)` : ''
 
   return (
     <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 select-none">
@@ -128,6 +177,24 @@ export default function SimulationPlayer() {
           <X size={ICON.sm} />
         </button>
       </div>
+
+      {/* Spindle + chip-load feedback */}
+      {curSeg && (
+        <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex items-center gap-3 whitespace-nowrap pointer-events-none">
+          <span>Spindle: {spindleRpm > 0 ? Math.round(spindleRpm) : '—'}</span>
+          <span className="flex items-center gap-1.5">
+            Chip
+            <span style={{ color: chip.color }}>●</span>
+            {actualFz !== null ? actualFz.toFixed(3) : '—'} / {targetFz > 0 ? targetFz.toFixed(3) : '—'} mm
+          </span>
+          {chip.label && (
+            <span className="flex items-center gap-1.5">
+              <span style={{ color: chip.color }}>{chip.label}</span>
+              {suggestion && <span className="text-gray-500 dark:text-neutral-400">· {suggestion}</span>}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

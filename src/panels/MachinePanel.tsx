@@ -29,6 +29,7 @@ import { generateSurface } from '../cam/surfacing'
 import { generateVCarve } from '../cam/vcarve'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { generateProfile3d } from '../cam/profile3d'
+import { effectiveStepDownMM } from '../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
@@ -182,7 +183,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, generateProfile(selectedPaths[0].d, selectedTool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
             direction: form.direction, rampIn: form.rampIn, safeHeightMM,
           }))
         } catch (err) {
@@ -207,7 +208,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generateProfile(path.d, selectedTool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, safeHeightMM,
             }))
           } catch (err) {
@@ -240,7 +241,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="flex items-center gap-2">
         <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}
@@ -341,7 +342,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, generateTrochoidal(selectedPaths[0].d, selectedTool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
             direction: form.direction, trochStepMM: form.trochStepMM,
             trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
             rampIn: form.rampIn, safeHeightMM,
@@ -371,7 +372,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generateTrochoidal(path.d, selectedTool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
               direction: form.direction, trochStepMM: form.trochStepMM,
               trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
               rampIn: form.rampIn, safeHeightMM,
@@ -406,7 +407,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -544,7 +545,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         try {
           setSegments(editOp.id, generatePocket(editBoundary.d, selectedTool, {
             strategy: form.strategy,
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
             stepoverPercent: form.stepoverPercent, direction: form.direction,
             islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
             finishAllowanceMM: form.allowanceMM,
@@ -574,7 +575,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           try {
             setSegments(opId, generatePocket(boundary.d, selectedTool, {
               strategy: form.strategy,
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
               finishAllowanceMM: form.allowanceMM,
@@ -638,7 +639,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       )}
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Allowance</label>
@@ -755,11 +756,11 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           let segs
           if (editOp.drillMode === 'helical' && editHelicalInfo) {
             segs = generateHelicalDrill(editHelicalInfo.cx, editHelicalInfo.cy, editHelicalInfo.radius, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
             })
           } else {
             segs = generatePeckDrill(editOp.points, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
             })
           }
           setSegments(editOp.id, segs)
@@ -795,7 +796,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, generateHelicalDrill(circle.cx, circle.cy, r, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -814,7 +815,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         updateOperation(opId, { status: 'generating' })
         try {
           setSegments(opId, generatePeckDrill(pendingDrillPoints, selectedTool, {
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM, safeHeightMM,
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
           }))
         } catch (err) {
           setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -927,7 +928,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
       <GenerateBtn
         disabled={!canGenerate}
         generating={generating}
@@ -1012,35 +1013,67 @@ function ToggleRow<T extends string>({ label, options, value, onChange }: {
 
 
 
-function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM }: {
+// Read-only display for an auto-calculated step-down (shown when auto feed is on).
+function AutoStepField({ label, valueMM }: { label: string; valueMM: number }) {
+  return (
+    <div>
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        {label} <span className="text-blue-500 dark:text-blue-400 normal-case">(auto)</span>
+      </label>
+      <div className="flex items-center gap-1">
+        <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
+          {valueMM.toFixed(2)}
+        </div>
+        <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+      </div>
+    </div>
+  )
+}
+
+function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool }: {
   depthMM: number; stepDownMM: number
   onDepth: (v: number) => void; onStep: (v: number) => void
   maxDepthMM?: number
+  tool?: Tool
 }) {
+  // When auto feed is on the step-down is computed and shown read-only. The parent
+  // form subscribes to the whole workpiece store, so this recomputes live as the
+  // user changes rigidity / material / max feed.
+  const autoFeedEnabled = useWorkpieceStore((s) => s.autoFeedEnabled)
+  const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM) : null
   const depthExceeds = maxDepthMM != null && depthMM > maxDepthMM
   return (
     <div className="grid grid-cols-2 gap-2">
-      {([
-        ['Depth', depthMM, onDepth],
-        ['Step Down', stepDownMM, onStep],
-      ] as [string, number, (v: number) => void][]).map(([lbl, val, fn]) => (
-        <div key={lbl}>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth</label>
+        <div className="flex items-center gap-1">
+          <NumericInput value={depthMM} min={0.01} step={0.5}
+            onChange={(v) => onDepth(v)}
+            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+          />
+          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+        </div>
+        {depthExceeds && (
+          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+            <AlertCircle size={10} className="shrink-0" />
+            Exceeds tool max ({maxDepthMM} mm)
+          </p>
+        )}
+      </div>
+      {autoStepDownMM != null ? (
+        <AutoStepField label="Step Down" valueMM={autoStepDownMM} />
+      ) : (
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
           <div className="flex items-center gap-1">
-            <NumericInput value={val} min={0.01} step={0.5}
-              onChange={(v) => fn(v)}
+            <NumericInput value={stepDownMM} min={0.01} step={0.5}
+              onChange={(v) => onStep(v)}
               className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
           </div>
-          {lbl === 'Depth' && depthExceeds && (
-            <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
-              <AlertCircle size={10} className="shrink-0" />
-              Exceeds tool max ({maxDepthMM} mm)
-            </p>
-          )}
         </div>
-      ))}
+      )}
     </div>
   )
 }
@@ -1227,7 +1260,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const endmills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
@@ -1274,7 +1307,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     const baseParams = {
       angleDeg,
       pocketDepthMM: form.pocketDepthMM,
-      stepDownMM: form.stepDownMM,
+      stepDownMM: effectiveStepDownMM(pocketTool, form.stepDownMM, form.pocketDepthMM),
       stepoverPercent: form.stepoverPercent,
       glueLineMM: form.glueLineMM,
       clearanceMM: form.clearanceMM,
@@ -1473,16 +1506,20 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
             <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
           </div>
         </div>
-        <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.stepDownMM} min={0.1} step={0.5}
-              onChange={(v) => up('stepDownMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+        {autoFeedEnabled && pocketTool ? (
+          <AutoStepField label="Step Down" valueMM={effectiveStepDownMM(pocketTool, form.stepDownMM, form.pocketDepthMM)} />
+        ) : (
+          <div>
+            <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
+            <div className="flex items-center gap-1">
+              <NumericInput value={form.stepDownMM} min={0.1} step={0.5}
+                onChange={(v) => up('stepDownMM', v)}
+                className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+              />
+              <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {/* Stepover */}
       <div>
@@ -1580,7 +1617,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const { paths, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
 
   const ballNoseTools = tools.filter((t) => t.type === 'ballnose')
   const defaultTool = ballNoseTools[0] ?? tools[0]
@@ -1657,7 +1694,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           maxDepthMM: form.maxDepthMM,
           roughingBallRadius: roughingTool?.type === 'ballnose' ? roughingTool.diameterMM / 2 : undefined,
           roughingStepoverPercent: hasRoughing ? form.roughingStepoverPercent : undefined,
-          roughingStepDownMM: hasRoughing ? form.roughingStepDownMM : undefined,
+          roughingStepDownMM: hasRoughing && roughingTool ? effectiveStepDownMM(roughingTool, form.roughingStepDownMM, form.maxDepthMM) : undefined,
           roughingStockAllowanceMM: hasRoughing ? form.roughingStockAllowanceMM : undefined,
           roughingRasterAngleDeg: hasRoughing && form.roughingRasterAngleDeg !== '' ? form.roughingRasterAngleDeg : undefined,
           roughingToolId: hasRoughing ? form.roughingToolId : undefined,
@@ -1777,20 +1814,24 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                 )}
               </div>
             </div>
-            <div>
-              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-                Roughing Step-Down
-              </label>
-              <div className="flex items-center gap-1">
-                <NumericInput
-                  value={form.roughingStepDownMM}
-                  min={0.1} max={50} step={0.5}
-                  onChange={(v) => up('roughingStepDownMM', v)}
-                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-                />
-                <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+            {autoFeedEnabled && roughingTool ? (
+              <AutoStepField label="Roughing Step-Down" valueMM={effectiveStepDownMM(roughingTool, form.roughingStepDownMM, form.maxDepthMM)} />
+            ) : (
+              <div>
+                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+                  Roughing Step-Down
+                </label>
+                <div className="flex items-center gap-1">
+                  <NumericInput
+                    value={form.roughingStepDownMM}
+                    min={0.1} max={50} step={0.5}
+                    onChange={(v) => up('roughingStepDownMM', v)}
+                    className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+                  />
+                  <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+                </div>
               </div>
-            </div>
+            )}
             <div>
               <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
                 Roughing Angle
@@ -1973,7 +2014,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         try {
           setSegments(editOp.id, generateSurface(selectedTool, {
             widthMM, heightMM,
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
             safeHeightMM,
           }))
@@ -2000,7 +2041,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         setSegments(opId, generateSurface(selectedTool, {
           widthMM, heightMM,
           depthMM: form.depthMM,
-          stepDownMM: form.stepDownMM,
+          stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
           stepoverPercent: form.stepoverPercent,
           passAngleDeg: form.passAngleDeg,
           safeHeightMM,
@@ -2051,6 +2092,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         onDepth={(v) => up('depthMM', v)}
         onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM}
+        tool={selectedTool}
       />
       <GenerateBtn
         disabled={!selectedTool || generating || form.depthMM <= 0}

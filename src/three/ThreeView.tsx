@@ -6,7 +6,7 @@ import { useToolpathStore } from '../store/toolpathStore'
 import { useWorkpieceStore, type Material } from '../store/workpieceStore'
 import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
-import { getCurrentSegIdx, interpolatePos } from '../sim/gcodeParser'
+import { getCurrentSegIdx, interpolatePos, segTool } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
 import { getBBox } from '../canvas/selectionUtils'
 import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE } from '../colors'
@@ -378,11 +378,12 @@ export default function ThreeView() {
         // Rebuild tool mesh if the current segment uses a different tool type/size
         const activeSeg = sim.segments[segIdx]
         if (activeSeg) {
-          let tType = 'flat', tDiam = activeSeg.toolDiameterMM, tAngle = 60
-          if (activeSeg.toolVbitHalfAngleTan) {
+          const ts = segTool(activeSeg, sim.toolStates)
+          let tType = 'flat', tDiam = ts.toolDiameterMM, tAngle = 60
+          if (ts.toolVbitHalfAngleTan) {
             tType  = 'vbit'
-            tAngle = Math.atan(activeSeg.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
-          } else if (activeSeg.toolBallNose) {
+            tAngle = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
+          } else if (ts.toolBallNose) {
             tType = 'ball'
           }
           const key = `${tType}|${tDiam}|${tAngle}`
@@ -584,6 +585,7 @@ function rebuildVoxels(refs: SceneRefs) {
   const org = originWorldXY(origin, W, H)
 
   const segments = useSimStore.getState().segments
+  const toolStates = useSimStore.getState().toolStates
 
   // Target 0.05 mm cells; the budget refinement in VoxelMaterial will scale up
   // if the actual voxel count would exceed 2M.
@@ -591,7 +593,7 @@ function rebuildVoxels(refs: SceneRefs) {
   const minCellMM = hasAnyCut ? 0.01 : Math.min(W, H) / 8
   const voxelBudget = refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget : undefined
 
-  const voxelMat = new VoxelMaterial(W, H, T, segments, org.x, org.y, minCellMM, voxelBudget)
+  const voxelMat = new VoxelMaterial(W, H, T, segments, toolStates, org.x, org.y, minCellMM, voxelBudget)
   refs.voxelMat  = voxelMat
   const N = voxelMat.leaves.length
   console.log(`[voxel] built ${N.toLocaleString()} voxels @ ${voxelMat.effectiveCellMM.toFixed(3)}mm cell | machine budget: ${refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget.toLocaleString() : 'uncalibrated'}`)
@@ -641,16 +643,17 @@ function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: 
 function buildToolIndicator(refs: SceneRefs) {
   refs.activeToolKey = ''
 
-  const segments = useSimStore.getState().segments
+  const { segments, toolStates } = useSimStore.getState()
   let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60
 
   for (const seg of segments) {
     if (!seg.rapid) {
-      diamMM = seg.toolDiameterMM
-      if (seg.toolVbitHalfAngleTan) {
+      const ts = segTool(seg, toolStates)
+      diamMM = ts.toolDiameterMM
+      if (ts.toolVbitHalfAngleTan) {
         toolType = 'vbit'
-        vbitAngleDeg = Math.atan(seg.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
-      } else if (seg.toolBallNose) {
+        vbitAngleDeg = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
+      } else if (ts.toolBallNose) {
         toolType = 'ball'
       }
       break

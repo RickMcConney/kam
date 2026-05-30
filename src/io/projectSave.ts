@@ -13,6 +13,7 @@ export function buildProjectData() {
   const {
     widthMM, heightMM, thicknessMM, units, origin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
+    machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
   } = useWorkpieceStore.getState()
   const { tools } = useToolStore.getState()
   const { paths } = usePathsStore.getState()
@@ -32,6 +33,7 @@ export function buildProjectData() {
     workpiece: {
       widthMM, heightMM, thicknessMM, units, origin, material,
       tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
+      machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
     },
     tools,
     paths,

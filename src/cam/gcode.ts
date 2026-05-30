@@ -3,6 +3,7 @@ import type { Tool } from '../store/toolStore'
 import type { PostProcessorProfile } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
+import { feedsForTool } from './feeds'
 
 const MM_PER_IN = 25.4
 
@@ -72,6 +73,7 @@ export function generateGcode(
     const roughTool = roughingToolId ? toolsById[roughingToolId] : null
     const firstTool = roughTool || finishTool
     const firstToolId = roughTool ? roughingToolId! : op.toolId
+    const firstFeeds = feedsForTool(firstTool)
 
     c(`=== ${op.name} ===`)
     if (roughingToolId && toolsById[roughingToolId]) {
@@ -80,10 +82,10 @@ export function generateGcode(
       // the roughing segments get the correct (large) diameter.  Finishing tool dia is
       // emitted at the tool-change segment later.
       c(`Finishing: ${finishTool.name}  ${opDesc(op)}`)
-      c(`Roughing: ${rt.name}  dia ${f(rt.diameterMM)}mm`)
+      c(`Roughing: ${rt.name}  dia ${f(rt.diameterMM)}mm  flutes:${rt.fluteCount}`)
       if (rt.type === 'ballnose') c(`ballnose`)
     } else {
-      c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  ${opDesc(op)}`)
+      c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  flutes:${finishTool.fluteCount}  ${opDesc(op)}`)
       if (finishTool.type === 'vbit') {
         const angleDeg = (op.type === 'vcarve' || op.type === 'inlay')
           ? op.angleDeg
@@ -98,7 +100,10 @@ export function generateGcode(
         lines.push(...profile.toolChangeGcode.split('\n'))
       }
       if (profile.spindleOnTemplate.trim()) {
-        lines.push(sub(profile.spindleOnTemplate, { s: firstTool.rpm }))
+        lines.push(sub(profile.spindleOnTemplate, { s: firstFeeds.rpm }))
+      }
+      if (firstFeeds.rpmAdjusted) {
+        c(`NOTE: auto-feed set spindle to ${firstFeeds.rpm} RPM (tool stored ${firstTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
       }
       lastToolId = firstToolId
     }
@@ -106,6 +111,7 @@ export function generateGcode(
     const coordDecimals = profile.unitMode === 'in' ? 3 : 2
     let prevX = NaN, prevY = NaN, prevZ = NaN
     let currentTool = firstTool
+    let currentFeeds = firstFeeds
 
     for (let i = 0; i < op.segments.length; i++) {
       const seg = op.segments[i]
@@ -116,14 +122,19 @@ export function generateGcode(
         if (newTool && seg.toolChange !== lastToolId) {
           if (profile.toolChangeGcode.trim()) lines.push(...profile.toolChangeGcode.split('\n'))
           // Emit dia + tool type so sim parser updates to the new tool
-          c(`${newTool.name}  dia ${f(newTool.diameterMM)}mm`)
+          c(`${newTool.name}  dia ${f(newTool.diameterMM)}mm  flutes:${newTool.fluteCount}`)
           if (newTool.type === 'vbit') {
             const vbitAngle = op.type === 'inlay' ? op.angleDeg : (newTool.vbitAngleDeg ?? 60)
             c(`vbit-angle:${f(vbitAngle / 2)}`)
           }
           if (newTool.type === 'ballnose') c(`ballnose`)
-          if (profile.spindleOnTemplate.trim()) lines.push(sub(profile.spindleOnTemplate, { s: newTool.rpm }))
+          const newFeeds = feedsForTool(newTool)
+          if (profile.spindleOnTemplate.trim()) lines.push(sub(profile.spindleOnTemplate, { s: newFeeds.rpm }))
+          if (newFeeds.rpmAdjusted) {
+            c(`NOTE: auto-feed set spindle to ${newFeeds.rpm} RPM (tool stored ${newTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
+          }
           currentTool = newTool
+          currentFeeds = newFeeds
           lastToolId = seg.toolChange
         }
         prevX = seg.x; prevY = seg.y; prevZ = seg.z
@@ -146,7 +157,7 @@ export function generateGcode(
         const ii = f(toOut(seg.arc.cx - prevX, profile), coordDecimals)
         const jj = f(toOut(seg.arc.cy - prevY, profile), coordDecimals)
         const isHelical = seg.z !== prevZ
-        const feedMm = (isHelical || currentTool.xyFeedMmMin === 0) ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
+        const feedMm = (isHelical || currentTool.xyFeedMmMin === 0) ? currentFeeds.plungeMmMin : currentFeeds.xyFeedMmMin
         const feed = Math.round(toOut(feedMm, profile))
         const template = seg.arc.cw ? profile.arcCWTemplate : profile.arcCCWTemplate
         lines.push(sub(template, { x, y, z, i: ii, j: jj, f: feed }))
@@ -161,7 +172,7 @@ export function generateGcode(
         else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
         else { if (a1 <= a0) a1 += 2 * Math.PI }
         const steps = Math.max(4, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
-        const feed = Math.round(toOut(currentTool.xyFeedMmMin, profile))
+        const feed = Math.round(toOut(currentFeeds.xyFeedMmMin, profile))
         for (let k = 1; k <= steps; k++) {
           const t = k / steps
           const a = a0 + (a1 - a0) * t
@@ -173,7 +184,7 @@ export function generateGcode(
       } else {
         const xyChanged = seg.x !== prevX || seg.y !== prevY
         const isPlunge = !xyChanged && seg.z < prevZ
-        const feedMm = isPlunge ? currentTool.zFeedMmMin : currentTool.xyFeedMmMin
+        const feedMm = isPlunge ? currentFeeds.plungeMmMin : currentFeeds.xyFeedMmMin
         const feed = Math.round(toOut(feedMm * (seg.feedScale ?? 1), profile))
         lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
       }

@@ -11,19 +11,36 @@ export interface SimSegment {
   lineIdx: number       // 0-based line index in the gcode text
   durationS: number     // seconds to traverse this segment
   startTimeS: number    // cumulative elapsed time at the start of this segment
+  toolStateIdx: number  // index into ParsedGcode.toolStates (flyweight; see ToolState)
+}
+
+// Tool/spindle parameters change only at tool changes, so rather than repeat them
+// on every segment we keep a small deduplicated table and store just an index on
+// each segment. Resolve with `segTool(seg, toolStates)`.
+export interface ToolState {
   toolDiameterMM: number
   toolVbitHalfAngleTan?: number  // set for V-bit segments; tan(halfAngle)
   toolBallNose?: boolean         // set for ball nose segments
+  spindleRpm: number             // active spindle speed (S word); 0 if none seen
+  fluteCount: number             // from "flutes:N" comment; defaults to 2
 }
 
 export interface ParsedGcode {
   lines: string[]
   segments: SimSegment[]
   totalTimeS: number
+  toolStates: ToolState[]
 }
 
 const RAPID_MM_PER_MIN = 5000
 const MM_PER_INCH = 25.4
+
+const FALLBACK_TOOL_STATE: ToolState = { toolDiameterMM: 3.0, spindleRpm: 0, fluteCount: 2 }
+
+// Resolve a segment's tool parameters from the flyweight table.
+export function segTool(seg: SimSegment, toolStates: ToolState[]): ToolState {
+  return toolStates[seg.toolStateIdx] ?? FALLBACK_TOOL_STATE
+}
 
 function parseWords(line: string): Array<[string, number]> {
   const clean = line.replace(/;.*$/, '').replace(/\([^)]*\)/g, '').trim()
@@ -46,9 +63,7 @@ function arcToSegments(
   feedMmMin: number,
   lineIdx: number,
   startTimeS: number,
-  toolDiameterMM: number,
-  toolVbitHalfAngleTan?: number,
-  toolBallNose?: boolean,
+  toolStateIdx: number,
 ): SimSegment[] {
   const cx = x0 + ii
   const cy = y0 + jj
@@ -83,9 +98,7 @@ function arcToSegments(
       lineIdx,
       durationS: dur,
       startTimeS: cumT,
-      toolDiameterMM,
-      toolVbitHalfAngleTan,
-      toolBallNose,
+      toolStateIdx,
     })
     cumT += dur
     px = nx; py = ny; pz = nz
@@ -104,7 +117,25 @@ export function parseGcode(text: string): ParsedGcode {
   let toolDiameterMM = 3.0
   let toolVbitHalfAngleTan: number | undefined
   let toolBallNose: boolean | undefined
+  let spindleRpm = 0
+  let fluteCount = 2
   let cumT = 0
+
+  // Deduplicated flyweight table of tool/spindle states. Segments store an index
+  // into this (toolStateIdx). syncToolState() finds-or-creates the entry matching
+  // the current parser state and points curStateIdx at it.
+  const toolStates: ToolState[] = [{ toolDiameterMM, spindleRpm, fluteCount }]
+  let curStateIdx = 0
+  const matchesCur = (t: ToolState) =>
+    t.toolDiameterMM === toolDiameterMM && t.toolVbitHalfAngleTan === toolVbitHalfAngleTan &&
+    t.toolBallNose === toolBallNose && t.spindleRpm === spindleRpm && t.fluteCount === fluteCount
+  const syncToolState = () => {
+    if (matchesCur(toolStates[curStateIdx])) return
+    const found = toolStates.findIndex(matchesCur)
+    if (found >= 0) { curStateIdx = found; return }
+    curStateIdx = toolStates.length
+    toolStates.push({ toolDiameterMM, toolVbitHalfAngleTan, toolBallNose, spindleRpm, fluteCount })
+  }
 
   for (let li = 0; li < rawLines.length; li++) {
     const raw = rawLines[li]
@@ -125,6 +156,13 @@ export function parseGcode(text: string): ParsedGcode {
     // Parse ball nose marker: "; ballnose"
     if (/\bballnose\b/i.test(raw)) toolBallNose = true
 
+    // Parse flute count: "; ... flutes:2"
+    const fluteMatch = raw.match(/flutes:(\d+)/i)
+    if (fluteMatch) fluteCount = Math.max(1, parseInt(fluteMatch[1]))
+
+    // Fold any tool-comment changes on this line into the flyweight table.
+    if (diamMatch || vbitMatch || fluteMatch || /\bballnose\b/i.test(raw)) syncToolState()
+
     const pairs = parseWords(raw)
     if (pairs.length === 0) continue
 
@@ -140,6 +178,9 @@ export function parseGcode(text: string): ParsedGcode {
 
     const f = get('F')
     if (f !== undefined) feedRate = f * unitScale
+
+    const s = get('S')
+    if (s !== undefined) { spindleRpm = s; syncToolState() }
 
     const hasX = get('X') !== undefined
     const hasY = get('Y') !== undefined
@@ -167,9 +208,7 @@ export function parseGcode(text: string): ParsedGcode {
           lineIdx: li,
           durationS: dur,
           startTimeS: cumT,
-          toolDiameterMM,
-          toolVbitHalfAngleTan,
-          toolBallNose,
+          toolStateIdx: curStateIdx,
         })
         cumT += dur
       }
@@ -186,14 +225,12 @@ export function parseGcode(text: string): ParsedGcode {
           lineIdx: li,
           durationS: dur,
           startTimeS: cumT,
-          toolDiameterMM,
-          toolVbitHalfAngleTan,
-          toolBallNose,
+          toolStateIdx: curStateIdx,
         })
         cumT += dur
       }
     } else if (motionMode === 2 || motionMode === 3) {
-      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, cz, nz, Math.max(feedRate, 1), li, cumT, toolDiameterMM, toolVbitHalfAngleTan, toolBallNose)
+      const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, cz, nz, Math.max(feedRate, 1), li, cumT, curStateIdx)
       segs.push(...arcSegs)
       if (arcSegs.length > 0) {
         const last = arcSegs[arcSegs.length - 1]
@@ -204,7 +241,7 @@ export function parseGcode(text: string): ParsedGcode {
     cx = nx; cy = ny; cz = nz
   }
 
-  return { lines: rawLines, segments: segs, totalTimeS: cumT }
+  return { lines: rawLines, segments: segs, totalTimeS: cumT, toolStates }
 }
 
 export function getCurrentSegIdx(segments: SimSegment[], elapsedTimeS: number): number {

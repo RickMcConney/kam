@@ -3,6 +3,7 @@ import { ICON } from '../theme'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import {
   useWorkpieceStore,
+  MATERIAL_INFO,
   type OriginPosition,
   type Units,
   type Material,
@@ -119,25 +120,27 @@ function Section({
   )
 }
 
-const MATERIALS: { value: Material; label: string }[] = [
-  { value: 'pine', label: 'Pine' },
-  { value: 'oak', label: 'Oak' },
-  { value: 'maple', label: 'Maple' },
-  { value: 'walnut', label: 'Walnut' },
-  { value: 'cherry', label: 'Cherry' },
-  { value: 'mdf', label: 'MDF' },
-  { value: 'plywood', label: 'Plywood' },
-  { value: 'hdpe', label: 'HDPE' },
-  { value: 'aluminum', label: 'Aluminum' },
-  { value: 'other', label: 'Other' },
-]
+const MATERIALS = (Object.keys(MATERIAL_INFO) as Material[]).map((value) => ({
+  value,
+  label: MATERIAL_INFO[value].label,
+}))
+
+const RIGIDITY_LABELS: Record<number, string> = {
+  1: 'Hobby (light gantry)',
+  2: 'Light hobby',
+  3: 'Prosumer',
+  4: 'Heavy / industrial',
+  5: 'Commercial CNC',
+}
 
 export default function WorkpiecePanel() {
   const {
     widthMM, heightMM, thicknessMM, units, origin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM, safeHeightMM,
+    machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
     setWidth, setHeight, setThickness, setOrigin, setMaterial,
     setTableLimitWidth, setTableLimitHeight, setTableLimitDepth, setSafeHeight,
+    setMachineRigidity, setMaxFeed, setMinSpindleRpm, setMaxSpindleRpm, setAutoFeedEnabled,
   } = useWorkpieceStore()
 
   return (
@@ -163,10 +166,95 @@ export default function WorkpiecePanel() {
         >
           {MATERIALS.map((m) => (
             <option key={m.value} value={m.value}>
-              {m.label}
+              {m.label} (hardness {MATERIAL_INFO[m.value].hardness.toFixed(1)})
             </option>
           ))}
         </select>
+        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1.5">
+          Hardness factor: {MATERIAL_INFO[material].hardness.toFixed(1)}
+          <span className="text-gray-400 dark:text-neutral-600"> (used for auto feeds &amp; speeds)</span>
+        </p>
+      </Section>
+
+      <Section title="Feeds &amp; Speeds">
+        <label className="flex items-center gap-2 mb-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoFeedEnabled}
+            onChange={(e) => setAutoFeedEnabled(e.target.checked)}
+            className="accent-blue-500"
+          />
+          <span className="text-body text-gray-700 dark:text-neutral-300">
+            Auto feed &amp; speeds
+          </span>
+        </label>
+        <p className="text-body text-gray-400 dark:text-neutral-500 mb-3 -mt-1.5">
+          When on, cutting feed and step-down are computed from material, tool and
+          rigidity. If the machine can't feed fast enough for the target chip load,
+          the spindle speed is lowered instead (a warning is added to the G-code —
+          set it by hand if your machine has no spindle control). When off, the
+          tool's own feeds and your step-down are used.
+        </p>
+
+        <div className="mb-3">
+          <label className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Machine Rigidity</label>
+          <select
+            value={machineRigidity}
+            onChange={(e) => setMachineRigidity(parseInt(e.target.value))}
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
+          >
+            {[1, 2, 3, 4, 5].map((r) => (
+              <option key={r} value={r}>
+                {r} · {RIGIDITY_LABELS[r]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">Max Feed Rate</label>
+          <div className="relative flex-1">
+            <NumericInput
+              value={fromMM(maxFeedMmMin, units)}
+              min={1}
+              step={units === 'in' ? 1 : 50}
+              onChange={(v) => setMaxFeed(toMM(v, units))}
+              className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-14 font-mono"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">
+              {units}/min
+            </span>
+          </div>
+        </div>
+        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
+          Hard ceiling — generated feeds never exceed this, even when auto is off.
+        </p>
+
+        {([
+          ['Min Spindle', minSpindleRpm, setMinSpindleRpm] as const,
+          ['Max Spindle', maxSpindleRpm, setMaxSpindleRpm] as const,
+        ]).map(([label, value, onChange]) => (
+          <div key={label} className="flex items-center gap-2 mt-3">
+            <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
+            <div className="relative flex-1">
+              <NumericInput
+                value={value}
+                min={1000}
+                step={1000}
+                onChange={onChange}
+                className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-12 font-mono"
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">
+                rpm
+              </span>
+            </div>
+          </div>
+        ))}
+        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
+          Auto mode picks a spindle speed in this range — as fast as needed to reach the
+          max feed (shorter jobs). Set the min to your spindle's real floor (routers ≈10000)
+          and lower the max if a material burns at high speed.
+        </p>
       </Section>
 
       <Section title="Machine Travel Limits">

@@ -380,7 +380,7 @@ export function generateProfile(
     const circle = fitCircle(oriented)
 
     if (circle) {
-      // Circle pass — tabs not supported for arc output (rare edge case)
+      // Circle pass — emitted as true arcs. Tabs aren't supported here (rare edge case).
       const { cx, cy, r } = circle
       let sx: number, sy: number
       if (params.startNear) {
@@ -393,12 +393,44 @@ export function generateProfile(
       }
       const cw = !wantCCW
 
-      segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
-      for (const zDepth of passes) {
-        segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
-        segs.push({ x: sx, y: sy, z: zDepth, rapid: false, arc: { cx, cy, cw } })
+      if (params.rampIn) {
+        // Helical entry: descend along the arc over a ramp wedge, complete the rest
+        // of the circle at depth, then (final pass only) clear the wedge with a flat
+        // finishing arc. Mirrors the closed-polygon ramp structure below.
+        const circ = 2 * Math.PI * r
+        const rampDist = Math.min(2 * tool.diameterMM, circ * 0.45)
+        const rampAngle = rampDist / r          // radians swept by the ramp
+        const dir = cw ? -1 : 1
+        const startAngle = Math.atan2(sy - cy, sx - cx)
+        const rampEndAngle = startAngle + dir * rampAngle
+        const rex = cx + r * Math.cos(rampEndAngle)
+        const rey = cy + r * Math.sin(rampEndAngle)
+
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+        for (let pi = 0; pi < passes.length; pi++) {
+          const zDepth = passes[pi]
+          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+          // pi 0: rapid down to the surface; pi>0: already at depth (no lift), the
+          // previous pass's circle ended back at sx at this depth.
+          segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
+          // Helical ramp arc sx → rampEnd, descending rampStartZ → zDepth.
+          segs.push({ x: rex, y: rey, z: zDepth, rapid: false, arc: { cx, cy, cw } })
+          // Remainder of the circle at depth: rampEnd → sx the long way round.
+          segs.push({ x: sx, y: sy, z: zDepth, rapid: false, arc: { cx, cy, cw } })
+          // Final pass: clear the ramp wedge with a flat arc sx → rampEnd.
+          if (pi === passes.length - 1) {
+            segs.push({ x: rex, y: rey, z: zDepth, rapid: false, arc: { cx, cy, cw } })
+          }
+        }
+        segs.push({ x: rex, y: rey, z: safeZ, rapid: true })
+      } else {
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+        for (const zDepth of passes) {
+          segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
+          segs.push({ x: sx, y: sy, z: zDepth, rapid: false, arc: { cx, cy, cw } })
+        }
+        segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
       }
-      segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
     } else {
       const rotated = params.startNear
         ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
