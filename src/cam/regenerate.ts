@@ -3,7 +3,7 @@ import { generateSurface } from './surfacing'
 import { runInWorker } from '../workers/workerClient'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
-import { useToolStore } from '../store/toolStore'
+import { useToolStore, type Tool } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
@@ -137,9 +137,11 @@ export async function regenerateOperation(opId: string): Promise<void> {
     } else if (op.type === 'inlay') {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
-      const vbitTool = tools.find((t) => t.id === op.vbitToolId)
+      // vbitToolId === 'none' (INLAY_NO_FINISH) → female roughing-only, no finish tool.
+      const noFinish = op.vbitToolId === 'none'
+      const vbitTool: Tool | null = noFinish ? null : (tools.find((t) => t.id === op.vbitToolId) ?? null)
       const pocketTool = tools.find((t) => t.id === op.pocketToolId)
-      if (!vbitTool) throw new Error('V-bit tool not found')
+      if (!noFinish && !vbitTool) throw new Error('V-bit tool not found')  // male/finish always needs it
       if (!pocketTool) throw new Error('Pocket/profile tool not found')
       const islandDs = op.islandIds.flatMap((id) => {
         const p = paths.find((x) => x.id === id)
@@ -149,7 +151,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
         stepDownMM: effectiveStepDownMM(pocketTool, op.stepDownMM, op.pocketDepthMM), stepoverPercent: op.stepoverPercent,
         glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM,
-        mirrorX: op.mirrorX, islandDs, safeHeightMM,
+        rampIn: op.rampIn, mirrorX: op.mirrorX, islandDs, safeHeightMM,
       }
       const result = op.role === 'female'
         ? await runInWorker('generateInlayFemale', path.d, pocketTool, vbitTool, inlayParams)

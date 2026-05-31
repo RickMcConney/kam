@@ -85,6 +85,10 @@ export interface VCarveOperation extends BaseOperation {
   angleDeg: number
 }
 
+// vbitToolId sentinel: skip the finish/wall pass entirely (female roughing-only —
+// just the raster pocket, no separate wall-finish contour). Only valid for female.
+export const INLAY_NO_FINISH = 'none'
+
 export interface InlayOperation extends BaseOperation {
   type: 'inlay'
   role: 'female' | 'male'
@@ -99,6 +103,7 @@ export interface InlayOperation extends BaseOperation {
   stepoverPercent: number
   glueLineMM: number
   clearanceMM: number
+  rampIn: boolean         // ramp/helical entry on roughing pockets instead of straight plunge
   mirrorX?: boolean       // male only: mirror shape around vertical axis before cutting
   linkedOpId?: string     // ID of the paired phase operation
 }

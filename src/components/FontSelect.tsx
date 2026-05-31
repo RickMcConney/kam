@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { AVAILABLE_FONTS, loadFont, getFont } from '../shapes/textGenerator'
 
 function buildPreviewSVG(family: string, text: string): string {
@@ -33,26 +34,62 @@ interface Props {
   className?: string
 }
 
+// Approximate height of the preview strip + the menu's borders, reserved when
+// sizing the scrollable list against the available viewport space.
+const PREVIEW_RESERVE = 64
+// Matches the old `max-h-44` (11rem) — the list never grows taller than this.
+const LIST_MAX = 176
+
 export default function FontSelect({ value, onChange, previewText, className = '' }: Props) {
   const [open, setOpen] = useState(false)
   const [hoveredFamily, setHoveredFamily] = useState<string | null>(null)
   const [previewSVG, setPreviewSVG] = useState<string>('')
   const rootRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Fixed-viewport placement so the menu escapes the sidebar's scroll clipping
+  // and can flip above the field when there isn't room below.
+  const [pos, setPos] = useState<{ left: number; width: number; top: number | null; bottom: number | null; listMaxH: number }>(
+    { left: 0, width: 0, top: 0, bottom: null, listMaxH: LIST_MAX }
+  )
+
+  const recalc = useCallback(() => {
+    const el = rootRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const margin = 8
+    const spaceBelow = window.innerHeight - r.bottom - margin
+    const spaceAbove = r.top - margin
+    // Drop up only when below is too cramped for a usable list and above has more room.
+    const dropUp = spaceBelow < LIST_MAX + PREVIEW_RESERVE && spaceAbove > spaceBelow
+    const listMaxH = Math.max(80, Math.min(LIST_MAX, (dropUp ? spaceAbove : spaceBelow) - PREVIEW_RESERVE))
+    setPos(dropUp
+      ? { left: r.left, width: r.width, top: null, bottom: window.innerHeight - r.top + 2, listMaxH }
+      : { left: r.left, width: r.width, top: r.bottom + 2, bottom: null, listMaxH })
+  }, [])
 
   useEffect(() => {
     if (!open) return
+    recalc()
     const onMouse = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (rootRef.current?.contains(t) || menuRef.current?.contains(t)) return
+      setOpen(false)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const reposition = () => recalc()
     document.addEventListener('mousedown', onMouse)
     document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', reposition)
+    // Capture phase so the menu follows when any ancestor (the sidebar) scrolls.
+    window.addEventListener('scroll', reposition, true)
     return () => {
       document.removeEventListener('mousedown', onMouse)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
     }
-  }, [open])
+  }, [open, recalc])
 
   const sampleText = previewText?.trim() || 'AaBbCc'
 
@@ -102,10 +139,18 @@ export default function FontSelect({ value, onChange, previewText, className = '
         </svg>
       </button>
 
-      {open && (
-        <div className="absolute z-50 left-0 right-0 mt-0.5 bg-white dark:bg-neutral-800 border border-gray-200 dark:border-neutral-600 rounded shadow-lg">
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-50 bg-white dark:bg-neutral-800 border border-gray-200 dark:border-neutral-600 rounded shadow-lg"
+          style={{
+            left: pos.left,
+            width: pos.width,
+            ...(pos.top != null ? { top: pos.top } : { bottom: pos.bottom ?? 0 }),
+          }}
+        >
           {/* Font list */}
-          <div className="overflow-y-auto max-h-44">
+          <div className="overflow-y-auto" style={{ maxHeight: pos.listMaxH }}>
             {AVAILABLE_FONTS.map(f => {
               const active = f.family === value
               const hovered = f.family === hoveredFamily
@@ -141,7 +186,8 @@ export default function FontSelect({ value, onChange, previewText, className = '
                 </span>
             }
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

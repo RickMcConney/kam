@@ -8,7 +8,7 @@ import {
   Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, RefreshCw,
 } from 'lucide-react'
 import { useToolStore, type Tool, type CuttingDirection } from '../store/toolStore'
-import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation, type TrochoidalOperation } from '../store/toolpathStore'
+import { useToolpathStore, INLAY_NO_FINISH, type CutSide, type AnyOperation, type ProfileOperation, type PocketOperation, type DrillOperation, type SurfaceOperation, type VCarveOperation, type InlayOperation, type Profile3dOperation, type TrochoidalOperation } from '../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../store/formDefaultsStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
@@ -286,7 +286,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<TrochoidalFormState>(() => editOp ? {
@@ -297,7 +297,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   } : mergeWithDefaults(load('trochoidal'), {
     toolId: defaultTool?.id ?? '',
     side: 'outside' as CutSide,
-    depthMM: defaultTool?.maxDepthMM ?? 10,
+    // Default to the full stock thickness; the tool's max Z is only a warning.
+    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
     trochStepMM: (defaultTool?.diameterMM ?? 6) * 0.15,
@@ -484,7 +485,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<PocketFormState>(() => editOp ? {
@@ -496,7 +497,8 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   } : mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     strategy: 'raster' as PocketStrategy,
-    depthMM: defaultTool?.maxDepthMM ?? 10,
+    // Default to the full stock thickness; the tool's max Z is only a warning.
+    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
     passAngleDeg: 0,
@@ -688,7 +690,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<DrillFormState>(() => editOp ? {
@@ -697,7 +699,8 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   } : mergeWithDefaults(load('drill'), {
     toolId: defaultTool?.id ?? '',
     drillMode: 'peck' as const,
-    depthMM: defaultTool?.maxDepthMM ?? 10,
+    // Default to the full stock thickness; the tool's max Z is only a warning.
+    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: defaultTool?.stepDownMM ?? 3,
   }, tools))
   const [generating, setGenerating] = useState(false)
@@ -1113,7 +1116,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
@@ -1122,7 +1125,8 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     : mergeWithDefaults(load('vcarve'), {
         toolId: defaultTool?.id ?? '',
         angleDeg: defaultTool?.vbitAngleDeg ?? 60,
-        maxDepthMM: defaultTool?.maxDepthMM ?? 10,
+        // Default to the full stock thickness; the tool's max Z is only a warning.
+        maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
       }, tools)
   )
   const [generating, setGenerating] = useState(false)
@@ -1264,6 +1268,7 @@ interface InlayFormState {
   glueLineMM: number
   clearanceMM: number
   role: 'female' | 'male'
+  rampIn: boolean
   mirrorX: boolean
 }
 
@@ -1284,7 +1289,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     pocketDepthMM: editOp.pocketDepthMM,
     stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
     glueLineMM: editOp.glueLineMM, clearanceMM: editOp.clearanceMM,
-    role: editOp.role, mirrorX: editOp.mirrorX ?? false,
+    role: editOp.role, rampIn: editOp.rampIn ?? false, mirrorX: editOp.mirrorX ?? false,
   } : mergeWithDefaults(load('inlay'), {
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
@@ -1294,11 +1299,15 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     glueLineMM: 0.2,
     clearanceMM: 0.1,
     role: 'female' as const,
+    rampIn: false,
     mirrorX: false,
   }, tools))
   const [generating, setGenerating] = useState(false)
 
-  const vbitTool = tools.find((t) => t.id === form.vbitToolId)
+  // Finish = "None": roughing tool only, no separate wall-finish pass. Female → flat-walled
+  // pocket; male → flat-walled plug freed by the roughing bit. One operation, no pairing.
+  const finishIsNone = form.vbitToolId === INLAY_NO_FINISH
+  const vbitTool = finishIsNone ? null : tools.find((t) => t.id === form.vbitToolId)
   const pocketTool = tools.find((t) => t.id === form.pocketToolId)
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
@@ -1311,10 +1320,13 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   }
 
   function handleGenerate() {
-    if (groups.length === 0 || !vbitTool || !pocketTool) return
+    if (groups.length === 0 || !pocketTool || (!vbitTool && !finishIsNone)) return
     pushHistoryBoth()
     setGenerating(true)
 
+    // After the guard, the wall tool is present unless finishIsNone (roughing-only); the
+    // finishIsNone path returns early below, so non-None branches always have a real tool.
+    const wallTool: Tool | null = vbitTool ?? null
     const angleDeg = vbitTool?.vbitAngleDeg ?? 60
     const baseParams = {
       angleDeg,
@@ -1323,6 +1335,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       stepoverPercent: form.stepoverPercent,
       glueLineMM: form.glueLineMM,
       clearanceMM: form.clearanceMM,
+      rampIn: form.rampIn,
       mirrorX: form.mirrorX,
       safeHeightMM,
     }
@@ -1335,6 +1348,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       stepoverPercent: form.stepoverPercent,
       glueLineMM: form.glueLineMM,
       clearanceMM: form.clearanceMM,
+      rampIn: form.rampIn,
       mirrorX: form.mirrorX,
     }
 
@@ -1360,8 +1374,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       setTimeout(async () => {
         try {
           const result = editOp.role === 'female'
-            ? await generateInlayFemale(editBoundary.d, pocketTool, vbitTool, inlayParams)
-            : await generateInlayMale(editBoundary.d, pocketTool, vbitTool, inlayParams)
+            ? await generateInlayFemale(editBoundary.d, pocketTool, wallTool, inlayParams)
+            : await generateInlayMale(editBoundary.d, pocketTool, wallTool, inlayParams)
           setSegments(editOp.id, editOp.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
           if (linkedOp) {
             setSegments(linkedOp.id, editOp.phase === 'vbit' ? result.endmillSegs : result.vbitSegs)
@@ -1371,6 +1385,39 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           const msg = err instanceof Error ? err.message : 'Generation failed'
           setError(editOp.id, msg)
           if (linkedOp) setError(linkedOp.id, msg)
+        }
+        setGenerating(false)
+        save('inlay', form)
+      }, 0)
+      return
+    }
+
+    // Finish = None (roughing-only): one end-mill op per group, no finish phase and no
+    // pairing. Female → the raster pocket forms the flat-walled socket; male → the roughing
+    // bit profiles the flat-walled plug and pockets any island sockets. All segs are endmill.
+    if (finishIsNone) {
+      const role = form.role
+      const roleLabel = role === 'female' ? 'Female' : 'Male'
+      const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
+      const ids = groups.map(({ boundary, islands }) => {
+        const id = addOperation({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
+          pathId: boundary.id, islandIds: islands.map((p) => p.id),
+          name: `Inlay ${roleLabel} (End Mill): ${boundary.name}` })
+        updateOperation(id, { status: 'generating' })
+        return id
+      })
+      setTimeout(async () => {
+        for (let i = 0; i < groups.length; i++) {
+          const { boundary, islands } = groups[i]
+          const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
+          try {
+            const result = role === 'female'
+              ? await generateInlayFemale(boundary.d, pocketTool, null, inlayParams)
+              : await generateInlayMale(boundary.d, pocketTool, null, inlayParams)
+            setSegments(ids[i], result.endmillSegs)
+          } catch (err) {
+            setError(ids[i], err instanceof Error ? err.message : 'Generation failed')
+          }
         }
         setGenerating(false)
         save('inlay', form)
@@ -1422,8 +1469,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
         try {
           const result = role === 'female'
-            ? await generateInlayFemale(boundary.d, pocketTool, vbitTool, inlayParams)
-            : await generateInlayMale(boundary.d, pocketTool, vbitTool, inlayParams)
+            ? await generateInlayFemale(boundary.d, pocketTool, wallTool, inlayParams)
+            : await generateInlayMale(boundary.d, pocketTool, wallTool, inlayParams)
           setSegments(firstIds[i],  firstPhase  === 'vbit' ? result.vbitSegs : result.endmillSegs)
           setSegments(secondIds[i], secondPhase === 'vbit' ? result.vbitSegs : result.endmillSegs)
 
@@ -1439,7 +1486,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   }
 
   const isEndmillMode = !!vbitTool && vbitTool.type !== 'vbit'
-  const canGenerate = groups.length > 0 && !!vbitTool && !!pocketTool && !generating && form.pocketDepthMM > 0
+  const canGenerate = groups.length > 0 && (!!vbitTool || finishIsNone) && !!pocketTool && !generating && form.pocketDepthMM > 0
   const isMale = editOp ? editOp.role === 'male' : form.role === 'male'
 
   return (
@@ -1465,26 +1512,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           </div>
         )}
       </div>
-      {/* Finish tool */}
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finish Tool</label>
-        <select
-          value={form.vbitToolId}
-          onChange={(e) => up('vbitToolId', e.target.value)}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
-        >
-          {tools.map((t) => (
-            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
-          ))}
-        </select>
-        {vbitTool?.type === 'vbit' && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">V-bit — sloped bevel walls</p>
-        )}
-        {vbitTool && vbitTool.type !== 'vbit' && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{vbitTool.diameterMM}mm</p>
-        )}
-      </div>
-      {/* Pocket tool */}
+      {/* Roughing tool */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">End Mill (Roughing / Profile)</label>
         <select
@@ -1500,6 +1528,30 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
             <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
           ))}
         </select>
+      </div>
+      {/* Finish tool */}
+      <div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finish Tool</label>
+        <select
+          value={form.vbitToolId}
+          onChange={(e) => up('vbitToolId', e.target.value)}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+        >
+          {/* Skip the wall-finish pass — the roughing bit alone forms the socket / plug walls. */}
+          <option value={INLAY_NO_FINISH}>None — roughing only</option>
+          {tools.map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          ))}
+        </select>
+        {finishIsNone && (
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">No finish pass — flat walls left by the roughing bit (corners at its radius).</p>
+        )}
+        {vbitTool?.type === 'vbit' && (
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">V-bit — sloped bevel walls</p>
+        )}
+        {vbitTool && vbitTool.type !== 'vbit' && (
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{vbitTool.diameterMM}mm</p>
+        )}
       </div>
       {vbitTool?.type === 'vbit' && (
         <p className="text-label text-gray-400 dark:text-neutral-500">
@@ -1589,6 +1641,15 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           </p>
         </div>
       )}
+      {/* Ramp In — angled/helical entry on roughing pockets and end-mill finish passes */}
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="inlay-ramp-in" checked={form.rampIn}
+          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="inlay-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+        </label>
+      </div>
+
       {/* Mirror option — male plug only */}
       {isMale && (
         <div className="flex items-center gap-2">
@@ -1602,7 +1663,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate}
         label={editOp
           ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}`
-          : `Generate ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * 2} ops)` : ''}`} />
+          : `Generate ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
     </FormShell>
   )
 }
@@ -1629,7 +1690,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const { paths, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
+  const { safeHeightMM, autoFeedEnabled, thicknessMM } = useWorkpieceStore()
 
   const ballNoseTools = tools.filter((t) => t.type === 'ballnose')
   const defaultTool = ballNoseTools[0] ?? tools[0]
@@ -1650,7 +1711,8 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     toolId: defaultTool?.id ?? '',
     stepoverPercent: 20,
     rasterAngleDeg: 0,
-    maxDepthMM: defaultTool?.maxDepthMM ?? 10,
+    // Default to the full stock thickness; the tool's max Z is only a warning.
+    maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     pathId: stlPaths[0]?.id ?? '',
     roughingToolId: '',
     roughingStepoverPercent: 60,

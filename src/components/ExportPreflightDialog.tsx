@@ -39,7 +39,7 @@ export default function ExportPreflightDialog({
   onConfirm: (splitByTool: boolean, prefix: string) => void
   onCancel: () => void
 }) {
-  const { machine, job, warnings, units } = report
+  const { machine, job, warnings, units, stock } = report
   const ext = job.extents
   const rig = rigidityInfo(machine.rigidity)
   const RigIcon = rig.Icon
@@ -116,6 +116,14 @@ export default function ExportPreflightDialog({
                 <Row label="Safe height" value={fmtMM(machine.safeHeightMM, units)} />
                 <Row label="Max feed" value={`${Math.round(machine.maxFeedMmMin)} mm/min`} />
                 <Row label="Spindle range" value={`${machine.minSpindleRpm}–${machine.maxSpindleRpm} RPM`} />
+                <Row label="Auto-feed" value={machine.autoFeed ? 'On' : 'Off'} />
+              </section>
+
+              {/* Stock */}
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Stock</h3>
+                <Row label="Size" value={`${fmtMM(stock.widthMM, units)} × ${fmtMM(stock.heightMM, units)}`} />
+                <Row label="Thickness" value={fmtMM(stock.thicknessMM, units)} />
               </section>
 
               {/* Job summary */}

@@ -39,9 +39,17 @@ function clamp(v: number, lo: number, hi: number): number {
 // Used to scale the feed in computeFeeds and to set the chip-load gauge's color
 // band (so a hobby machine running its lighter feed still reads "in the sweet
 // spot" against this adjusted aim, while the displayed target stays intrinsic).
+// Tuned per level (R1–R3 softened so hobby machines don't slam the feed cap);
+// indexed by rigidity 1..5.
+const RIGIDITY_FEED_FACTOR = [0.35, 0.5, 0.65, 0.95, 1.1]
 export function rigidityFeedFactor(rigidity: number): number {
-  return 0.5 + (clamp(rigidity, 1, 5) - 1) * 0.15 // R1→0.5 … R5→1.1
+  return RIGIDITY_FEED_FACTOR[clamp(Math.round(rigidity), 1, 5) - 1]
 }
+
+// Axial depth-of-cut aggressiveness by machine rigidity (before the material and
+// diameter caps). R1–R3 take shallower passes than the old linear ramp so light
+// machines aren't handed near-full-diameter step-downs. Indexed by rigidity 1..5.
+const RIGIDITY_DEPTH_FACTOR = [0.3, 0.45, 0.6, 0.85, 1.0]
 
 // Intrinsic recommended chip load (mm per tooth) for a tool in a given material —
 // a property of the tool type + diameter + material only (this is what manufacturer
@@ -135,17 +143,22 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
   // Step-down comes from machine rigidity + material hardness, capped by the tool
   // diameter — it can be shallower OR deeper than the user's guess.
   const diaCap = tool.diameterMM >= SMALL_BIT_THRESHOLD_MM ? tool.diameterMM : 0.5 * tool.diameterMM
-  const rigidDepthFactor = 0.4 + (R - 1) * 0.15 // R1→0.4 … R5→1.0
+  const rigidDepthFactor = RIGIDITY_DEPTH_FACTOR[clamp(Math.round(R), 1, 5) - 1]
   const matDepthFactor = clamp(1 / Math.sqrt(hardness), 0.4, 1.5)
   const idealDoc = clamp(diaCap * rigidDepthFactor * matDepthFactor, 0.1, diaCap)
 
   // Favor a whole-number division of the intended total depth so passes come out
-  // even (e.g. 10 mm @ ~2.7 ideal → 4 passes of 2.5 mm).
+  // even (e.g. 10 mm @ ~2.7 ideal → 4 passes of 2.5 mm). Rounding to the nearest
+  // pass count can overshoot idealDoc by up to ~50% (e.g. 4 mm @ 2.7 ideal rounds
+  // to a single 4 mm pass), so cap the result: idealDoc is the rigidity/material
+  // ceiling and may be exceeded only slightly for evenness before forcing another,
+  // shallower pass. The diameter cap is the hard upper bound.
   let stepDown = idealDoc
   if (totalDepthMM > 0) {
+    const stepCap = Math.min(idealDoc * 1.1, diaCap)
     let passes = Math.max(1, Math.round(totalDepthMM / idealDoc))
     stepDown = totalDepthMM / passes
-    if (stepDown > diaCap) { passes += 1; stepDown = totalDepthMM / passes } // never exceed the diameter cap
+    while (stepDown > stepCap && passes < 1000) { passes += 1; stepDown = totalDepthMM / passes }
   }
 
   return { xyFeedMmMin: xyFeed, plungeMmMin: plunge, stepDownMM: stepDown, rpm, rpmAdjusted, spindleTooFast }

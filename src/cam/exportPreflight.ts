@@ -1,8 +1,8 @@
 import { useToolpathStore } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
-import { useWorkpieceStore } from '../store/workpieceStore'
-import { feedsForTool } from './feeds'
+import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
+import { feedsForTool, targetChipLoad, rigidityFeedFactor } from './feeds'
 import { generateGcode } from './gcode'
 import { parseGcode } from '../sim/gcodeParser'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -30,7 +30,9 @@ export interface ExportPreflight {
     minSpindleRpm: number
     maxSpindleRpm: number
     rigidity: number
+    autoFeed: boolean
   }
+  stock: { widthMM: number; heightMM: number; thicknessMM: number }
   job: {
     operationCount: number
     tools: PreflightTool[]
@@ -52,8 +54,8 @@ export function buildExportPreflight(): ExportPreflight {
   const profile = usePostProcessorStore.getState().getActiveProfile()
   const wp = useWorkpieceStore.getState()
   const {
-    widthMM, heightMM, thicknessMM, origin, units,
-    maxFeedMmMin, minSpindleRpm, maxSpindleRpm, safeHeightMM, machineRigidity,
+    widthMM, heightMM, thicknessMM, origin, units, material,
+    maxFeedMmMin, minSpindleRpm, maxSpindleRpm, safeHeightMM, machineRigidity, autoFeedEnabled,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
   } = wp
 
@@ -166,6 +168,77 @@ export function buildExportPreflight(): ExportPreflight {
     })
   }
 
+  // Chip-load sanity per tool: judge the exported feed's chip load against the
+  // rigidity-adjusted target the same way the simulator's gauge does. Chips that
+  // are too large can break the bit or stall the spindle; chips that are too small
+  // make the edge rub and overheat. (Drills cut by plunging, not feed-per-tooth
+  // side load, so they're excluded.)
+  const hardness = MATERIAL_INFO[material].hardness
+  const heavyTools: string[] = []
+  const rubbingTools: string[] = []
+  for (const id of usedToolIds) {
+    const t = toolsById[id]
+    if (t.type === 'drill') continue
+    const f = feedsForTool(t)
+    const flutes = t.fluteCount > 0 ? t.fluteCount : 1
+    if (f.rpm <= 0 || f.xyFeedMmMin <= 0) continue
+    const aimFz = targetChipLoad(t.type, t.diameterMM, hardness) * rigidityFeedFactor(machineRigidity)
+    if (aimFz <= 0) continue
+    const ratio = (f.xyFeedMmMin / (f.rpm * flutes)) / aimFz
+    if (ratio > 1.4) heavyTools.push(t.name)
+    else if (ratio < 0.75) rubbingTools.push(t.name)
+  }
+  if (heavyTools.length > 0) {
+    warnings.push({
+      level: 'warn',
+      text: `Chip load is too high on ${heavyTools.length} tool(s) (${heavyTools.join(', ')}) — ` +
+        `the chips are too large for the programmed feed and speed, risking tool breakage or a stalled spindle. ` +
+        `Lower the feed or raise the RPM${autoFeedEnabled ? '' : ' (or turn on auto-feed)'}.`,
+    })
+  }
+  if (rubbingTools.length > 0) {
+    warnings.push({
+      level: 'warn',
+      text: `Chip load is too low on ${rubbingTools.length} tool(s) (${rubbingTools.join(', ')}) — ` +
+        `the bit will rub instead of cut and run hot. ` +
+        `Raise the feed or lower the RPM${autoFeedEnabled ? '' : ' (or turn on auto-feed)'}.`,
+    })
+  }
+
+  // Inlay male/female overlap: a male plug and its female pocket must be cut at
+  // separate spots on the stock. If both roles are present and their toolpaths
+  // overlap in XY, the user likely ran "inlay in place" without moving the male
+  // copy, so the plug sits on top of the pocket.
+  type BB = { mnx: number; mny: number; mxx: number; mxy: number }
+  const opBBox = (op: { segments: { x: number; y: number }[] }): BB | null => {
+    let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity
+    for (const s of op.segments) {
+      if (s.x < mnx) mnx = s.x
+      if (s.x > mxx) mxx = s.x
+      if (s.y < mny) mny = s.y
+      if (s.y > mxy) mxy = s.y
+    }
+    return Number.isFinite(mnx) ? { mnx, mny, mxx, mxy } : null
+  }
+  const bbOverlap = (a: BB, b: BB): boolean => {
+    const ix = Math.min(a.mxx, b.mxx) - Math.max(a.mnx, b.mnx)
+    const iy = Math.min(a.mxy, b.mxy) - Math.max(a.mny, b.mny)
+    if (ix <= 0 || iy <= 0) return false
+    const minArea = Math.min((a.mxx - a.mnx) * (a.mxy - a.mny), (b.mxx - b.mnx) * (b.mxy - b.mny))
+    return minArea > 0 && (ix * iy) / minArea > 0.25
+  }
+  const femaleBoxes = doneOps.filter((o) => o.type === 'inlay' && o.role === 'female').map(opBBox)
+  const maleBoxes = doneOps.filter((o) => o.type === 'inlay' && o.role === 'male').map(opBBox)
+  const inlayOverlap = femaleBoxes.some((f) => f && maleBoxes.some((m) => m && bbOverlap(f, m)))
+  if (inlayOverlap) {
+    warnings.push({
+      level: 'warn',
+      text: `An inlay plug (male) and pocket (female) toolpath overlap on the stock — they must be cut at ` +
+        `separate positions. If you used "inlay in place", duplicate the male part and move it clear of the ` +
+        `female pocket before exporting.`,
+    })
+  }
+
   if (profile.unitMode !== units) {
     warnings.push({
       level: 'info',
@@ -185,7 +258,9 @@ export function buildExportPreflight(): ExportPreflight {
       minSpindleRpm,
       maxSpindleRpm,
       rigidity: machineRigidity,
+      autoFeed: autoFeedEnabled,
     },
+    stock: { widthMM, heightMM, thicknessMM },
     job: {
       operationCount: doneOps.length,
       tools: toolList,

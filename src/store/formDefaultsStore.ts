@@ -31,7 +31,8 @@ export function mergeWithDefaults<T extends Record<string, unknown>>(
   for (const key of Object.keys(merged)) {
     if (key === 'toolId' || key.endsWith('ToolId')) {
       const id = merged[key] as string
-      if (!tools.some((t) => t.id === id)) (merged as Record<string, unknown>)[key] = fallback[key]
+      // 'none' is an explicit "no tool" sentinel (e.g. inlay finish=None), not a stale ID.
+      if (id !== 'none' && !tools.some((t) => t.id === id)) (merged as Record<string, unknown>)[key] = fallback[key]
     }
   }
   return merged

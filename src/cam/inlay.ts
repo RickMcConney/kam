@@ -14,6 +14,7 @@ export interface InlayParams {
   glueLineMM: number         // extra depth added to female pocket for glue space
   clearanceMM: number        // reduction of male bevel offsets for fit clearance
   islandDs: string[]         // hole paths inside the shape
+  rampIn?: boolean           // ramp/helical entry on roughing pockets instead of plunging
   mirrorX?: boolean          // male only: mirror shape around vertical axis
   safeHeightMM?: number
 }
@@ -193,14 +194,60 @@ function zStepsTo(depthMM: number, stepDownMM: number): number[] {
   return out
 }
 
-function addContourStack(pts: Pt2[], zPasses: number[], segs: MotionSegment[], safeZ = 5) {
+// When `rampLenMM` is given, each pass enters by ramping down along the contour over
+// ~rampLenMM of travel (feed-reduced) instead of plunging straight in, then cuts the
+// full perimeter at depth and re-cuts the ramped zone to clean the floor. This mirrors
+// the ramp-in entry that generateProfile/generatePocket use. `undefined` → plunge in place.
+function addContourStack(pts: Pt2[], zPasses: number[], segs: MotionSegment[], safeZ = 5, rampLenMM?: number) {
   if (pts.length < 2 || zPasses.length === 0) return
-  const [sx, sy] = pts[0]
+  // Normalize: drop a duplicate closing vertex so the loop is a clean vertex ring.
+  let loop = pts
+  if (loop.length > 2 && Math.hypot(loop[loop.length-1][0]-loop[0][0], loop[loop.length-1][1]-loop[0][1]) < 1e-6)
+    loop = loop.slice(0, -1)
+  const [sx, sy] = loop[0]
+  const n = loop.length
+
+  if (rampLenMM === undefined || rampLenMM <= 0 || n < 3) {
+    segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+    for (const z of zPasses) {
+      segs.push({ x: sx, y: sy, z, rapid: false })   // feed-plunge in place
+      for (let i = 1; i < loop.length; i++) segs.push({ x: loop[i][0], y: loop[i][1], z, rapid: false })
+      segs.push({ x: sx, y: sy, z, rapid: false })   // close loop back to start
+    }
+    segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+    return
+  }
+
+  // Cumulative arc length at each vertex (cum[0] = 0); total perimeter includes the
+  // closing segment back to loop[0].
+  const cum = [0]
+  let total = 0
+  for (let i = 1; i < n; i++) { total += Math.hypot(loop[i][0]-loop[i-1][0], loop[i][1]-loop[i-1][1]); cum.push(total) }
+  total += Math.hypot(loop[0][0]-loop[n-1][0], loop[0][1]-loop[n-1][1])
+  if (total < 1e-6) { segs.push({ x: sx, y: sy, z: safeZ, rapid: true }); return }
+  const rampLen = Math.min(rampLenMM, total * 0.45)
+
+  // Vertices spanned by the ramp: 1..rampLast (rampLast = first vertex at/after rampLen).
+  let rampLast = 1
+  for (let i = 1; i < n; i++) { rampLast = i; if (cum[i] >= rampLen) break }
+
   segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
+  segs.push({ x: sx, y: sy, z: 0, rapid: true })   // rapid to surface at the start point
+  let prevZ = 0
   for (const z of zPasses) {
-    segs.push({ x: sx, y: sy, z, rapid: false })   // feed-plunge in place
-    for (let i = 1; i < pts.length; i++) segs.push({ x: pts[i][0], y: pts[i][1], z, rapid: false })
-    segs.push({ x: sx, y: sy, z, rapid: false })   // close loop back to start
+    // Ramp: loop[0] (already here at prevZ) → loop[rampLast], descending prevZ → z.
+    for (let i = 1; i <= rampLast; i++) {
+      const f = Math.min(cum[i] / rampLen, 1)
+      segs.push({ x: loop[i][0], y: loop[i][1], z: prevZ + (z - prevZ) * f, rapid: false, feedScale: 0.5 })
+    }
+    // Cut the rest of the perimeter at depth: loop[rampLast] → … → loop[0].
+    for (let i = rampLast + 1; i < n; i++) segs.push({ x: loop[i][0], y: loop[i][1], z, rapid: false })
+    segs.push({ x: sx, y: sy, z, rapid: false })
+    // Re-cut the ramped zone at full depth, ending back at loop[0] for the next pass.
+    for (let i = 1; i <= rampLast; i++) segs.push({ x: loop[i][0], y: loop[i][1], z, rapid: false })
+    for (let i = rampLast - 1; i >= 1; i--) segs.push({ x: loop[i][0], y: loop[i][1], z, rapid: false })
+    segs.push({ x: sx, y: sy, z, rapid: false })
+    prevZ = z
   }
   segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
 }
@@ -265,9 +312,37 @@ export function computeInlayFemaleOffsets(
 // Result slots: vbitSegs = wall/finish-tool passes, endmillSegs = roughing passes.
 async function insideClear(
   boundaryD: string, protrusionDs: string[],
-  roughTool: Tool, wallTool: Tool, params: InlayParams,
+  roughTool: Tool, wallTool: Tool | null, params: InlayParams,
 ): Promise<InlaySplitResult> {
   const totalDepthMM = params.pocketDepthMM + params.glueLineMM
+
+  // ── No finish tool: raster-pocket only (roughing socket, no wall-finish pass). ──
+  // The raster pocket already emits a finishing contour ring at each Z (see pocket.ts),
+  // so for a plain flat-walled socket the rough bit alone produces the final socket.
+  // Corners are rounded to the ROUGHING tool (there's no finish tool to do it), matching
+  // outerCut's no-finish male plug so the socket corners and plug corners agree.
+  // Clearance still lives on the socket: finishAllowanceMM = −c grows the pocket outward
+  // by c, and protrusions are pre-grown by c so the −c allowance nets them to nominal.
+  if (wallTool === null) {
+    const c = params.clearanceMM
+    const roundedD = roundCornersForEndmill(boundaryD, roughTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+    const pocketIslandDs = protrusionDs.map(iD => {
+      const roundedIsland = roundCornersForEndmill(iD, roughTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+      return c !== 0 ? (offsetPathRound(roundedIsland, c) ?? roundedIsland) : roundedIsland
+    })
+    const endmillSegs: MotionSegment[] = []
+    try {
+      endmillSegs.push(...generatePocket(roundedD, roughTool, {
+        strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
+        stepoverPercent: params.stepoverPercent, direction: 'climb',
+        islandDs: pocketIslandDs, angle: 0, safeHeightMM: params.safeHeightMM,
+        finishAllowanceMM: -c, rampIn: params.rampIn,
+      }))
+    } catch (e) { if (!isExpectedGeometryError(e)) throw e }
+    if (endmillSegs.length === 0)
+      throw new Error('Inlay socket is too small for the selected tool')
+    return { endmillSegs, vbitSegs: [] }
+  }
 
   // ── V-bit walls: raster pocket to the bevel-foot boundary + medial-axis V-carve. ──
   if (wallTool.type === 'vbit') {
@@ -301,6 +376,7 @@ async function insideClear(
         strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
         stepoverPercent: params.stepoverPercent, direction: 'climb',
         islandDs: islandPocketDs, angle: 0, safeHeightMM: params.safeHeightMM,
+        rampIn: params.rampIn,
       }))
     } catch (e) { if (!isExpectedGeometryError(e)) throw e }
 
@@ -364,14 +440,15 @@ async function insideClear(
       strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
       stepoverPercent: params.stepoverPercent, direction: 'climb',
       islandDs: pocketIslandDs, angle: 0, safeHeightMM: params.safeHeightMM,
-      finishAllowanceMM: -c,
+      finishAllowanceMM: -c, rampIn: params.rampIn,
     }))
   } catch (e) { if (!isExpectedGeometryError(e)) throw e }
 
+  const wallRampLen = params.rampIn ? 2 * wallTool.diameterMM : undefined
   const vbitSegs: MotionSegment[] = []
-  for (const pts of getOuters(finishContourD)) addContourStack(pts, zPasses, vbitSegs, safeZ)
+  for (const pts of getOuters(finishContourD)) addContourStack(pts, zPasses, vbitSegs, safeZ, wallRampLen)
   for (const cD of protrusionFinishDs)
-    for (const pts of getOuters(cD)) addContourStack(pts, zPasses, vbitSegs, safeZ)
+    for (const pts of getOuters(cD)) addContourStack(pts, zPasses, vbitSegs, safeZ, wallRampLen)
 
   if (endmillSegs.length === 0 && vbitSegs.length === 0)
     throw new Error('Inlay socket is too small for the selected tools')
@@ -382,9 +459,22 @@ async function insideClear(
 // the outline is traced (tip on path) and the surrounding stock freed by a roughing
 // release profile; for an end mill a single outside finish profile forms the wall and
 // frees the plug at once. vbitSegs = wall/finish-tool passes, endmillSegs = roughing.
-function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool, params: InlayParams): InlaySplitResult {
+function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool | null, params: InlayParams): InlaySplitResult {
   const safeZ = params.safeHeightMM ?? 5
   const zPasses = zStepsTo(params.pocketDepthMM, params.stepDownMM)
+
+  // No finish tool: free the plug with a single flat-walled outside profile cut by the
+  // roughing end mill itself (corners rounded to its radius). Segments go in endmillSegs.
+  if (wallTool === null) {
+    const r = roughTool.diameterMM / 2
+    const roundedD = roundCornersForEndmill(boundaryD, roughTool.diameterMM + CORNER_ROUND_EXTRA_MM)
+    const outsideProfileD = offsetPathRound(roundedD, r)
+    const endmillSegs: MotionSegment[] = []
+    const rampLen = params.rampIn ? 2 * roughTool.diameterMM : undefined
+    if (outsideProfileD)
+      for (const outer of getOuters(outsideProfileD)) addContourStack(outer, zPasses, endmillSegs, safeZ, rampLen)
+    return { vbitSegs: [], endmillSegs }
+  }
 
   if (wallTool.type !== 'vbit') {
     // End mill: round corners, then one outside profile (finishR outside the wall).
@@ -392,8 +482,9 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool, params: In
     const roundedD = roundCornersForEndmill(boundaryD, wallTool.diameterMM + CORNER_ROUND_EXTRA_MM)
     const outsideProfileD = offsetPathRound(roundedD, finishR)
     const vbitSegs: MotionSegment[] = []
+    const rampLen = params.rampIn ? 2 * wallTool.diameterMM : undefined
     if (outsideProfileD)
-      for (const outer of getOuters(outsideProfileD)) addContourStack(outer, zPasses, vbitSegs, safeZ)
+      for (const outer of getOuters(outsideProfileD)) addContourStack(outer, zPasses, vbitSegs, safeZ, rampLen)
     return { vbitSegs, endmillSegs: [] }
   }
 
@@ -402,7 +493,8 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool, params: In
   for (const pts of getOuters(boundaryD)) addContourStack(pts, zPasses, vbitSegs, safeZ)
   const endmillSegs: MotionSegment[] = []
   const releaseD = offsetPathD(boundaryD, roughTool.diameterMM / 2)
-  if (releaseD) for (const outer of getOuters(releaseD)) addContourStack(outer, zPasses, endmillSegs, safeZ)
+  const rampLen = params.rampIn ? 2 * roughTool.diameterMM : undefined
+  if (releaseD) for (const outer of getOuters(releaseD)) addContourStack(outer, zPasses, endmillSegs, safeZ, rampLen)
   return { vbitSegs, endmillSegs }
 }
 
@@ -410,16 +502,17 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool, params: In
  * Female socket = insideClear(outline, islands): pocket the interior and form the walls
  * (V-bit V-carve or end-mill finish contour), leaving any islands standing as protrusions.
  * `endmill` is the roughing tool, `vbit` the wall tool (its .type selects the wall method).
+ * `vbit === null` skips the wall pass entirely → a plain flat-walled roughing-only socket.
  */
 export async function generateInlayFemale(
   d: string,
   endmill: Tool,
-  vbit: Tool,
+  vbit: Tool | null,
   params: InlayParams
 ): Promise<InlaySplitResult> {
   // Text / multi-subpath with a V-bit: plain VCarve over the whole path (the VCarve
   // alone forms the socket; no flat pocket). Depth at full engagement = r / tan(half).
-  if (vbit.type === 'vbit' && splitRegions(d).length > 0) {
+  if (vbit && vbit.type === 'vbit' && splitRegions(d).length > 0) {
     const tanHalf = Math.tan((params.angleDeg / 2) * (Math.PI / 180))
     if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
     const vbitSegs = await generateVCarve(d, vbit, {
@@ -541,6 +634,7 @@ async function generateInlayMaleText(
       islandDs:       letterOuterDs,
       angle:          0,
       safeHeightMM:   params.safeHeightMM,
+      rampIn:         params.rampIn,
     }))
   } catch (e) { if (!isExpectedGeometryError(e)) throw e }
 
@@ -558,6 +652,7 @@ async function generateInlayMaleText(
         islandDs:       [],
         angle:          0,
         safeHeightMM:   params.safeHeightMM,
+        rampIn:         params.rampIn,
       }))
     } catch (e) { if (!isExpectedGeometryError(e)) throw e }
   }
@@ -573,8 +668,9 @@ async function generateInlayMaleText(
     let zr = -step
     while (zr > -depth) { zPasses.push(zr); zr -= step }
     zPasses.push(-depth)
+    const rampLen = params.rampIn ? 2 * profileTool.diameterMM : undefined
     for (const pts of getOuters(releaseD)) {
-      addContourStack(pts, zPasses, endmillSegs, safeZ)
+      addContourStack(pts, zPasses, endmillSegs, safeZ, rampLen)
     }
   }
 
@@ -599,11 +695,11 @@ async function generateInlayMaleText(
 export async function generateInlayMale(
   d: string,
   profileTool: Tool,
-  vbitTool: Tool,
+  vbitTool: Tool | null,
   params: InlayParams
 ): Promise<InlaySplitResult> {
   // Multi-subpath paths (text) with a V-bit: Virtual Z-Plane Shift (raised-letter prisms).
-  if (vbitTool.type === 'vbit' && splitRegions(d).length > 0) {
+  if (vbitTool && vbitTool.type === 'vbit' && splitRegions(d).length > 0) {
     return generateInlayMaleText(d, profileTool, vbitTool, params)
   }
 
