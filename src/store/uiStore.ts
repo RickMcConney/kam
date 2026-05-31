@@ -6,7 +6,7 @@ import type { PenCurveType } from '../cam/penCurves'
 export type { PenCurveType }
 
 export type SidebarTab = 'draw' | 'paths'
-export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor' | 'setup'
+export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
 export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
 
 export type PenNode = {
@@ -31,6 +31,7 @@ interface UIState {
   machineFormActive: boolean
   tabsFormActive: boolean
   shapesPanelOpen: boolean
+  setupPanelOpen: boolean
   helpOpen: boolean
   // Local undo/redo for point-edit sessions — registered by CanvasStage, used by Toolbar + App
   nodeEditUndo: (() => void) | null
@@ -40,6 +41,7 @@ interface UIState {
   setMachineFormActive: (active: boolean) => void
   setTabsFormActive: (active: boolean) => void
   setShapesPanelOpen: (open: boolean) => void
+  setSetupPanelOpen: (open: boolean) => void
   setHelpOpen: (open: boolean) => void
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
@@ -76,6 +78,7 @@ export const useUIStore = create<UIState>()(
   machineFormActive: false,
   tabsFormActive: false,
   shapesPanelOpen: false,
+  setupPanelOpen: false,
   helpOpen: false,
   nodeEditUndo: null,
   nodeEditRedo: null,
@@ -84,6 +87,7 @@ export const useUIStore = create<UIState>()(
   setMachineFormActive: (active) => set({ machineFormActive: active }),
   setTabsFormActive: (active) => set({ tabsFormActive: active }),
   setShapesPanelOpen: (open) => set({ shapesPanelOpen: open }),
+  setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
   setHelpOpen: (open) => set({ helpOpen: open }),
   setSidebarTab: (tab) => set({ sidebarTab: tab, activeTool: 'select' }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),

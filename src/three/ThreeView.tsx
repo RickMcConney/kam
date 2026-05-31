@@ -9,7 +9,7 @@ import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos, segTool } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
 import { getBBox } from '../canvas/selectionUtils'
-import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE } from '../colors'
+import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE, MATERIAL_COLORS } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -46,21 +46,8 @@ function buildCNCAxes(size: number): THREE.LineSegments {
   return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }))
 }
 
-const MATERIAL_COLORS: Record<Material, number> = {
-  pine:     0xd4a86a,
-  oak:      0xb5803d,
-  maple:    0xe8c98d,
-  walnut:   0x6b3d1e,
-  cherry:   0x9c4a2e,
-  mdf:      0xc8b89a,
-  plywood:  0xc9a96a,
-  hdpe:     0xe0e0e0,
-  aluminum: 0xa8b4b8,
-  other:    0xc8c8c8,
-}
-
 function materialColor(mat: Material): number {
-  return MATERIAL_COLORS[mat] ?? 0xc8c8c8
+  return MATERIAL_COLORS[mat]?.three ?? 0xc8c8c8
 }
 
 // Builds a tool indicator mesh/group.

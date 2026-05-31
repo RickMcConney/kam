@@ -31,7 +31,14 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Playwright MCP artifacts
+.playwright-mcp/
+
 todo.txt
 PRD.md
 PLAN.md
 CLAUDE.md
+TECHNICAL.md
+TODOLIST.md
+fonts.txt
+optimizations.md

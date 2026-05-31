@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { DraftingCompass, Route } from 'lucide-react'
+import { DraftingCompass, Route, SlidersHorizontal, X } from 'lucide-react'
 import { ICON } from '../theme'
 import { useUIStore, type SidebarTab } from '../store/uiStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -8,6 +8,7 @@ import PathsPanel from '../panels/PathsPanel'
 import MachinePanel from '../panels/MachinePanel'
 import PropertiesPanel from '../panels/PropertiesPanel'
 import ShapePanel from '../panels/draw/ShapePanel'
+import WorkpiecePanel from '../panels/WorkpiecePanel'
 import GcodeViewer from '../panels/GcodeViewer'
 
 const TABS: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
@@ -26,12 +27,13 @@ function TabContent({ tab, machineFormActive, shapesPanelOpen }: { tab: SidebarT
 }
 
 export default function Sidebar() {
-  const { sidebarTab, setSidebarTab, setMachineFormActive, setShapesPanelOpen } = useUIStore()
+  const { sidebarTab, setSidebarTab, setMachineFormActive, setShapesPanelOpen, setSetupPanelOpen, setWorkspaceTab } = useUIStore()
   const selectedIds = usePathsStore((s) => s.selectedIds)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
   const hasGcode = useSimStore((s) => !!s.gcode)
   const machineFormActive = useUIStore((s) => s.machineFormActive)
   const shapesPanelOpen = useUIStore((s) => s.shapesPanelOpen)
+  const setupPanelOpen = useUIStore((s) => s.setupPanelOpen)
 
   const [width, setWidth] = useState(320)
   const dragging = useRef(false)
@@ -70,11 +72,32 @@ export default function Sidebar() {
 
   return (
     <div
-      className="bg-gray-100 dark:bg-neutral-800 border-r border-gray-300 dark:border-neutral-700 flex flex-col flex-shrink-0 overflow-hidden relative"
+      className="bg-gray-100 dark:bg-neutral-800 border-r border-gray-300 dark:border-neutral-700 flex flex-row flex-shrink-0 overflow-hidden"
       style={{ width }}
     >
+      {/* Content column — its scrollbar lands at this column's right edge, to the
+          left of the resize handle, so the two no longer overlap. */}
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
       {hasGcode && gcodeViewerOpen ? (
         <GcodeViewer fill />
+      ) : setupPanelOpen ? (
+        /* Setup fills the sidebar so stock / origin / material edits are visible
+           live in the 2D or 3D view while the panel stays open. */
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-300 dark:border-neutral-700 flex-shrink-0">
+            <span className="text-sm font-semibold text-gray-700 dark:text-neutral-300">Setup</span>
+            <button
+              onClick={() => setSetupPanelOpen(false)}
+              title="Close setup"
+              className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+            >
+              <X size={ICON.sm} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <WorkpiecePanel />
+          </div>
+        </div>
       ) : (
         <>
           {/* Tab bar */}
@@ -95,6 +118,22 @@ export default function Sidebar() {
                 <span>{tab.label}</span>
               </button>
             ))}
+            {/* Setup opens a fill panel rather than a content tab (no active state).
+                Switch to the 2D view if the current workspace tab can't show the
+                stock (Tools / Post-Processor) so edits are always visible live;
+                stay on 3D if already there. */}
+            <button
+              onClick={() => {
+                const tab = useUIStore.getState().workspaceTab
+                if (tab !== '2d' && tab !== '3d') setWorkspaceTab('2d')
+                setSetupPanelOpen(true)
+              }}
+              title="Setup — stock size, origin, material, machine limits"
+              className="flex-1 flex flex-col items-center gap-0.5 py-2 text-body transition-colors border-b-2 border-transparent text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
+            >
+              <SlidersHorizontal size={ICON.md} />
+              <span>Setup</span>
+            </button>
           </div>
 
           {/* Scrollable content — switches to flex-col fill when machine or shapes panel is open */}
@@ -109,11 +148,14 @@ export default function Sidebar() {
           {selectedIds.length > 0 && !machineFormActive && <PropertiesPanel />}
         </>
       )}
+      </div>
 
-      {/* Resize handle */}
+      {/* Resize handle — its own column beside the content so it sits clear of the
+          scrollbar; widened a little to make it easy to grab. */}
       <div
         onMouseDown={onHandleMouseDown}
-        className="absolute right-0 inset-y-0 w-1 cursor-col-resize hover:bg-blue-500/40 transition-colors"
+        title="Drag to resize sidebar"
+        className="w-1.5 flex-shrink-0 cursor-col-resize bg-transparent hover:bg-blue-500/40 transition-colors"
       />
     </div>
   )

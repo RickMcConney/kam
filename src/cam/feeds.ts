@@ -60,6 +60,7 @@ export interface FeedCalcInput {
   maxFeedMmMin: number
   minSpindleRpm: number  // machine's lowest usable spindle speed (clamp floor)
   maxSpindleRpm: number  // machine's top spindle speed — auto may raise rpm up to this
+  maxSurfaceSpeedMMin?: number  // material Vc ceiling (m/min) — caps rpm for metals; omit for wood
   userStepDownMM: number
   totalDepthMM: number   // operation's intended total depth — for whole-division of step-down
   enabled: boolean
@@ -71,10 +72,11 @@ export interface FeedCalcResult {
   stepDownMM: number
   rpm: number
   rpmAdjusted: boolean   // true when auto chose an rpm different from the tool's stored setting
+  spindleTooFast: boolean // true when the machine's min rpm exceeds the material's safe Vc ceiling
 }
 
 export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
-  const { tool, materialHardness, rigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, userStepDownMM, totalDepthMM, enabled } = input
+  const { tool, materialHardness, rigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, maxSurfaceSpeedMMin, userStepDownMM, totalDepthMM, enabled } = input
   const maxFeed = maxFeedMmMin > 0 ? maxFeedMmMin : Infinity
 
   // When auto-feed is off we keep the tool's own feeds/speed and the user's
@@ -86,6 +88,7 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
       stepDownMM: userStepDownMM,
       rpm: tool.rpm,
       rpmAdjusted: false,
+      spindleTooFast: false,
     }
   }
 
@@ -107,7 +110,22 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
   // feed, it lowers it.
   const denom = fzAim * flutes
   const loRpm = minSpindleRpm > 0 ? minSpindleRpm : 1
-  const hiRpm = Math.max(maxSpindleRpm, loRpm)
+  let hiRpm = Math.max(maxSpindleRpm, loRpm)
+
+  // Metals get a surface-speed (Vc) ceiling so the edge doesn't overheat at the
+  // high RPMs wood prefers: rpm = Vc / (π·d). This tightens the top of the rpm
+  // range (never below the machine's own floor). If even the machine's minimum
+  // rpm spins faster than the safe Vc — common on trim routers that idle high —
+  // we can't honor it, so flag it so the UI can warn (use a smaller bit / VFD).
+  let spindleTooFast = false
+  if (maxSurfaceSpeedMMin && maxSurfaceSpeedMMin > 0 && tool.diameterMM > 0) {
+    // Floor so the whole-rpm result never rounds *above* the surface-speed ceiling
+    // (Math.round on a fractional ceiling rpm would nudge Vc a hair over the limit).
+    const vcRpm = Math.floor((maxSurfaceSpeedMMin * 1000) / (Math.PI * tool.diameterMM))
+    if (vcRpm < loRpm) spindleTooFast = true
+    hiRpm = clamp(vcRpm, loRpm, hiRpm)
+  }
+
   const idealRpm = denom > 0 ? maxFeed / denom : hiRpm
   const rpm = Math.round(clamp(idealRpm, loRpm, hiRpm))
   const xyFeed = Math.min(fzAim * flutes * rpm, maxFeed)
@@ -130,7 +148,7 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
     if (stepDown > diaCap) { passes += 1; stepDown = totalDepthMM / passes } // never exceed the diameter cap
   }
 
-  return { xyFeedMmMin: xyFeed, plungeMmMin: plunge, stepDownMM: stepDown, rpm, rpmAdjusted }
+  return { xyFeedMmMin: xyFeed, plungeMmMin: plunge, stepDownMM: stepDown, rpm, rpmAdjusted, spindleTooFast }
 }
 
 // ─── Store-reading convenience wrappers ────────────────────────────────────────
@@ -144,6 +162,7 @@ function calcForTool(tool: Tool, userStepDownMM: number, totalDepthMM: number): 
     maxFeedMmMin,
     minSpindleRpm,
     maxSpindleRpm,
+    maxSurfaceSpeedMMin: MATERIAL_INFO[material].maxSurfaceSpeedMMin,
     userStepDownMM,
     totalDepthMM,
     enabled: autoFeedEnabled,
@@ -155,13 +174,14 @@ export interface ToolFeeds {
   plungeMmMin: number
   rpm: number
   rpmAdjusted: boolean
+  spindleTooFast: boolean
 }
 
 // Cutting/plunge feed + spindle speed for the current machine/material — used by
 // gcode.ts. Step-down inputs are irrelevant to these outputs.
 export function feedsForTool(tool: Tool): ToolFeeds {
-  const { xyFeedMmMin, plungeMmMin, rpm, rpmAdjusted } = calcForTool(tool, 0, 0)
-  return { xyFeedMmMin, plungeMmMin, rpm, rpmAdjusted }
+  const { xyFeedMmMin, plungeMmMin, rpm, rpmAdjusted, spindleTooFast } = calcForTool(tool, 0, 0)
+  return { xyFeedMmMin, plungeMmMin, rpm, rpmAdjusted, spindleTooFast }
 }
 
 // Effective step-down for a generator call — used at every toolpath call site.

@@ -15,13 +15,15 @@ import { useSimStore } from '../store/simStore'
 import { GCODE_IMPORT_TOOL_ID, type MotionSegment } from '../store/toolpathStore'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { DxfUnitsChoice } from '../importers/dxfImporter'
-import { generateGcode, downloadGcode } from '../cam/gcode'
+import { generateGcode } from '../cam/gcode'
 import { optimizeStartPoints } from '../cam/startOptimizer'
+import { triggerProjectSave, triggerGcodeExport, triggerGcodeExportSplit } from '../io/fileSystem'
+import { buildExportPreflight, type ExportPreflight } from '../cam/exportPreflight'
+import ExportPreflightDialog from './ExportPreflightDialog'
 import { importSvg } from '../importers/svgImporter'
 import { importDxf } from '../importers/dxfImporter'
 import { importStl } from '../importers/stlImporter'
 import { getMultiBBox, translateD } from '../canvas/selectionUtils'
-import { saveProject } from '../io/projectSave'
 import { openProjectFile, newProject } from '../io/projectLoad'
 import HelpPanel from '../panels/HelpPanel'
 
@@ -149,16 +151,8 @@ export default function Toolbar() {
   const getActiveProfile = usePostProcessorStore((s) => s.getActiveProfile)
   const importRef = useRef<HTMLInputElement>(null)
   const [pendingDxf, setPendingDxf] = useState<{ text: string; name: string } | null>(null)
+  const [preflight, setPreflight] = useState<ExportPreflight | null>(null)
   const fmt = (n: number) => +n.toFixed(4)
-
-  async function handleExportGcode() {
-    await optimizeStartPoints()
-    const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
-    const profile = getActiveProfile()
-    const { operations: ops } = useToolpathStore.getState()
-    const gcode = generateGcode(ops, toolsById, name, profile)
-    downloadGcode(gcode, name)
-  }
 
   async function handleSimulate() {
     await optimizeStartPoints()
@@ -355,7 +349,7 @@ export default function Toolbar() {
         <ToolbarButton
           icon={<Save size={ICON.md} />}
           label="Save Project (Ctrl+S)"
-          onClick={saveProject}
+          onClick={() => void triggerProjectSave()}
         />
         
 
@@ -363,6 +357,9 @@ export default function Toolbar() {
         <input
           ref={importRef}
           type="file"
+          data-testid="import-file-input"
+          aria-hidden="true"
+          tabIndex={-1}
           accept=".svg,.dxf,.stl,.png,.jpg,.jpeg,.webp,.gcode,.nc,.ngc,.tap"
           className="hidden"
           onChange={handleImportFileChange}
@@ -375,7 +372,7 @@ export default function Toolbar() {
         <ToolbarButton
           icon={<FileCog size={ICON.md} />}
           label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
-          onClick={handleExportGcode}
+          onClick={() => setPreflight(buildExportPreflight())}
         />
         <Sep />
 
@@ -419,6 +416,15 @@ export default function Toolbar() {
       </div>
 
       <HelpPanel />
+
+      {/* Pre-export review: summary + safety warnings, then run the export */}
+      {preflight && (
+        <ExportPreflightDialog
+          report={preflight}
+          onCancel={() => setPreflight(null)}
+          onConfirm={(splitByTool, prefix) => { setPreflight(null); void (splitByTool ? triggerGcodeExportSplit(prefix) : triggerGcodeExport()) }}
+        />
+      )}
 
       {/* DXF units prompt modal */}
       {pendingDxf && (

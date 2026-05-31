@@ -7,21 +7,8 @@ export const ICON = {
   lg:  22,   // empty-state illustrations
 } as const
 
-// ─── Material fill colors (light / dark) ───────────────────────────────────
-import type { Material } from './store/workpieceStore'
-
-export const MATERIAL_FILL: Record<Material, { light: string; dark: string }> = {
-  pine:      { light: '#e8c98a', dark: '#7a5828' },
-  oak:       { light: '#c8a060', dark: '#6a4820' },
-  maple:     { light: '#f0d9a8', dark: '#8a6e3a' },
-  walnut:    { light: '#7a4a28', dark: '#3a2010' },
-  cherry:    { light: '#c47a45', dark: '#6a3a1a' },
-  mdf:       { light: '#c8b89a', dark: '#5a4a38' },
-  plywood:   { light: '#d4b07a', dark: '#6a5030' },
-  hdpe:      { light: '#d8ecd8', dark: '#3a5a3a' },
-  aluminum:  { light: '#c8ccd0', dark: '#4a5058' },
-  other:     { light: '#e0e0e0', dark: '#404040' },
-}
+// Material fill colors now live in ./colors (MATERIAL_COLORS) as the single
+// source of truth shared with the 3D view. Import them from there.
 
 // ─── Canvas (Konva) colors ──────────────────────────────────────────────────
 // Konva draws to a bitmap canvas — it can't use CSS variables.

@@ -138,7 +138,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<ProfileFormState>(() => editOp ? {
@@ -147,7 +147,9 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   } : mergeWithDefaults(load('profile'), {
     toolId: defaultTool?.id ?? '',
     side: 'outside' as CutSide,
-    depthMM: defaultTool?.maxDepthMM ?? 10,
+    // A profile typically cuts the part free, so default to the full stock
+    // thickness rather than the tool's max flute depth.
+    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
     rampIn: false,
@@ -1040,8 +1042,12 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool }: {
   // form subscribes to the whole workpiece store, so this recomputes live as the
   // user changes rigidity / material / max feed.
   const autoFeedEnabled = useWorkpieceStore((s) => s.autoFeedEnabled)
+  const thicknessMM = useWorkpieceStore((s) => s.thicknessMM)
   const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM) : null
   const depthExceeds = maxDepthMM != null && depthMM > maxDepthMM
+  // Guard against plunging past the bottom of the stock into the spoilboard.
+  const pastStockMM = thicknessMM > 0 ? depthMM - thicknessMM : 0
+  const cutsPastStock = pastStockMM > 0.001
   return (
     <div className="grid grid-cols-2 gap-2">
       <div>
@@ -1057,6 +1063,12 @@ function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool }: {
           <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
             Exceeds tool max ({maxDepthMM} mm)
+          </p>
+        )}
+        {cutsPastStock && (
+          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+            <AlertCircle size={10} className="shrink-0" />
+            {pastStockMM.toFixed(2)} mm past stock bottom ({thicknessMM} mm)
           </p>
         )}
       </div>

@@ -36,6 +36,7 @@ export default function SimulationPlayer() {
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
   const material = useWorkpieceStore((s) => s.material)
   const machineRigidity = useWorkpieceStore((s) => s.machineRigidity)
+  const minSpindleRpm = useWorkpieceStore((s) => s.minSpindleRpm)
   const { play, pause, stop, seekToTime, setSpeed, toggleGcodeViewer, clearSim } = useSimStore()
 
   // Animation loop — reads fresh store state each frame to avoid stale closures
@@ -93,6 +94,28 @@ export default function SimulationPlayer() {
   const suggestion =
     status === 'rubbing' && sweetFeed > 0 ? `raise feed to ~${sweetFeed} mm/min (or lower RPM / fewer flutes)` :
     status === 'heavy'   && sweetFeed > 0 ? `lower feed to ~${sweetFeed} mm/min (or raise RPM / more flutes)` : ''
+
+  // Surface-speed (Vc) check: metals carry a safe cutting-speed ceiling. If the
+  // programmed spindle drives the edge past it — typically because the machine's
+  // minimum RPM is still too fast for the bit diameter — the cut runs hot (built-up
+  // edge on aluminum, edge wear on brass). Flag it so the spindle reads red.
+  const vcCeilingMMin = MATERIAL_INFO[material].maxSurfaceSpeedMMin
+  const dia = ts?.toolDiameterMM ?? 0
+  const surfaceSpeedMMin = dia > 0 && spindleRpm > 0 ? (Math.PI * dia * spindleRpm) / 1000 : 0
+  // Compare on whole m/min so a 1-rpm integer rounding in the G-code (≈0.01 m/min)
+  // doesn't flag a spindle that's sitting right on the ceiling.
+  const spindleTooFast = !!vcCeilingMMin && Math.round(surfaceSpeedMMin) > vcCeilingMMin
+
+  // When the spindle reads red, explain *why* and whether the user can fix it:
+  //  • safeRpm   — fastest spindle that keeps this bit under the material's Vc limit.
+  //  • machine-constrained — even the machine's slowest spindle is over the limit,
+  //    so no RPM helps; only a smaller bit (or a lower-min spindle) will.
+  const safeRpm = vcCeilingMMin && dia > 0 ? Math.floor((vcCeilingMMin * 1000) / (Math.PI * dia)) : 0
+  const maxBitMM = vcCeilingMMin && minSpindleRpm > 0 ? (vcCeilingMMin * 1000) / (Math.PI * minSpindleRpm) : 0
+  const machineConstrained = spindleTooFast && safeRpm > 0 && safeRpm < minSpindleRpm
+  const spindleHint = !spindleTooFast ? '' : machineConstrained
+    ? `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min, but a Ø${dia.toFixed(2)} mm bit reaches that at ${safeRpm} rpm — below your machine's ${minSpindleRpm} rpm minimum. The spindle can't slow down enough, so lowering RPM won't help: use a bit ≤ ${maxBitMM.toFixed(1)} mm, or fit a spindle that runs slower.`
+    : `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min. Lower the spindle to ≤ ${safeRpm} rpm for this Ø${dia.toFixed(2)} mm bit (or turn on auto-feed to set it automatically).`
 
   return (
     <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 select-none">
@@ -181,7 +204,13 @@ export default function SimulationPlayer() {
       {/* Spindle + chip-load feedback */}
       {curSeg && (
         <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex items-center gap-3 whitespace-nowrap pointer-events-none">
-          <span>Spindle: {spindleRpm > 0 ? Math.round(spindleRpm) : '—'}</span>
+          <span
+            className={spindleTooFast ? 'text-red-500 font-semibold' : ''}
+            title={spindleHint || undefined}
+          >
+            Spindle: {spindleRpm > 0 ? Math.round(spindleRpm) : '—'}
+            {spindleTooFast && ` (${Math.round(surfaceSpeedMMin)} m/min)`}
+          </span>
           <span className="flex items-center gap-1.5">
             Chip
             <span style={{ color: chip.color }}>●</span>
@@ -193,6 +222,13 @@ export default function SimulationPlayer() {
               {suggestion && <span className="text-gray-500 dark:text-neutral-400">· {suggestion}</span>}
             </span>
           )}
+        </div>
+      )}
+
+      {/* Surface-speed warning — explains the red spindle and how (or whether) to fix it */}
+      {spindleTooFast && spindleHint && (
+        <div className="max-w-md bg-red-50/95 dark:bg-red-950/90 border border-red-300 dark:border-red-800 rounded-md px-3 py-1.5 text-body text-red-700 dark:text-red-300 text-center whitespace-normal pointer-events-none">
+          ⚠ Spindle too fast — {spindleHint}
         </div>
       )}
     </div>

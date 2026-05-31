@@ -102,6 +102,17 @@ function fitViewport(sw: number, sh: number, ww: number, wh: number): Viewport {
   }
 }
 
+// Smallest zoom (px/mm) allowed: the point where the whole table just fits the
+// canvas. Zooming out further is clamped to this so the table can't shrink to a
+// speck — the user can pan if they need room past the table edge. Falls back to
+// a tiny floor if sizes aren't known yet.
+function minZoomScale(sw: number, sh: number, tableW: number, tableH: number): number {
+  const uw = sw - RULER_W
+  const uh = sh - RULER_H
+  if (uw <= 0 || uh <= 0 || tableW <= 0 || tableH <= 0) return 0.01
+  return Math.max(0.01, Math.min(uw / tableW, uh / tableH))
+}
+
 function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: number } {
   return { x: (sx - vp.x) / vp.scale, y: (vp.y - sy) / vp.scale }
 }
@@ -590,8 +601,11 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     const pointer = stageRef.current?.getPointerPosition()
     if (!pointer) return
     const factor = e.evt.deltaY < 0 ? 1.12 : 1 / 1.12
+    // Cap zoom-out at the table size + margin so the user can't lose the table.
+    const { tableLimitWidthMM, tableLimitHeightMM } = useWorkpieceStore.getState()
+    const minScale = minZoomScale(size.width, size.height, tableLimitWidthMM, tableLimitHeightMM)
     setViewport((vp) => {
-      const newScale = Math.min(Math.max(vp.scale * factor, 0.01), 500)
+      const newScale = Math.min(Math.max(vp.scale * factor, minScale), 500)
       const ratio = newScale / vp.scale
       return {
         scale: newScale,
@@ -599,7 +613,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         y: pointer.y + (vp.y - pointer.y) * ratio,
       }
     })
-  }, [setViewport])
+  }, [setViewport, size])
 
   // Start drawing a shape from the given CNC point (used by both stage and path mousedown when shape tool active)
   const startDrawShape = useCallback((pointer: { x: number; y: number }) => {
@@ -1637,6 +1651,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
   return (
     <div
       ref={containerRef}
+      data-testid="canvas-stage"
       className="w-full h-full relative overflow-hidden select-none"
       style={{ cursor: getCursor() }}
       onDragOver={(e) => e.preventDefault()}

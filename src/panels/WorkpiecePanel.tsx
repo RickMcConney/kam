@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ICON } from '../theme'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import InfoPopover from '../components/InfoPopover'
 import {
   useWorkpieceStore,
   MATERIAL_INFO,
@@ -61,7 +62,7 @@ function OriginSelector({
   onChange: (o: OriginPosition) => void
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col items-center gap-2">
       <div className="inline-grid grid-cols-3 gap-1 p-1.5 bg-gray-50 dark:bg-neutral-900 rounded border border-gray-300 dark:border-neutral-700 w-fit">
         {ORIGIN_GRID.map((row) =>
           row.map((pos) => {
@@ -120,10 +121,13 @@ function Section({
   )
 }
 
-const MATERIALS = (Object.keys(MATERIAL_INFO) as Material[]).map((value) => ({
-  value,
-  label: MATERIAL_INFO[value].label,
-}))
+// Ordered softest → hardest by relative machining hardness.
+const MATERIALS = (Object.keys(MATERIAL_INFO) as Material[])
+  .sort((a, b) => MATERIAL_INFO[a].hardness - MATERIAL_INFO[b].hardness)
+  .map((value) => ({
+    value,
+    label: MATERIAL_INFO[value].label,
+  }))
 
 const RIGIDITY_LABELS: Record<number, string> = {
   1: 'Hobby (light gantry)',
@@ -132,6 +136,18 @@ const RIGIDITY_LABELS: Record<number, string> = {
   4: 'Heavy / industrial',
   5: 'Commercial CNC',
 }
+
+const AUTO_FEED_HELP =
+  "When on, cutting feed and step-down are computed from material, tool and rigidity. " +
+  "If the machine can't feed fast enough for the target chip load, the spindle speed is " +
+  "lowered instead (a warning is added to the G-code — set it by hand if your machine has " +
+  "no spindle control). When off, the tool's own feeds and your step-down are used."
+
+const SPINDLE_HELP =
+  "Auto mode picks a spindle speed in this range — as fast as needed to reach the max feed " +
+  "(shorter jobs). Set the min to your spindle's real floor (routers ≈10000) and lower the " +
+  "max if a material burns at high speed."
+
 
 export default function WorkpiecePanel() {
   const {
@@ -177,24 +193,20 @@ export default function WorkpiecePanel() {
       </Section>
 
       <Section title="Feeds &amp; Speeds">
-        <label className="flex items-center gap-2 mb-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={autoFeedEnabled}
-            onChange={(e) => setAutoFeedEnabled(e.target.checked)}
-            className="accent-blue-500"
-          />
-          <span className="text-body text-gray-700 dark:text-neutral-300">
-            Auto feed &amp; speeds
-          </span>
-        </label>
-        <p className="text-body text-gray-400 dark:text-neutral-500 mb-3 -mt-1.5">
-          When on, cutting feed and step-down are computed from material, tool and
-          rigidity. If the machine can't feed fast enough for the target chip load,
-          the spindle speed is lowered instead (a warning is added to the G-code —
-          set it by hand if your machine has no spindle control). When off, the
-          tool's own feeds and your step-down are used.
-        </p>
+        <div className="flex items-center gap-2 mb-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoFeedEnabled}
+              onChange={(e) => setAutoFeedEnabled(e.target.checked)}
+              className="accent-blue-500"
+            />
+            <span className="text-body text-gray-700 dark:text-neutral-300">
+              Auto feed &amp; speeds
+            </span>
+          </label>
+          <InfoPopover text={AUTO_FEED_HELP} />
+        </div>
 
         <div className="mb-3">
           <label className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Machine Rigidity</label>
@@ -248,13 +260,9 @@ export default function WorkpiecePanel() {
                 rpm
               </span>
             </div>
+            <InfoPopover text={SPINDLE_HELP} />
           </div>
         ))}
-        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
-          Auto mode picks a spindle speed in this range — as fast as needed to reach the
-          max feed (shorter jobs). Set the min to your spindle's real floor (routers ≈10000)
-          and lower the max if a material burns at high speed.
-        </p>
       </Section>
 
       <Section title="Machine Travel Limits">

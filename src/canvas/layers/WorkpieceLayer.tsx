@@ -3,7 +3,7 @@ import { Group, Rect } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore, type OriginPosition } from '../../store/workpieceStore'
 import { useUIStore } from '../../store/uiStore'
-import { MATERIAL_FILL } from '../../theme'
+import { MATERIAL_COLORS } from '../../colors'
 
 // In Y-up CNC space: top = high Y (back of machine), bottom = low Y (front)
 // With layer scaleY=-scale, world Y=0 appears at screen bottom of workpiece,
@@ -34,7 +34,7 @@ export const WorkpieceLayer = memo(function WorkpieceLayer({ viewport }: Props) 
   const { widthMM, heightMM, material } = useWorkpieceStore()
   const { scale } = viewport
   const darkMode = useUIStore((s) => s.darkMode)
-  const fill = MATERIAL_FILL[material][darkMode ? 'dark' : 'light']
+  const fill = MATERIAL_COLORS[material][darkMode ? 'dark' : 'light']
 
   return (
     <Group listening={false}>

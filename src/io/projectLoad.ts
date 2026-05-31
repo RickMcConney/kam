@@ -9,6 +9,7 @@ import { useSimStore } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { useTabStore, type Tab } from '../store/tabStore'
+import { clearFileHandles } from './fileSystem'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -80,6 +81,9 @@ export function loadProject(data: ProjectData) {
   useTabStore.getState().replaceTabs(data.tabs ?? [])
 
   useProjectStore.getState().markClean()
+  // Drop any prior file handle so a later Ctrl+S prompts for this project's own
+  // file rather than overwriting whatever was saved before.
+  clearFileHandles()
   regenerateAll()
 }
 
@@ -96,6 +100,7 @@ export function newProject() {
   useTabStore.getState().replaceTabs([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
+  clearFileHandles()
   useCanvasStore.getState().requestFit()
   // Workpiece settings (size, origin, thickness, material) are persisted in
   // localStorage and intentionally kept across new projects.
