@@ -621,7 +621,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           {form.strategy === 'adaptive' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
-          type="range" min={form.strategy === 'adaptive' ? 5 : 10} max={form.strategy === 'adaptive' ? 40 : 90} step={5}
+          type="range" min={form.strategy === 'adaptive' ? 5 : 10} max={form.strategy === 'adaptive' ? 60 : 90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
           className="w-full accent-blue-500"
