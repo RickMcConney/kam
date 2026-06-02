@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Shapes, Heart, Pill, Signpost, Shield } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, ChevronDown } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
@@ -10,7 +10,6 @@ import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
 
 
-const LS_SHAPE_KEY = 'kam:lastShapeType'
 const LS_TEXT_KEY = 'kam:textConfig'
 
 const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
@@ -25,6 +24,10 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'slot',      label: 'Slot',    icon: <Pill size={ICON.md} /> },
   { type: 'shield',    label: 'Shield',  icon: <Shield size={ICON.md} /> },
 ]
+
+const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
+  SHAPES.map((s) => [s.type, { label: s.label, icon: s.icon }])
+)
 
 const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
 const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-14 flex-shrink-0'
@@ -154,9 +157,10 @@ const toolBtnCls = (active: boolean) =>
 // ─── Main ShapePanel ──────────────────────────────────────────────────────────
 
 export default function ShapePanel({ fill = false }: { fill?: boolean }) {
-  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, penCurveType, setPenCurveType } = useUIStore()
+  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, penCurveType, setPenCurveType, lastShapeType, setLastShapeType } = useUIStore()
   const { units } = useWorkpieceStore()
-  const isShapeTool = activeTool !== 'select' && activeTool !== 'pen' && activeTool !== 'text'
+  const isShapeTool = SHAPES.some((s) => s.type === activeTool)
+  const lastShape = SHAPE_META[lastShapeType] ?? SHAPE_META.rectangle
 
   const [fontReady, setFontReady] = useState(() => isFontLoaded(shapeToolConfig.text.fontFamily))
 
@@ -187,9 +191,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
 
   useEffect(() => {
     if (!fill) return
-    const saved = localStorage.getItem(LS_SHAPE_KEY) as ShapeType | null
-    const valid = SHAPES.map(s => s.type)
-    setActiveTool(saved && valid.includes(saved) ? saved : SHAPES[0].type)
+    setActiveTool(lastShapeType)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fill])
 
@@ -212,9 +214,9 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
               <button
                 key={type}
                 onClick={() => {
-                  const next = activeTool === type ? 'select' : type
-                  setActiveTool(next)
-                  if (next !== 'select') localStorage.setItem(LS_SHAPE_KEY, next)
+                  setActiveTool(type)
+                  setLastShapeType(type)
+                  setShapesPanelOpen(false)
                 }}
                 title={label}
                 className={toolBtnCls(activeTool === type)}
@@ -224,14 +226,6 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
               </button>
             ))}
           </div>
-          {isShapeTool && (
-            <div className="space-y-1.5 border-t border-gray-200 dark:border-neutral-700 pt-3">
-              <p className="text-label text-gray-400 dark:text-neutral-500 font-medium capitalize">
-                {activeTool} defaults
-              </p>
-              <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={updateConfig} units={units} />
-            </div>
-          )}
         </div>
       </div>
     )
@@ -258,15 +252,31 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <span style={{ color: PATH_COLOR }}><Type size={ICON.md} /></span>
           <span className="text-label text-gray-500 dark:text-neutral-400">Text</span>
         </button>
-        <button
-          onClick={() => setShapesPanelOpen(true)}
-          title="Shapes"
-          className={toolBtnCls(isShapeTool)}
-        >
-          <span style={{ color: PATH_COLOR }}><Shapes size={ICON.md} /></span>
-          <span className="text-label text-gray-500 dark:text-neutral-400">Shapes</span>
-        </button>
+        <div className={`relative ${toolBtnCls(isShapeTool)}`}>
+          <button
+            onClick={() => setActiveTool(activeTool === lastShapeType ? 'select' : lastShapeType)}
+            title={`${lastShape.label} — click the chevron to pick a different shape`}
+            className="flex flex-col items-center gap-0.5 w-full"
+          >
+            <span style={{ color: PATH_COLOR }}>{lastShape.icon}</span>
+            <span className="text-label text-gray-500 dark:text-neutral-400">{lastShape.label}</span>
+          </button>
+          <button
+            onClick={() => setShapesPanelOpen(true)}
+            title="Pick a different shape"
+            className="absolute top-0.5 right-0.5 p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700"
+          >
+            <ChevronDown size={ICON.sm} />
+          </button>
+        </div>
       </div>
+
+      {isShapeTool && (
+        <div className="space-y-1.5 pt-0.5">
+          <p className="text-label text-gray-400 dark:text-neutral-500 font-medium capitalize">{activeTool} defaults</p>
+          <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={updateConfig} units={units} />
+        </div>
+      )}
 
       {activeTool === 'text' && (
         <div className="space-y-1.5 pt-0.5">

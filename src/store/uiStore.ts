@@ -23,6 +23,7 @@ interface UIState {
   snapEnabled: boolean
   activeTool: ActiveTool
   shapeToolConfig: ShapeToolConfig
+  lastShapeType: ShapeType
   pendingDrillPoints: { x: number; y: number }[]
   penNodes: PenNode[]
   penCurveType: PenCurveType
@@ -49,6 +50,7 @@ interface UIState {
   setSnap: (enabled: boolean) => void
   setActiveTool: (tool: ActiveTool) => void
   setShapeToolConfig: (config: ShapeToolConfig) => void
+  setLastShapeType: (type: ShapeType) => void
   addDrillPoint: (pt: { x: number; y: number }) => void
   setDrillPoints: (pts: { x: number; y: number }[]) => void
   clearDrillPoints: () => void
@@ -70,6 +72,7 @@ export const useUIStore = create<UIState>()(
   snapEnabled: true,
   activeTool: 'select',
   shapeToolConfig: DEFAULT_SHAPE_CONFIG,
+  lastShapeType: 'rectangle',
   pendingDrillPoints: [],
   penNodes: [],
   penCurveType: 'catmull-rom',
@@ -95,6 +98,7 @@ export const useUIStore = create<UIState>()(
   setSnap: (enabled) => set({ snapEnabled: enabled }),
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
+  setLastShapeType: (type) => set({ lastShapeType: type }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),
   clearDrillPoints: () => set({ pendingDrillPoints: [] }),
@@ -109,7 +113,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'freazykam-ui',
-      partialize: (s) => ({ penCurveType: s.penCurveType }),
+      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType }),
     }
   )
 )

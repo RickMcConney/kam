@@ -656,15 +656,13 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Stock left on walls; negative grows the pocket.</p>
       </div>
-      {form.strategy !== 'adaptive' && (
-        <div className="flex items-center gap-2">
-          <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
-            onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
-          <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-            Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
-          </label>
-        </div>
-      )}
+      <div className="flex items-center gap-2">
+        <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
+          onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
+        <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+        </label>
+      </div>
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}

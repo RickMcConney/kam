@@ -1,4 +1,5 @@
 import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from './adaptiveClearing'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
@@ -799,6 +800,15 @@ function contourPocket(
   return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, roughEnd)
 }
 
+// ─── Adaptive (constant-engagement) clearing ─────────────────────────────────────
+//
+// Delegates to the Adaptive2d engine (a faithful port of FreeCAD's libarea Adaptive.cpp)
+// in ./adaptiveClearing. That engine measures cutter engagement analytically and steers the
+// tool to hold it constant, so spirals and trochoids emerge automatically. Here we just feed
+// it the pocket geometry (boundary + islands) for this depth level and translate its
+// motion-type-tagged output paths into MotionSegments — emitting a helix/plunge entry per
+// region and lifting only on the engine's "link not clear" relinks.
+
 function adaptivePocket(
   boundary: Pt2[],
   islands: Pt2[][],
@@ -810,66 +820,100 @@ function adaptivePocket(
   incomingPos: Pt2 | null = null,
 ): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
-  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
-  const toolRadius = tool.diameterMM / 2
+  const dia = tool.diameterMM
   const wantCCW = params.direction === 'conventional'
+  const rampIn = params.rampIn ?? false
 
-  const toCP = (pts: Pt2[]) => pts.map(([x, y]) => ({ x, y }))
-  const fromCP = (r: { x: number; y: number }[]) =>
-    stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2))
+  // Geometry for the engine, in CNC mm. The engine offsets the boundary inward and islands
+  // outward by the tool radius itself, so feed the raw walls (already allowance-adjusted by
+  // generatePocket). paths = boundary + island holes; stock = boundary; cleared = none.
+  const toDP = (pts: Pt2[]): Array<[number, number]> => pts.map(([x, y]) => [x, y] as [number, number])
+  const geomPaths: Array<Array<[number, number]>> = [toDP(boundary), ...islands.map(toDP)]
+  const stock: Array<Array<[number, number]>> = [toDP(boundary)]
 
-  const subject = [
-    toCP(ensureWinding(boundary, true)),
-    ...islands.map(isl => toCP(ensureWinding(isl, false))),
-  ]
+  const engine = new Adaptive2d({
+    toolDiameter: dia,
+    stepOverFactor: params.stepoverPercent / 100,
+    tolerance: 0.1,
+    stockToLeave: 0,             // allowance already applied upstream in generatePocket
+    forceInsideOut: true,        // stay inside the pocket boundary
+    finishingProfile: true,      // clean the walls with a finishing contour
+    keepToolDownDistRatio: 3.0,
+    helixRampMinDiameter: rampIn ? 0 : dia / 8,      // 0 → engine defaults to dia/8
+    helixRampTargetDiameter: rampIn ? dia : dia / 8, // small target when not ramping
+    opType: OperationType.ClearingInside,
+  })
 
-  const maxPasses = Math.ceil((Math.sqrt(Math.abs(signedArea(boundary))) / stepoverMM) * 2) + 80
-  const levels: Pt2[][][] = []
-  let current = subject
-  let delta = toolRadius
-
-  for (let pass = 0; pass < maxPasses; pass++) {
-    const result = inflatePathsD(current, -delta, JoinType.Miter, EndType.Polygon, 4, 6)
-    if (result.length === 0) break
-    const level = result
-      .map(r => fromCP(r))
-      .filter(pts => pts.length >= 3 && Math.abs(signedArea(pts)) > 0.01)
-      .map(pts => ensureWinding(pts, wantCCW))
-    if (level.length === 0) break
-    levels.push(level)
-    current = result
-    delta = stepoverMM
+  let outputs: AdaptiveOutput[]
+  try {
+    outputs = engine.Execute(stock, geomPaths, [])
+  } catch (err) {
+    console.error('[adaptive] engine failed', err)
+    return incomingPos
   }
 
-  if (levels.length === 0) return incomingPos
+  let lastPos: Pt2 | null = incomingPos
 
-  const finishingLevel = levels[0]
-  const innerLevels = levels.slice(1).reverse()
-  const allLevels = innerLevels.length > 0 ? [...innerLevels, finishingLevel] : [finishingLevel]
-  const firstRing = allLevels[0][0]
-  const helixCenter = centroidOfRing(firstRing)
-  const helixRadius = Math.max(0.05, Math.min(toolRadius * 0.6, stepoverMM * 1.25))
-  if (incomingPos) segs.push({ x: incomingPos[0], y: incomingPos[1], z: safeZ, rapid: true })
-  const helixEnd = emitHelicalRamp(helixCenter, helixRadius, prevZ, zDepth, wantCCW, segs, safeZ)
+  for (const out of outputs) {
+    if (out.adaptivePaths.length === 0) continue
+    const firstCut = out.adaptivePaths[0].pts[0]
+    if (!firstCut) continue
+    const helixCenter: Pt2 = [out.helixCenter[0], out.helixCenter[1]]
+    const helixR = Math.hypot(firstCut[0] - helixCenter[0], firstCut[1] - helixCenter[1])
 
-  const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
-  const obstacles = [...finishingLevel, ...islandObstacles]
-  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+    // Entry: ramp or plunge from prevZ down to zDepth, then settle on the first cut point.
+    if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+    if (rampIn && helixR >= 0.1) {
+      emitHelicalRamp(helixCenter, helixR, prevZ, zDepth, wantCCW, segs, safeZ)
+      segs.push({ x: firstCut[0], y: firstCut[1], z: zDepth, rapid: false })
+    } else {
+      segs.push({ x: firstCut[0], y: firstCut[1], z: safeZ, rapid: true })
+      segs.push({ x: firstCut[0], y: firstCut[1], z: prevZ, rapid: true })
+      segs.push({ x: firstCut[0], y: firstCut[1], z: zDepth, rapid: false })
+    }
+    let cur: Pt2 = [firstCut[0], firstCut[1]]
 
-  let lastPos: Pt2 | null = helixEnd
-  for (const level of allLevels) {
-    lastPos = emitLinkedContourRings(
-      level,
-      zDepth,
-      travelObstacles,
-      segs,
-      params.startNear,
-      undefined,
-      zDepth,
-      safeZ,
-      tool.diameterMM,
-      lastPos,
-    )
+    for (const tp of out.adaptivePaths) {
+      if (tp.pts.length === 0) continue
+      if (tp.motion === MotionType.Helix) {
+        // Mid-region helix re-entry into a fresh blob: lift, then ramp down at the blob centre.
+        // pts = [center, rim]; the rim is the first cut point (helix radius = |rim-center|).
+        const center = tp.pts[0]
+        const rim = tp.pts[tp.pts.length - 1]
+        const hr = Math.hypot(rim[0] - center[0], rim[1] - center[1])
+        segs.push({ x: cur[0], y: cur[1], z: safeZ, rapid: true })
+        if (hr >= 0.1) {
+          emitHelicalRamp([center[0], center[1]], hr, prevZ, zDepth, wantCCW, segs, safeZ)
+          segs.push({ x: rim[0], y: rim[1], z: zDepth, rapid: false })
+        } else {
+          segs.push({ x: center[0], y: center[1], z: safeZ, rapid: true })
+          segs.push({ x: center[0], y: center[1], z: zDepth, rapid: false })
+        }
+        cur = [rim[0], rim[1]]
+      } else if (tp.motion === MotionType.LinkNotClear) {
+        // Relink that crosses uncleared stock — lift, rapid across, plunge back down.
+        const dest = tp.pts[tp.pts.length - 1]
+        segs.push({ x: cur[0], y: cur[1], z: safeZ, rapid: true })
+        segs.push({ x: dest[0], y: dest[1], z: safeZ, rapid: true })
+        segs.push({ x: dest[0], y: dest[1], z: zDepth, rapid: false })
+        cur = [dest[0], dest[1]]
+      } else if (tp.motion === MotionType.LinkClear) {
+        // Stay-down reposition over already-cleared stock — the engine verified it's clear, so
+        // traverse it at depth (travel, not a cut). Marked `travel` so it's shown/treated as a
+        // rapid-at-depth, not a cutting feed move (that re-machined air and cluttered the view).
+        for (const [x, y] of tp.pts) {
+          segs.push({ x, y, z: zDepth, rapid: false, travel: true })
+          cur = [x, y]
+        }
+      } else {
+        // Cutting move — actual material removal at controlled engagement.
+        for (const [x, y] of tp.pts) {
+          segs.push({ x, y, z: zDepth, rapid: false })
+          cur = [x, y]
+        }
+      }
+    }
+    lastPos = cur
   }
 
   return lastPos

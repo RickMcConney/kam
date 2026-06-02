@@ -264,6 +264,10 @@ export default function CanvasStage() {
   const altDownRef = useRef(false)
   const [altDown, setAltDown] = useState(false)
   const didDragRef = useRef(false)
+  // Tracks the active shape-tool session: once the user has dragged out at least
+  // one shape, the tool stays selected for more drags and a subsequent click
+  // (no drag) exits to select mode instead of placing another shape.
+  const shapeDragSessionRef = useRef<{ tool: string | null; dragged: boolean }>({ tool: null, dragged: false })
   const flatCache = useRef(new Map<string, [number, number][][]>())
 
   const { widthMM, heightMM } = useWorkpieceStore()
@@ -289,6 +293,11 @@ export default function CanvasStage() {
   const editClosedRef = useRef(false)
   useEffect(() => { editNodesRef.current = editNodes }, [editNodes])
   useEffect(() => { editClosedRef.current = editClosed }, [editClosed])
+  // Reset the shape-drag session whenever the active tool changes (incl. exit
+  // via Escape or re-activating the same shape) so a fresh session starts clean.
+  useEffect(() => useUIStore.subscribe((s, prev) => {
+    if (s.activeTool !== prev.activeTool) shapeDragSessionRef.current = { tool: null, dragged: false }
+  }), [])
 
   const prevNodeEditPathIdRef = useRef<string | null>(null)
   const editDragInitRef = useRef<{ initialNodes: PathNode[]; startCNC: { x: number; y: number } } | null>(null)
@@ -1362,7 +1371,19 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       const { activeTool, shapeToolConfig } = useUIStore.getState()
       if (activeTool !== 'select') {
         const shapeType = activeTool as ShapeType
-        const params = didDragRef.current
+        const session = shapeDragSessionRef.current
+        if (session.tool !== activeTool) { session.tool = activeTool; session.dragged = false }
+        const dragged = didDragRef.current
+
+        // A click (no drag) after the user has already dragged out at least one
+        // shape this session means "done" — exit to select without adding a shape.
+        if (!dragged && session.dragged) {
+          shapeDragSessionRef.current = { tool: null, dragged: false }
+          useUIStore.getState().setActiveTool('select')
+          return
+        }
+
+        const params = dragged
           ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig)
           : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
 
@@ -1381,7 +1402,15 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             })
           })
         }
-        useUIStore.getState().setActiveTool('select')
+
+        if (dragged) {
+          // Keep the shape tool selected so more shapes can be dragged out.
+          session.dragged = true
+        } else {
+          // A click placed a default-sized shape — exit to select as before.
+          shapeDragSessionRef.current = { tool: null, dragged: false }
+          useUIStore.getState().setActiveTool('select')
+        }
       }
       return
     }
