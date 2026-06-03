@@ -19,16 +19,12 @@ import { computePatternInstances, applyPatternInstance } from '../tools/patternO
 import { nextPathColor } from '../importers/svgImporter'
 import { useTabStore } from '../store/tabStore'
 import { regenerateAffected } from '../cam/regenerate'
+import { runInWorker } from '../workers/workerClient'
 import { useUIStore } from '../store/uiStore'
 import { flattenPath } from '../cam/pathFlattener'
-import { generateProfile } from '../cam/profile'
-import { generateTrochoidal } from '../cam/trochoidal'
-import { generatePocket, type PocketStrategy } from '../cam/pocket'
+import { type PocketStrategy } from '../cam/pocket'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
-import { generateVCarve } from '../cam/vcarve'
-import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
-import { generateProfile3d } from '../cam/profile3d'
 import { effectiveStepDownMM } from '../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
@@ -171,21 +167,22 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (selectedPaths.length === 0 || !selectedTool) return
+    const tool = selectedTool
     pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
-    setTimeout(() => {
-      let failed = false
+    let failed = false
+    try {
       if (editOp) {
         updateOperation(editOp.id, {
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
           stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, generateProfile(selectedPaths[0].d, selectedTool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+          setSegments(editOp.id, await runInWorker('generateProfile', selectedPaths[0].d, tool, {
+            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             direction: form.direction, rampIn: form.rampIn, safeHeightMM,
           }))
         } catch (err) {
@@ -197,7 +194,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       } else {
         for (const path of selectedPaths) {
           const opId = addOperation({
-            name: `Profile: ${path.name} (${selectedTool.name})`,
+            name: `Profile: ${path.name} (${tool.name})`,
             type: 'profile',
             toolId: form.toolId,
             pathId: path.id,
@@ -209,8 +206,8 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           })
           updateOperation(opId, { status: 'generating' })
           try {
-            setSegments(opId, generateProfile(path.d, selectedTool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+            setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
+              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, safeHeightMM,
             }))
           } catch (err) {
@@ -220,9 +217,10 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           }
         }
       }
+    } finally {
       setGenerating(false)
       if (!failed) { save('profile', form) }
-    }, 0)
+    }
   }
 
   return (
@@ -329,13 +327,14 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (selectedPaths.length === 0 || !selectedTool) return
+    const tool = selectedTool
     pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
-    setTimeout(() => {
-      let failed = false
+    let failed = false
+    try {
       if (editOp) {
         updateOperation(editOp.id, {
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
@@ -344,8 +343,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
           finishingPass: form.finishingPass, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, generateTrochoidal(selectedPaths[0].d, selectedTool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+          setSegments(editOp.id, await runInWorker('generateTrochoidal', selectedPaths[0].d, tool, {
+            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             direction: form.direction, trochStepMM: form.trochStepMM,
             trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
             rampIn: form.rampIn, safeHeightMM,
@@ -359,7 +358,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       } else {
         for (const path of selectedPaths) {
           const opId = addOperation({
-            name: `Trochoidal: ${path.name} (${selectedTool.name})`,
+            name: `Trochoidal: ${path.name} (${tool.name})`,
             type: 'trochoidal',
             toolId: form.toolId,
             pathId: path.id,
@@ -374,8 +373,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
           })
           updateOperation(opId, { status: 'generating' })
           try {
-            setSegments(opId, generateTrochoidal(path.d, selectedTool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+            setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
+              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, trochStepMM: form.trochStepMM,
               trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
               rampIn: form.rampIn, safeHeightMM,
@@ -387,9 +386,10 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
           }
         }
       }
+    } finally {
       setGenerating(false)
       if (!failed) { save('trochoidal', form) }
-    }, 0)
+    }
   }
 
   return (
@@ -534,11 +534,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (groups.length === 0 || !selectedTool) return
+    const tool = selectedTool
     pushHistoryBoth()
     setGenerating(true)
-    setTimeout(() => {
+    // Run the (potentially slow, e.g. adaptive) pocket generation off the main thread so the
+    // browser stays responsive — same worker pattern as regenerate.ts. Awaiting the worker also
+    // lets React paint the 'generating' state, so the old setTimeout(…,0) yield is unnecessary.
+    try {
       if (editOp && editBoundary) {
         updateOperation(editOp.id, {
           toolId: form.toolId, strategy: form.strategy,
@@ -547,9 +551,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, generatePocket(editBoundary.d, selectedTool, {
+          setSegments(editOp.id, await runInWorker('generatePocket', editBoundary.d, tool, {
             strategy: form.strategy,
-            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             stepoverPercent: form.stepoverPercent, direction: form.direction,
             islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
             finishAllowanceMM: form.allowanceMM,
@@ -561,7 +565,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       } else {
         for (const { boundary, islands } of groups) {
           const opId = addOperation({
-            name: `Pocket: ${boundary.name} (${selectedTool.name})`,
+            name: `Pocket: ${boundary.name} (${tool.name})`,
             type: 'pocket',
             toolId: form.toolId,
             strategy: form.strategy,
@@ -577,9 +581,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           })
           updateOperation(opId, { status: 'generating' })
           try {
-            setSegments(opId, generatePocket(boundary.d, selectedTool, {
+            setSegments(opId, await runInWorker('generatePocket', boundary.d, tool, {
               strategy: form.strategy,
-              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
               finishAllowanceMM: form.allowanceMM,
@@ -590,9 +594,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           }
         }
       }
+    } finally {
       setGenerating(false)
       save('pocket', form)
-    }, 0)
+    }
   }
 
   return (
@@ -1145,17 +1150,18 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (groups.length === 0 || !selectedTool) return
+    const tool = selectedTool
     pushHistoryBoth()
     setGenerating(true)
-    setTimeout(async () => {
+    try {
       if (editOp && editBoundary) {
         updateOperation(editOp.id, {
           toolId: form.toolId, angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, await generateVCarve(editBoundary.d, selectedTool, {
+          setSegments(editOp.id, await runInWorker('generateVCarve', editBoundary.d, tool, {
             angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
             islandDs: editIslands.map((p) => p.d), safeHeightMM,
           }))
@@ -1165,7 +1171,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       } else {
         for (const { boundary, islands } of groups) {
           const opId = addOperation({
-            name: `V-Carve: ${boundary.name} (${selectedTool.name})`,
+            name: `V-Carve: ${boundary.name} (${tool.name})`,
             type: 'vcarve',
             toolId: form.toolId,
             pathId: boundary.id,
@@ -1175,7 +1181,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           })
           updateOperation(opId, { status: 'generating' })
           try {
-            setSegments(opId, await generateVCarve(boundary.d, selectedTool, {
+            setSegments(opId, await runInWorker('generateVCarve', boundary.d, tool, {
               angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
               islandDs: islands.map((p) => p.d), safeHeightMM,
             }))
@@ -1184,9 +1190,10 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           }
         }
       }
+    } finally {
       setGenerating(false)
       save('vcarve', form)
-    }, 0)
+    }
   }
 
   return (
@@ -1372,8 +1379,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       setTimeout(async () => {
         try {
           const result = editOp.role === 'female'
-            ? await generateInlayFemale(editBoundary.d, pocketTool, wallTool, inlayParams)
-            : await generateInlayMale(editBoundary.d, pocketTool, wallTool, inlayParams)
+            ? await runInWorker('generateInlayFemale', editBoundary.d, pocketTool, wallTool, inlayParams)
+            : await runInWorker('generateInlayMale', editBoundary.d, pocketTool, wallTool, inlayParams)
           setSegments(editOp.id, editOp.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
           if (linkedOp) {
             setSegments(linkedOp.id, editOp.phase === 'vbit' ? result.endmillSegs : result.vbitSegs)
@@ -1410,8 +1417,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
           try {
             const result = role === 'female'
-              ? await generateInlayFemale(boundary.d, pocketTool, null, inlayParams)
-              : await generateInlayMale(boundary.d, pocketTool, null, inlayParams)
+              ? await runInWorker('generateInlayFemale', boundary.d, pocketTool, null, inlayParams)
+              : await runInWorker('generateInlayMale', boundary.d, pocketTool, null, inlayParams)
             setSegments(ids[i], result.endmillSegs)
           } catch (err) {
             setError(ids[i], err instanceof Error ? err.message : 'Generation failed')
@@ -1467,8 +1474,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
         try {
           const result = role === 'female'
-            ? await generateInlayFemale(boundary.d, pocketTool, wallTool, inlayParams)
-            : await generateInlayMale(boundary.d, pocketTool, wallTool, inlayParams)
+            ? await runInWorker('generateInlayFemale', boundary.d, pocketTool, wallTool, inlayParams)
+            : await runInWorker('generateInlayMale', boundary.d, pocketTool, wallTool, inlayParams)
           setSegments(firstIds[i],  firstPhase  === 'vbit' ? result.vbitSegs : result.endmillSegs)
           setSegments(secondIds[i], secondPhase === 'vbit' ? result.vbitSegs : result.endmillSegs)
 
@@ -1750,7 +1757,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     setGenerating(true)
     setErrorMsg(null)
 
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
         const buf = base64ToArrayBuffer(selectedPath.stlSrc!)
         const geo = parseStlGeometry(buf)
@@ -1773,7 +1780,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           finishingToolId: form.toolId,
           safeHeightMM,
         }
-        const segments = generateProfile3d(positions, indices, selectedPath.stlModelBounds!, cncBbox, selectedTool, params)
+        const segments = await runInWorker('generateProfile3d', positions, indices, selectedPath.stlModelBounds!, cncBbox, selectedTool, params)
 
         const opName = hasRoughing
           ? `3D Profile: ${selectedPath.name} (rough: ${roughingTool?.name ?? ''} / finish: ${selectedTool.name})`

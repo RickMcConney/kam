@@ -31,6 +31,7 @@ import {
   getBoundsPaths,
 } from 'clipper2-ts'
 import type { Point64, Paths64 } from 'clipper2-ts'
+import { TileRaster } from './tileRaster.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────────
 // IntPoint coords are integers in scaled space; DoublePoint is an unscaled direction/vec.
@@ -85,6 +86,46 @@ const DBL_MAX = Number.MAX_VALUE
 
 const MIN_STEP_CLIPPER = 16.0 * 3
 const MAX_ITERATIONS = 30
+// Probe baseline for raster engagement: measure cut area over ≥ this distance (≈6 cells) so the
+// count is low-noise even when the actual march step is tiny (during turns). Encapsulated in
+// CalcCutArea — measure ahead at the probe, scale back to the real step — so iterateNextStep is
+// untouched. (= the probe-step decoupling.)
+const RASTER_PROBE_MIN = 5 * MIN_STEP_CLIPPER
+// …but a fixed multiple of MIN_STEP_CLIPPER doesn't scale with the tool: scaleFactor freezes once
+// stepOverFactor·toolDiameter ≥ 1 (the min(1,…) clamp in Execute), so for big tools the cell/probe
+// stay fixed while the radius keeps growing — fewer probe-lengths averaged per radius → a noisier
+// engagement metric → ±45° steering hunts → jitter (visible scalloping on a 6 mm bit). Floor the
+// probe at a fixed fraction of the tool radius so probe/toolR is constant across tool sizes. 0.20
+// matched the clean 3 mm baseline but the 6 mm still hunted; 0.30 averages ~50% more frontier per
+// engagement sample and quiets it (a longer probe = more low-pass on the metric).
+const RASTER_PROBE_TOOL_FRAC = 0.30
+// Cross-check the raster engagement against the analytic on real runs (ADV_RASTER_AUDIT=1).
+const RASTER_AUDIT = !!(globalThis as { process?: { env?: Record<string, string> } }).process?.env?.ADV_RASTER_AUDIT
+const gRasterAudit = { n: 0, sumAbsErr: 0, maxErr: 0 }
+
+// ─── Profiling (wall-clock per bucket; on by default, set Adaptive2d.profiling=false to silence) ─
+let gProfEnabled = true
+const gProf: Record<string, { calls: number; ms: number }> = {}
+const _now = (): number => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+function profReset(): void { for (const k of Object.keys(gProf)) delete gProf[k] }
+function profAdd(name: string, ms: number): void { const e = gProf[name] ?? (gProf[name] = { calls: 0, ms: 0 }); e.calls++; e.ms += ms }
+function prof<T>(name: string, fn: () => T): T {
+  if (!gProfEnabled) return fn()
+  const t0 = _now(); try { return fn() } finally { profAdd(name, _now() - t0) }
+}
+function profReport(label: string, totalMs: number): void {
+  if (!gProfEnabled) return
+  const rows = Object.entries(gProf).sort((a, b) => b[1].ms - a[1].ms)
+  let out = `[adv-prof] ${label} — total ${totalMs.toFixed(1)} ms (buckets may nest)\n`
+  out += '  ' + 'bucket'.padEnd(22) + 'calls'.padStart(10) + 'total ms'.padStart(12) + 'avg µs'.padStart(12) + '       %\n'
+  for (const [name, e] of rows) {
+    const pct = totalMs > 0 ? 100 * e.ms / totalMs : 0
+    out += '  ' + name.padEnd(22) + String(e.calls).padStart(10) + e.ms.toFixed(1).padStart(12)
+      + (e.calls ? 1000 * e.ms / e.calls : 0).toFixed(1).padStart(12) + (pct.toFixed(1) + '%').padStart(9) + '\n'
+  }
+  console.log(out)
+}
+
 const AREA_ERROR_FACTOR = 0.05
 const ANGLE_HISTORY_POINTS = 3
 const DIRECTION_SMOOTHING_BUFLEN = 3
@@ -127,29 +168,38 @@ function PointInPolygon(pt: IntPoint, poly: Path): number {
   return 1
 }
 
+const CLIP_NAME: Record<number, string> = {
+  [ClipType.Union]: 'clip.union', [ClipType.Difference]: 'clip.diff', [ClipType.Intersection]: 'clip.intersect', [ClipType.Xor]: 'clip.xor',
+}
 function clipBoolean(ct: ClipType, subjects: Paths, clips: Paths | null): Paths {
-  const c = new Clipper64()
-  if (subjects.length) c.addPaths(subjects, PathType.Subject)
-  if (clips && clips.length) c.addPaths(clips, PathType.Clip)
-  const sol: Paths64 = []
-  c.execute(ct, FillRule.EvenOdd, sol)
-  return sol
+  return prof(CLIP_NAME[ct] ?? 'clip.other', () => {
+    const c = new Clipper64()
+    if (subjects.length) c.addPaths(subjects, PathType.Subject)
+    if (clips && clips.length) c.addPaths(clips, PathType.Clip)
+    const sol: Paths64 = []
+    c.execute(ct, FillRule.EvenOdd, sol)
+    return sol
+  })
 }
 
 function offsetPaths(paths: Paths, delta: number, jt: JoinType, et: EndType): Paths {
   if (!paths.length) return []
-  const co = new ClipperOffset(2, gArcTol)
-  co.addPaths(paths, jt, et)
-  const sol: Paths64 = []
-  co.execute(delta, sol)
-  return sol
+  return prof('offset', () => {
+    const co = new ClipperOffset(2, gArcTol)
+    co.addPaths(paths, jt, et)
+    const sol: Paths64 = []
+    co.execute(delta, sol)
+    return sol
+  })
 }
 function offsetPath(path: Path, delta: number, jt: JoinType, et: EndType): Paths {
-  const co = new ClipperOffset(2, gArcTol)
-  co.addPath(path, jt, et)
-  const sol: Paths64 = []
-  co.execute(delta, sol)
-  return sol
+  return prof('offset', () => {
+    const co = new ClipperOffset(2, gArcTol)
+    co.addPath(path, jt, et)
+    const sol: Paths64 = []
+    co.execute(delta, sol)
+    return sol
+  })
 }
 
 // SimplifyPolygons: resolve self-intersections (Clipper1 used an EvenOdd self-union).
@@ -160,7 +210,7 @@ function SimplifyPolygons(paths: Paths): Paths {
 // CleanPolygon(s): remove near-collinear / near-coincident vertices. Clipper2 dropped
 // CleanPolygon; RamerDouglasPeucker with the same distance is the faithful analog.
 function CleanPolygons(paths: Paths, dist = 1.415): Paths {
-  return simplifyPaths(paths, dist, true)
+  return prof('cleanPolygons', () => simplifyPaths(paths, dist, true))
 }
 
 // ─── Geometry utils ─────────────────────────────────────────────────────────────────
@@ -543,11 +593,54 @@ class ClearedArea {
   private clearedBBClippedInFocus = new BoundBox()
   private bboxClippedInvalid = false
   private clearedBoundedWindowScale = 10
+  // The raster is now the source of truth for the cleared region. expandCleared/addClearedDisk just
+  // mark it (O(footprint)); getCleared() materializes the polygon on demand via toContours (O(frontier),
+  // cached) for the remaining polygon consumers (engage-point generation, finishing, fallbacks).
+  // seedPaths holds any non-swept initial cleared region passed to setClearedPaths (empty for pockets).
+  private raster: TileRaster | null
+  private seedPaths: Paths = []
+  private clearedDirty = true
 
-  constructor(toolRadiusScaled: number) { this.toolRadiusScaled = toolRadiusScaled }
+  constructor(toolRadiusScaled: number, raster: TileRaster | null = null) {
+    this.toolRadiusScaled = toolRadiusScaled
+    this.raster = raster
+  }
+
+  get hasRaster(): boolean { return this.raster !== null }
+  rasterArea(): number { return this.raster ? this.raster.area() : 0 }  // total cut area, scaled²
+  rasterCutArea(c1: IntPoint, c2: IntPoint): [number, number] { return prof('raster.cutArea', () => this.raster!.cutArea(c1, c2)) }
+  rasterIsClearPath(tp: Path, rad: number): boolean { return prof('raster.isClearPath', () => this.raster!.isClearPath(tp, rad)) }
+  rasterIsCleared(p: IntPoint): boolean { return this.raster!.isCleared(p.x, p.y) }
+  // Largest r ≤ maxR with disk(p,r) fully cut (how deep p sits in cleared). For routing heuristics.
+  rasterClearedDepth(p: IntPoint, maxR: number): number {
+    if (!this.raster) return 0
+    let lo = 0, hi = Math.trunc(maxR)
+    while (lo < hi) { const m = Math.trunc((lo + hi + 1) / 2); if (this.raster.isClearPath([p], m)) lo = m; else hi = m - 1 }
+    return lo
+  }
+  rasterDeepestUncut(inside: (x: number, y: number) => boolean): { x: number; y: number; depth: number } | null {
+    return this.raster ? prof('raster.deepest', () => this.raster!.deepestUncutTile(inside)) : null
+  }
+  rasterNearestDeepCleared(p: IntPoint): IntPoint | null {
+    const r = this.raster?.nearestFullTile(p.x, p.y)
+    return r ? { x: trunc(r.x), y: trunc(r.y) } : null
+  }
+  // p is ≥ rad deep inside cleared ⟺ the disk(p,rad) is fully cut ⟺ isClearPath([p], rad).
+  rasterDeepInside(p: IntPoint, rad: number): boolean { return prof('raster.isClearPath', () => this.raster!.isClearPath([p], rad)) }
+  rasterMark(path: Path): void { if (this.raster) prof('raster.mark', () => this.raster!.mark(path, this.toolRadiusScaled)) }
+
+  // Cheap raster-only clone for the lead-path scratch (the only caller, MakeLeadPath, is raster-only
+  // and never reads the polygon, so we skip copying it).
+  clone(): ClearedArea {
+    return new ClearedArea(this.toolRadiusScaled, this.raster ? this.raster.clone() : null)
+  }
 
   setClearedPaths(paths: Paths): void {
-    this.clearedPaths = paths.map(p => p.map(pt => ({ x: pt.x, y: pt.y })))
+    // Non-swept initial cleared region. Raster-backed: kept as a seed unioned into getCleared() and
+    // (for membership/engagement to see it) marked into the raster. Empty in the common pocket case.
+    this.seedPaths = paths.map(p => p.map(pt => ({ x: pt.x, y: pt.y })))
+    if (!this.raster) { this.clearedPaths = this.seedPaths }
+    this.clearedDirty = true
     this.bboxClippedInvalid = true
   }
 
@@ -557,8 +650,18 @@ class ClearedArea {
     this.bboxClippedInvalid = true
   }
 
+  // Helix bore: a disk of `radius` at `center`. Raster-backed: just stamp it (the polygon is
+  // re-derived on demand); polygon path keeps the diskPaths union as a fallback.
+  addClearedDisk(diskPaths: Paths, center: IntPoint, radius: number): void {
+    if (this.raster) { this.raster.markStamp(center.x, center.y, radius); this.clearedDirty = true; return }
+    this.clearedPaths = clipBoolean(ClipType.Union, this.clearedPaths, diskPaths)
+    this.clearedPaths = CleanPolygons(this.clearedPaths, gClearSimplify)
+    this.bboxClippedInvalid = true
+  }
+
   expandCleared(toClearToolPath: Path): void {
     if (toClearToolPath.length === 0) return
+    if (this.raster) { prof('raster.mark', () => this.raster!.mark(toClearToolPath, this.toolRadiusScaled)); this.clearedDirty = true; return }
     const toolCoverPoly = offsetPath(toClearToolPath, this.toolRadiusScaled + 1, JoinType.Round, EndType.Round)
     this.clearedPaths = clipBoolean(ClipType.Union, this.clearedPaths, toolCoverPoly)
     this.clearedPaths = CleanPolygons(this.clearedPaths, gClearSimplify)
@@ -595,7 +698,21 @@ class ClearedArea {
     return this.clearedBoundedClipped
   }
 
-  getCleared(): Paths { return this.clearedPaths }
+  getCleared(): Paths {
+    if (this.raster) {
+      if (this.clearedDirty) {
+        let c = prof('contour', () => this.raster!.toContours()) as Paths
+        // Collapse the cell-staircase (~cell amplitude) to the true boundary so downstream offsets
+        // operate on a low-vertex polygon, not thousands of staircase corners.
+        c = CleanPolygons(c, this.raster.cell * 2)
+        if (this.seedPaths.length) c = clipBoolean(ClipType.Union, c, this.seedPaths)
+        this.clearedPaths = c
+        this.clearedDirty = false
+      }
+      return this.clearedPaths
+    }
+    return this.clearedPaths
+  }
 }
 
 // ─── Linear interpolation: area-error vs steering angle ──────────────────────────────
@@ -725,6 +842,7 @@ export interface Adaptive2dConfig {
   finishingProfile?: boolean
   keepToolDownDistRatio?: number
   opType?: OperationTypeValue
+  profiling?: boolean
 }
 
 export class Adaptive2d {
@@ -738,6 +856,7 @@ export class Adaptive2d {
   finishingProfile = true
   keepToolDownDistRatio = 3.0
   opType: OperationTypeValue = OperationType.ClearingInside
+  profiling = true
 
   private results: AdaptiveOutput[] = []
   private inputPaths: Paths = []
@@ -754,8 +873,32 @@ export class Adaptive2d {
 
   constructor(cfg: Adaptive2dConfig = {}) { Object.assign(this, cfg) }
 
-  // ── Analytic cut-area measurement (the engagement metric) ──────────────────────────
+  // Engagement metric. Raster path (main cleared): probe ahead ≥ RASTER_PROBE_MIN so the cell count
+  // is low-noise even for tiny steps, then scale the area back to the real step → iterateNextStep is
+  // unchanged. Falls back to the analytic when there's no raster (the lead-path / before-pass copies).
   private CalcCutArea(c1in: IntPoint, c2in: IntPoint, clearedArea: ClearedArea): [number, number] {
+    if (clearedArea.hasRaster) {
+      const dx = c2in.x - c1in.x, dy = c2in.y - c1in.y
+      const stepLen = Math.sqrt(dx * dx + dy * dy)
+      if (stepLen < NTOL) return [0, 0]
+      const probeLen = Math.max(stepLen, RASTER_PROBE_MIN, this.toolRadiusScaled * RASTER_PROBE_TOOL_FRAC)
+      const ext = probeLen / stepLen
+      const probeC2: IntPoint = { x: trunc(c1in.x + dx * ext), y: trunc(c1in.y + dy * ext) }
+      const [a, cv] = clearedArea.rasterCutArea(c1in, probeC2)
+      const scale = stepLen / probeLen
+      const res: [number, number] = [a * scale, cv * scale]
+      if (RASTER_AUDIT) {
+        const ana = this.calcCutAreaAnalytic(c1in, c2in, clearedArea)
+        const err = Math.abs(res[0] - ana[0]) / (1 + Math.abs(ana[0]))
+        gRasterAudit.n++; gRasterAudit.sumAbsErr += err; if (err > gRasterAudit.maxErr) gRasterAudit.maxErr = err
+      }
+      return res
+    }
+    return this.calcCutAreaAnalytic(c1in, c2in, clearedArea)
+  }
+
+  // ── Analytic cut-area measurement (the original engagement metric) ─────────────────
+  private calcCutAreaAnalytic(c1in: IntPoint, c2in: IntPoint, clearedArea: ClearedArea): [number, number] {
     let c1: IntPoint = { x: c1in.x, y: c1in.y }
     let c2: IntPoint = { x: c2in.x, y: c2in.y }
     const dist = Math.sqrt(DistanceSqrd(c1, c2))
@@ -891,6 +1034,9 @@ export class Adaptive2d {
   }
 
   Execute(stockPaths: DPaths, paths: DPaths, clearedPaths: DPaths): AdaptiveOutput[] {
+    gProfEnabled = this.profiling
+    profReset()
+    const tExec0 = _now()
     this.results = []
     this.tolerance = Math.max(this.tolerance, 0.01)
     this.tolerance = Math.min(this.tolerance, 1.0)
@@ -1021,7 +1167,37 @@ export class Adaptive2d {
       this.ProcessPolyNode(boundPath, currentTBP, finishingPass, initialClearedPaths)
     }
 
+    if (RASTER_AUDIT && gRasterAudit.n > 0) {
+      console.log(`[raster-audit] CalcCutArea raster-vs-analytic: n=${gRasterAudit.n} `
+        + `meanErr=${(100 * gRasterAudit.sumAbsErr / gRasterAudit.n).toFixed(2)}% maxErr=${(100 * gRasterAudit.maxErr).toFixed(1)}%`)
+    }
+    profReport('Execute', _now() - tExec0)
     return this.results
+  }
+
+  // Refine a tile-quantized deepest-uncut seed to cell resolution. rasterDeepestUncut returns a
+  // tile CENTRE (≈1.6 mm grid, and the grid's alignment shifts with toolR via the raster origin),
+  // so a helix otherwise lands up to ±½-tile off the true pocket centre — and differently for a
+  // 3 mm vs a 6 mm bit. Local hill-climb that maximises clearance from the region wall (boundPaths,
+  // which already includes islands as separate loops) while staying inside the uncut cut-region.
+  private refineEntryPoint(p: IntPoint, boundPaths: Paths, toolBoundPaths: Paths, cleared: ClearedArea): IntPoint {
+    let best: IntPoint = { x: p.x, y: p.y }
+    let bestD = DistancePointToPathsSqrd(boundPaths, best).distSq
+    const accept = (c: IntPoint): boolean =>
+      IsPointWithinCutRegion(toolBoundPaths, c) && (!cleared.hasRaster || !cleared.rasterIsCleared(c))
+    for (let step = trunc(this.toolRadiusScaled); step >= MIN_STEP_CLIPPER; step = trunc(step / 2)) {
+      let improved = true
+      while (improved) {
+        improved = false
+        for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]] as const) {
+          const c: IntPoint = { x: best.x + dx, y: best.y + dy }
+          if (!accept(c)) continue
+          const d = DistancePointToPathsSqrd(boundPaths, c).distSq
+          if (d > bestD) { bestD = d; best = c; improved = true }
+        }
+      }
+    }
+    return best
   }
 
   private FindEntryPoint(
@@ -1032,7 +1208,6 @@ export class Adaptive2d {
     let found = false
     let entryPoint: IntPoint = { x: 0, y: 0 }
     let helixRadiusScaled = minHelixRadiusScaled
-    let checkPaths = clipBoolean(ClipType.Difference, toolBoundPaths, cleared.getCleared())
 
     const checkHelixFit = (testR: number): { fits: boolean; clearedPaths: Paths } => {
       let clearedPaths = offsetPath(entryPoint ? [entryPoint] : [], testR + this.toolRadiusScaled, JoinType.Round, EndType.Round)
@@ -1041,54 +1216,60 @@ export class Adaptive2d {
       return { fits: crossing.length === 0, clearedPaths }
     }
 
-    for (let iter = 0; iter < 10; iter++) {
-      // largest inward offset that is still non-empty → its centroid
-      const step = MIN_STEP_CLIPPER
-      let currentDelta = -1
-      let lastValidOffset: Paths = []
-      let incOffset = offsetPaths(checkPaths, currentDelta, JoinType.Square, EndType.Polygon)
-      while (incOffset.length) {
-        incOffset = offsetPaths(checkPaths, currentDelta, JoinType.Square, EndType.Polygon)
-        if (incOffset.length) lastValidOffset = incOffset
-        currentDelta -= step
+    const tryEntry = (): void => {
+      if (!checkHelixFit(minHelixRadiusScaled).fits) { found = false; return }
+      let minSize = minHelixRadiusScaled
+      let maxSize = Math.max(this.helixRampMaxRadiusScaled, minHelixRadiusScaled)
+      while (minSize < maxSize) {
+        const testSize = Math.trunc((minSize + maxSize + 1) / 2)
+        if (checkHelixFit(testSize).fits) minSize = testSize
+        else maxSize = testSize - 1
       }
-      found = false
-      for (const lv of lastValidOffset) { if (lv.length) { entryPoint = Compute2DPolygonCentroid(lv); found = true; break } }
+      helixRadiusScaled = minSize
+      const fit = checkHelixFit(helixRadiusScaled)
+      cleared.addClearedDisk(fit.clearedPaths, entryPoint, helixRadiusScaled + this.toolRadiusScaled)
+      found = true
+    }
 
-      for (let j = 0; j < checkPaths.length; j++) {
-        const pip = PointInPolygon(entryPoint, checkPaths[j])
-        if ((j === 0 && pip === 0) || (j > 0 && pip !== 0)) { found = false; break }
+    if (cleared.hasRaster) {
+      // Deepest uncut point off the live raster (replaces the Difference + inward-offset loop);
+      // wall-fit binary search (vs boundPaths input) sizes the helix.
+      const deepest = cleared.rasterDeepestUncut((x, y) => IsPointWithinCutRegion(toolBoundPaths, { x: trunc(x), y: trunc(y) }))
+      if (deepest) {
+        entryPoint = this.refineEntryPoint({ x: trunc(deepest.x), y: trunc(deepest.y) }, boundPaths, toolBoundPaths, cleared)
+        tryEntry()
       }
-
-      if (found) {
-        if (!checkHelixFit(minHelixRadiusScaled).fits) {
-          found = false
-        } else {
-          let minSize = minHelixRadiusScaled
-          let maxSize = Math.max(this.helixRampMaxRadiusScaled, minHelixRadiusScaled)
-          while (minSize < maxSize) {
-            const testSize = Math.trunc((minSize + maxSize + 1) / 2)
-            if (checkHelixFit(testSize).fits) minSize = testSize
-            else maxSize = testSize - 1
-          }
-          helixRadiusScaled = minSize
-          const fit = checkHelixFit(helixRadiusScaled)
-          cleared.addClearedPaths(fit.clearedPaths)
+    } else {
+      let checkPaths = clipBoolean(ClipType.Difference, toolBoundPaths, cleared.getCleared())
+      for (let iter = 0; iter < 10; iter++) {
+        const step = MIN_STEP_CLIPPER
+        let currentDelta = -1
+        let lastValidOffset: Paths = []
+        let incOffset = offsetPaths(checkPaths, currentDelta, JoinType.Square, EndType.Polygon)
+        while (incOffset.length) {
+          incOffset = offsetPaths(checkPaths, currentDelta, JoinType.Square, EndType.Polygon)
+          if (incOffset.length) lastValidOffset = incOffset
+          currentDelta -= step
         }
+        found = false
+        for (const lv of lastValidOffset) { if (lv.length) { entryPoint = Compute2DPolygonCentroid(lv); found = true; break } }
+        for (let j = 0; j < checkPaths.length; j++) {
+          const pip = PointInPolygon(entryPoint, checkPaths[j])
+          if ((j === 0 && pip === 0) || (j > 0 && pip !== 0)) { found = false; break }
+        }
+        if (found) tryEntry()
+        if (!found) {
+          const bounds = getBoundsPaths(checkPaths)
+          const rect: Path = [
+            { x: bounds.left, y: bounds.bottom },
+            { x: bounds.left, y: trunc((bounds.top + bounds.bottom) / 2) },
+            { x: trunc((bounds.left + bounds.right) / 2), y: trunc((bounds.top + bounds.bottom) / 2) },
+            { x: trunc((bounds.left + bounds.right) / 2), y: bounds.bottom },
+          ]
+          checkPaths = clipBoolean(ClipType.Intersection, [rect], checkPaths)
+        }
+        if (found) break
       }
-
-      if (!found) {
-        // break symmetry: clip to lower-left quadrant and retry
-        const bounds = getBoundsPaths(checkPaths)
-        const rect: Path = [
-          { x: bounds.left, y: bounds.bottom },
-          { x: bounds.left, y: trunc((bounds.top + bounds.bottom) / 2) },
-          { x: trunc((bounds.left + bounds.right) / 2), y: trunc((bounds.top + bounds.bottom) / 2) },
-          { x: trunc((bounds.left + bounds.right) / 2), y: bounds.bottom },
-        ]
-        checkPaths = clipBoolean(ClipType.Intersection, [rect], checkPaths)
-      }
-      if (found) break
     }
 
     if (!found) { if (flagNotFound) output.startPointNotFound = true; return null }
@@ -1105,26 +1286,25 @@ export class Adaptive2d {
   private findHelixSeed(
     boundPaths: Paths, toolBoundPaths: Paths, cleared: ClearedArea, minInscribedScaled: number,
   ): { entryPoint: IntPoint; toolPos: IntPoint; toolDir: DoublePoint; helixRadiusScaled: number } | null {
-    const uncut = clipBoolean(ClipType.Difference, toolBoundPaths, cleared.getCleared())
-    if (!uncut.length) return null
-
-    // Pole of inaccessibility: offset the uncut region inward until it vanishes; the last
-    // non-empty offset's deepest (largest-area) island gives a point far from any edge.
-    const step = Math.max(MIN_STEP_CLIPPER, this.toolRadiusScaled / 2)
-    let lastValid = uncut
-    let depth = 0
-    for (let delta = -step; ; delta -= step) {
-      const o = offsetPaths(uncut, delta, JoinType.Round, EndType.Polygon)
-      if (!o.length) break
-      lastValid = o
-      depth = -delta
+    // Deepest remaining uncut point = pole of inaccessibility. From the live raster when available
+    // (replaces the Difference(toolBounds, cleared) + inward-offset loop); coarse tile-level location
+    // is fine since the wall-fit binary search below sizes the helix precisely against boundPaths.
+    let entryPoint: IntPoint
+    if (cleared.hasRaster) {
+      const deepest = cleared.rasterDeepestUncut((x, y) => IsPointWithinCutRegion(toolBoundPaths, { x: trunc(x), y: trunc(y) }))
+      if (!deepest || deepest.depth < minInscribedScaled) return null
+      entryPoint = this.refineEntryPoint({ x: trunc(deepest.x), y: trunc(deepest.y) }, boundPaths, toolBoundPaths, cleared)
+    } else {
+      const uncut = clipBoolean(ClipType.Difference, toolBoundPaths, cleared.getCleared())
+      if (!uncut.length) return null
+      const step = Math.max(MIN_STEP_CLIPPER, this.toolRadiusScaled / 2)
+      let lastValid = uncut, depth = 0
+      for (let delta = -step; ; delta -= step) { const o = offsetPaths(uncut, delta, JoinType.Round, EndType.Polygon); if (!o.length) break; lastValid = o; depth = -delta }
+      if (depth < minInscribedScaled) return null
+      let best = lastValid[0], bestArea = -1
+      for (const p of lastValid) { const a = Math.abs(Area(p)); if (a > bestArea) { bestArea = a; best = p } }
+      entryPoint = Compute2DPolygonCentroid(best)
     }
-    if (depth < minInscribedScaled) return null
-
-    let best = lastValid[0]
-    let bestArea = -1
-    for (const p of lastValid) { const a = Math.abs(Area(p)); if (a > bestArea) { bestArea = a; best = p } }
-    const entryPoint = Compute2DPolygonCentroid(best)
 
     const checkFit = (r: number): Paths | null => {
       let cp = offsetPath([entryPoint], r + this.toolRadiusScaled, JoinType.Round, EndType.Round)
@@ -1137,7 +1317,7 @@ export class Adaptive2d {
     while (lo < hi) { const t = Math.trunc((lo + hi + 1) / 2); if (checkFit(t)) lo = t; else hi = t - 1 }
     const helixRadiusScaled = lo
     const fit = checkFit(helixRadiusScaled)
-    if (fit) cleared.addClearedPaths(fit)
+    if (fit) cleared.addClearedDisk(fit, entryPoint, helixRadiusScaled + this.toolRadiusScaled)
     return {
       entryPoint,
       toolPos: { x: entryPoint.x, y: entryPoint.y - helixRadiusScaled },
@@ -1147,6 +1327,7 @@ export class Adaptive2d {
   }
 
   private IsClearPath(tp: Path, cleared: ClearedArea, safetyClearance: number): boolean {
+    if (cleared.hasRaster) return cleared.rasterIsClearPath(tp, this.toolRadiusScaled + safetyClearance)
     const toolShape = offsetPath(tp, this.toolRadiusScaled + safetyClearance, JoinType.Round, EndType.Round)
     const crossing = clipBoolean(ClipType.Difference, toolShape, cleared.getCleared())
     let collisionArea = 0
@@ -1231,9 +1412,10 @@ export class Adaptive2d {
           const offset = i * scanStep
           let cp1: IntPoint = { x: trunc(midPoint.x + offset * pDir.x), y: trunc(midPoint.y + offset * pDir.y) }
           let cp2: IntPoint = { x: trunc(midPoint.x - offset * pDir.x), y: trunc(midPoint.y - offset * pDir.y) }
-          if (DistancePointToPathsSqrd(clearedArea.getCleared(), cp1).distSq < DistancePointToPathsSqrd(clearedArea.getCleared(), cp2).distSq) {
-            const tmp = cp2; cp2 = cp1; cp1 = tmp
-          }
+          const closer = clearedArea.hasRaster
+            ? clearedArea.rasterClearedDepth(cp1, 2 * this.stepOverScaled) < clearedArea.rasterClearedDepth(cp2, 2 * this.stepOverScaled)
+            : DistancePointToPathsSqrd(clearedArea.getCleared(), cp1).distSq < DistancePointToPathsSqrd(clearedArea.getCleared(), cp2).distSq
+          if (closer) { const tmp = cp2; cp2 = cp1; cp1 = tmp }
           clearBudget -= 2
           if (this.IsClearPath([cp1], clearedArea, clearance + 1)) {
             queue.push([pp1, cp1]); queue.push([cp1, pp2]); resolved = true
@@ -1255,15 +1437,14 @@ export class Adaptive2d {
   ): Path | null {
     const result: Path = [startPoint]
     const stepSize = Math.min(MIN_STEP_CLIPPER * 8, 0.2 * this.stepOverScaled + 1)
-    const clearedArea = new ClearedArea(this.toolRadiusScaled)
-    clearedArea.setClearedPaths(clearedAreaOriginal.getCleared())
+    const clearedArea = clearedAreaOriginal.clone()
+    const deepDelta = this.toolRadiusScaled + stepSize
 
-    let cleared = offsetPaths(clearedArea.getCleared(), -(this.toolRadiusScaled + stepSize), JoinType.Round, EndType.Polygon)
-    if (cleared.length === 0) return null
-
+    // Aim the beacon at deep cleared stock. If it isn't already deep inside, nudge it to the nearest
+    // deep-cleared point (raster) — replaces the eroded-polygon relocation.
     let beaconPoint = beaconPointIn
-    if (getPathNestingLevel(beaconPoint, cleared) % 2 === 0) {
-      beaconPoint = DistancePointToPathsSqrd(cleared, beaconPoint).clp
+    if (!clearedArea.rasterDeepInside(beaconPoint, deepDelta)) {
+      beaconPoint = clearedArea.rasterNearestDeepCleared(beaconPoint) ?? beaconPoint
     }
 
     let currentPoint = startPoint
@@ -1285,10 +1466,10 @@ export class Adaptive2d {
     for (let i = 0; i < 600; i++) {
       if (this.IsAllowedToCutTrough(currentPoint, nextPoint, clearedArea, toolBoundPaths)) {
         if (!leadIn) {
+          // Mark the lead's own cut on the raster so the next engagement check sees it (no offset).
           checkPath.push(nextPoint)
-          clearedArea.expandCleared(checkPath)
+          clearedArea.rasterMark(checkPath)
           checkPath.length = 0; checkPath.push(nextPoint)
-          cleared = offsetPaths(clearedArea.getCleared(), -(this.toolRadiusScaled + stepSize), JoinType.Round, EndType.Polygon)
         }
         result.push(nextPoint)
         currentPoint = nextPoint
@@ -1297,13 +1478,13 @@ export class Adaptive2d {
         nextDir = { x: nextDir.x + adaptFactor * targetDir.x, y: nextDir.y + adaptFactor * targetDir.y }
         NormalizeV(nextDir)
 
-        if (getPathNestingLevel(currentPoint, cleared) % 2 === 1) {
+        if (clearedArea.rasterDeepInside(currentPoint, deepDelta)) {
           if (clearedStartLen === null) clearedStartLen = pathLen
           if (pathLen > minExitLength && pathLen - clearedStartLen > MIN_STEP_CLIPPER) return result
         } else clearedStartLen = null
 
         if (pathLen > maxLength) {
-          if (getPathNestingLevel(currentPoint, clearedArea.getCleared()) % 2 === 1) return result
+          if (clearedArea.rasterIsCleared(currentPoint)) return result
           output.leadPathFailed = true
           return null
         }
@@ -1448,7 +1629,17 @@ export class Adaptive2d {
     let toolPos: IntPoint = { x: 0, y: 0 }
     let toolDir: DoublePoint = { x: 0, y: 0 }
 
-    const cleared = new ClearedArea(this.toolRadiusScaled)
+    // Raster over the region (tool centre within boundPaths; cut extends ~toolR, helix a bit more →
+    // 3·toolR margin). cell ≈ tolerance/2 in mm (≈ MIN_STEP). Only the main cleared gets one.
+    const rb = getBoundsPaths(boundPaths)
+    const rMargin = 3 * this.toolRadiusScaled
+    const rCell = Math.max(1, trunc(this.tolerance * this.scaleFactor / 4))
+    const raster = new TileRaster(
+      Math.min(rb.left, rb.right) - rMargin, Math.min(rb.top, rb.bottom) - rMargin,
+      Math.max(rb.left, rb.right) + rMargin, Math.max(rb.top, rb.bottom) + rMargin,
+      rCell, this.toolRadiusScaled,
+    )
+    const cleared = new ClearedArea(this.toolRadiusScaled, raster)
     cleared.setClearedPaths(initialClearedPaths)
 
     let stepScaled = trunc(MIN_STEP_CLIPPER)
@@ -1469,8 +1660,9 @@ export class Adaptive2d {
       unclearedAreaRemains: false, failedToSetUpFinishingPass: false, finishingLeadInFailed: false,
     }
 
-    const clearedBeforePass = new ClearedArea(this.toolRadiusScaled)
-    clearedBeforePass.setClearedPaths(cleared.getCleared())
+    // Per-pass cut-area accounting via the raster's running cut total (replaces a clearedBeforePass
+    // polygon snapshot + a per-pass clip.diff).
+    let areaBeforePass = cleared.rasterArea()
 
     let lastExpandToolDir: DoublePoint = toolDir
 
@@ -1828,12 +2020,7 @@ export class Adaptive2d {
 
       if (toClearPath.length) { cleared.expandCleared(toClearPath); toClearPath.length = 0 }
 
-      const newlyClearedAreas = clipBoolean(ClipType.Difference, cleared.getCleared(), clearedBeforePass.getCleared())
-      let cumulativeCutArea = 0
-      for (const a of newlyClearedAreas) {
-        const nesting = getPathNestingLevelP(a, newlyClearedAreas)
-        cumulativeCutArea += (nesting % 2 === 1 ? 1 : -1) * Math.abs(Area(a))
-      }
+      const cumulativeCutArea = cleared.rasterArea() - areaBeforePass
 
       if (cumulativeCutArea >= 1) {
         const cleaned = CleanPath(passToolPath, CLEAN_PATH_TOLERANCE)
@@ -1847,7 +2034,7 @@ export class Adaptive2d {
 
       if (cumulativeCutArea < reseedAreaThresh) unproductiveStreak++; else unproductiveStreak = 0
 
-      clearedBeforePass.setClearedPaths(cleared.getCleared())
+      areaBeforePass = cleared.rasterArea()
 
       // The spiral has stalled and we've been nibbling — if a blob big enough for a helix
       // remains, re-seed a fresh spiral there rather than continuing to mush.

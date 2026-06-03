@@ -824,10 +824,20 @@ function adaptivePocket(
   const wantCCW = params.direction === 'conventional'
   const rampIn = params.rampIn ?? false
 
+  // Winding control via geometric reflection. The engine's engagement steering always winds CCW
+  // (its tuned, clean path = conventional for an inside pocket). To get the CW/climb path we mirror
+  // the geometry across X, clear in the engine's natural mode, then mirror the toolpath back:
+  // reflection reverses orientation (CCW→CW) and swaps climb↔conventional, so the flipped result is
+  // exactly as clean as the natural one. (Inverting the engine's conventional test instead left the
+  // flipped spiral hunting — the angle/interpolation conventions don't invert with it.) wantCCW is
+  // true for conventional on an inside pocket, so reflect exactly when we want CW (climb).
+  const reflect = !wantCCW
+  const mx = reflect ? -1 : 1
+
   // Geometry for the engine, in CNC mm. The engine offsets the boundary inward and islands
   // outward by the tool radius itself, so feed the raw walls (already allowance-adjusted by
   // generatePocket). paths = boundary + island holes; stock = boundary; cleared = none.
-  const toDP = (pts: Pt2[]): Array<[number, number]> => pts.map(([x, y]) => [x, y] as [number, number])
+  const toDP = (pts: Pt2[]): Array<[number, number]> => pts.map(([x, y]) => [mx * x, y] as [number, number])
   const geomPaths: Array<Array<[number, number]>> = [toDP(boundary), ...islands.map(toDP)]
   const stock: Array<Array<[number, number]>> = [toDP(boundary)]
 
@@ -850,6 +860,13 @@ function adaptivePocket(
   } catch (err) {
     console.error('[adaptive] engine failed', err)
     return incomingPos
+  }
+
+  // Mirror the toolpath back into real coordinates (no-op when not reflecting).
+  if (reflect) for (const out of outputs) {
+    out.helixCenter = [mx * out.helixCenter[0], out.helixCenter[1]]
+    out.startPoint = [mx * out.startPoint[0], out.startPoint[1]]
+    for (const tp of out.adaptivePaths) for (const p of tp.pts) p[0] = mx * p[0]
   }
 
   let lastPos: Pt2 | null = incomingPos
