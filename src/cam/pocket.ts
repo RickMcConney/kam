@@ -308,6 +308,85 @@ function emitHelicalRamp(
   return last
 }
 
+// Descend a helical bore about `center` (tool-centre radius `radius`), finishing at
+// `endAngle` on the circle at `toZ`. Integer turns ⇒ the plunge point is also at
+// `endAngle`, so the bore is a clean circle entered and exited at the same place; the
+// full revolutions clear the disk of radius radius+toolRadius. A final FLAT revolution
+// at `toZ` removes the spiral ramp the descent leaves on the floor (each angle bottoms
+// out at a different Z, so without it the bored centre isn't flat). Returns the end point.
+function emitHelixBore(
+  center: Pt2,
+  radius: number,
+  endAngle: number,
+  fromZ: number,
+  toZ: number,
+  wantCCW: boolean,
+  segs: MotionSegment[],
+  safeZ = 5,
+): Pt2 {
+  const dir = wantCCW ? 1 : -1
+  const stepsPerTurn = 28
+  const turns = Math.max(1, Math.ceil(Math.abs(toZ - fromZ) / 1.5))
+  const totalSteps = turns * stepsPerTurn
+  const pt = (a: number): Pt2 => [center[0] + Math.cos(a) * radius, center[1] + Math.sin(a) * radius]
+  const startPt = pt(endAngle)
+  segs.push({ x: startPt[0], y: startPt[1], z: safeZ, rapid: true })
+  segs.push({ x: startPt[0], y: startPt[1], z: fromZ, rapid: true })
+  let last = startPt
+  for (let i = 1; i <= totalSteps; i++) {
+    const t = i / totalSteps
+    last = pt(endAngle - dir * (1 - t) * turns * 2 * Math.PI)
+    segs.push({ x: last[0], y: last[1], z: fromZ + (toZ - fromZ) * t, rapid: false, feedScale: 0.45 })
+  }
+  // Flat finishing revolution at full depth: levels the helical ramp groove so the bored
+  // floor is flat before the spiral takes over. Full 2π back to `endAngle`.
+  for (let i = 1; i <= stepsPerTurn; i++) {
+    last = pt(endAngle - dir * (1 - i / stepsPerTurn) * 2 * Math.PI)
+    segs.push({ x: last[0], y: last[1], z: toZ, rapid: false, feedScale: 0.45 })
+  }
+  return last
+}
+
+// First spiral index whose tool pass removes material the helix bore didn't already
+// clear. A helix of tool-centre radius `hr` about `center` clears a solid disk of
+// radius hr+toolRadius (hr ≤ toolRadius), so a spiral point only cuts new stock once
+// its centre exceeds hr from `center`. The morph's seeded-centre turn hugs the bore for
+// a whole revolution (centre-distance ≈ hr with small numerical wobble), so we walk the
+// CONTIGUOUS leading run within hr+margin and stop at the first point that escapes it —
+// only the leading run, so a spiral that later loops back near the centre (around an
+// island) is never skipped. The margin absorbs the wobble; whatever is skipped leaves
+// at most `margin` of stock at the bore edge (negligible, within tolerance).
+function firstUncutSpiralIndex(spiral: Pt2[], center: Pt2, hr: number): number {
+  const band = hr + 0.1
+  let k = 1
+  while (k < spiral.length - 1 &&
+         Math.hypot(spiral[k][0] - center[0], spiral[k][1] - center[1]) <= band) k++
+  return k
+}
+
+// Integrated helix entry for a centre-seeded spiral, bored CONCENTRIC with the spiral's
+// innermost loop: `center` is that loop's centroid. The bore (radius `hr`) clears the
+// middle; the descent ends at the angle of the first point the bore didn't already clear,
+// so — because the spiral winds concentrically about `center` — the helix and the spiral
+// share a tangent there and join cleanly, with the whole redundant inner turn skipped and
+// no offset/backtrack. Returns that cut-start index; the caller cuts `spiral` from it on.
+function emitSpiralHelixEntry(
+  spiral: Pt2[],
+  center: Pt2,
+  hr: number,
+  fromZ: number,
+  toZ: number,
+  wantCCW: boolean,
+  segs: MotionSegment[],
+  safeZ: number,
+): number {
+  const cutFrom = firstUncutSpiralIndex(spiral, center, hr)
+  const join = spiral[cutFrom]
+  const endAngle = Math.atan2(join[1] - center[1], join[0] - center[0])
+  emitHelixBore(center, hr, endAngle, fromZ, toZ, wantCCW, segs, safeZ)
+  return cutFrom
+}
+
 // ─── Linear ramp lead-in (shared by every strategy) ──────────────────────────────
 //
 // A ramp lead-in descends the tool from prevZ to zDepth while moving along a portion
@@ -985,6 +1064,10 @@ function emitSpiralChain(
   safeZ: number,
   toolDiameterMM: number,
   incomingPos: Pt2 | null,
+  // Center-seeded chains may enter with an integrated helix bored CONCENTRIC with the
+  // innermost loop (`center` = its centroid); `clearance(p)` is the largest safe bore
+  // radius at p. Omitted for branch/island chains, which ramp/plunge instead.
+  helix?: { clearance: (p: Pt2) => number; center: Pt2; wantCCW: boolean },
 ): Pt2 | null {
   if (spiral.length < 2) return incomingPos
   const start = spiral[0]
@@ -994,7 +1077,17 @@ function emitSpiralChain(
     segs.push({ x: incomingPos[0], y: incomingPos[1], z: safeZ, rapid: true })
   }
 
-  if (needsLift && rampDistMM !== undefined) {
+  // Integrated helix entry concentric with the innermost loop (clears the middle, joins
+  // the spiral tangentially). Falls through to the linear ramp when there's no room.
+  const hr = helix ? helix.clearance(helix.center) : 0
+  const helixOk = needsLift && helix !== undefined && hr >= 0.6
+
+  // After a helix bore, skip the leading spiral points it already cleared and join at
+  // the first uncut point — emitSpiralHelixEntry ends the bore right there.
+  let cutFrom = 1
+  if (helixOk) {
+    cutFrom = emitSpiralHelixEntry(spiral, helix!.center, hr, prevZ, zDepth, helix!.wantCCW, segs, safeZ)
+  } else if (needsLift && rampDistMM !== undefined) {
     // Ramp along the first rampDist of the spiral: position the tool that far in,
     // ramp backward to the spiral start descending to depth, then cut the whole
     // spiral forward (re-cutting the ramped section leaves a clean floor). This
@@ -1010,7 +1103,7 @@ function emitSpiralChain(
     emitCutTransition(segs, incomingPos!, start, zDepth, toolDiameterMM, safeZ)
   }
 
-  for (let i = 1; i < spiral.length; i++) {
+  for (let i = cutFrom; i < spiral.length; i++) {
     segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
   }
   return spiral[spiral.length - 1]
@@ -1050,6 +1143,11 @@ function spiralPocket(
   const holes = growIslands(islands, toolRadius, JoinType.Round)
   const islandCentroids = islands.map(centroidOfRing)
 
+  // Helix keep-outs: the outer wall + grown island holes (tool-centre paths). Used by
+  // center-seeded chains for the integrated helix entry.
+  const helixRings = [insetBoundary, ...holes]
+  const helixClearance = (p: Pt2) => maxClearHelixRadius(p, helixRings, toolRadius * 0.9)
+
   // Decompose into chains. forestToChains emits them in post-order (lobes before
   // their parent branch), so we plunge the deepest interior lobes first and climb
   // outward; each later chain links to the previous by travel move. Only leaf
@@ -1069,16 +1167,25 @@ function spiralPocket(
     const seedCenter = chain.innerIsLeaf && !encirclesIsland
 
     const innerToOuter = [...chain.loopsOuterToInner].reverse()
-    // Small transition window: trace each offset loop almost fully (the loops are
-    // stepover-spaced, so on-contour tracing guarantees coverage) and confine the
-    // step to the next loop to a short seam. A wider window leaves inner slivers at
-    // the seam when the stepover overlap is thin (≥~55%).
-    const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 0.12)
+    // Full-revolution morph (transitionFrac = 1): the radius grows a constant ~one
+    // stepover per turn, so there is no localized seam window — the offset rings blend
+    // into one smooth uniform spiral with constant engagement. Unlike the field
+    // spiral's isotherms, Clipper offset rings are uniformly spaced, so spreading the
+    // step over the whole turn keeps coverage identical (verified) while removing the
+    // per-revolution ripple a short window leaves.
+    const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 1)
     // Clamp so no point seeds/cuts into an island or past the wall.
     const spiral = clampSpiralToRegion(raw, insetBoundary, holes)
     if (spiral.length < 2) continue
     const passPrevZ = cutAnything ? zDepth : prevZ
-    lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos)
+    // Bore concentric with the innermost loop so it meshes with the offset rings — only
+    // when its centroid is inside the loop (a non-convex loop's centroid lands outside it
+    // and would gouge; those chains ramp in instead).
+    const innerCentroid = centroidOfRing(innerLoop)
+    const helixOpt = seedCenter && pointInPolygon(innerCentroid[0], innerCentroid[1], innerLoop)
+      ? { clearance: helixClearance, center: innerCentroid, wantCCW }
+      : undefined
+    lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos, helixOpt)
     cutAnything = true
   }
 
@@ -1203,37 +1310,46 @@ function buildIsothermChains(g: FieldGrid, insetBoundary: Pt2[], stepoverMM: num
     for (const lp of isothermLoops(g, (g.tMax * i) / (NL + 1))) loops.push(ensureWinding(lp, wantCCW))
   }
 
-  // Nest by containment: parent = the smallest-area placed (larger) loop that
-  // contains this loop. Containment is decided by a MAJORITY VOTE over several
-  // sampled vertices of the inner loop, not a single probe point:
-  //   - a single centroid fails on a non-convex (L-shaped) loop whose centroid lands
-  //     in a notch outside the loop (would orphan every loop → 88 stray chains);
-  //   - a single first-vertex fails on a near-wall isotherm whose grid-discretized
-  //     vertex lands just OUTSIDE its true parent (marching-squares cell noise),
-  //     orphaning it into a spurious standalone chain (the "extra contour pass" bug).
-  // Most sampled vertices being inside is robust to both. Largest-area first
-  // guarantees any container is already placed.
-  const nodes: LoopNode[] = loops.map(l => ({ loop: l, centroid: centroidOfRing(l), children: [] }))
-  const areas = loops.map(l => Math.abs(signedArea(l)))
-  const order = nodes.map((_, i) => i).sort((a, b) => areas[b] - areas[a])
-  const roots: LoopNode[] = []
-  const placed: number[] = []
+  // Cull near-coincident loops. The dense extraction over-samples — near the wall
+  // consecutive isotherms can sit a small fraction of a stepover apart. Such
+  // near-duplicate loops make the majority-vote containment test below ambiguous
+  // (~half their vertices straddle each other under grid noise), which fragments a
+  // single region into multiple spurious roots/branches — the doubled spiral+contour
+  // bug. Keep a loop only when it clears every already-kept (larger) loop by at least
+  // a fraction of a stepover; properly spaced loops and separate lobes keep a large
+  // gap and survive. Largest-area first so the wall anchors the kept set.
+  const areasAll = loops.map(l => Math.abs(signedArea(l)))
+  const order = loops.map((_, i) => i).sort((a, b) => areasAll[b] - areasAll[a])
+  const minGap = stepoverMM * 0.2
+  const kept: Pt2[][] = []
   for (const idx of order) {
-    let parent: LoopNode | null = null
-    let parentArea = Infinity
-    for (const pj of placed) {
-      if (areas[pj] < parentArea && loopMostlyInside(loops[idx], nodes[pj].loop)) {
-        parent = nodes[pj]; parentArea = areas[pj]
-      }
-    }
-    if (parent) parent.children.push(nodes[idx])
-    else roots.push(nodes[idx])
-    placed.push(idx)
+    const cand = loops[idx]
+    if (kept.every(k => setGap([cand], [k]) >= minGap)) kept.push(cand)
   }
 
-  // Merge near-coincident sibling loops (same lobe, over-sampled) so they don't each
-  // become a separate overlapping pass. Genuine lobes have centroids far further apart
-  // than one stepover.
+  // Nest the survivors by containment: parent = the smallest-area placed (larger) loop
+  // that contains this loop, by MAJORITY VOTE over sampled vertices — robust to both a
+  // concave loop's centroid landing in a notch and a near-wall vertex landing just
+  // outside its parent from grid noise. `kept` is largest-area first, so any container
+  // is placed before its children.
+  const keptAreas = kept.map(l => Math.abs(signedArea(l)))
+  const nodes: LoopNode[] = kept.map(l => ({ loop: l, centroid: centroidOfRing(l), children: [] }))
+  const roots: LoopNode[] = []
+  for (let i = 0; i < nodes.length; i++) {
+    let parent: LoopNode | null = null
+    let parentArea = Infinity
+    for (let j = 0; j < i; j++) {
+      if (keptAreas[j] < parentArea && loopMostlyInside(kept[i], kept[j])) {
+        parent = nodes[j]; parentArea = keptAreas[j]
+      }
+    }
+    if (parent) parent.children.push(nodes[i])
+    else roots.push(nodes[i])
+  }
+
+  // Belt-and-suspenders: merge any residual near-coincident sibling loops (same lobe)
+  // so they don't each become a separate overlapping pass. Genuine lobes have
+  // centroids far further apart than one stepover.
   dedupeForestBranches(roots, stepoverMM)
 
   // Decimate each chain so consecutive kept loops are ≤ one stepover apart.
@@ -1257,6 +1373,19 @@ function nearestPointOnRing(px: number, py: number, ring: Pt2[]): Pt2 {
     if (d < bestD) { bestD = d; best = [qx, qy] }
   }
   return best
+}
+
+// Largest helix radius at `p` that keeps a bored circle clear of every keep-out ring
+// (the tool-centre paths along walls/islands), capped at `maxR`. 0 (or negative) when
+// there's no room. Shared by both spiral strategies' helix entries.
+function maxClearHelixRadius(p: Pt2, rings: Pt2[][], maxR: number): number {
+  let r = maxR
+  for (const ring of rings) {
+    if (ring.length < 2) continue
+    const np = nearestPointOnRing(p[0], p[1], ring)
+    r = Math.min(r, Math.hypot(p[0] - np[0], p[1] - np[1]) - 0.1)
+  }
+  return r
 }
 
 // Clamp every spiral point into the cuttable region: a tool centre may never sit
@@ -1306,7 +1435,7 @@ function decimateChain(loops: Pt2[][], stepoverMM: number): Pt2[][] {
 type SpiralEntry = 'helix' | 'ramp' | 'travel'
 
 interface FieldSpiralPlan {
-  chains: { spiral: Pt2[]; entry: SpiralEntry }[]
+  chains: { spiral: Pt2[]; entry: SpiralEntry; helixCenter: Pt2 }[]
   finishRings: Pt2[][]
 }
 
@@ -1354,7 +1483,7 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
     if (chains.length === 0) return null
     const islandCentroids = islands.map(centroidOfRing)
 
-    const out: { spiral: Pt2[]; entry: SpiralEntry }[] = []
+    const out: { spiral: Pt2[]; entry: SpiralEntry; helixCenter: Pt2 }[] = []
     for (const chain of chains) {
       // A chain whose innermost loop encircles an island wraps a hole, not a point:
       // it must not centre-fill (its "centre" is the solid island) and it enters by
@@ -1374,8 +1503,13 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
       // Helix at a true point centre; ramp everywhere else. A branch/saddle chain's
       // start is NOT inside its children's cleared lobes (the lobes are deeper in),
       // so a straight plunge there slots at full engagement — always ramp instead.
-      const entry: SpiralEntry = seedCenter ? 'helix' : 'ramp'
-      out.push({ spiral, entry })
+      // Bore concentric with the innermost loop so the helix meshes with the spiral —
+      // but only when its centroid lies INSIDE the loop. A non-convex (L-shaped) loop's
+      // centroid falls in a notch outside it; boring there would gouge the wall, so such
+      // chains ramp in instead.
+      const helixCenter = centroidOfRing(innerLoop)
+      const canHelix = seedCenter && pointInPolygon(helixCenter[0], helixCenter[1], innerLoop)
+      out.push({ spiral, entry: canHelix ? 'helix' : 'ramp', helixCenter })
     }
     if (out.length === 0) return null
     // Finish the outer wall and each island wall (the tool-centre path around a
@@ -1416,14 +1550,7 @@ function fieldSpiralPocket(
 
   // Largest helix radius at `p` that keeps the bored circle clear of every wall and
   // island (finishRings are the tool-centre paths along them). 0 if there's no room.
-  const safeHelixRadius = (p: Pt2): number => {
-    let r = toolRadius * 0.9
-    for (const ring of finishRings) {
-      const np = nearestPointOnRing(p[0], p[1], ring)
-      r = Math.min(r, Math.hypot(p[0] - np[0], p[1] - np[1]) - 0.1)
-    }
-    return r
-  }
+  const safeHelixRadius = (p: Pt2) => maxClearHelixRadius(p, finishRings, toolRadius * 0.9)
 
   const rampIn = (start: Pt2, spiral: Pt2[], passPrevZ: number) => {
     if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
@@ -1437,24 +1564,27 @@ function fieldSpiralPocket(
 
   let lastPos: Pt2 | null = incomingPos
   let cutAnything = false
-  for (const { spiral, entry } of chains) {
+  for (const { spiral, entry, helixCenter } of chains) {
     const start = spiral[0]
     const passPrevZ = cutAnything ? zDepth : prevZ
-    const hr = entry === 'helix' ? safeHelixRadius(start) : 0
-    if (entry === 'helix' && hr >= 0.6) {
-      // Helix entry at the lobe's seed, sized to clear walls/islands: opens a hole
-      // rather than plunging a full slot.
+    // Bore concentric with the innermost loop so the helix meshes with the spiral.
+    const hr = entry === 'helix' ? safeHelixRadius(helixCenter) : 0
+    const helixOk = entry === 'helix' && hr >= 0.6
+    let cutFrom = 1
+    if (helixOk) {
+      // Integrated helix entry: bores the centre and ends at the first uncut point,
+      // already moving along the spiral — no straight connector, no redundant seed loop.
       if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
         segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
       }
-      emitHelicalRamp(start, hr, passPrevZ, zDepth, wantCCW, segs, safeZ)
-      segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
+      cutFrom = emitSpiralHelixEntry(spiral, helixCenter, hr, passPrevZ, zDepth, wantCCW, segs, safeZ)
     } else {
       // Ramp down along the spiral start — used for branch/island chains and for any
-      // helix start with no room to bore (near a wall or island).
+      // helix start with no room to bore (near a wall or island). Also ends at the
+      // spiral start, flowing into it.
       rampIn(start, spiral, passPrevZ)
     }
-    for (let i = 1; i < spiral.length; i++) {
+    for (let i = cutFrom; i < spiral.length; i++) {
       segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
     }
     lastPos = spiral[spiral.length - 1]
