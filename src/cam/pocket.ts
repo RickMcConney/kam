@@ -1,4 +1,4 @@
-import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, douglasPeucker, type Pt2 } from './pathFlattener'
 import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from './adaptiveClearing'
 import { morphChainToSpiral } from './spiralMorph'
 import { solveField, type FieldGrid } from './spiralField'
@@ -1801,7 +1801,49 @@ export function generatePocket(
   const safeZ = params.safeHeightMM ?? 5
   if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
 
-  return segs
+  return simplifyMotion(segs, 0.01)
+}
+
+// Collapse collinear runs of motion: within each maximal run of consecutive segments
+// that share a move type (same z, rapid, travel, feedScale; no arc/toolChange) the XY
+// path is reduced with Douglas–Peucker, so a straight edge traced as many resampled
+// points becomes just its endpoints. Ramps/helixes (varying z), arcs and tool changes
+// break a run and are never merged, so depth moves stay intact. `tolMM` bounds the
+// deviation (tiny — collinear cleanup only). douglasPeucker returns the SAME point
+// objects it kept, so we recover their segment indices by reference and keep those
+// segments unchanged (each kept segment already carries the correct move attributes).
+function simplifyMotion(segs: MotionSegment[], tolMM: number): MotionSegment[] {
+  const n = segs.length
+  if (n <= 2) return segs
+  // Two consecutive moves can share a straight run only if identical in every attribute
+  // that affects machining, and at the same Z (so the XY reduction is planar).
+  const sameRun = (a: MotionSegment, b: MotionSegment): boolean =>
+    !a.arc && !b.arc && !a.toolChange && !b.toolChange &&
+    !!a.rapid === !!b.rapid && !!a.travel === !!b.travel &&
+    a.feedScale === b.feedScale && a.z === b.z
+
+  const keep = new Uint8Array(n)
+  keep[0] = keep[n - 1] = 1
+  // Run boundaries: a point whose incoming and outgoing moves differ in type.
+  const bounds: number[] = [0]
+  for (let i = 1; i < n - 1; i++) {
+    if (!sameRun(segs[i], segs[i + 1])) { keep[i] = 1; bounds.push(i) }
+  }
+  bounds.push(n - 1)
+
+  for (let h = 0; h + 1 < bounds.length; h++) {
+    const s = bounds[h], e = bounds[h + 1]
+    if (e - s <= 1) continue
+    const runPts: Pt2[] = []
+    for (let k = s; k <= e; k++) runPts.push([segs[k].x, segs[k].y])
+    const simp = douglasPeucker(runPts, tolMM)
+    let sp = 0
+    for (let k = 0; k < runPts.length && sp < simp.length; k++) {
+      if (runPts[k] === simp[sp]) { keep[s + k] = 1; sp++ }
+    }
+  }
+
+  return segs.filter((_, i) => keep[i])
 }
 
 export function generateInfillWithBoundary(
