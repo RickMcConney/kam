@@ -1,10 +1,17 @@
 import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from './adaptiveClearing'
+import { morphChainToSpiral } from './spiralMorph'
+import { solveField, type FieldGrid } from './spiralField'
+import { traceIsolines } from './marchingSquares'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
-export type PocketStrategy = 'raster' | 'contour' | 'adaptive'
+// 'spiral' is the field-based curvilinear spiral (Poisson isotherms, helix entry) —
+// best for chunky pockets and islands. 'spiralOffset' is the offset-ring morph
+// spiral (shown in the UI as "offset") — contour-parallel, so it stays clean on
+// thin/diagonal strokes (letters) where the field spiral's ridge fragments.
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'spiral' | 'spiralOffset'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -219,7 +226,7 @@ function growRing(pts: Pt2[], delta: number): Pt2[] {
 // for sub-rings produced by splitSelfIntersecting (e.g. a figure-8 island) —
 // offsetting them as a unit avoids miter spikes at shared crossing vertices that
 // would otherwise make the finishing contour cut through the original island.
-function growIslands(islands: Pt2[][], delta: number): Pt2[][] {
+function growIslands(islands: Pt2[][], delta: number, joinType: JoinType = JoinType.Miter): Pt2[][] {
   if (islands.length === 0) return []
   const result = inflatePathsD(
     islands.map(isl => {
@@ -227,7 +234,7 @@ function growIslands(islands: Pt2[][], delta: number): Pt2[][] {
       const ccw = signedArea(clean) >= 0 ? clean : [...clean].reverse()
       return ccw.map(([x, y]) => ({ x, y }))
     }),
-    delta, JoinType.Miter, EndType.Polygon, 4, 6,
+    delta, joinType, EndType.Polygon, 4, 6,
   )
   return result
     .map(r => stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2)))
@@ -299,6 +306,58 @@ function emitHelicalRamp(
   }
 
   return last
+}
+
+// ─── Linear ramp lead-in (shared by every strategy) ──────────────────────────────
+//
+// A ramp lead-in descends the tool from prevZ to zDepth while moving along a portion
+// of the geometry that is (or will be) cut at full depth, so the ramp groove is left
+// clean. The lead-in is min(rampDistMM, total*0.45) long and always ENDS at the cut
+// start point. Two flavours:
+//   open=true  → the first window of an open path (spiral / scanline), traversed
+//                backward so it ends at geom[0].
+//   open=false → the final window of a closed ring, approaching its start vertex.
+// `sampleAt(t)` gives the XY position at descent fraction t (t=0 touchdown, t=1 start).
+function rampLeadIn(
+  geom: Pt2[],
+  open: boolean,
+  rampDistMM: number,
+): { touchdown: Pt2; sampleAt: (t: number) => Pt2 } {
+  if (open) {
+    const { lens, total } = arcLengths(geom)
+    const rampDist = Math.min(rampDistMM, total * 0.45)
+    return {
+      touchdown: interpPt(geom, lens, rampDist),
+      sampleAt: (t: number) => interpPt(geom, lens, rampDist * (1 - t)),
+    }
+  }
+  const closed: Pt2[] = [...geom, geom[0]]
+  const { lens, total } = arcLengths(closed)
+  const rampDist = Math.min(rampDistMM, total * 0.45)
+  const rampStartS = total - rampDist
+  return {
+    touchdown: interpPt(closed, lens, rampStartS),
+    sampleAt: (t: number) => interpPt(closed, lens, rampStartS + t * rampDist),
+  }
+}
+
+// The inner ramp descent: the tool is already positioned at the touchdown point at
+// `prevZ`; step down to `zDepth` over `steps` increments at reduced feed, tracing the
+// lead-in via `sampleAt`. Ends at (cut start, zDepth). The lift/plunge that gets the
+// tool to the touchdown point stays at each call site (it varies per strategy).
+function emitRampDescent(
+  segs: MotionSegment[],
+  sampleAt: (t: number) => Pt2,
+  prevZ: number,
+  zDepth: number,
+  steps: number,
+  feedScale = 0.5,
+): void {
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps
+    const p = sampleAt(t)
+    segs.push({ x: p[0], y: p[1], z: prevZ + (zDepth - prevZ) * t, rapid: false, feedScale })
+  }
 }
 
 // ─── Raster utilities ──────────────────────────────────────────────────────────
@@ -428,25 +487,10 @@ function buildRasterPath(
         // Position rampDist forward along the scanline, then ramp backwards to start.
         // When the tool reaches start it is at full depth; the forward cut to end
         // then re-cuts the ramp section, leaving a clean floor.
-        const dx = end[0] - start[0], dy = end[1] - start[1]
-        const lineLen = Math.hypot(dx, dy)
-        const rampOnLine = Math.min(rampDistMM, lineLen * 0.45)
-        const nx = lineLen > 1e-6 ? dx / lineLen : 1
-        const ny = lineLen > 1e-6 ? dy / lineLen : 0
-        const rex = start[0] + nx * rampOnLine
-        const rey = start[1] + ny * rampOnLine
-        segs.push({ x: rex, y: rey, z: safeZ, rapid: true })
-        segs.push({ x: rex, y: rey, z: prevZ, rapid: true })
-        const RAMP_STEPS = 8
-        for (let ri = 1; ri <= RAMP_STEPS; ri++) {
-          const t = ri / RAMP_STEPS
-          segs.push({
-            x: rex - nx * t * rampOnLine,
-            y: rey - ny * t * rampOnLine,
-            z: prevZ + (zDepth - prevZ) * t,
-            rapid: false, feedScale: 0.5,
-          })
-        }
+        const { touchdown, sampleAt } = rampLeadIn([start, end], true, rampDistMM)
+        segs.push({ x: touchdown[0], y: touchdown[1], z: safeZ, rapid: true })
+        segs.push({ x: touchdown[0], y: touchdown[1], z: prevZ, rapid: true })
+        emitRampDescent(segs, sampleAt, prevZ, zDepth, 12)
         // Tool is now at (start, zDepth); fall through to cut forward to end
       } else {
         segs.push({ x: start[0], y: start[1], z: safeZ, rapid: true })
@@ -543,11 +587,8 @@ function emitLinkedContourRings(
       // Ramp starts rampDist BEFORE the ring's start vertex and cuts toward it,
       // arriving at full depth exactly at (sx, sy). The first ring of every depth
       // level must ramp from prevZ to z even when linked from the prior level.
-      const closed: Pt2[] = [...ring, ring[0]]
-      const { lens, total } = arcLengths(closed)
-      const rampDist = Math.min(rampDistMM, total * 0.45)
-      const rampStartS = total - rampDist
-      const [rampStartX, rampStartY] = interpPt(closed, lens, rampStartS)
+      const { touchdown, sampleAt } = rampLeadIn(ring, false, rampDistMM)
+      const [rampStartX, rampStartY] = touchdown
       const firstRingAtDepth = emittedCount === 0 && Math.abs(z - prevZ) > 1e-6
       const canTravelAtDepth = lastPos !== null && isTravelSafe(lastPos, [sx, sy], travelObstacles)
       const rampNeeded = firstRingAtDepth || !canTravelAtDepth
@@ -564,12 +605,7 @@ function emitLinkedContourRings(
           segs.push({ x: rampStartX, y: rampStartY, z: prevZ, rapid: false })
         }
 
-        const RAMP_STEPS = 12
-        for (let i = 1; i <= RAMP_STEPS; i++) {
-          const t = i / RAMP_STEPS
-          const [rx, ry] = interpPt(closed, lens, rampStartS + t * rampDist)
-          segs.push({ x: rx, y: ry, z: prevZ + (z - prevZ) * t, rapid: false, feedScale: 0.5 })
-        }
+        emitRampDescent(segs, sampleAt, prevZ, z, 12)
       } else {
         if (lastPos) emitCutTransition(segs, lastPos, [sx, sy], z, toolDiameterMM, safeZ)
         else segs.push({ x: sx, y: sy, z, rapid: false })
@@ -732,22 +768,20 @@ function rasterPocket(
   )
 }
 
-function contourPocket(
+// Build the nested concentric offset levels that both the contour and spiral
+// strategies are made of. levels[0] is the outermost (finishing) ring set —
+// the boundary inset by one tool radius; each subsequent level is offset inward
+// by one stepover. Every level is an array of component loops (Clipper splits a
+// ring that pinches apart into separate polygons automatically), already wound
+// to `wantCCW`. Islands are fed as CW holes so the offset grows around them.
+function buildOffsetLevels(
   boundary: Pt2[],
   islands: Pt2[][],
-  tool: Tool,
-  params: PocketParams,
-  zDepth: number,
-  segs: MotionSegment[],
-  prevZ = 0,
-  incomingPos: Pt2 | null = null,
-): Pt2 | null {
-  const safeZ = params.safeHeightMM ?? 5
-  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
-  const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
-  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
-
+  toolRadius: number,
+  stepoverMM: number,
+  wantCCW: boolean,
+  joinType: JoinType = JoinType.Miter,
+): Pt2[][][] {
   const toCP = (pts: Pt2[]) => pts.map(([x, y]) => ({ x, y }))
   const fromCP = (r: { x: number; y: number }[]) =>
     stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2))
@@ -771,7 +805,7 @@ function contourPocket(
   let delta = toolRadius
 
   for (let pass = 0; pass < maxPasses; pass++) {
-    const result = inflatePathsD(current, -delta, JoinType.Miter, EndType.Polygon, 4, 6)
+    const result = inflatePathsD(current, -delta, joinType, EndType.Polygon, 4, 6)
     if (result.length === 0) break
     const level = result
       .map(r => fromCP(r))
@@ -782,6 +816,27 @@ function contourPocket(
     current = result
     delta = stepoverMM
   }
+
+  return levels
+}
+
+function contourPocket(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  zDepth: number,
+  segs: MotionSegment[],
+  prevZ = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  const safeZ = params.safeHeightMM ?? 5
+  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
+  const toolRadius = tool.diameterMM / 2
+  const wantCCW = params.direction === 'conventional'
+  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
+
+  const levels = buildOffsetLevels(boundary, islands, toolRadius, stepoverMM, wantCCW)
 
   if (levels.length === 0) return incomingPos
 
@@ -798,6 +853,617 @@ function contourPocket(
   const roughEnd = emitLinkedContourRings(innerRings, zDepth, travelObstacles, segs, params.startNear, rampDist, prevZ, safeZ, tool.diameterMM, incomingPos)
   const finishPrevZ = innerRings.length > 0 ? zDepth : prevZ
   return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, roughEnd)
+}
+
+// ─── Spiral (curvilinear) clearing ───────────────────────────────────────────────
+//
+// Builds a continuous curvilinear spiral from the same concentric offset levels
+// the contour strategy cuts: the nested loops are organized into a containment
+// forest, each non-branching chain is morphed into one smooth outward spiral
+// (see spiralMorph.ts), and the outer wall is cleaned with a finishing contour.
+// This is the offset-ring realization of Bieterman's curvilinear spiral — the
+// morph of Leroy et al. 2024 seeded from Clipper offsets instead of isotherms.
+//
+// Phase 1 scope: single-boundary pockets without islands. The forest/chain code
+// is general (a pocket that pinches into lobes yields multiple chains, linked by
+// travel moves), but branch linking is a nearest-first heuristic, not yet the
+// optimized peak-to-peak routing planned for Phase 2/3.
+
+interface LoopNode {
+  loop: Pt2[]
+  centroid: Pt2
+  children: LoopNode[]
+}
+
+// Organize the offset levels into a forest by containment: a loop on level k is
+// a child of the loop on level k-1 that contains its centroid. Roots are the
+// outermost (level 0) loops.
+function buildOffsetForest(levels: Pt2[][][]): LoopNode[] {
+  const asNode = (loop: Pt2[]): LoopNode => ({ loop, centroid: centroidOfRing(loop), children: [] })
+  let prev: LoopNode[] = levels[0].map(asNode)
+  const roots = prev
+  for (let k = 1; k < levels.length; k++) {
+    const cur = levels[k].map(asNode)
+    for (const node of cur) {
+      // Find the parent on the previous level whose polygon contains this
+      // loop's centroid. Fall back to the nearest-centroid parent if numeric
+      // offset noise leaves the point just outside every candidate.
+      let parent: LoopNode | null = null
+      let bestDistSq = Infinity
+      for (const cand of prev) {
+        const d = (cand.centroid[0] - node.centroid[0]) ** 2 + (cand.centroid[1] - node.centroid[1]) ** 2
+        if (pointInPolygon(node.centroid[0], node.centroid[1], cand.loop)) {
+          if (d < bestDistSq) { bestDistSq = d; parent = cand }
+        }
+      }
+      if (!parent) {
+        for (const cand of prev) {
+          const d = (cand.centroid[0] - node.centroid[0]) ** 2 + (cand.centroid[1] - node.centroid[1]) ** 2
+          if (d < bestDistSq) { bestDistSq = d; parent = cand }
+        }
+      }
+      if (parent) parent.children.push(node)
+    }
+    prev = cur
+  }
+  return roots
+}
+
+interface SpiralChain {
+  loopsOuterToInner: Pt2[][]
+  // True when the chain's innermost loop is a real leaf (a single-lobe center),
+  // so the spiral can seed a circular center fill there. False when the inner
+  // end is a branch node (the lobes that split off it are separate chains that
+  // clear that interior), in which case the spiral must not seed a center.
+  innerIsLeaf: boolean
+}
+
+// Decompose the forest into chains. A chain is a maximal run of singly-nested
+// loops (each node with exactly one child continues the chain); at a branch
+// (>1 child) the chain ends and each child subtree starts a fresh chain. Chains
+// are emitted in post-order — child (lobe) chains before their parent — so the
+// deepest lobes are plunged first and we climb outward, linking by travel.
+function subtreeSize(n: LoopNode): number {
+  let s = 1
+  for (const c of n.children) s += subtreeSize(c)
+  return s
+}
+
+// Collapse spurious branches: when a node has several children whose loop centroids
+// nearly coincide, they are the SAME lobe split apart by near-duplicate isotherm loops
+// (marching-squares over-sampling), not genuinely separate lobes — which would have
+// distinct centroids. Keep only the child with the largest subtree per centroid cluster;
+// the dropped near-duplicates are covered by the kept chain + the wall finish. Without
+// this a near-duplicate ring becomes its own pass (an extra contour overlapping the
+// spiral). Recurses so the rule holds at every depth.
+function dedupeForestBranches(roots: LoopNode[], tol: number): void {
+  const dedupe = (node: LoopNode) => {
+    if (node.children.length > 1) {
+      const kept: LoopNode[] = []
+      for (const child of [...node.children].sort((a, b) => subtreeSize(b) - subtreeSize(a))) {
+        if (kept.some(k => Math.hypot(k.centroid[0] - child.centroid[0], k.centroid[1] - child.centroid[1]) < tol)) continue
+        kept.push(child)
+      }
+      node.children = kept
+    }
+    for (const c of node.children) dedupe(c)
+  }
+  for (const r of roots) dedupe(r)
+}
+
+function forestToChains(roots: LoopNode[]): SpiralChain[] {
+  const chains: SpiralChain[] = []
+  const walk = (start: LoopNode) => {
+    const loopsOuterToInner: Pt2[][] = []
+    let innerIsLeaf = true
+    let node: LoopNode | null = start
+    while (node) {
+      loopsOuterToInner.push(node.loop)
+      if (node.children.length === 1) {
+        node = node.children[0]
+      } else {
+        innerIsLeaf = node.children.length === 0
+        for (const c of node.children) walk(c)   // children pushed before parent
+        node = null
+      }
+    }
+    chains.push({ loopsOuterToInner, innerIsLeaf })
+  }
+  for (const r of roots) walk(r)
+  return chains
+}
+
+// Emit one chain's spiral: ramp/plunge at the spiral start (chain center) then
+// cut the morphed polyline outward to the wall.
+function emitSpiralChain(
+  spiral: Pt2[],
+  zDepth: number,
+  travelObstacles: TravelSafetyObstacles,
+  segs: MotionSegment[],
+  rampDistMM: number | undefined,
+  prevZ: number,
+  safeZ: number,
+  toolDiameterMM: number,
+  incomingPos: Pt2 | null,
+): Pt2 | null {
+  if (spiral.length < 2) return incomingPos
+  const start = spiral[0]
+  const needsLift = incomingPos === null || !isTravelSafe(incomingPos, start, travelObstacles)
+
+  if (needsLift && incomingPos !== null) {
+    segs.push({ x: incomingPos[0], y: incomingPos[1], z: safeZ, rapid: true })
+  }
+
+  if (needsLift && rampDistMM !== undefined) {
+    // Ramp along the first rampDist of the spiral: position the tool that far in,
+    // ramp backward to the spiral start descending to depth, then cut the whole
+    // spiral forward (re-cutting the ramped section leaves a clean floor). This
+    // keeps the ramp inside the path about to be cut, valid even in solid stock.
+    const { touchdown, sampleAt } = rampLeadIn(spiral, true, rampDistMM)
+    segs.push({ x: touchdown[0], y: touchdown[1], z: safeZ, rapid: true })
+    segs.push({ x: touchdown[0], y: touchdown[1], z: prevZ, rapid: true })
+    emitRampDescent(segs, sampleAt, prevZ, zDepth, 12)
+  } else if (needsLift) {
+    segs.push({ x: start[0], y: start[1], z: safeZ, rapid: true })
+    segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
+  } else {
+    emitCutTransition(segs, incomingPos!, start, zDepth, toolDiameterMM, safeZ)
+  }
+
+  for (let i = 1; i < spiral.length; i++) {
+    segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
+  }
+  return spiral[spiral.length - 1]
+}
+
+function spiralPocket(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  zDepth: number,
+  segs: MotionSegment[],
+  prevZ = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  const safeZ = params.safeHeightMM ?? 5
+  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
+  const toolRadius = tool.diameterMM / 2
+  const wantCCW = params.direction === 'conventional'
+  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
+  const chordTol = Math.max(0.1, Math.min(0.4, tool.diameterMM * 0.04))
+
+  // Round joins so the spiral's corners are rounded (smooth), not mitred chamfers.
+  const levels = buildOffsetLevels(boundary, islands, toolRadius, stepoverMM, wantCCW, JoinType.Round)
+  if (levels.length === 0) return incomingPos
+
+  const finishingLevel = levels[0]
+  const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
+  const obstacles = [...finishingLevel, ...islandObstacles]
+  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+
+  // Island keep-outs: the outer boundary ring (largest loop of level 0) and the
+  // grown islands (round join). Used to keep the spiral from seeding into / cutting
+  // through an island, the same way the field spiral does.
+  const insetBoundary = finishingLevel.reduce(
+    (a, b) => (Math.abs(signedArea(b)) > Math.abs(signedArea(a)) ? b : a), finishingLevel[0])
+  const holes = growIslands(islands, toolRadius, JoinType.Round)
+  const islandCentroids = islands.map(centroidOfRing)
+
+  // Decompose into chains. forestToChains emits them in post-order (lobes before
+  // their parent branch), so we plunge the deepest interior lobes first and climb
+  // outward; each later chain links to the previous by travel move. Only leaf
+  // chains (true single-lobe centers) seed a circular center spiral; branch
+  // chains morph between their loops without one — their interior is cleared by
+  // the lobe chains that split off them.
+  const chains = forestToChains(buildOffsetForest(levels))
+    .filter(c => c.loopsOuterToInner.length > 0)
+
+  let lastPos: Pt2 | null = incomingPos
+  let cutAnything = false
+  for (const chain of chains) {
+    // A chain whose innermost loop encircles an island wraps a hole, not a point:
+    // it must not centre-seed (its centre is the solid island).
+    const innerLoop = chain.loopsOuterToInner[chain.loopsOuterToInner.length - 1]
+    const encirclesIsland = islandCentroids.some(c => pointInPolygon(c[0], c[1], innerLoop))
+    const seedCenter = chain.innerIsLeaf && !encirclesIsland
+
+    const innerToOuter = [...chain.loopsOuterToInner].reverse()
+    // Small transition window: trace each offset loop almost fully (the loops are
+    // stepover-spaced, so on-contour tracing guarantees coverage) and confine the
+    // step to the next loop to a short seam. A wider window leaves inner slivers at
+    // the seam when the stepover overlap is thin (≥~55%).
+    const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 0.12)
+    // Clamp so no point seeds/cuts into an island or past the wall.
+    const spiral = clampSpiralToRegion(raw, insetBoundary, holes)
+    if (spiral.length < 2) continue
+    const passPrevZ = cutAnything ? zDepth : prevZ
+    lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos)
+    cutAnything = true
+  }
+
+  if (!cutAnything) return incomingPos
+
+  // Clean the outer wall with a finishing contour, as the contour strategy does.
+  const finishPrevZ = zDepth
+  return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, lastPos)
+}
+
+// ─── Field-based curvilinear spiral (Bieterman/Leroy) ────────────────────────────
+//
+// Solves a Poisson "temperature" field over the pocket (0 at the walls, peaking on
+// the medial ridge), traces its isotherms as structure curves spaced by the radial
+// tool engagement, and morphs them into a curvilinear spiral that starts with a
+// helix at the field's peak and works outward to the wall. Unlike the offset-ring
+// spiral, the first cut is a helix (not a full-width slot), so engagement stays
+// limited — this is the cheap approximation of the adaptive clearing path.
+//
+function distSqPointSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay
+  const l2 = dx * dx + dy * dy
+  let t = l2 > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0
+  t = t < 0 ? 0 : t > 1 ? 1 : t
+  const ex = px - (ax + t * dx), ey = py - (ay + t * dy)
+  return ex * ex + ey * ey
+}
+
+// Largest distance from a set of inner loops out to the nearest edge of a set of
+// outer loops (the paper's D_isoHQ, eq. 10, generalized to multiple components).
+// Distance is to the nearest EDGE, not vertex — a low-vertex outer loop (e.g. an
+// inset square's 4 corners) would otherwise read points mid-edge as far away and
+// break the stepover spacing. Inner points subsampled; outer kept as edges.
+function setGap(inners: Pt2[][], outers: Pt2[][]): number {
+  const subVerts = (loop: Pt2[], target: number) => {
+    const step = Math.max(1, Math.floor(loop.length / target))
+    const out: Pt2[] = []
+    for (let i = 0; i < loop.length; i += step) out.push(loop[i])
+    return out
+  }
+  const outerSegs: [Pt2, Pt2][] = []
+  for (const o of outers) {
+    const v = subVerts(o, 200)
+    for (let i = 0; i < v.length; i++) outerSegs.push([v[i], v[(i + 1) % v.length]])
+  }
+  if (outerSegs.length === 0) return Infinity
+  let maxMin = 0
+  for (const inner of inners) {
+    for (const p of subVerts(inner, 40)) {
+      let mn = Infinity
+      for (const [a, b] of outerSegs) {
+        const d = distSqPointSeg(p[0], p[1], a[0], a[1], b[0], b[1])
+        if (d < mn) mn = d
+      }
+      if (mn > maxMin) maxMin = mn
+    }
+  }
+  return Math.sqrt(maxMin)
+}
+
+// Light Laplacian smoothing of a closed loop — removes the ~1-cell staircase that
+// marching squares leaves on the grid, so the isotherm reads as the smooth curve it
+// represents. Without this the blocky corners make the corner-fillet smoothing
+// explode the point count (and nudge points across walls/islands).
+function smoothLoop(loop: Pt2[], iters: number, factor: number): Pt2[] {
+  const n = loop.length
+  if (n < 5) return loop
+  let cur = loop
+  for (let it = 0; it < iters; it++) {
+    const out: Pt2[] = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const a = cur[(i - 1 + n) % n], p = cur[i], b = cur[(i + 1) % n]
+      out[i] = [p[0] + factor * ((a[0] + b[0]) / 2 - p[0]), p[1] + factor * ((a[1] + b[1]) / 2 - p[1])]
+    }
+    cur = out
+  }
+  return cur
+}
+
+function isothermLoops(g: FieldGrid, level: number): Pt2[][] {
+  return traceIsolines(g, level)
+    .map(l => smoothLoop(stripClosingDuplicate(l), 2, 0.5))
+    .filter(l => l.length >= 3 && Math.abs(signedArea(l)) > 0.01)
+}
+
+// Build the structure-curve levels for the merge-tree spiral, ordered outer →
+// inner: levels[0] is the inset boundary (the wall), and each subsequent level is
+// the isotherm set one stepover further in. Because isotherms of a multi-maximum
+// field split into separate loops near the peaks, each level is a *set* of loops;
+// buildOffsetForest then turns the nesting/splits into per-seed chains.
+//
+// Levels are spaced by distance, not by temperature: the field is flat near a
+// peak, so a fixed temperature step would leave huge distance gaps there. Levels
+// are decimated per chain (below) to one stepover.
+//
+// Loops are NOT grouped by temperature: around an island the field is annular, so
+// one temperature gives two concentric loops (toward the wall, toward the island)
+// at very different distances. Instead we extract isotherm loops densely and nest
+// them by area/containment — every loop encircling an island encloses its centre,
+// so they sort cleanly by size into one chain wall→ridge→island. This is
+// topology-agnostic: a simple disk nests the same way.
+
+// True when a majority of `inner`'s sampled vertices lie inside `outer`. Sampling
+// ~12 vertices (not one) makes isotherm nesting robust to marching-squares grid
+// noise that can place an individual near-wall vertex just outside its true parent.
+function loopMostlyInside(inner: Pt2[], outer: Pt2[]): boolean {
+  const SAMPLES = 12
+  const step = Math.max(1, Math.floor(inner.length / SAMPLES))
+  let tested = 0, inCount = 0
+  for (let i = 0; i < inner.length; i += step) {
+    tested++
+    if (pointInPolygon(inner[i][0], inner[i][1], outer)) inCount++
+  }
+  return tested > 0 && inCount * 2 > tested
+}
+
+function buildIsothermChains(g: FieldGrid, insetBoundary: Pt2[], stepoverMM: number, wantCCW: boolean): SpiralChain[] {
+  const wall = ensureWinding(stripClosingDuplicate(insetBoundary), wantCCW)
+  const loops: Pt2[][] = [wall]
+  const NL = 120
+  for (let i = 1; i <= NL; i++) {
+    for (const lp of isothermLoops(g, (g.tMax * i) / (NL + 1))) loops.push(ensureWinding(lp, wantCCW))
+  }
+
+  // Nest by containment: parent = the smallest-area placed (larger) loop that
+  // contains this loop. Containment is decided by a MAJORITY VOTE over several
+  // sampled vertices of the inner loop, not a single probe point:
+  //   - a single centroid fails on a non-convex (L-shaped) loop whose centroid lands
+  //     in a notch outside the loop (would orphan every loop → 88 stray chains);
+  //   - a single first-vertex fails on a near-wall isotherm whose grid-discretized
+  //     vertex lands just OUTSIDE its true parent (marching-squares cell noise),
+  //     orphaning it into a spurious standalone chain (the "extra contour pass" bug).
+  // Most sampled vertices being inside is robust to both. Largest-area first
+  // guarantees any container is already placed.
+  const nodes: LoopNode[] = loops.map(l => ({ loop: l, centroid: centroidOfRing(l), children: [] }))
+  const areas = loops.map(l => Math.abs(signedArea(l)))
+  const order = nodes.map((_, i) => i).sort((a, b) => areas[b] - areas[a])
+  const roots: LoopNode[] = []
+  const placed: number[] = []
+  for (const idx of order) {
+    let parent: LoopNode | null = null
+    let parentArea = Infinity
+    for (const pj of placed) {
+      if (areas[pj] < parentArea && loopMostlyInside(loops[idx], nodes[pj].loop)) {
+        parent = nodes[pj]; parentArea = areas[pj]
+      }
+    }
+    if (parent) parent.children.push(nodes[idx])
+    else roots.push(nodes[idx])
+    placed.push(idx)
+  }
+
+  // Merge near-coincident sibling loops (same lobe, over-sampled) so they don't each
+  // become a separate overlapping pass. Genuine lobes have centroids far further apart
+  // than one stepover.
+  dedupeForestBranches(roots, stepoverMM)
+
+  // Decimate each chain so consecutive kept loops are ≤ one stepover apart.
+  return forestToChains(roots)
+    .filter(c => c.loopsOuterToInner.length > 0)
+    .map(c => ({ loopsOuterToInner: decimateChain(c.loopsOuterToInner, stepoverMM), innerIsLeaf: c.innerIsLeaf }))
+}
+
+// Closest point on a closed ring's edges to (px,py).
+function nearestPointOnRing(px: number, py: number, ring: Pt2[]): Pt2 {
+  let best: Pt2 = ring[0]
+  let bestD = Infinity
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length]
+    const dx = b[0] - a[0], dy = b[1] - a[1]
+    const l2 = dx * dx + dy * dy
+    let t = l2 > 1e-12 ? ((px - a[0]) * dx + (py - a[1]) * dy) / l2 : 0
+    t = t < 0 ? 0 : t > 1 ? 1 : t
+    const qx = a[0] + t * dx, qy = a[1] + t * dy
+    const d = (px - qx) ** 2 + (py - qy) ** 2
+    if (d < bestD) { bestD = d; best = [qx, qy] }
+  }
+  return best
+}
+
+// Clamp every spiral point into the cuttable region: a tool centre may never sit
+// inside a grown island (would gouge the island) or outside the inset boundary
+// (would over-cut the wall). Out-of-region points are snapped to the nearest
+// boundary point, so the tool edge lands exactly on the real island/wall edge.
+// This corrects the small over-cut the corner-fillet smoothing can introduce on
+// blocky isotherms without giving up its smoothing elsewhere.
+function clampSpiralToRegion(spiral: Pt2[], insetBoundary: Pt2[], grownIslands: Pt2[][]): Pt2[] {
+  return spiral.map(([x, y]) => {
+    let px = x, py = y
+    for (const gi of grownIslands) {
+      if (gi.length >= 3 && pointInPolygon(px, py, gi)) {
+        const n = nearestPointOnRing(px, py, gi)
+        px = n[0]; py = n[1]
+      }
+    }
+    if (insetBoundary.length >= 3 && !pointInPolygon(px, py, insetBoundary)) {
+      const n = nearestPointOnRing(px, py, insetBoundary)
+      px = n[0]; py = n[1]
+    }
+    return [px, py] as Pt2
+  })
+}
+
+// Keep loops one stepover apart along a chain (ordered outer→inner): from each
+// anchor, take the farthest-in loop still within a stepover, then repeat.
+function decimateChain(loops: Pt2[][], stepoverMM: number): Pt2[][] {
+  if (loops.length <= 1) return loops
+  const kept: Pt2[][] = [loops[0]]
+  let anchor = 0, i = 1
+  while (i < loops.length) {
+    let lastGood = -1, j = i
+    while (j < loops.length && setGap([loops[j]], [loops[anchor]]) <= stepoverMM) { lastGood = j; j++ }
+    const pick = lastGood === -1 ? i : lastGood
+    kept.push(loops[pick])
+    anchor = pick
+    i = pick + 1
+  }
+  if (kept[kept.length - 1] !== loops[loops.length - 1]) kept.push(loops[loops.length - 1])
+  return kept
+}
+
+// How a chain's spiral is entered: 'helix' bores a hole at a point centre; 'ramp'
+// descends along the path (island chains / first cut into solid); 'travel' drops
+// straight in because the interior is already cleared (branch chains).
+type SpiralEntry = 'helix' | 'ramp' | 'travel'
+
+interface FieldSpiralPlan {
+  chains: { spiral: Pt2[]; entry: SpiralEntry }[]
+  finishRings: Pt2[][]
+}
+
+// One-entry cache so the field is solved once per geometry, not once per Z level
+// (generatePocket calls the strategy fn for every depth pass of a boundary).
+let fieldPlanCache: { key: string; plan: FieldSpiralPlan | null } | null = null
+
+function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, params: PocketParams): FieldSpiralPlan | null {
+  const toolRadius = tool.diameterMM / 2
+  const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
+  const wantCCW = params.direction === 'conventional'
+  // Coarser chord on the spiral body keeps gcode size sane; sub-0.4 mm facets are
+  // invisible on a roughing pass.
+  const chordTol = Math.max(0.3, Math.min(0.6, tool.diameterMM * 0.07))
+
+  // Geometry signature: bounding box + a coordinate checksum, so distinct
+  // boundaries that happen to share a point count / first vertex don't collide.
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity, sum = 0
+  for (let i = 0; i < boundary.length; i++) {
+    const [x, y] = boundary[i]
+    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y
+    sum += x * (i + 1) + y * (i + 7)
+  }
+  for (const isl of islands) for (let i = 0; i < isl.length; i++) sum += isl[i][0] * (i + 3) - isl[i][1] * (i + 11)
+  const key = [
+    tool.diameterMM, params.stepoverPercent, params.direction, params.finishAllowanceMM ?? 0,
+    boundary.length, islands.length,
+    bx0.toFixed(3), by0.toFixed(3), bx1.toFixed(3), by1.toFixed(3), sum.toFixed(2),
+  ].join('|')
+  if (fieldPlanCache && fieldPlanCache.key === key) return fieldPlanCache.plan
+
+  const plan = ((): FieldSpiralPlan | null => {
+    const inset = insetRing(boundary, toolRadius)
+    if (inset.length < 3) return null
+    // Round join: the tool-centre path around a convex island corner is an arc of
+    // the tool radius, not a sharp mitre — keeps the keep-out free of corners the
+    // clamped spiral could chord across.
+    const holes = growIslands(islands, toolRadius, JoinType.Round)
+    const cell = Math.max(0.25, toolRadius / 4)
+    const g = solveField([inset], holes, cell)
+    if (g.tMax <= 0) return null
+
+    // Isotherm loops → containment nesting → per-region chains (handles islands).
+    const chains = buildIsothermChains(g, inset, stepoverMM, wantCCW)
+    if (chains.length === 0) return null
+    const islandCentroids = islands.map(centroidOfRing)
+
+    const out: { spiral: Pt2[]; entry: SpiralEntry }[] = []
+    for (const chain of chains) {
+      // A chain whose innermost loop encircles an island wraps a hole, not a point:
+      // it must not centre-fill (its "centre" is the solid island) and it enters by
+      // ramp (no helix at the island). The morph still spirals around the island.
+      const innerLoop = chain.loopsOuterToInner[chain.loopsOuterToInner.length - 1]
+      const encirclesIsland = islandCentroids.some(c => pointInPolygon(c[0], c[1], innerLoop))
+      const seedCenter = chain.innerIsLeaf && !encirclesIsland
+
+      const innerToOuter = [...chain.loopsOuterToInner].reverse()
+      // Localized transition (default fraction): stays on-contour most of each turn
+      // so coverage holds even where consecutive isotherms differ in extent (arm
+      // tips). The entry handles the worst-case entry engagement.
+      const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter)
+      // Never let the tool centre enter an island or leave the inset wall.
+      const spiral = clampSpiralToRegion(raw, inset, holes)
+      if (spiral.length < 2) continue
+      // Helix at a true point centre; ramp everywhere else. A branch/saddle chain's
+      // start is NOT inside its children's cleared lobes (the lobes are deeper in),
+      // so a straight plunge there slots at full engagement — always ramp instead.
+      const entry: SpiralEntry = seedCenter ? 'helix' : 'ramp'
+      out.push({ spiral, entry })
+    }
+    if (out.length === 0) return null
+    // Finish the outer wall and each island wall (the tool-centre path around a
+    // grown island is its finishing contour). Islands wound opposite for climb.
+    const finishRings = [
+      ensureWinding(stripClosingDuplicate(inset), wantCCW),
+      ...holes.map(h => ensureWinding(stripClosingDuplicate(h), !wantCCW)),
+    ].filter(r => r.length >= 3)
+    return { chains: out, finishRings }
+  })()
+
+  fieldPlanCache = { key, plan }
+  return plan
+}
+
+function fieldSpiralPocket(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  zDepth: number,
+  segs: MotionSegment[],
+  prevZ = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  const safeZ = params.safeHeightMM ?? 5
+  const toolRadius = tool.diameterMM / 2
+  const wantCCW = params.direction === 'conventional'
+  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
+
+  const plan = computeFieldSpiralPlan(boundary, islands, tool, params)
+  if (!plan) return incomingPos
+  const { chains, finishRings } = plan
+
+  const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
+  const obstacles = [...finishRings, ...islandObstacles]
+  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+
+  // Largest helix radius at `p` that keeps the bored circle clear of every wall and
+  // island (finishRings are the tool-centre paths along them). 0 if there's no room.
+  const safeHelixRadius = (p: Pt2): number => {
+    let r = toolRadius * 0.9
+    for (const ring of finishRings) {
+      const np = nearestPointOnRing(p[0], p[1], ring)
+      r = Math.min(r, Math.hypot(p[0] - np[0], p[1] - np[1]) - 0.1)
+    }
+    return r
+  }
+
+  const rampIn = (start: Pt2, spiral: Pt2[], passPrevZ: number) => {
+    if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
+      segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+    }
+    const { touchdown, sampleAt } = rampLeadIn(spiral, true, rampDist ?? 2 * tool.diameterMM)
+    segs.push({ x: touchdown[0], y: touchdown[1], z: safeZ, rapid: true })
+    segs.push({ x: touchdown[0], y: touchdown[1], z: passPrevZ, rapid: true })
+    emitRampDescent(segs, sampleAt, passPrevZ, zDepth, 12)
+  }
+
+  let lastPos: Pt2 | null = incomingPos
+  let cutAnything = false
+  for (const { spiral, entry } of chains) {
+    const start = spiral[0]
+    const passPrevZ = cutAnything ? zDepth : prevZ
+    const hr = entry === 'helix' ? safeHelixRadius(start) : 0
+    if (entry === 'helix' && hr >= 0.6) {
+      // Helix entry at the lobe's seed, sized to clear walls/islands: opens a hole
+      // rather than plunging a full slot.
+      if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
+        segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+      }
+      emitHelicalRamp(start, hr, passPrevZ, zDepth, wantCCW, segs, safeZ)
+      segs.push({ x: start[0], y: start[1], z: zDepth, rapid: false })
+    } else {
+      // Ramp down along the spiral start — used for branch/island chains and for any
+      // helix start with no room to bore (near a wall or island).
+      rampIn(start, spiral, passPrevZ)
+    }
+    for (let i = 1; i < spiral.length; i++) {
+      segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
+    }
+    lastPos = spiral[spiral.length - 1]
+    cutAnything = true
+  }
+  if (!cutAnything) return incomingPos
+
+  // Finish the wall with a contour pass on the inset boundary.
+  return emitLinkedContourRings(finishRings, zDepth, travelObstacles, segs, params.startNear, rampDist, zDepth, safeZ, tool.diameterMM, lastPos)
 }
 
 // ─── Adaptive (constant-engagement) clearing ─────────────────────────────────────
@@ -975,7 +1641,11 @@ export function generatePocket(
     ? contourPocket
     : strategy === 'adaptive'
       ? adaptivePocket
-      : rasterPocket
+      : strategy === 'spiral'
+        ? fieldSpiralPocket
+        : strategy === 'spiralOffset'
+          ? spiralPocket
+          : rasterPocket
 
   let lastPos: Pt2 | null = null
   for (const boundary of boundaries) {

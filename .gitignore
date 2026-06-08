@@ -42,6 +42,6 @@ TECHNICAL.md
 TODOLIST.md
 fonts.txt
 optimizations.md
-# Adaptive2d diff-harness transpile output
+# Dev verification/diagnostic harnesses + their transpile output and golden snapshot
 .harness-build/
-scripts/adaptive-diff.snapshot.json
+scripts/

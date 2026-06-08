@@ -620,7 +620,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
-      <ToggleRow label="Strategy" options={['raster', 'contour', 'adaptive'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} />
+      {/* 'adaptive' temporarily removed from the selector — too slow; adaptivePocket + the
+          adaptive-specific branches below are kept so it can be re-enabled by re-adding it here. */}
+      <ToggleRow label="Strategy" options={['raster', 'contour', 'spiral', 'spiralOffset'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ spiralOffset: 'offset' }} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
           {form.strategy === 'adaptive' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
@@ -993,11 +995,12 @@ function ToolSelector({ tools, value, onChange }: {
   )
 }
 
-function ToggleRow<T extends string>({ label, options, value, onChange }: {
+function ToggleRow<T extends string>({ label, options, value, onChange, labels }: {
   label: string
   options: readonly T[]
   value: T
   onChange: (v: T) => void
+  labels?: Partial<Record<T, string>>
 }) {
   return (
     <div>
@@ -1011,7 +1014,7 @@ function ToggleRow<T extends string>({ label, options, value, onChange }: {
                 ? 'bg-blue-600 border-blue-500 text-white'
                 : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
             ].join(' ')}>
-            {o}
+            {labels?.[o] ?? o}
           </button>
         ))}
       </div>

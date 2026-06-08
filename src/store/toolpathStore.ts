@@ -52,7 +52,7 @@ export interface PocketOperation extends BaseOperation {
   stepoverPercent: number
   passAngleDeg: number
   direction: CuttingDirection
-  strategy: 'raster' | 'contour' | 'adaptive'
+  strategy: 'raster' | 'contour' | 'adaptive' | 'spiral' | 'spiralOffset'
   rampIn: boolean
   allowanceMM?: number   // finish allowance: stock left on all walls (negative grows the pocket)
 }

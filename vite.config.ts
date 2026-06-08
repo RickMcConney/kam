@@ -16,9 +16,23 @@ const jspolyPlugin = {
   },
 }
 
+// The CAM pipeline runs in a Web Worker (src/workers/worker.ts), which Vite bundles
+// as a separate module graph. HMR on the main thread never reaches it, so editing
+// src/cam/* would leave the worker running stale code until a manual full reload.
+// Force a full reload whenever a worker-graph file changes so the worker restarts.
+const reloadWorkerGraph = {
+  name: 'full-reload-worker-graph',
+  handleHotUpdate({ file, server }: { file: string; server: { ws: { send: (p: unknown) => void } } }) {
+    if (/\/src\/(cam|workers)\//.test(file)) {
+      server.ws.send({ type: 'full-reload' })
+      return []
+    }
+  },
+}
+
 export default defineConfig({
   base: '/kam/',
-  plugins: [react(), jspolyPlugin],
+  plugins: [react(), jspolyPlugin, reloadWorkerGraph],
   worker: {
     plugins: () => [jspolyPlugin],
   },
