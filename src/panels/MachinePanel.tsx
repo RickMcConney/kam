@@ -521,11 +521,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   function handleStrategyChange(strategy: PocketStrategy) {
+    const adaptive = strategy === 'adaptive' || strategy === 'adaptive2'
     setForm((f) => ({
       ...f,
       strategy,
-      stepoverPercent: strategy === 'adaptive'
-        ? Math.min(Math.max(f.stepoverPercent, 5), 40)
+      stepoverPercent: adaptive
+        ? Math.min(Math.max(f.stepoverPercent, 5), 60)
         : Math.min(Math.max(f.stepoverPercent, 10), 90),
     }))
   }
@@ -620,15 +621,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
-      {/* 'adaptive' temporarily removed from the selector — too slow; adaptivePocket + the
-          adaptive-specific branches below are kept so it can be re-enabled by re-adding it here. */}
-      <ToggleRow label="Strategy" options={['raster', 'contour', 'spiral', 'spiralOffset'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ spiralOffset: 'offset' }} />
+      {/* 'adaptive' (the old Adaptive2d port) stays hidden — too slow; 'adaptive2' is the fast
+          raster-marching engine and is what the UI shows as "adaptive". */}
+      <ToggleRow label="Strategy" options={['raster', 'contour', 'spiral', 'spiralOffset', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ spiralOffset: 'offset', adaptive2: 'adaptive' }} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          {form.strategy === 'adaptive' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+          {form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
-          type="range" min={form.strategy === 'adaptive' ? 5 : 10} max={form.strategy === 'adaptive' ? 60 : 90} step={5}
+          type="range" min={form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 5 : 10} max={form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 60 : 90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
           className="w-full accent-blue-500"

@@ -1,5 +1,6 @@
 import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, douglasPeucker, type Pt2 } from './pathFlattener'
 import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from './adaptiveClearing'
+import { computeAdaptive2Plan, type Adaptive2Region } from './adaptive2'
 import { morphChainToSpiral } from './spiralMorph'
 import { solveField, type FieldGrid } from './spiralField'
 import { traceIsolines } from './marchingSquares'
@@ -11,7 +12,9 @@ import type { Tool, CuttingDirection } from '../store/toolStore'
 // best for chunky pockets and islands. 'spiralOffset' is the offset-ring morph
 // spiral (shown in the UI as "offset") — contour-parallel, so it stays clean on
 // thin/diagonal strokes (letters) where the field spiral's ridge fragments.
-export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'spiral' | 'spiralOffset'
+// 'adaptive' is the FreeCAD Adaptive2d port (slow on large pockets, kept intact);
+// 'adaptive2' is the fast raster-marching constant-engagement engine (./adaptive2).
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'spiral' | 'spiralOffset' | 'adaptive2'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -1733,6 +1736,103 @@ function adaptivePocket(
 }
 
 
+// ─── Adaptive2 (fast raster-marching constant engagement) ───────────────────────
+//
+// Delegates to computeAdaptive2Plan (./adaptive2) — a from-scratch engine that grows the
+// toolpath over an occupancy grid instead of clipping polygons, so it stays fast on large
+// pockets. The 2D plan is identical for every Z level, so it's computed once per geometry
+// and replayed at each depth pass (single-entry cache, same scheme as the field spiral).
+
+let adaptive2PlanCache: { key: string; plan: Adaptive2Region[] } | null = null
+
+function adaptive2PlanFor(boundary: Pt2[], islands: Pt2[][], tool: Tool, params: PocketParams): Adaptive2Region[] {
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity, sum = 0
+  for (let i = 0; i < boundary.length; i++) {
+    const [x, y] = boundary[i]
+    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y
+    sum += x * (i + 1) + y * (i + 7)
+  }
+  for (const isl of islands) for (let i = 0; i < isl.length; i++) sum += isl[i][0] * (i + 3) - isl[i][1] * (i + 11)
+  const key = [
+    'a2', tool.diameterMM, params.stepoverPercent, params.direction, params.rampIn ? 1 : 0,
+    boundary.length, islands.length,
+    bx0.toFixed(3), by0.toFixed(3), bx1.toFixed(3), by1.toFixed(3), sum.toFixed(2),
+  ].join('|')
+  if (adaptive2PlanCache && adaptive2PlanCache.key === key) return adaptive2PlanCache.plan
+
+  const plan = computeAdaptive2Plan(boundary, islands, {
+    toolDiameterMM: tool.diameterMM,
+    stepoverMM: tool.diameterMM * (params.stepoverPercent / 100),
+    wantCCW: params.direction === 'conventional',
+    helixEntry: params.rampIn ?? false,
+  })
+  adaptive2PlanCache = { key, plan }
+  return plan
+}
+
+function adaptive2Pocket(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  zDepth: number,
+  segs: MotionSegment[],
+  prevZ = 0,
+  incomingPos: Pt2 | null = null,
+): Pt2 | null {
+  const safeZ = params.safeHeightMM ?? 5
+  const toolRadius = tool.diameterMM / 2
+  const wantCCW = params.direction === 'conventional'
+  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
+
+  const plan = adaptive2PlanFor(boundary, islands, tool, params)
+
+  let lastPos: Pt2 | null = incomingPos
+  for (const reg of plan) {
+    const first = reg.moves[0]?.pts[0]
+    if (!first) continue
+    if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+    if (reg.helixRadiusMM > 0) {
+      // The plan starts the march on the bore rim; end the bore exactly there so the
+      // helix flows into the spiral with no connector.
+      const endAngle = Math.atan2(first[1] - reg.helixCenter[1], first[0] - reg.helixCenter[0])
+      emitHelixBore(reg.helixCenter, reg.helixRadiusMM, endAngle, prevZ, zDepth, wantCCW, segs, safeZ)
+    } else {
+      segs.push({ x: first[0], y: first[1], z: safeZ, rapid: true })
+      segs.push({ x: first[0], y: first[1], z: prevZ, rapid: true })
+      segs.push({ x: first[0], y: first[1], z: zDepth, rapid: false })
+    }
+    lastPos = first
+    for (const mv of reg.moves) {
+      const travel = mv.kind === 'link' ? true : undefined
+      for (const [x, y] of mv.pts) {
+        if (x === lastPos?.[0] && y === lastPos?.[1]) continue
+        segs.push({ x, y, z: zDepth, rapid: false, travel })
+        lastPos = [x, y]
+      }
+    }
+  }
+
+  // Finishing wall pass — same construction as the raster strategy's.
+  const finishRing = insetRing(boundary, toolRadius)
+  const islandFinish = growIslands(islands, toolRadius)
+  const islandExclusions = growIslands(islands, tool.diameterMM)
+  const rings = [
+    ...islandFinish,
+    ...(finishRing.length >= 3 ? [finishRing] : []),
+  ].map(r => ensureWinding(r, wantCCW))
+  const obstacles = [
+    ...(finishRing.length >= 3 ? [finishRing] : []),
+    ...islandExclusions,
+  ]
+  const finishPrevZ = plan.length > 0 ? zDepth : prevZ
+  return emitLinkedContourRings(
+    rings, zDepth,
+    { edgeObstacles: obstacles, solidObstacles: islandFinish },
+    segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, lastPos,
+  )
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────────
 
 export function generatePocket(
@@ -1771,11 +1871,13 @@ export function generatePocket(
     ? contourPocket
     : strategy === 'adaptive'
       ? adaptivePocket
-      : strategy === 'spiral'
-        ? fieldSpiralPocket
-        : strategy === 'spiralOffset'
-          ? spiralPocket
-          : rasterPocket
+      : strategy === 'adaptive2'
+        ? adaptive2Pocket
+        : strategy === 'spiral'
+          ? fieldSpiralPocket
+          : strategy === 'spiralOffset'
+            ? spiralPocket
+            : rasterPocket
 
   let lastPos: Pt2 | null = null
   for (const boundary of boundaries) {
