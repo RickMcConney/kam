@@ -1804,11 +1804,22 @@ function adaptive2Pocket(
     }
     lastPos = first
     for (const mv of reg.moves) {
-      const travel = mv.kind === 'link' ? true : undefined
-      for (const [x, y] of mv.pts) {
-        if (x === lastPos?.[0] && y === lastPos?.[1]) continue
-        segs.push({ x, y, z: zDepth, rapid: false, travel })
-        lastPos = [x, y]
+      if (mv.kind === 'link') {
+        // Stay-down air move: micro-lift, traverse as travel (dashed in the UI), drop
+        // back to depth — clearly separates cutting from repositioning.
+        const liftZ = Math.min(safeZ, zDepth + MICRO_LIFT_MM)
+        segs.push({ x: lastPos[0], y: lastPos[1], z: liftZ, rapid: false, travel: true })
+        for (const [x, y] of mv.pts) {
+          segs.push({ x, y, z: liftZ, rapid: false, travel: true })
+          lastPos = [x, y]
+        }
+        segs.push({ x: lastPos[0], y: lastPos[1], z: zDepth, rapid: false })
+      } else {
+        for (const [x, y] of mv.pts) {
+          if (x === lastPos[0] && y === lastPos[1]) continue
+          segs.push({ x, y, z: zDepth, rapid: false })
+          lastPos = [x, y]
+        }
       }
     }
   }

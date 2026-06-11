@@ -189,20 +189,15 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   // Pre-clearing everything outside the region makes walls invisible to the engagement
   // probe — the tool-centre mask (mach) is what actually keeps the tool off them.
   const cleared = new Uint8Array(nCells)
-  let uncut = 0
-  for (let i = 0; i < nCells; i++) {
-    if (region[i]) uncut++
-    else cleared[i] = 1
-  }
+  for (let i = 0; i < nCells; i++) if (!region[i]) cleared[i] = 1
 
   // Drop stock no tool position can ever touch (sharp concave corner fillets) so it
   // neither registers as engagement nor keeps the march hunting for it.
   const dMach = edtSq(w, h, i => mach[i] !== 0)
   const reachSq = (rb / cell) * (rb / cell)
   for (let i = 0; i < nCells; i++) {
-    if (!cleared[i] && dMach[i] > reachSq) { cleared[i] = 1; uncut-- }
+    if (!cleared[i] && dMach[i] > reachSq) cleared[i] = 1
   }
-  if (uncut === 0) return []
 
   // Distance from every cell to the nearest non-machinable cell — helix headroom at seeds.
   const dWall = edtSq(w, h, i => mach[i] === 0)
@@ -211,6 +206,26 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   // Target fraction of the tool circumference in stock: for a straight pass at radial
   // stepover s the engaged arc is acos(1 − s/rb).
   const ft = Math.acos(clamp(1 - s / rb, -1, 1)) / (2 * Math.PI)
+
+  // band[i] = 1 ⇒ wall sliver the finishing pass takes: stock at most ONE STEPOVER deep
+  // along the walls/islands, so the finishing bite never exceeds the target engagement.
+  // Band stock stays fully visible to the engagement probe — the tool really cuts it in
+  // passing and the steering must respect it (blinding the probe to it kills the
+  // trochoids and overloads the cutter) — but it is never a GOAL: seeds, guide-field
+  // targets and the completion count all ignore it, so the march never travels back
+  // across the pocket just to shave a wall crumb the finishing pass erases anyway.
+  const band = new Uint8Array(nCells)
+  const dEdge = edtSq(w, h, i => region[i] === 0)
+  const bandCells = Math.min(s, rb) / cell
+  const bandSq = bandCells * bandCells
+  for (let i = 0; i < nCells; i++) {
+    if (region[i] && dEdge[i] <= bandSq) band[i] = 1
+  }
+
+  // uncut counts OWED stock only (real and not band) — the marcher's goal metric.
+  let uncut = 0
+  for (let i = 0; i < nCells; i++) if (!cleared[i] && !band[i]) uncut++
+  if (uncut === 0) return []
 
   const K = 96
   const cosT = new Float64Array(K)
@@ -238,23 +253,31 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     return c / K
   }
 
-  const stampSeg = (ax: number, ay: number, bx: number, by: number, r: number): void => {
+  // Returns the number of cells this sweep actually cleared — 0 means the move was pure
+  // air (the path-straightener may then reroute it without changing any grid state).
+  const stampSeg = (ax: number, ay: number, bx: number, by: number, r: number): number => {
     const r2 = r * r
     const ix0 = Math.max(0, Math.floor((Math.min(ax, bx) - r - x0) / cell))
     const ix1 = Math.min(w - 1, Math.floor((Math.max(ax, bx) + r - x0) / cell))
     const iy0 = Math.max(0, Math.floor((Math.min(ay, by) - r - y0) / cell))
     const iy1 = Math.min(h - 1, Math.floor((Math.max(ay, by) + r - y0) / cell))
+    let n = 0
     for (let iy = iy0; iy <= iy1; iy++) {
       const py = y0 + (iy + 0.5) * cell
       const row = iy * w
       for (let ix = ix0; ix <= ix1; ix++) {
         if (cleared[row + ix]) continue
         const px = x0 + (ix + 0.5) * cell
-        if (distSqPtSeg(px, py, ax, ay, bx, by) <= r2) { cleared[row + ix] = 1; uncut-- }
+        if (distSqPtSeg(px, py, ax, ay, bx, by) <= r2) {
+          cleared[row + ix] = 1
+          if (!band[row + ix]) uncut--
+          n++
+        }
       }
     }
+    return n
   }
-  const stampDisk = (cx: number, cy: number, r: number): void => stampSeg(cx, cy, cx, cy, r)
+  const stampDisk = (cx: number, cy: number, r: number): void => { stampSeg(cx, cy, cx, cy, r) }
 
   // Guide field: BFS distance (in cells, over machinable cells only) to the nearest
   // machinable cell that still touches stock. Descending it walks the tool across the
@@ -267,12 +290,11 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     guide.fill(-1)
     const q = guideQueue!
     let qt = 0
+    // Sources: machinable cells holding OWED stock (band crumbs are not goals). The
+    // flood then expands ONLY across the cleared floor — cells the tool can actually
+    // slide over — so descending the field never demands plowing through solid stock.
     for (let i = 0; i < nCells; i++) {
-      if (!mach[i]) continue
-      if (!cleared[i]) { guide[i] = 0; q[qt++] = i; continue }
-      const x = i % w
-      if ((x > 0 && !cleared[i - 1]) || (x < w - 1 && !cleared[i + 1]) ||
-          (i >= w && !cleared[i - w]) || (i + w < nCells && !cleared[i + w])) { guide[i] = 0; q[qt++] = i }
+      if (mach[i] && cleared[i] === 0 && band[i] === 0) { guide[i] = 0; q[qt++] = i }
     }
     if (qt === 0) return false
     let qh = 0
@@ -280,10 +302,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       const c = q[qh++]
       const d = guide[c] + 1
       const x = c % w
-      if (x > 0 && mach[c - 1] && guide[c - 1] < 0) { guide[c - 1] = d; q[qt++] = c - 1 }
-      if (x < w - 1 && mach[c + 1] && guide[c + 1] < 0) { guide[c + 1] = d; q[qt++] = c + 1 }
-      if (c >= w && mach[c - w] && guide[c - w] < 0) { guide[c - w] = d; q[qt++] = c - w }
-      if (c + w < nCells && mach[c + w] && guide[c + w] < 0) { guide[c + w] = d; q[qt++] = c + w }
+      if (x > 0 && mach[c - 1] && cleared[c - 1] && guide[c - 1] < 0) { guide[c - 1] = d; q[qt++] = c - 1 }
+      if (x < w - 1 && mach[c + 1] && cleared[c + 1] && guide[c + 1] < 0) { guide[c + 1] = d; q[qt++] = c + 1 }
+      if (c >= w && mach[c - w] && cleared[c - w] && guide[c - w] < 0) { guide[c - w] = d; q[qt++] = c - w }
+      if (c + w < nCells && mach[c + w] && cleared[c + w] && guide[c + w] < 0) { guide[c + w] = d; q[qt++] = c + w }
     }
     return true
   }
@@ -308,7 +330,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
   let px = 0, py = 0, theta = 0               // march state
 
-  const steerStep = (): number | null => {
+  const steerStep = (): { e: number; cut: number } | null => {
     let bestDelta = NaN, bestScore = Infinity, bestE = 0
     for (let i = 0; i < CAND.length; i++) {
       const c = CAND[i]
@@ -324,10 +346,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     theta += bestDelta
     const nx = px + Math.cos(theta) * ds
     const ny = py + Math.sin(theta) * ds
-    stampSeg(px, py, nx, ny, rb)
+    const cut = stampSeg(px, py, nx, ny, rb)
     px = nx
     py = ny
-    return bestE
+    return { e: bestE, cut }
   }
 
   // The turn-per-step limit keeps the path smooth, but it can nose the march into a
@@ -350,63 +372,83 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     return true
   }
 
+  // True when the straight tool move a→b runs entirely over already-cut floor: the
+  // centre line stays machinable (same wall guarantee as a marched step) and every cell
+  // the tool sweeps is cut AND inside the pocket (outside-region cells read "cleared"
+  // for the engagement probe, but they are wall — a chord may never cross them).
+  const chordClear = (ax: number, ay: number, bx: number, by: number): boolean => {
+    const len = Math.hypot(bx - ax, by - ay)
+    const lineSteps = Math.max(1, Math.ceil(len / cell))
+    for (let k = 0; k <= lineSteps; k++) {
+      if (!machAt(ax + ((bx - ax) * k) / lineSteps, ay + ((by - ay) * k) / lineSteps)) return false
+    }
+    const r2 = rb * rb
+    const ix0 = Math.max(0, Math.floor((Math.min(ax, bx) - rb - x0) / cell))
+    const ix1 = Math.min(w - 1, Math.floor((Math.max(ax, bx) + rb - x0) / cell))
+    const iy0 = Math.max(0, Math.floor((Math.min(ay, by) - rb - y0) / cell))
+    const iy1 = Math.min(h - 1, Math.floor((Math.max(ay, by) + rb - y0) / cell))
+    for (let iy = iy0; iy <= iy1; iy++) {
+      const pyc = y0 + (iy + 0.5) * cell
+      const row = iy * w
+      for (let ix = ix0; ix <= ix1; ix++) {
+        const pxc = x0 + (ix + 0.5) * cell
+        if (distSqPtSeg(pxc, pyc, ax, ay, bx, by) > r2) continue
+        if (!cleared[row + ix] || !region[row + ix]) return false
+      }
+    }
+    return true
+  }
+
+  // Replace a steered air run (steps that removed no material) with the fewest straight
+  // chords over cut floor — the straight back-stroke of the trochoidal "D". Greedy
+  // line-of-sight: from each anchor jump to the farthest run point reachable by a clear
+  // chord (adjacent points were physically traversed, so the fallback is always valid).
+  // Endpoints are preserved, so the rejoin into the next cut is unchanged.
+  const straighten = (from: Pt2, pts: Pt2[]): Pt2[] => {
+    if (pts.length <= 1) return pts
+    const out: Pt2[] = []
+    let ax = from[0], ay = from[1]
+    let i = 0
+    while (i < pts.length) {
+      let j = pts.length - 1
+      while (j > i && !chordClear(ax, ay, pts[j][0], pts[j][1])) {
+        j = i + Math.floor((j - i) / 2)
+      }
+      out.push(pts[j])
+      ax = pts[j][0]
+      ay = pts[j][1]
+      i = j + 1
+    }
+    return out
+  }
+
   // ── Region loop ───────────────────────────────────────────────────────────────
 
   const regions: Adaptive2Region[] = []
   const simplifyTol = cell * 0.4
-  // Leftovers below ~one step's worth of stock aren't worth another entry move.
-  const stopUncut = Math.max(4, Math.round(Math.max(s * R, 1) / (cell * cell)))
+  // Owed leftovers under ~1 mm² aren't worth another entry move.
+  const stopUncut = Math.max(4, Math.round(1 / (cell * cell)))
   let budget = Math.ceil((uncut * cell * cell) / (ds * s)) * 8 + 20000
 
   while (uncut > stopUncut && regions.length < 200 && budget > 0) {
-    // Seed at the deepest remaining stock the tool centre can sit on.
-    const dClear = edtSq(w, h, i => cleared[i] !== 0)
+    // Seed at the deepest remaining OWED stock the tool centre can sit on (depth measured
+    // to anything cut, void, or mere band — keeps seeds off the walls). Owed stock always
+    // sits on machinable cells (everything else is band), so no seed means done.
+    const dClear = edtSq(w, h, i => cleared[i] !== 0 || band[i] !== 0)
     let seedIdx = -1
     let seedScore = 0
     for (let i = 0; i < nCells; i++) {
-      if (mach[i] && !cleared[i] && dClear[i] > seedScore) { seedScore = dClear[i]; seedIdx = i }
+      if (mach[i] && !cleared[i] && !band[i] && dClear[i] > seedScore) { seedScore = dClear[i]; seedIdx = i }
     }
+    if (seedIdx < 0) break
 
-    let sx: number, sy: number, hr = 0
-    if (seedIdx >= 0) {
-      sx = x0 + ((seedIdx % w) + 0.5) * cell
-      sy = y0 + (Math.floor(seedIdx / w) + 0.5) * cell
-      if (prm.helixEntry) {
-        const head = Math.min(Math.sqrt(dWall[seedIdx]), Math.sqrt(dClear[seedIdx])) * cell - cell
-        hr = Math.min(0.9 * R, head)
-        if (hr < Math.max(0.3, 0.15 * R)) hr = 0
-      }
-    } else {
-      // Every machinable centre is already cleared, but reachable stock remains (wall
-      // bands and corner nibs that only the tool's edge can take). Enter on the cleared
-      // floor at the machinable cell nearest that stock and let the march walk to it.
-      let uIdx = -1
-      let uBest = Infinity
-      for (let i = 0; i < nCells; i++) {
-        if (!cleared[i] && dMach[i] < uBest) { uBest = dMach[i]; uIdx = i }
-      }
-      if (uIdx < 0) break
-      const ux = x0 + ((uIdx % w) + 0.5) * cell
-      const uy = y0 + (Math.floor(uIdx / w) + 0.5) * cell
-      // nearest machinable cell to that stock cell
-      const cx = uIdx % w, cy = Math.floor(uIdx / w)
-      let found = false
-      const maxR = Math.ceil(rb / cell) + 2
-      sx = ux; sy = uy
-      outer: for (let r = 0; r <= maxR && !found; r++) {
-        for (let iy = Math.max(0, cy - r); iy <= Math.min(h - 1, cy + r); iy++) {
-          for (let ix = Math.max(0, cx - r); ix <= Math.min(w - 1, cx + r); ix++) {
-            if (Math.max(Math.abs(ix - cx), Math.abs(iy - cy)) !== r) continue
-            if (mach[iy * w + ix]) {
-              sx = x0 + (ix + 0.5) * cell
-              sy = y0 + (iy + 0.5) * cell
-              found = true
-              break outer
-            }
-          }
-        }
-      }
-      if (!found) break
+    const sx = x0 + ((seedIdx % w) + 0.5) * cell
+    const sy = y0 + (Math.floor(seedIdx / w) + 0.5) * cell
+    let hr = 0
+    if (prm.helixEntry) {
+      const head = Math.min(Math.sqrt(dWall[seedIdx]), Math.sqrt(dClear[seedIdx])) * cell - cell
+      hr = Math.min(0.9 * R, head)
+      if (hr < Math.max(0.3, 0.15 * R)) hr = 0
     }
 
     const before = uncut
@@ -439,22 +481,46 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     cur.push([px, py])
 
     let idle = 0
-    let navPts: Pt2[] | null = null   // non-null ⇒ descending the guide field to new stock
-    let navMaxE = 0
+    let navMode = false               // descending the guide field to new stock
     let navSteps = 0
     let navLimit = 0
 
+    // Steps that removed nothing accumulate here instead of going straight into the
+    // path; when cutting resumes the run is replaced by straight chords over cut floor
+    // (straighten) and emitted as a stay-down 'link' move — rendered as dashed travel in
+    // the UI, so cutting and air-moves are visually distinct. Hops shorter than a couple
+    // of steps stay inline in the cut move. Only zero-cut steps may be rerouted — their
+    // stamps changed nothing, so the swap is exactly behavior-preserving on the grid.
+    const air: Pt2[] = []
+    const emitAir = () => {
+      if (air.length === 0) return
+      const from = cur[cur.length - 1]
+      const pts = straighten(from, air)
+      air.length = 0
+      let len = 0
+      let prev = from
+      for (const p of pts) { len += Math.hypot(p[0] - prev[0], p[1] - prev[1]); prev = p }
+      if (len <= ds * 2) {
+        for (const p of pts) cur.push(p)
+        return
+      }
+      if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
+      moves.push({ kind: 'link', pts })
+      cur = [pts[pts.length - 1]]
+    }
+
     while (uncut > stopUncut && budget-- > 0) {
-      if (navPts === null) {
+      if (!navMode) {
         // ── cutting mode: hold engagement at target ──
-        let e = steerStep()
-        if (e === null) {
+        let r = steerStep()
+        if (r === null) {
           if (!reAim()) break
-          e = steerStep()
-          if (e === null) break
+          r = steerStep()
+          if (r === null) break
         }
-        cur.push([px, py])
-        if (e < ft * 0.08) idle++
+        if (r.cut === 0) air.push([px, py])
+        else { emitAir(); cur.push([px, py]) }
+        if (r.e < ft * 0.08) idle++
         else idle = 0
         if (idle > idleLimit) {
           // A full loop without touching stock: nothing left here. Flood the guide field
@@ -463,8 +529,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
           if (!buildGuide()) break
           const g0 = guideAt(px, py)
           if (!Number.isFinite(g0)) break
-          navPts = []
-          navMaxE = 0
+          navMode = true
           navSteps = 0
           navLimit = g0 * 3 + 100
           idle = 0
@@ -492,29 +557,20 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         theta += bestDelta
         const nx = px + Math.cos(theta) * ds
         const ny = py + Math.sin(theta) * ds
-        stampSeg(px, py, nx, ny, rb)
+        const cutN = stampSeg(px, py, nx, ny, rb)
         px = nx
         py = ny
-        navPts.push([px, py])
-        if (bestE > navMaxE) navMaxE = bestE
+        if (cutN === 0) air.push([px, py])
+        else { emitAir(); cur.push([px, py]) }
         if (bestE >= ft * 0.5 || guideAt(px, py) === 0) {
-          // Re-engaged. A traverse that never really cut is a stay-down link; one that
-          // nibbled on the way is just more cutting.
-          if (navMaxE < ft * 0.2 && navPts.length >= 2) {
-            if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
-            moves.push({ kind: 'link', pts: navPts })
-            cur = [navPts[navPts.length - 1]]
-          } else {
-            for (const p of navPts) cur.push(p)
-          }
-          navPts = null
+          navMode = false
           idle = 0
         } else if (++navSteps > navLimit) {
           break
         }
       }
     }
-    if (navPts) for (const p of navPts) cur.push(p)
+    emitAir()
     if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
 
     moves = moves
