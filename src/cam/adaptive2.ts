@@ -171,14 +171,17 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   const rb = R - 0.75 * cell
   if (rb <= cell) return []   // tool of the order of grid resolution — nothing sensible to do
 
-  // Tool-centre allowed region: boundary ⊖ R, islands ⊕ R — the single polygon op.
+  // Tool-centre allowed region: boundary ⊖ R, islands ⊕ R — the single polygon op. The
+  // extra half cell covers raster quantization (a cell centre can sit up to ~0.7 cell
+  // inside the polygon while its true position is outside), so no committed step can
+  // stray past the real inset wall; the finishing pass owns that margin anyway.
   const toCP = (pts: Pt2[], ccw: boolean) => {
     const wound = (signedArea(pts) >= 0) === ccw ? pts : [...pts].reverse()
     return wound.map(([x, y]) => ({ x, y }))
   }
   const machPolys = inflatePathsD(
     [toCP(boundary, true), ...islands.map(i => toCP(i, false))],
-    -R, JoinType.Round, EndType.Polygon, 4, 6,
+    -(R + 0.5 * cell), JoinType.Round, EndType.Polygon, 4, 6,
   ).map(r => r.map(({ x, y }) => [x, y] as Pt2)).filter(r => r.length >= 3)
   if (machPolys.length === 0) return []
 
@@ -227,6 +230,20 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   for (let i = 0; i < nCells; i++) if (!cleared[i] && !band[i]) uncut++
   if (uncut === 0) return []
 
+  // Cutting steps prefer to keep the tool edge OUT of the finishing band: without this
+  // the final wall lap pins against the machinable limit and swallows leftover strip +
+  // band in one bite (~2 stepovers ≈ 80–95% width — the frontier-collision spikes). The
+  // penalty is soft: in corridors narrower than the threshold every candidate carries it
+  // equally, so geometric slots are still cut.
+  const bandKeep = (R + Math.min(s, rb)) / cell
+  const bandKeepSq = bandKeep * bandKeep
+  const inBandZone = (x: number, y: number): boolean => {
+    const ix = Math.floor((x - x0) / cell)
+    const iy = Math.floor((y - y0) / cell)
+    if (ix < 0 || iy < 0 || ix >= w || iy >= h) return true
+    return dEdge[iy * w + ix] < bandKeepSq
+  }
+
   const K = 96
   const cosT = new Float64Array(K)
   const sinT = new Float64Array(K)
@@ -253,15 +270,16 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     return c / K
   }
 
-  // Returns the number of cells this sweep actually cleared — 0 means the move was pure
-  // air (the path-straightener may then reroute it without changing any grid state).
-  const stampSeg = (ax: number, ay: number, bx: number, by: number, r: number): number => {
+  // Returns how many cells this sweep cleared — `n` = any material (0 ⇒ pure air, the
+  // path-straightener may reroute it), `owed` = non-band material (goal progress).
+  const stampSeg = (ax: number, ay: number, bx: number, by: number, r: number): { n: number; owed: number } => {
     const r2 = r * r
     const ix0 = Math.max(0, Math.floor((Math.min(ax, bx) - r - x0) / cell))
     const ix1 = Math.min(w - 1, Math.floor((Math.max(ax, bx) + r - x0) / cell))
     const iy0 = Math.max(0, Math.floor((Math.min(ay, by) - r - y0) / cell))
     const iy1 = Math.min(h - 1, Math.floor((Math.max(ay, by) + r - y0) / cell))
     let n = 0
+    let owed = 0
     for (let iy = iy0; iy <= iy1; iy++) {
       const py = y0 + (iy + 0.5) * cell
       const row = iy * w
@@ -270,12 +288,12 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         const px = x0 + (ix + 0.5) * cell
         if (distSqPtSeg(px, py, ax, ay, bx, by) <= r2) {
           cleared[row + ix] = 1
-          if (!band[row + ix]) uncut--
+          if (!band[row + ix]) { uncut--; owed++ }
           n++
         }
       }
     }
-    return n
+    return { n, owed }
   }
   const stampDisk = (cx: number, cy: number, r: number): void => { stampSeg(cx, cy, cx, cy, r) }
 
@@ -321,6 +339,9 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
   const ds = Math.max(2 * cell, R / 5)        // step length
   const A = ds / (0.45 * R)                   // max turn per step (loop radius ≥ 0.45 R)
+  // Hard chip-load governor: no single step may sweep more new stock than a pass at
+  // 1.3× the target stepover would.
+  const maxStepArea = 1.3 * s * ds
   const dirSign = prm.wantCCW ? 1 : -1
   // Candidate turns, as fractions of A. The score prefers engagement closest to target,
   // mildly prefers going straight (smoothness), and nudges toward the requested winding
@@ -330,7 +351,38 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
   let px = 0, py = 0, theta = 0               // march state
 
-  const steerStep = (): { e: number; cut: number } | null => {
+  // Read-only preview of a step's newly-swept stock area (mm²): uncut cells inside the
+  // leading crescent (within rb of the step end, beyond rb of the start).
+  const previewStepArea = (ax: number, ay: number, bx: number, by: number): number => {
+    const r2 = rb * rb
+    const ix0 = Math.max(0, Math.floor((bx - rb - x0) / cell))
+    const ix1 = Math.min(w - 1, Math.floor((bx + rb - x0) / cell))
+    const iy0 = Math.max(0, Math.floor((by - rb - y0) / cell))
+    const iy1 = Math.min(h - 1, Math.floor((by + rb - y0) / cell))
+    let n = 0
+    for (let iy = iy0; iy <= iy1; iy++) {
+      const pyc = y0 + (iy + 0.5) * cell
+      const row = iy * w
+      for (let ix = ix0; ix <= ix1; ix++) {
+        if (cleared[row + ix]) continue
+        const pxc = x0 + (ix + 0.5) * cell
+        const dbx = pxc - bx, dby = pyc - by
+        if (dbx * dbx + dby * dby > r2) continue
+        const dax = pxc - ax, day = pyc - ay
+        if (dax * dax + day * day <= r2) continue
+        n++
+      }
+    }
+    return n * cell * cell
+  }
+
+  const steerStep = (): { e: number; cut: number; owed: number } | null => {
+    // Rank candidates by circumference occupancy (cheap), then govern by ACTUAL swept
+    // area: occupancy misreads pivots around convex corners (the outer flank sweeps a
+    // wide fan at on-target occupancy) and deep wall strips. If the winner's previewed
+    // area overloads, re-rank every candidate by area — biggest bite under the cap,
+    // else retreat through cleared (the trochoidal loop-back), else least overload
+    // (true geometric slots).
     let bestDelta = NaN, bestScore = Infinity, bestE = 0
     for (let i = 0; i < CAND.length; i++) {
       const c = CAND[i]
@@ -340,16 +392,37 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       if (!machAt(nx, ny)) continue
       const e = engagement(nx, ny)
       const score = Math.abs(e - ft) + 0.02 * Math.abs(c) - 0.012 * c * dirSign
+        + (inBandZone(nx, ny) ? 0.6 : 0)
       if (score < bestScore) { bestScore = score; bestDelta = c * A; bestE = e }
     }
     if (Number.isNaN(bestDelta)) return null
+    {
+      const th = theta + bestDelta
+      const nx = px + Math.cos(th) * ds
+      const ny = py + Math.sin(th) * ds
+      if (previewStepArea(px, py, nx, ny) > maxStepArea) {
+        let areaDelta = NaN
+        let areaScore = Infinity
+        for (let i = 0; i < CAND.length; i++) {
+          const c = CAND[i]
+          const t2 = theta + c * A
+          const mx = px + Math.cos(t2) * ds
+          const my = py + Math.sin(t2) * ds
+          if (!machAt(mx, my)) continue
+          const a2 = previewStepArea(px, py, mx, my)
+          const sc = (a2 > maxStepArea ? 1000 + a2 : maxStepArea - a2) + 0.05 * Math.abs(c)
+          if (sc < areaScore) { areaScore = sc; areaDelta = c * A }
+        }
+        if (!Number.isNaN(areaDelta)) bestDelta = areaDelta
+      }
+    }
     theta += bestDelta
     const nx = px + Math.cos(theta) * ds
     const ny = py + Math.sin(theta) * ds
-    const cut = stampSeg(px, py, nx, ny, rb)
+    const st = stampSeg(px, py, nx, ny, rb)
     px = nx
     py = ny
-    return { e: bestE, cut }
+    return { e: bestE, cut: st.n, owed: st.owed }
   }
 
   // The turn-per-step limit keeps the path smooth, but it can nose the march into a
@@ -364,7 +437,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       const ny = py + Math.sin(th) * ds
       if (!machAt(nx, ny)) continue
       const e = engagement(nx, ny)
-      const sc = e > ft * 1.2 ? 2 + e : Math.abs(e - ft)
+      const sc = (e > ft * 1.2 ? 2 + e : Math.abs(e - ft)) + (inBandZone(nx, ny) ? 0.6 : 0)
       if (sc < bestSc) { bestSc = sc; bestT = th }
     }
     if (Number.isNaN(bestT)) return false
@@ -453,7 +526,9 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
     const before = uncut
 
-    // Entry: bore (helix) or plunge, then march.
+    // Entry: bore (helix) or plunge, then march. A plunge's first lateral moves are
+    // area-governed like any other step, so even a plunge into a leftover sliver cuts
+    // its way out at capped width rather than slotting.
     let moves: Adaptive2Move[] = []
     let cur: Pt2[] = []
     if (hr > 0) {
@@ -520,7 +595,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         }
         if (r.cut === 0) air.push([px, py])
         else { emitAir(); cur.push([px, py]) }
-        if (r.e < ft * 0.08) idle++
+        // Idle = no GOAL progress: steps that cut nothing, or only shave band stock the
+        // finishing pass owns, both count — otherwise the march nibbles the band edge
+        // forever at low engagement without ever moving on.
+        if (r.owed === 0) idle++
         else idle = 0
         if (idle > idleLimit) {
           // A full loop without touching stock: nothing left here. Flood the guide field
@@ -546,6 +624,9 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
           if (!machAt(nx, ny)) continue
           const g = guideAt(nx, ny)
           if (!Number.isFinite(g)) continue
+          // Same chip-load governor as cutting mode: occupancy alone misses pivot
+          // inflation (e.g. rounding an island while walking to new stock).
+          if (previewStepArea(px, py, nx, ny) > maxStepArea) continue
           const e = engagement(nx, ny)
           const sc = g + (e > ft * 1.15 ? 1e6 : 0) + 0.3 * Math.abs(CAND[i])
           if (sc < bestSc) { bestSc = sc; bestDelta = CAND[i] * A; bestE = e }
@@ -557,10 +638,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         theta += bestDelta
         const nx = px + Math.cos(theta) * ds
         const ny = py + Math.sin(theta) * ds
-        const cutN = stampSeg(px, py, nx, ny, rb)
+        const st = stampSeg(px, py, nx, ny, rb)
         px = nx
         py = ny
-        if (cutN === 0) air.push([px, py])
+        if (st.n === 0) air.push([px, py])
         else { emitAir(); cur.push([px, py]) }
         if (bestE >= ft * 0.5 || guideAt(px, py) === 0) {
           navMode = false
