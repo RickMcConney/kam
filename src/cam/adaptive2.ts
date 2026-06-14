@@ -499,6 +499,71 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
   const regions: Adaptive2Region[] = []
   const simplifyTol = cell * 0.4
+
+  // Post-smoothing: the march advances in fixed steps with quantized headings, so raw
+  // cut polylines carry facet noise of a fraction of a cell. Repeated binomial
+  // moving-average passes (endpoints pinned, so entries and link junctions stay exact —
+  // 4 passes ≈ averaging over ±4 neighbours) read as a fair curve. The displacement
+  // clamp is CURVATURE-AWARE: on near-straight runs (where facet noise lives) a point
+  // may move up to a full cell from its original position, but where the path genuinely
+  // turns — wall corners, trochoid apexes — the clamp tightens, so smoothing cannot
+  // shortcut a corner and leave a stock lens for the next lap to swallow (that showed up
+  // as 88% corner bites with a uniform clamp). Points leaving the machinable mask revert,
+  // so walls/islands stay untouchable. A light Douglas-Peucker afterwards drops collinear
+  // leftovers without re-faceting the curve into visible chords.
+  const SMOOTH_PASSES = 4
+  const smoothTol = 1.0 * cell
+  const smoothCut = (pts: Pt2[]): Pt2[] => {
+    if (pts.length < 2 * SMOOTH_PASSES + 1) return douglasPeucker(pts, simplifyTol)
+    // Per-point clamp from the ORIGINAL local turn angle (over ±2 neighbours): full
+    // tolerance when straight, down to 20% at ≥ ~45° of turn.
+    const n = pts.length
+    const tol = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      const im = Math.max(0, i - 2)
+      const ip = Math.min(n - 1, i + 2)
+      const v1x = pts[i][0] - pts[im][0]
+      const v1y = pts[i][1] - pts[im][1]
+      const v2x = pts[ip][0] - pts[i][0]
+      const v2y = pts[ip][1] - pts[i][1]
+      const l1 = Math.hypot(v1x, v1y)
+      const l2 = Math.hypot(v2x, v2y)
+      let turn = 0
+      if (l1 > 1e-9 && l2 > 1e-9) {
+        const c = clamp((v1x * v2x + v1y * v2y) / (l1 * l2), -1, 1)
+        turn = Math.acos(c)
+      }
+      tol[i] = smoothTol * Math.max(0.2, 1 - turn / 0.8)
+      // Wall-adjacent laps feed the finishing contour: rounding them grows the corner
+      // lens the (ungoverned) finishing pass swallows in one pivot. Keep them faithful;
+      // they ride walls and are nearly straight anyway.
+      if (inBandZone(pts[i][0], pts[i][1])) tol[i] *= 0.25
+    }
+    let cur2 = pts
+    for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+      const out: Pt2[] = new Array(n)
+      out[0] = cur2[0]
+      out[n - 1] = cur2[n - 1]
+      for (let i = 1; i < n - 1; i++) {
+        const a = cur2[i - 1], p = cur2[i], b = cur2[i + 1]
+        let sx = (a[0] + 2 * p[0] + b[0]) / 4
+        let sy = (a[1] + 2 * p[1] + b[1]) / 4
+        const o = pts[i]
+        const dx = sx - o[0]
+        const dy = sy - o[1]
+        const d2 = dx * dx + dy * dy
+        const ti = tol[i]
+        if (d2 > ti * ti) {
+          const k = ti / Math.sqrt(d2)
+          sx = o[0] + dx * k
+          sy = o[1] + dy * k
+        }
+        out[i] = machAt(sx, sy) ? [sx, sy] : o
+      }
+      cur2 = out
+    }
+    return douglasPeucker(cur2, simplifyTol * 0.4)
+  }
   // Owed leftovers under ~1 mm² aren't worth another entry move.
   const stopUncut = Math.max(4, Math.round(1 / (cell * cell)))
   let budget = Math.ceil((uncut * cell * cell) / (ds * s)) * 8 + 20000
@@ -655,7 +720,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
 
     moves = moves
-      .map(m => (m.kind === 'cut' ? { kind: m.kind, pts: douglasPeucker(m.pts, simplifyTol) } : m))
+      .map(m => (m.kind === 'cut' ? { kind: m.kind, pts: smoothCut(m.pts) } : m))
       .filter(m => m.pts.length >= (m.kind === 'cut' ? 2 : 1))
 
     if (moves.some(m => m.kind === 'cut')) {

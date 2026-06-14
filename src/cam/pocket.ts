@@ -8,13 +8,15 @@ import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
-// 'spiral' is the field-based curvilinear spiral (Poisson isotherms, helix entry) —
-// best for chunky pockets and islands. 'spiralOffset' is the offset-ring morph
-// spiral (shown in the UI as "offset") — contour-parallel, so it stays clean on
-// thin/diagonal strokes (letters) where the field spiral's ridge fragments.
+// 'morph' is the field-based curvilinear spiral (Poisson isotherms, helix entry — cf.
+// Fusion's "Morphed Spiral") — best for chunky pockets and islands. 'spiral' is the
+// offset-ring spiral — contour-parallel, so it stays clean on thin/diagonal strokes
+// (letters) where the field spiral's ridge fragments. Renamed 2026-06: 'spiral' was
+// 'spiralOffset' (UI "offset"); 'morph' was 'spiral' — generatePocket maps the legacy
+// ids so older saved projects keep working.
 // 'adaptive' is the FreeCAD Adaptive2d port (slow on large pockets, kept intact);
 // 'adaptive2' is the fast raster-marching constant-engagement engine (./adaptive2).
-export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'spiral' | 'spiralOffset' | 'adaptive2'
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'spiral' | 'adaptive2'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -242,6 +244,31 @@ function growIslands(islands: Pt2[][], delta: number, joinType: JoinType = JoinT
   return result
     .map(r => stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2)))
     .filter(r => r.length >= 3)
+}
+
+// Finishing contours for a pocket with islands: ONE compound inset — boundary ⊖ R with
+// the islands as CW holes — so an island closer than a tool diameter to the outer wall
+// (or to another island) pinches/merges into a contour that never swings the tool centre
+// past a wall. Growing island rings independently of the boundary gouges the outer wall
+// in exactly that case. Output: outer-type loops wound to `wantCCW`, island (hole-type)
+// loops wound opposite, so climb stays climb on island walls (material is on the inside
+// of an island ring, so the traversal direction must flip to keep the same chip formation).
+function compoundFinishRings(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  toolRadius: number,
+  wantCCW: boolean,
+  joinType: JoinType = JoinType.Miter,
+): Pt2[][] {
+  const toCP = (pts: Pt2[], ccw: boolean) =>
+    ensureWinding(stripClosingDuplicate(pts), ccw).map(([x, y]) => ({ x, y }))
+  return inflatePathsD(
+    [toCP(boundary, true), ...islands.map(isl => toCP(isl, false))],
+    -toolRadius, joinType, EndType.Polygon, 4, 6,
+  )
+    .map(r => stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2)))
+    .filter(r => r.length >= 3)
+    .map(r => ensureWinding(r, signedArea(r) < 0 ? !wantCCW : wantCCW))
 }
 
 function emitCutTransition(
@@ -833,11 +860,9 @@ function rasterPocket(
     zDepth, segs, incomingPos, rampDist, prevZ, safeZ, tool.diameterMM,
   )
 
-  // Finishing contours: linked without lifts when safe.
-  const finishingRings = [
-    ...islandFinish,
-    ...(finishRing.length >= 3 ? [finishRing] : []),
-  ].map(r => ensureWinding(r, wantCCW))
+  // Finishing contours: linked without lifts when safe. Compound inset so a near-wall
+  // island pinches instead of swinging the tool through the outer wall.
+  const finishingRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW)
   const finishObstacles = [
     ...(finishRing.length >= 3 ? [finishRing] : []),
     ...islandExclusions,
@@ -1164,10 +1189,20 @@ function spiralPocket(
   let cutAnything = false
   for (const chain of chains) {
     // A chain whose innermost loop encircles an island wraps a hole, not a point:
-    // it must not centre-seed (its centre is the solid island).
+    // it must not centre-seed (its centre is the solid island). The centroid test
+    // alone is not enough — a C-shaped inner loop hugging an island does NOT contain
+    // the island's centroid, yet its OWN centroid can land inside the island; seeding
+    // a circular centre fill there starts the spiral inside the island (and no clamp
+    // can repair a path that dives through an island's middle). So additionally
+    // require the seed point itself to sit in free space: inside the inset boundary
+    // and outside every grown island.
     const innerLoop = chain.loopsOuterToInner[chain.loopsOuterToInner.length - 1]
     const encirclesIsland = islandCentroids.some(c => pointInPolygon(c[0], c[1], innerLoop))
-    const seedCenter = chain.innerIsLeaf && !encirclesIsland
+    const innerCentroidPre = centroidOfRing(innerLoop)
+    const centroidFree =
+      pointInPolygon(innerCentroidPre[0], innerCentroidPre[1], insetBoundary) &&
+      !holes.some(h => h.length >= 3 && pointInPolygon(innerCentroidPre[0], innerCentroidPre[1], h))
+    const seedCenter = chain.innerIsLeaf && !encirclesIsland && centroidFree
 
     const innerToOuter = [...chain.loopsOuterToInner].reverse()
     // Full-revolution morph (transitionFrac = 1): the radius grows a constant ~one
@@ -1177,19 +1212,23 @@ function spiralPocket(
     // step over the whole turn keeps coverage identical (verified) while removing the
     // per-revolution ripple a short window leaves.
     const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 1)
-    // Clamp so no point seeds/cuts into an island or past the wall.
-    const spiral = clampSpiralToRegion(raw, insetBoundary, holes)
-    if (spiral.length < 2) continue
-    const passPrevZ = cutAnything ? zDepth : prevZ
+    // Clamp so no point seeds/cuts into an island or past the wall, then split out any
+    // snap-flip chords the clamp left behind.
+    const runs = splitClampedSpiral(clampSpiralToRegion(raw, insetBoundary, holes))
     // Bore concentric with the innermost loop so it meshes with the offset rings — only
     // when its centroid is inside the loop (a non-convex loop's centroid lands outside it
-    // and would gouge; those chains ramp in instead).
+    // and would gouge; those chains ramp in instead), and only for the first run.
     const innerCentroid = centroidOfRing(innerLoop)
-    const helixOpt = seedCenter && pointInPolygon(innerCentroid[0], innerCentroid[1], innerLoop)
-      ? { clearance: helixClearance, center: innerCentroid, wantCCW }
-      : undefined
-    lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos, helixOpt)
-    cutAnything = true
+    const canHelix = seedCenter && pointInPolygon(innerCentroid[0], innerCentroid[1], innerLoop)
+    for (let ri = 0; ri < runs.length; ri++) {
+      const spiral = runs[ri]
+      const passPrevZ = cutAnything ? zDepth : prevZ
+      const helixOpt = ri === 0 && canHelix
+        ? { clearance: helixClearance, center: innerCentroid, wantCCW }
+        : undefined
+      lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos, helixOpt)
+      cutAnything = true
+    }
   }
 
   if (!cutAnything) return incomingPos
@@ -1395,10 +1434,18 @@ function maxClearHelixRadius(p: Pt2, rings: Pt2[][], maxR: number): number {
 // inside a grown island (would gouge the island) or outside the inset boundary
 // (would over-cut the wall). Out-of-region points are snapped to the nearest
 // boundary point, so the tool edge lands exactly on the real island/wall edge.
-// This corrects the small over-cut the corner-fillet smoothing can introduce on
-// blocky isotherms without giving up its smoothing elsewhere.
+// Long segments are SUBDIVIDED first: clamping only the endpoints lets a chord
+// between two legal points pass straight through an island (the morph emits such
+// chords when consecutive rings differ around islands) — the subdivided samples
+// snap onto the keep-out ring, so the path slides around the island instead.
 function clampSpiralToRegion(spiral: Pt2[], insetBoundary: Pt2[], grownIslands: Pt2[][]): Pt2[] {
-  return spiral.map(([x, y]) => {
+  const MAX_SEG = 0.75
+  // Where a grown island overlaps the inset boundary (island close to the wall) there is
+  // NO legal tool position: island-snap pushes the point outside the pocket, wall-snap
+  // pulls it back inside the island ring. Such points return null (dropped); the jump
+  // splitter then severs the spiral on each side of the dead zone.
+  const TOL = 0.05
+  const clampPt = (x: number, y: number): Pt2 | null => {
     let px = x, py = y
     for (const gi of grownIslands) {
       if (gi.length >= 3 && pointInPolygon(px, py, gi)) {
@@ -1409,9 +1456,57 @@ function clampSpiralToRegion(spiral: Pt2[], insetBoundary: Pt2[], grownIslands: 
     if (insetBoundary.length >= 3 && !pointInPolygon(px, py, insetBoundary)) {
       const n = nearestPointOnRing(px, py, insetBoundary)
       px = n[0]; py = n[1]
+      // re-validate: the wall snap may have moved the point back into an island ring
+      for (const gi of grownIslands) {
+        if (gi.length >= 3 && pointInPolygon(px, py, gi)) {
+          const nn = nearestPointOnRing(px, py, gi)
+          if (Math.hypot(px - nn[0], py - nn[1]) > TOL) return null
+        }
+      }
     }
-    return [px, py] as Pt2
-  })
+    return [px, py]
+  }
+  const out: Pt2[] = []
+  const push = (p: Pt2 | null) => {
+    if (!p) return
+    const last = out[out.length - 1]
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 1e-6) out.push(p)
+  }
+  for (let i = 0; i < spiral.length; i++) {
+    if (i > 0) {
+      const [ax, ay] = spiral[i - 1]
+      const [bx, by] = spiral[i]
+      const n = Math.floor(Math.hypot(bx - ax, by - ay) / MAX_SEG)
+      for (let k = 1; k <= n; k++) {
+        const t = k / (n + 1)
+        push(clampPt(ax + (bx - ax) * t, ay + (by - ay) * t))
+      }
+    }
+    push(clampPt(spiral[i][0], spiral[i][1]))
+  }
+  return out
+}
+
+// Clamping can snap neighbouring (densified) samples to opposite sides of a keep-out,
+// leaving a chord straight through an island. Legitimate steps are sub-millimetre after
+// densification, so any far longer step is such an artifact: split the spiral there and
+// keep each contiguous run; runs too short to cut anything are dropped (their crumb is
+// swept by the finishing contour).
+function splitClampedSpiral(spiral: Pt2[]): Pt2[][] {
+  // Legitimate densified steps are ≤ 0.75 mm; a chord ≤ JUMP across a convex keep-out
+  // dips at most ~c²/8r ≈ 0.1 mm into it — below the cut tolerance.
+  const JUMP = 1.5
+  const runs: Pt2[][] = []
+  let run: Pt2[] = []
+  for (let i = 0; i < spiral.length; i++) {
+    if (i > 0 && Math.hypot(spiral[i][0] - spiral[i - 1][0], spiral[i][1] - spiral[i - 1][1]) > JUMP) {
+      if (run.length >= 5) runs.push(run)
+      run = []
+    }
+    run.push(spiral[i])
+  }
+  if (run.length >= 5) runs.push(run)
+  return runs
 }
 
 // Keep loops one stepover apart along a chain (ordered outer→inner): from each
@@ -1491,36 +1586,43 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
       // A chain whose innermost loop encircles an island wraps a hole, not a point:
       // it must not centre-fill (its "centre" is the solid island) and it enters by
       // ramp (no helix at the island). The morph still spirals around the island.
+      // As in spiralPocket: a C-shaped inner loop hugging an island defeats the
+      // centroid-containment test while its OWN centroid sits inside the island, so
+      // additionally require the seed point to lie in free space.
       const innerLoop = chain.loopsOuterToInner[chain.loopsOuterToInner.length - 1]
       const encirclesIsland = islandCentroids.some(c => pointInPolygon(c[0], c[1], innerLoop))
-      const seedCenter = chain.innerIsLeaf && !encirclesIsland
+      const innerCentroidPre = centroidOfRing(innerLoop)
+      const centroidFree =
+        pointInPolygon(innerCentroidPre[0], innerCentroidPre[1], inset) &&
+        !holes.some(hh => hh.length >= 3 && pointInPolygon(innerCentroidPre[0], innerCentroidPre[1], hh))
+      const seedCenter = chain.innerIsLeaf && !encirclesIsland && centroidFree
 
       const innerToOuter = [...chain.loopsOuterToInner].reverse()
       // Localized transition (default fraction): stays on-contour most of each turn
       // so coverage holds even where consecutive isotherms differ in extent (arm
       // tips). The entry handles the worst-case entry engagement.
       const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter)
-      // Never let the tool centre enter an island or leave the inset wall.
-      const spiral = clampSpiralToRegion(raw, inset, holes)
-      if (spiral.length < 2) continue
+      // Never let the tool centre enter an island or leave the inset wall; split out any
+      // snap-flip chords the clamp left behind.
+      const runs = splitClampedSpiral(clampSpiralToRegion(raw, inset, holes))
       // Helix at a true point centre; ramp everywhere else. A branch/saddle chain's
       // start is NOT inside its children's cleared lobes (the lobes are deeper in),
       // so a straight plunge there slots at full engagement — always ramp instead.
       // Bore concentric with the innermost loop so the helix meshes with the spiral —
       // but only when its centroid lies INSIDE the loop. A non-convex (L-shaped) loop's
       // centroid falls in a notch outside it; boring there would gouge the wall, so such
-      // chains ramp in instead.
+      // chains ramp in instead — and only the first run may helix.
       const helixCenter = centroidOfRing(innerLoop)
       const canHelix = seedCenter && pointInPolygon(helixCenter[0], helixCenter[1], innerLoop)
-      out.push({ spiral, entry: canHelix ? 'helix' : 'ramp', helixCenter })
+      for (let ri = 0; ri < runs.length; ri++) {
+        out.push({ spiral: runs[ri], entry: ri === 0 && canHelix ? 'helix' : 'ramp', helixCenter })
+      }
     }
     if (out.length === 0) return null
-    // Finish the outer wall and each island wall (the tool-centre path around a
-    // grown island is its finishing contour). Islands wound opposite for climb.
-    const finishRings = [
-      ensureWinding(stripClosingDuplicate(inset), wantCCW),
-      ...holes.map(h => ensureWinding(stripClosingDuplicate(h), !wantCCW)),
-    ].filter(r => r.length >= 3)
+    // Finish the outer wall and each island wall. Compound inset (round joins, matching
+    // this strategy's smooth style) so a near-wall island pinches instead of swinging
+    // the tool through the outer wall; islands wound opposite for climb.
+    const finishRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW, JoinType.Round)
     return { chains: out, finishRings }
   })()
 
@@ -1824,18 +1926,11 @@ function adaptive2Pocket(
     }
   }
 
-  // Finishing wall pass — same construction as the raster strategy's.
-  const finishRing = insetRing(boundary, toolRadius)
+  // Finishing wall pass — compound inset, see compoundFinishRings.
+  const rings = compoundFinishRings(boundary, islands, toolRadius, wantCCW)
   const islandFinish = growIslands(islands, toolRadius)
   const islandExclusions = growIslands(islands, tool.diameterMM)
-  const rings = [
-    ...islandFinish,
-    ...(finishRing.length >= 3 ? [finishRing] : []),
-  ].map(r => ensureWinding(r, wantCCW))
-  const obstacles = [
-    ...(finishRing.length >= 3 ? [finishRing] : []),
-    ...islandExclusions,
-  ]
+  const obstacles = [...rings, ...islandExclusions]
   const finishPrevZ = plan.length > 0 ? zDepth : prevZ
   return emitLinkedContourRings(
     rings, zDepth,
@@ -1874,7 +1969,9 @@ export function generatePocket(
     if (boundaries.length === 0) throw new Error('Pocket allowance collapsed the boundary')
   }
 
-  const strategy = params.strategy ?? 'raster'
+  // Legacy id from older saved projects/forms: 'spiralOffset' is today's 'spiral'.
+  const rawStrategy = (params.strategy ?? 'raster') as string
+  const strategy = rawStrategy === 'spiralOffset' ? 'spiral' : rawStrategy
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
@@ -1884,9 +1981,9 @@ export function generatePocket(
       ? adaptivePocket
       : strategy === 'adaptive2'
         ? adaptive2Pocket
-        : strategy === 'spiral'
+        : strategy === 'morph'
           ? fieldSpiralPocket
-          : strategy === 'spiralOffset'
+          : strategy === 'spiral'
             ? spiralPocket
             : rasterPocket
 
