@@ -197,6 +197,45 @@ function circleFrom3Pts(a: Pt2, b: Pt2, c: Pt2): { cx: number; cy: number; r: nu
 
 export type ArcFitSeg = { x: number; y: number; arc?: { cx: number; cy: number; cw: boolean } }
 
+// True if the G2/G3 arc (centre cx,cy, radius r, from pts[lo] to pts[hi] swept in
+// the `cw` direction) stays within a small tolerance of the source polyline
+// pts[lo..hi]. Samples the swept arc — using the SAME start→end sweep convention as
+// the gcode emitter and sim parser — and checks each sample is near the polyline. A
+// wrong sweep direction makes the arc trace the major (long-way-round) arc, whose
+// samples land far from the path, so this rejects it. `v0` marches forward so the
+// scan is ~O(steps + span), not O(steps·span).
+function arcHugsPolyline(
+  pts: Pt2[], lo: number, hi: number,
+  cx: number, cy: number, r: number, cw: boolean, tol: number,
+): boolean {
+  const s = pts[lo], e = pts[hi]
+  const a0 = Math.atan2(s[1] - cy, s[0] - cx)
+  let a1 = Math.atan2(e[1] - cy, e[0] - cx)
+  const isFull = Math.abs(s[0] - e[0]) < 1e-6 && Math.abs(s[1] - e[1]) < 1e-6
+  if (isFull) a1 = a0 + (cw ? -2 * Math.PI : 2 * Math.PI)
+  else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
+  else { if (a1 <= a0) a1 += 2 * Math.PI }
+
+  const sweep = Math.abs(a1 - a0)
+  const steps = Math.max(6, Math.ceil(sweep / (Math.PI / 45)))  // ~4° spacing
+  const maxDev = Math.max(0.15, tol * 3)
+
+  let v0 = lo
+  for (let k = 1; k < steps; k++) {
+    const a = a0 + (a1 - a0) * (k / steps)
+    const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r
+    let dmin = Infinity, vClosest = v0
+    for (let v = v0; v < hi; v++) {
+      const d = dist(px, py, pts[v][0], pts[v][1], pts[v + 1][0], pts[v + 1][1])
+      if (d < dmin) { dmin = d; vClosest = v }
+      else if (d > dmin + maxDev) break  // distance climbing past the local min — stop
+    }
+    if (dmin > maxDev) return false
+    v0 = vClosest  // arc & polyline both advance lo→hi, so never look back
+  }
+  return true
+}
+
 // Convert a polyline to a list of G1/G2/G3 motion endpoints.
 // Arc spans where all points fit within `tol` of a circle are collapsed to a single arc segment.
 // The first point of `pts` is the current position (not emitted); segments cover pts[1..n-1].
@@ -209,7 +248,6 @@ export type ArcFitSeg = { x: number; y: number; arc?: { cx: number; cy: number; 
 export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): ArcFitSeg[] {
   const result: ArcFitSeg[] = []
   const n = pts.length
-  let skip = false
   let i = 0
   while (i < n - 1) {
     let bestJ = -1
@@ -249,10 +287,17 @@ export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): Arc
         if (la < 1e-10 || lb < 1e-10) continue
         if ((ax * bx + ay * by) / (la * lb) < 0.707) { hasSharpCorner = true; break } // > 45°
       }
-      if (skip && sagitta > 0.05 && startOnArc && !hasSharpCorner) {
-        // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
-        const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
-        result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw: triArea < 0 } })
+      // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
+      const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
+      const cw = triArea < 0
+      // Final guard: the *emitted* G2/G3 arc (start→end in the cw direction) must
+      // actually hug the source polyline. The checks above only prove the vertices
+      // sit on the fitted circle — they don't catch a wrong sweep direction, which
+      // makes the controller/sim trace the major arc and bulge far outside the path
+      // (most common on near-straight spans where the 3-point winding is ambiguous).
+      if (sagitta > 0.05 && startOnArc && !hasSharpCorner &&
+          arcHugsPolyline(pts, i, bestJ, bestCircle.cx, bestCircle.cy, bestCircle.r, cw, tol)) {
+        result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw } })
         i = bestJ
       } else {
         result.push({ x: pts[i + 1][0], y: pts[i + 1][1] })
