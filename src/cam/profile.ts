@@ -185,8 +185,23 @@ export function generateProfile(
   params: ProfileParams,
   tabs?: Tab[]
 ): MotionSegment[] {
-  const subpaths = splitSelfIntersecting(flattenPath(d, 0.05))
-  if (subpaths.length === 0) throw new Error('No geometry found in path')
+  // Separate closed loops from open strokes (e.g. single-stroke / Hershey text):
+  //  • closed loops feed splitSelfIntersecting — it needs ≥3 points and assumes a
+  //    closed polygon — and the offset/winding logic below.
+  //  • open strokes, including 2-point straight segments like an 'I' stem, are
+  //    followed as-is for centerline cuts. They must NOT go through
+  //    splitSelfIntersecting: it drops sub-3-point strokes (so they vanish, hence
+  //    "No geometry found") and wraps a self-touching open stroke into a closed
+  //    loop, adding a spurious end→start closing line.
+  const flat = flattenPath(d, 0.05)
+  const isOpenSub = (sp: Pt2[]) =>
+    sp.length < 2 ||
+    Math.hypot(sp[sp.length - 1][0] - sp[0][0], sp[sp.length - 1][1] - sp[0][1]) >= 1e-6
+  const closedSubs = splitSelfIntersecting(flat.filter((sp) => !isOpenSub(sp)))
+  const openSubs = flat.filter(isOpenSub)
+  if (closedSubs.length === 0 && openSubs.length === 0) throw new Error('No geometry found in path')
+  // Combined design geometry, used for tab arc-length placement.
+  const designSubs = [...closedSubs, ...openSubs]
 
   const safeZ = params.safeHeightMM ?? 5
 
@@ -204,7 +219,9 @@ export function generateProfile(
   interface OffsetPath { pts: Pt2[]; isOpen: boolean }
   let offsetPaths: OffsetPath[]
   if (delta !== 0) {
-    const inputPaths = subpaths
+    // Inside/outside offset only applies to closed loops; open strokes have no
+    // interior, so they're left to centerline cuts.
+    const inputPaths = closedSubs
       .map(sp => stripClosingDuplicate(sp))
       .filter(sp => sp.length >= 3)
       .map(sp => {
@@ -217,14 +234,12 @@ export function generateProfile(
       .filter(p => p.length >= 3)
       .map(pts => ({ pts, isOpen: false }))
   } else {
-    // Detect open paths before stripping the closing duplicate so we can tell them apart.
-    offsetPaths = subpaths
-      .map(sp => {
-        const isOpen = sp.length < 2 ||
-          Math.hypot(sp[sp.length - 1][0] - sp[0][0], sp[sp.length - 1][1] - sp[0][1]) >= 1e-6
-        return { pts: isOpen ? sp : stripClosingDuplicate(sp), isOpen }
-      })
-      .filter(({ pts }) => pts.length >= 2)
+    // Centerline: follow every subpath exactly. Closed loops trace once (drop the
+    // duplicate closing point); open strokes cut start → end with no closing line.
+    offsetPaths = [
+      ...closedSubs.map(sp => ({ pts: stripClosingDuplicate(sp), isOpen: false })),
+      ...openSubs.map(sp => ({ pts: sp, isOpen: true })),
+    ].filter(({ pts }) => pts.length >= 2)
   }
 
   const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
@@ -239,7 +254,7 @@ export function generateProfile(
       const tabRanges: { start: number; end: number; tabZ: number }[] = []
       if (tabs && tabs.length > 0) {
         for (const tab of tabs) {
-          const pos = designPathAtT(subpaths, tab.t)
+          const pos = designPathAtT(designSubs, tab.t)
           if (!pos) continue
           const center = nearestArcLen(rawPts, pathLens, pos[0], pos[1])
           const half = tab.lengthMM / 2 + tool.diameterMM / 2
@@ -446,7 +461,7 @@ export function generateProfile(
       const tabRanges: { start: number; end: number; tabZ: number }[] = []
       if (tabs && tabs.length > 0) {
         for (const tab of tabs) {
-          const pos = designPathAtT(subpaths, tab.t)
+          const pos = designPathAtT(designSubs, tab.t)
           if (!pos) continue
           const center = nearestArcLen(closed, lens, pos[0], pos[1])
           const half = tab.lengthMM / 2 + tool.diameterMM / 2

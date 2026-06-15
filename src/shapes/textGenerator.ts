@@ -1,4 +1,5 @@
 import * as opentype from 'opentype.js'
+import { loadSvgStrokeShim } from './svgStrokeFont'
 
 export interface TextParams {
   type: 'text'
@@ -11,7 +12,12 @@ export interface TextParams {
 
 const BASE = import.meta.env.BASE_URL
 
-export const AVAILABLE_FONTS: { label: string; family: string; url: string }[] = [
+// `svg` marks a single-stroke font in the SVG-font format (value = asset URL). It
+// renders as open strokes — ideal for engraving — and flows through the same
+// getPath() interface as the TTF/WOFF outline fonts loaded from `url`.
+export interface FontDef { label: string; family: string; url?: string; svg?: string }
+
+export const AVAILABLE_FONTS: FontDef[] = [
   { label: 'Roboto', family: 'Roboto', url: `${BASE}fonts/Roboto-Regular.ttf` },
   { label: 'AV Hershey Complex Heavy', family: 'AV Hershey Complex Heavy', url: `${BASE}fonts/AVHersheyComplexHeavy.ttf` },
   { label: 'AV Hershey Simplex Light', family: 'AV Hershey Simplex Light', url: `${BASE}fonts/AVHersheySimplexLight.ttf` },
@@ -20,7 +26,14 @@ export const AVAILABLE_FONTS: { label: string; family: string; url: string }[] =
   { label: 'Times New Roman', family: 'Times New Roman', url: `${BASE}fonts/Times%20New%20Roman.ttf` },
   { label: 'Roboto Mono', family: 'Roboto Mono', url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@4.5.10/files/roboto-mono-latin-400-normal.woff' },
   { label: 'Open Sans', family: 'Open Sans', url: 'https://cdn.jsdelivr.net/npm/@fontsource/open-sans@4.5.14/files/open-sans-latin-400-normal.woff' },
+  // Single-stroke engraving font (Relief SingleLine, OFL) — open strokes ideal for V-bit/engrave
+  { label: 'Relief SingleLine (single-line)', family: 'Relief SingleLine', svg: `${BASE}fonts/ReliefSingleLineSVG-Regular.svg` },
 ]
+
+/** True for single-stroke faces (SVG-stroke) — text renders as open strokes. */
+export function isSingleStrokeFont(family: string): boolean {
+  return !!AVAILABLE_FONTS.find((f) => f.family === family)?.svg
+}
 
 export const DEFAULT_FONT_FAMILY = 'Roboto'
 
@@ -47,7 +60,15 @@ export async function loadFont(family: string): Promise<void> {
 
   const p = (async () => {
     try {
-      const res = await fetch(def.url)
+      // Single-stroke SVG-font face (e.g. Relief SingleLine).
+      if (def.svg) {
+        const shim = await loadSvgStrokeShim(def.svg)
+        if (!shim) throw new Error(`SVG stroke font "${def.svg}" not found`)
+        fontCache.set(family, shim)
+        onLoadCallbacks.forEach((cb) => cb())
+        return
+      }
+      const res = await fetch(def.url!)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const buf = await res.arrayBuffer()
       const font = opentype.parse(buf)

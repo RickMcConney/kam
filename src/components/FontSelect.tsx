@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { AVAILABLE_FONTS, loadFont, getFont } from '../shapes/textGenerator'
+import { AVAILABLE_FONTS, loadFont, getFont, isSingleStrokeFont } from '../shapes/textGenerator'
 
 function buildPreviewSVG(family: string, text: string): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -15,12 +15,16 @@ function buildPreviewSVG(family: string, text: string): string {
     const vw = bb.x2 - bb.x1 + pad * 2
     const vh = bb.y2 - bb.y1 + pad * 2
     const d: string = path.toPathData(1)
+    // Single-stroke fonts are open polylines — stroke them; outline fonts fill.
+    const paint = isSingleStrokeFont(family)
+      ? `fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"`
+      : `fill="currentColor"`
     return (
       `<svg xmlns="http://www.w3.org/2000/svg"` +
       ` viewBox="${bb.x1 - pad} ${bb.y1 - pad} ${vw} ${vh}"` +
       ` height="44" preserveAspectRatio="xMinYMid meet"` +
       ` style="display:block;max-width:100%"` +
-      ` aria-hidden="true"><path d="${d}" fill="currentColor"/></svg>`
+      ` aria-hidden="true"><path d="${d}" ${paint}/></svg>`
     )
   } catch {
     return ''

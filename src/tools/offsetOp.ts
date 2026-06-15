@@ -34,7 +34,11 @@ export function applyOffset(d: string, params: OffsetOpParams): string {
     params.distanceMM,
     JOIN_TYPE[params.cornerStyle],
     EndType.Polygon,
-    2,  // miterLimit
+    // miterLimit = max ratio of miter-length to offset distance before Clipper
+    // squares the corner off. Clipper's default (2) squares any corner sharper
+    // than 60°, which mangles sharp points like star tips. 10 keeps points sharp
+    // down to ~11.5° interior angle while still capping near-degenerate spikes.
+    10, // miterLimit
     6,  // precision: decimal places used for internal integer scaling
   )
 

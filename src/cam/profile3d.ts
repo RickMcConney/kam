@@ -148,8 +148,9 @@ function sampleGrid(
 // satisfy: toolZ >= h_neighbor + sqrt(R² - dist²)  for every neighbor within R.
 //
 // This is the 2D morphological dilation of the height map.  After subtracting R,
-// the result is the "effective surface" — plug it in as if it were the real surface
-// and the existing  toolZ = effectiveSurface + R  formula gives a gouge-free path.
+// the result is the "effective surface" — the gouge-free tool-TIP height. The pipeline
+// is tip-referenced, so the emitted Z is just this effective surface (+ stock allowance);
+// there is no extra ball-radius term (adding one would float the tool R above the stock).
 //
 // Computed on a downsampled grid (≤DILATE_MAX cells) for speed.
 
@@ -216,7 +217,6 @@ function computeToolSurface(
 function generateStepDownPasses(
   grid: Float32Array, nx: number, ny: number,
   bbox: BBox, cellX: number, cellY: number,
-  roughRadius: number,
   stepoverMM: number,
   stepDownMM: number,
   maxDepthMM: number,
@@ -246,7 +246,7 @@ function generateStepDownPasses(
     const passDepth   = Math.min(n * stepDownMM, effectiveMaxDepth)
     const prevDepthMM = (n - 1) * stepDownMM   // skip areas already cut in previous pass
     segs.push(...generateRaster(grid, nx, ny, bbox, cellX, cellY,
-      stepoverMM, rasterAngleDeg, passDepth, roughRadius, stockAllowanceMM, prevDepthMM, safeZ))
+      stepoverMM, rasterAngleDeg, passDepth, stockAllowanceMM, prevDepthMM, safeZ))
   }
 
   return segs
@@ -255,8 +255,11 @@ function generateStepDownPasses(
 // ─── Raster strategy ──────────────────────────────────────────────────────────
 //
 // Scanlines parallel to rasterAngleDeg, stepped by stepoverMM.
-// The tool follows the 3D surface: at each sample point the tool-centre Z is
-// surfaceZ + ball_radius (ball tip just touching the relief surface).
+// The tool follows the 3D surface: the emitted Z is the tool-TIP position
+// (gcode and the simulator are both tip-referenced — see gcode.ts / SimulationLayer).
+// `grid` already holds the gouge-free tip height (computeToolSurface solves the ball
+// collision and returns tip = surface raised by the ball geometry), so the tip Z is
+// simply surfaceZ + stockAllowance — no ball-radius term.
 //
 // When roughedInfo is provided, points where roughing already cleared to the
 // finish depth are skipped (rest machining). The function handles gaps within
@@ -266,8 +269,8 @@ function generateRaster(
   grid: Float32Array, nx: number, ny: number,
   bbox: BBox, cellX: number, cellY: number,
   stepoverMM: number, rasterAngleDeg: number,
-  maxDepthMM: number, ballRadius: number,
-  stockAllowanceMM = 0,   // lift tool above surface (roughing clearance); 0 = finishing
+  maxDepthMM: number,
+  stockAllowanceMM = 0,   // lift tip above surface (roughing clearance); 0 = finishing
   prevPassDepthMM  = 0,   // skip points already cut at this depth in a prior pass
   safeZ = 5,
 ): MotionSegment[] {
@@ -329,7 +332,7 @@ function generateRaster(
       if (prevPassDepthMM > 0 && h >= -prevPassDepthMM + 1e-6) { endGroup(); continue }
 
       const surfZ = Math.max(h, -maxDepthMM)
-      const toolZ = surfZ + ballRadius + stockAllowanceMM
+      const toolZ = surfZ + stockAllowanceMM
 
       if (!inGroup) {
         beginGroup(cncX, cncY, toolZ)
@@ -383,7 +386,7 @@ export function generateProfile3d(
   if (!hasRoughing) {
     return generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,
       bbox, finishSurface.cellX, finishSurface.cellY,
-      stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius, 0, 0, safeZ)
+      stepoverMM, params.rasterAngleDeg, params.maxDepthMM, 0, 0, safeZ)
   }
 
   // ── Two-pass: roughing + rest-machining finish ────────────────────────────
@@ -410,14 +413,14 @@ export function generateProfile3d(
   const roughingSegs = generateStepDownPasses(
     roughSurface.grid, roughSurface.nx, roughSurface.ny,
     bbox, roughSurface.cellX, roughSurface.cellY,
-    roughRadius, roughStepMM, roughStepDownMM, params.maxDepthMM,
+    roughStepMM, roughStepDownMM, params.maxDepthMM,
     roughStockMM, roughAngleDeg,
     rawMaxDepth, safeZ,
   )
 
   const finishingSegs = generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,
     bbox, finishSurface.cellX, finishSurface.cellY,
-    stepoverMM, params.rasterAngleDeg, params.maxDepthMM, ballRadius, 0, 0, safeZ)
+    stepoverMM, params.rasterAngleDeg, params.maxDepthMM, 0, 0, safeZ)
 
   // Stitch together: roughing → tool-change marker → finishing
   const lastRough = roughingSegs[roughingSegs.length - 1]
