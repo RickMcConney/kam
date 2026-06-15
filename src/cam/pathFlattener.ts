@@ -209,6 +209,7 @@ export type ArcFitSeg = { x: number; y: number; arc?: { cx: number; cy: number; 
 export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): ArcFitSeg[] {
   const result: ArcFitSeg[] = []
   const n = pts.length
+  let skip = false
   let i = 0
   while (i < n - 1) {
     let bestJ = -1
@@ -248,7 +249,7 @@ export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): Arc
         if (la < 1e-10 || lb < 1e-10) continue
         if ((ax * bx + ay * by) / (la * lb) < 0.707) { hasSharpCorner = true; break } // > 45°
       }
-      if (false &&sagitta > 0.05 && startOnArc && !hasSharpCorner) {
+      if (skip && sagitta > 0.05 && startOnArc && !hasSharpCorner) {
         // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
         const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
         result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw: triArea < 0 } })
