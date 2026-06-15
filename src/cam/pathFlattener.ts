@@ -200,14 +200,21 @@ export type ArcFitSeg = { x: number; y: number; arc?: { cx: number; cy: number; 
 // Convert a polyline to a list of G1/G2/G3 motion endpoints.
 // Arc spans where all points fit within `tol` of a circle are collapsed to a single arc segment.
 // The first point of `pts` is the current position (not emitted); segments cover pts[1..n-1].
-export function arcFitPolyline(pts: Pt2[], tol: number): ArcFitSeg[] {
+//
+// `maxSpan` caps how many points a single arc may absorb. The fit re-validates the
+// whole candidate span on every growth step (O(span²) per arc), so on long smooth
+// runs (spiral/morph/adaptive pockets) an uncapped span makes this quadratic in the
+// run length. Capping bounds the cost to O(n·maxSpan); a longer-than-cap arc is just
+// emitted as a few arcs instead of one. Default Infinity keeps prior callers exact.
+export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): ArcFitSeg[] {
   const result: ArcFitSeg[] = []
   const n = pts.length
   let i = 0
   while (i < n - 1) {
     let bestJ = -1
     let bestCircle: { cx: number; cy: number; r: number } | null = null
-    for (let j = Math.min(i + 2, n - 1); j < n; j++) {
+    const jCap = Math.min(n - 1, i + maxSpan)
+    for (let j = Math.min(i + 2, n - 1); j <= jCap; j++) {
       const mid = (i + j) >> 1
       const c = circleFrom3Pts(pts[i], pts[mid], pts[j])
       if (!c) break
@@ -241,7 +248,7 @@ export function arcFitPolyline(pts: Pt2[], tol: number): ArcFitSeg[] {
         if (la < 1e-10 || lb < 1e-10) continue
         if ((ax * bx + ay * by) / (la * lb) < 0.707) { hasSharpCorner = true; break } // > 45°
       }
-      if (sagitta > 0.05 && startOnArc && !hasSharpCorner) {
+      if (false &&sagitta > 0.05 && startOnArc && !hasSharpCorner) {
         // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
         const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
         result.push({ x: e[0], y: e[1], arc: { cx: bestCircle.cx, cy: bestCircle.cy, cw: triArea < 0 } })

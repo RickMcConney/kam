@@ -11,6 +11,7 @@ import { flattenPath } from '../cam/pathFlattener'
 import { getBBox } from '../canvas/selectionUtils'
 import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE, MATERIAL_COLORS } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
+import { HeightfieldMaterial } from './HeightfieldMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
@@ -171,6 +172,10 @@ function syncDirtyInstances(
 
 // ─── scene refs ──────────────────────────────────────────────────────────────
 
+// Material-removal simulation strategy. 'voxel' = quadtree instanced boxes
+// (VoxelMaterial); 'heightfield' = GPU displaced plane (HeightfieldMaterial).
+type SimStrategy = 'voxel' | 'heightfield'
+
 interface StlGeoCacheEntry {
   geo: THREE.BufferGeometry              // raw parsed geometry, not modified
   stlSrcLen: number                      // detect changes by length
@@ -192,6 +197,8 @@ interface SceneRefs {
   voxelWoodMesh: THREE.InstancedMesh | null  // uncut voxels, all-wood
   voxelCutMesh:  THREE.InstancedMesh | null  // carved voxels, yellow top/sides + wood bottom
   voxelMat: VoxelMaterial | null
+  heightfield: HeightfieldMaterial | null    // alternate GPU heightfield strategy
+  simStrategy: SimStrategy
   stlGeoCache: Map<string, StlGeoCacheEntry>  // path.id → parsed raw geometry
   rafId: number
   fpsSamples: number[]
@@ -281,6 +288,11 @@ export default function ThreeView() {
       voxelWoodMesh: null,
       voxelCutMesh:  null,
       voxelMat: null,
+      heightfield: null,
+      // Heightfield is the active strategy. The voxel path (VoxelMaterial,
+      // rebuildVoxels, syncDirtyInstances) is retained but inactive — set this to
+      // 'voxel' to bring it back.
+      simStrategy: 'heightfield',
       stlGeoCache: new Map(),
       rafId: 0,
       fpsSamples: [],
@@ -351,6 +363,7 @@ export default function ThreeView() {
       if (refs.workpieceGroup.visible !== wpVis) { refs.workpieceGroup.visible = wpVis; refs.renderNeeded = true }
       if (refs.voxelWoodMesh && refs.voxelWoodMesh.visible !== wpVis) { refs.voxelWoodMesh.visible = wpVis; refs.renderNeeded = true }
       if (refs.voxelCutMesh  && refs.voxelCutMesh.visible  !== wpVis) { refs.voxelCutMesh.visible  = wpVis; refs.renderNeeded = true }
+      if (refs.heightfield   && refs.heightfield.group.visible !== wpVis) { refs.heightfield.group.visible = wpVis; refs.renderNeeded = true }
       if (refs.shapesGroup.visible    !== shVis) { refs.shapesGroup.visible    = shVis; refs.renderNeeded = true }
 
       const sim = useSimStore.getState()
@@ -395,23 +408,32 @@ export default function ThreeView() {
           refs.controls.target.set(tx, ty, tz)
         }
 
-        if (refs.voxelMat) {
+        if (refs.heightfield) {
           const seg = sim.segments[segIdx]
           const t = seg && seg.durationS > 1e-9
             ? Math.max(0, Math.min(1, (sim.elapsedTimeS - seg.startTimeS) / seg.durationS))
             : 1
-          refs.voxelMat.applyUpTo(sim.segments, segIdx, t)
+          // Voxel strategy retained but inactive:
+          // if (refs.voxelMat) refs.voxelMat.applyUpTo(sim.segments, segIdx, t)
+          refs.heightfield.applyUpTo(sim.segments, segIdx, t)
         }
       } else {
         if (refs.toolMesh && refs.toolMesh.visible) { refs.toolMesh.visible = false; refs.renderNeeded = true }
 
-        if (refs.voxelMat && (refs.voxelWoodMesh || refs.voxelCutMesh)) {
-          if (refs.voxelMat.anyCarved) refs.voxelMat.reset()
-        }
+        // Voxel strategy retained but inactive:
+        // if (refs.voxelMat && (refs.voxelWoodMesh || refs.voxelCutMesh)) {
+        //   if (refs.voxelMat.anyCarved) refs.voxelMat.reset()
+        // }
+        if (refs.heightfield && refs.heightfield.anyCarved) refs.heightfield.reset()
       }
 
+      // Inert while heightfield is active (voxelMat is never built); kept so the
+      // voxel path stays wired up for an easy switch back.
       if (refs.voxelMat && refs.voxelWoodMesh && refs.voxelCutMesh) {
         if (syncDirtyInstances(refs.voxelMat, refs.voxelWoodMesh, refs.voxelCutMesh)) refs.renderNeeded = true
+      }
+      if (refs.heightfield) {
+        if (refs.heightfield.flushToGPU()) refs.renderNeeded = true
       }
 
       controls.update()
@@ -436,7 +458,7 @@ export default function ThreeView() {
       if (state.gcode !== prev.gcode) {
         refs.fpsAdapted = false
         refs.fpsSamples = []
-        rebuildVoxels(refs)
+        rebuildSim(refs)
         buildToolIndicator(refs)
         refs.renderNeeded = true
       }
@@ -451,6 +473,7 @@ export default function ThreeView() {
       unsubWP(); unsubTP(); unsubSim(); unsubPaths()
       if (refs.voxelWoodMesh) { refs.voxelWoodMesh.geometry.dispose(); (refs.voxelWoodMesh.material as THREE.Material).dispose() }
       if (refs.voxelCutMesh) { refs.voxelCutMesh.geometry.dispose(); (refs.voxelCutMesh.material as THREE.Material).dispose() }
+      if (refs.heightfield) refs.heightfield.dispose()
       if (refs.toolMesh) disposeObject3D(refs.toolMesh)
       for (const entry of refs.stlGeoCache.values()) { entry.geo.dispose(); entry.bakedGeo?.dispose() }
       refs.stlGeoCache.clear()
@@ -548,11 +571,24 @@ function rebuildWorkpiece(refs: SceneRefs) {
   refs.gridHelper.position.y = -0.5
   refs.scene.add(refs.gridHelper)
 
-  rebuildVoxels(refs)
+  rebuildSim(refs)
   buildToolIndicator(refs)
 }
 
-function rebuildVoxels(refs: SceneRefs) {
+// Build the simulation material for the active strategy, tearing down the other.
+// refs.simStrategy is fixed to 'heightfield' (the toggle was removed); the 'voxel'
+// branch is retained so the older path can be re-enabled by changing that field.
+function rebuildSim(refs: SceneRefs) {
+  if (refs.simStrategy === 'heightfield') {
+    disposeVoxels(refs)
+    rebuildHeightfield(refs)
+  } else {
+    disposeHeightfield(refs)
+    rebuildVoxels(refs)
+  }
+}
+
+function disposeVoxels(refs: SceneRefs) {
   if (refs.voxelWoodMesh) {
     refs.scene.remove(refs.voxelWoodMesh)
     refs.voxelWoodMesh.geometry.dispose()
@@ -566,6 +602,32 @@ function rebuildVoxels(refs: SceneRefs) {
     refs.voxelCutMesh = null
   }
   refs.voxelMat = null
+}
+
+function disposeHeightfield(refs: SceneRefs) {
+  if (refs.heightfield) {
+    refs.scene.remove(refs.heightfield.group)
+    refs.heightfield.dispose()
+    refs.heightfield = null
+  }
+}
+
+function rebuildHeightfield(refs: SceneRefs) {
+  disposeHeightfield(refs)
+
+  const wp  = useWorkpieceStore.getState()
+  const { widthMM: W, heightMM: H, thicknessMM: T, material, origin } = wp
+  const org = originWorldXY(origin, W, H)
+  const { segments, toolStates } = useSimStore.getState()
+
+  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, materialColor(material), SIM_CUT_COLOR_THREE)
+  refs.heightfield = hf
+  refs.scene.add(hf.group)
+  console.log(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
+}
+
+function rebuildVoxels(refs: SceneRefs) {
+  disposeVoxels(refs)
 
   const wp  = useWorkpieceStore.getState()
   const { widthMM: W, heightMM: H, thicknessMM: T, material, origin } = wp

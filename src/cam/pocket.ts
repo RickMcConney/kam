@@ -44,6 +44,20 @@ interface TravelSafetyObstacles {
 
 const MICRO_LIFT_MM = 0.5
 
+// ─── temporary sub-stage profiling (remove once pocket perf work is done) ────────
+// Accumulates wall-clock time per named stage across one generatePocket call.
+const _perf = new Map<string, number>()
+function _timed<T>(stage: string, fn: () => T): T {
+  const t = performance.now()
+  try { return fn() } finally { _perf.set(stage, (_perf.get(stage) ?? 0) + (performance.now() - t)) }
+}
+function _perfReset() { _perf.clear() }
+function _perfLog(label: string) {
+  if (_perf.size === 0) return
+  const parts = [..._perf.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(0)}ms`)
+  console.log(`[perf] pocket/${label} substages: ${parts.join(' | ')}`)
+}
+
 // ─── Shared utilities ──────────────────────────────────────────────────────────
 
 function zPasses(depthMM: number, stepDownMM: number): number[] {
@@ -902,17 +916,24 @@ function buildOffsetLevels(
     ...islands.map(isl => toCP(ensureWinding(isl, false))),
   ]
 
-  // Iterative offset: each pass feeds the previous result into the next.
-  // The geometry shrinks in complexity each step (fewer points as the polygon
-  // collapses), so this is much faster than re-offsetting the original each time.
-  // Clipper correctly grows CW hole paths (islands) with each negative-delta step.
+  // Incremental offset (feed each result into the next) keeps vertex counts low for
+  // MITRE joins — the polygon shrinks in complexity each step, so chaining is cheap.
+  // But ROUND joins ADD arc vertices at every corner on each pass, so chaining makes
+  // the vertex count grow without bound: ~O(passes²) total, seconds of Clipper time
+  // on a big pocket. For round joins, offset the ORIGINAL by a cumulative delta each
+  // pass instead, so every ring's vertex count stays bounded by the source geometry.
+  // Clipper correctly shrinks the CCW boundary and grows CW island holes either way.
+  const fromOriginal = joinType === JoinType.Round
   const maxPasses = Math.ceil((Math.sqrt(Math.abs(signedArea(boundary))) / stepoverMM) * 2) + 50
   const levels: Pt2[][][] = []   // levels[0] = finishing (outermost), levels[last] = innermost
   let current = subject
-  let delta = toolRadius
+  let incDelta = toolRadius   // incremental step from the previous ring (mitre path)
+  let cumDelta = toolRadius   // cumulative offset from the original (round path)
 
   for (let pass = 0; pass < maxPasses; pass++) {
-    const result = inflatePathsD(current, -delta, joinType, EndType.Polygon, 4, 6)
+    const result = fromOriginal
+      ? inflatePathsD(subject, -cumDelta, joinType, EndType.Polygon, 4, 6)
+      : inflatePathsD(current, -incDelta, joinType, EndType.Polygon, 4, 6)
     if (result.length === 0) break
     const level = result
       .map(r => fromCP(r))
@@ -920,8 +941,9 @@ function buildOffsetLevels(
       .map(pts => ensureWinding(pts, wantCCW))
     if (level.length === 0) break
     levels.push(level)
-    current = result
-    delta = stepoverMM
+    if (!fromOriginal) current = result
+    incDelta = stepoverMM
+    cumDelta += stepoverMM
   }
 
   return levels
@@ -1155,7 +1177,7 @@ function spiralPocket(
   const chordTol = Math.max(0.1, Math.min(0.4, tool.diameterMM * 0.04))
 
   // Round joins so the spiral's corners are rounded (smooth), not mitred chamfers.
-  const levels = buildOffsetLevels(boundary, islands, toolRadius, stepoverMM, wantCCW, JoinType.Round)
+  const levels = _timed('buildOffsetLevels', () => buildOffsetLevels(boundary, islands, toolRadius, stepoverMM, wantCCW, JoinType.Round))
   if (levels.length === 0) return incomingPos
 
   const finishingLevel = levels[0]
@@ -1182,7 +1204,7 @@ function spiralPocket(
   // chains (true single-lobe centers) seed a circular center spiral; branch
   // chains morph between their loops without one — their interior is cleared by
   // the lobe chains that split off them.
-  const chains = forestToChains(buildOffsetForest(levels))
+  const chains = _timed('forest+chains', () => forestToChains(buildOffsetForest(levels)))
     .filter(c => c.loopsOuterToInner.length > 0)
 
   let lastPos: Pt2 | null = incomingPos
@@ -1211,10 +1233,10 @@ function spiralPocket(
     // spiral's isotherms, Clipper offset rings are uniformly spaced, so spreading the
     // step over the whole turn keeps coverage identical (verified) while removing the
     // per-revolution ripple a short window leaves.
-    const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 1)
+    const raw = _timed('morphChainToSpiral', () => morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter, 1))
     // Clamp so no point seeds/cuts into an island or past the wall, then split out any
     // snap-flip chords the clamp left behind.
-    const runs = splitClampedSpiral(clampSpiralToRegion(raw, insetBoundary, holes))
+    const runs = _timed('clampSpiral', () => splitClampedSpiral(clampSpiralToRegion(raw, insetBoundary, holes)))
     // Bore concentric with the innermost loop so it meshes with the offset rings — only
     // when its centroid is inside the loop (a non-convex loop's centroid lands outside it
     // and would gouge; those chains ramp in instead), and only for the first run.
@@ -1226,7 +1248,7 @@ function spiralPocket(
       const helixOpt = ri === 0 && canHelix
         ? { clearance: helixClearance, center: innerCentroid, wantCCW }
         : undefined
-      lastPos = emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos, helixOpt)
+      lastPos = _timed('emitSpiralChain', () => emitSpiralChain(spiral, zDepth, travelObstacles, segs, rampDist, passPrevZ, safeZ, tool.diameterMM, lastPos, helixOpt))
       cutAnything = true
     }
   }
@@ -1235,7 +1257,7 @@ function spiralPocket(
 
   // Clean the outer wall with a finishing contour, as the contour strategy does.
   const finishPrevZ = zDepth
-  return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, lastPos)
+  return _timed('finishContour', () => emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, lastPos))
 }
 
 // ─── Field-based curvilinear spiral (Bieterman/Leroy) ────────────────────────────
@@ -1573,11 +1595,11 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
     // clamped spiral could chord across.
     const holes = growIslands(islands, toolRadius, JoinType.Round)
     const cell = Math.max(0.25, toolRadius / 4)
-    const g = solveField([inset], holes, cell)
+    const g = _timed('solveField', () => solveField([inset], holes, cell))
     if (g.tMax <= 0) return null
 
     // Isotherm loops → containment nesting → per-region chains (handles islands).
-    const chains = buildIsothermChains(g, inset, stepoverMM, wantCCW)
+    const chains = _timed('buildIsothermChains', () => buildIsothermChains(g, inset, stepoverMM, wantCCW))
     if (chains.length === 0) return null
     const islandCentroids = islands.map(centroidOfRing)
 
@@ -1601,10 +1623,10 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
       // Localized transition (default fraction): stays on-contour most of each turn
       // so coverage holds even where consecutive isotherms differ in extent (arm
       // tips). The entry handles the worst-case entry engagement.
-      const raw = morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter)
+      const raw = _timed('morphChainToSpiral', () => morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter))
       // Never let the tool centre enter an island or leave the inset wall; split out any
       // snap-flip chords the clamp left behind.
-      const runs = splitClampedSpiral(clampSpiralToRegion(raw, inset, holes))
+      const runs = _timed('clampSpiral', () => splitClampedSpiral(clampSpiralToRegion(raw, inset, holes)))
       // Helix at a true point centre; ramp everywhere else. A branch/saddle chain's
       // start is NOT inside its children's cleared lobes (the lobes are deeper in),
       // so a straight plunge there slots at full engagement — always ramp instead.
@@ -1622,7 +1644,7 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
     // Finish the outer wall and each island wall. Compound inset (round joins, matching
     // this strategy's smooth style) so a near-wall island pinches instead of swinging
     // the tool through the outer wall; islands wound opposite for climb.
-    const finishRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW, JoinType.Round)
+    const finishRings = _timed('compoundFinishRings', () => compoundFinishRings(boundary, islands, toolRadius, wantCCW, JoinType.Round))
     return { chains: out, finishRings }
   })()
 
@@ -1645,7 +1667,7 @@ function fieldSpiralPocket(
   const wantCCW = params.direction === 'conventional'
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
-  const plan = computeFieldSpiralPlan(boundary, islands, tool, params)
+  const plan = _timed('computeFieldSpiralPlan', () => computeFieldSpiralPlan(boundary, islands, tool, params))
   if (!plan) return incomingPos
   const { chains, finishRings } = plan
 
@@ -1757,7 +1779,7 @@ function adaptivePocket(
 
   let outputs: AdaptiveOutput[]
   try {
-    outputs = engine.Execute(stock, geomPaths, [])
+    outputs = _timed('engine.Execute', () => engine.Execute(stock, geomPaths, []))
   } catch (err) {
     console.error('[adaptive] engine failed', err)
     return incomingPos
@@ -1987,6 +2009,7 @@ export function generatePocket(
             ? spiralPocket
             : rasterPocket
 
+  _perfReset()
   let lastPos: Pt2 | null = null
   for (const boundary of boundaries) {
     // Only pass islands whose centroid lies inside this boundary sub-ring.
@@ -2011,7 +2034,9 @@ export function generatePocket(
   const safeZ = params.safeHeightMM ?? 5
   if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
 
-  return simplifyMotion(segs, 0.01)
+  const result = _timed('simplifyMotion', () => simplifyMotion(segs, 0.01))
+  _perfLog(strategy)
+  return result
 }
 
 // Collapse collinear runs of motion: within each maximal run of consecutive segments

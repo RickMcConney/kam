@@ -30,7 +30,14 @@ export function runInWorker<K extends keyof WorkerHandlers>(
 ): Promise<Awaited<ReturnType<WorkerHandlers[K]>>> {
   return new Promise((resolve, reject) => {
     const id = _nextId++
-    _pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+    const _t0 = performance.now()  // [perf] times every worker generation call
+    _pending.set(id, {
+      resolve: (v: unknown) => {
+        console.log(`[perf] worker ${String(fn)}: ${(performance.now() - _t0).toFixed(0)}ms`)
+        ;(resolve as (v: unknown) => void)(v)
+      },
+      reject,
+    })
     getWorker().postMessage({ id, fn, args })
   })
 }

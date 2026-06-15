@@ -4,6 +4,7 @@ import type { PostProcessorProfile } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { feedsForTool } from './feeds'
+import { arcFitPolyline, douglasPeucker, type Pt2 } from './pathFlattener'
 import { sanitizeFileName } from '../io/filename'
 
 const MM_PER_IN = 25.4
@@ -34,12 +35,104 @@ function toOut(mm: number, profile: PostProcessorProfile): number {
   return profile.unitMode === 'in' ? mm / MM_PER_IN : mm
 }
 
+// Tolerance (mm) between the original chords and a fitted arc. Matches the value
+// profile/trochoidal already pass to arcFitPolyline so every strategy arc-fits
+// the same way. Chord vertices sit on the true curve, so genuine arcs fit well
+// inside this; arcFitPolyline's own sagitta/sharp-corner guards reject straights
+// and polygon corners.
+const ARC_FIT_TOLERANCE_MM = 0.1
+
+// Cap how many chords one fitted arc may absorb. arcFitPolyline re-validates the
+// whole candidate span on each growth step, so without a cap a long smooth run
+// (spiral/morph/adaptive pockets emit exactly these) makes arc fitting quadratic
+// in the run length. 256 bounds the cost while still merging genuinely long arcs
+// into just a handful of G2/G3 moves.
+const ARC_FIT_MAX_SPAN = 256
+
+// Simplify the emitted cut moves in two ways so curved and straight passes export
+// compactly. Strategies like profile/trochoidal already arc-fit upstream; this
+// catches the ones (pocket, adaptive, surfacing, …) that only emit flattened
+// line chords:
+//   - dense chords that approximate a *curve* collapse to one G2/G3 arc, and
+//   - dense chords along a *straight* line collapse to a single endpoint move
+//     (a straight cut needs only its start and end).
+//
+// Order matters: arcs are fit first on the original dense points, then only the
+// straight spans between arcs are thinned — thinning first could starve a tight
+// arc of points and trip arcFitPolyline's sharp-corner guard, losing the arc.
+//
+// Only constant-Z runs at full feed are eligible: a G2/G3 move carries a single
+// feed and the emitter ignores per-segment feedScale on arcs, so any segment with
+// a reduced feedScale (e.g. adaptive2 engagement control) is left untouched to
+// preserve its protective feed override. Rapids, travels, plunges/lifts (pure Z
+// moves), tool changes, and segments that already carry an arc pass through
+// verbatim.
+function reconstructArcs(segments: MotionSegment[]): MotionSegment[] {
+  const eligible = (s: MotionSegment) =>
+    !s.rapid && !s.travel && !s.arc && !s.toolChange && (s.feedScale ?? 1) === 1
+  const out: MotionSegment[] = []
+  const n = segments.length
+  let i = 0
+  while (i < n) {
+    const s = segments[i]
+    // A pure vertical move (plunge/lift) shares XY with the prior point; an XY
+    // simplifier would drop it and turn the descent into an angled cut. Keep it,
+    // and every ineligible/first segment, exactly as-is.
+    const verticalMove = i > 0
+      && Math.abs(s.x - segments[i - 1].x) < 1e-6
+      && Math.abs(s.y - segments[i - 1].y) < 1e-6
+    if (i === 0 || !eligible(s) || verticalMove) { out.push(s); i++; continue }
+
+    // Maximal run of eligible cut moves at a constant Z.
+    const z0 = s.z
+    let e = i
+    while (e < n && eligible(segments[e]) && Math.abs(segments[e].z - z0) <= 1e-4) e++
+
+    // arcFitPolyline treats pts[0] as the (already-emitted) current position and
+    // returns one segment per pts[1..]; circular spans collapse to a single arc.
+    const pts: Pt2[] = [[segments[i - 1].x, segments[i - 1].y]]
+    for (let k = i; k < e; k++) pts.push([segments[k].x, segments[k].y])
+
+    // Walk the arc-fit result; RDP-thin each maximal straight span (line moves
+    // between arcs), anchored at the prior emitted point so collinear runs reduce
+    // to their endpoints while arcs are passed through intact.
+    let anchor: Pt2 = pts[0]
+    let lineRun: Pt2[] = []
+    const flushLine = () => {
+      if (lineRun.length === 0) return
+      const simplified = douglasPeucker([anchor, ...lineRun], ARC_FIT_TOLERANCE_MM)
+      for (let k = 1; k < simplified.length; k++) {
+        out.push({ x: simplified[k][0], y: simplified[k][1], z: z0, rapid: false })
+      }
+      anchor = lineRun[lineRun.length - 1]
+      lineRun = []
+    }
+    for (const seg of arcFitPolyline(pts, ARC_FIT_TOLERANCE_MM, ARC_FIT_MAX_SPAN)) {
+      if (seg.arc) {
+        flushLine()
+        out.push({ x: seg.x, y: seg.y, z: z0, rapid: false, arc: seg.arc })
+        anchor = [seg.x, seg.y]
+      } else {
+        lineRun.push([seg.x, seg.y])
+      }
+    }
+    flushLine()
+    i = e
+  }
+  return out
+}
+
 export function generateGcode(
   operations: AnyOperation[],
   toolsById: Record<string, Tool>,
   projectName: string,
   profile: PostProcessorProfile,
 ): string {
+  const _tStart = performance.now()
+  let _arcMs = 0
+  let _segIn = 0
+  let _segOut = 0
+
   const lines: string[] = []
   const date = new Date().toISOString().replace('T', ' ').slice(0, 19)
   const c = (text: string) => { const l = cmt(text, profile.commentStyle); if (l) lines.push(l) }
@@ -115,8 +208,16 @@ export function generateGcode(
     let currentTool = firstTool
     let currentFeeds = firstFeeds
 
-    for (let i = 0; i < op.segments.length; i++) {
-      const seg = op.segments[i]
+    // Collapse dense straight-line cut runs into G2/G3 arcs (skipped if the post
+    // can't output arcs — they'd just be expanded straight back to lines).
+    const _ta = performance.now()
+    const segs = profile.outputArcs ? reconstructArcs(op.segments) : op.segments
+    _arcMs += performance.now() - _ta
+    _segIn += op.segments.length
+    _segOut += segs.length
+
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i]
 
       // Tool-change marker: emit tool-change gcode, update current tool, no movement
       if (seg.toolChange) {
@@ -197,6 +298,8 @@ export function generateGcode(
   }
 
   if (profile.endGcode.trim()) lines.push(...profile.endGcode.split('\n'))
+
+  console.log(`[perf] generateGcode total ${(performance.now() - _tStart).toFixed(0)}ms | arc-fit ${_arcMs.toFixed(0)}ms | segs ${_segIn}→${_segOut}`)
 
   return lines.join('\n')
 }
