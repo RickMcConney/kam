@@ -26,8 +26,7 @@ export interface PostProcessorProfile {
 
 // The RS274 motion/arc grammar is shared by every controller we target; only the
 // header/footer, comment style, tool-change, and spindle lines differ. So each
-// preset overrides just those fields on top of this base. This mirrors PureCut's
-// per-controller JSON definitions, expressed through our existing template schema.
+// preset overrides just those fields on top of this base. 
 const RS274_MOTION = {
   spindleOnTemplate: 'M3 S{s}',
   spindleOffGcode: 'M5',

@@ -71,7 +71,32 @@ function patchSurfaceShader(
         uniform float uThickness;
         varying float vH;`)
       .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
+        // Cut all the way through the stock (height collapsed to 0) → drop the
+        // fragment so the scene background shows through the hole instead of a floor.
+        if (vH <= 0.001) discard;
         diffuseColor.rgb = mix(uWood, uCut, vH < uThickness - 0.001 ? 1.0 : 0.0);`)
+  }
+}
+
+// The stock bottom over the cut region is a separate flat plane at Y=0 (reusing the
+// surface grid, undisplaced). It carries the wood colour like the rest of the block,
+// but discards wherever the column is fully cut so a through-hole becomes a real hole
+// rather than exposing a wood-coloured floor.
+function patchFloorShader(mat: THREE.MeshLambertMaterial, texture: THREE.DataTexture) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uHeight = { value: texture }
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        uniform sampler2D uHeight;
+        attribute vec2 aHUv;
+        varying float vH;`)
+      .replace('#include <begin_vertex>', /* glsl */ `#include <begin_vertex>
+        vH = texture2D(uHeight, aHUv).r;`)
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        varying float vH;`)
+      .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
+        if (vH <= 0.001) discard;`)
   }
 }
 
@@ -136,6 +161,7 @@ export class HeightfieldMaterial {
   private readonly _texture: THREE.DataTexture
   private readonly _surfaceGeo: THREE.BufferGeometry
   private readonly _surfaceMat: THREE.MeshLambertMaterial
+  private readonly _floorMat: THREE.MeshLambertMaterial
   private readonly _stockGeo: THREE.BufferGeometry
   private readonly _stockMat: THREE.MeshLambertMaterial
 
@@ -223,6 +249,11 @@ export class HeightfieldMaterial {
     this._surfaceMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
     patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodColor, cutColor)
 
+    // Flat bottom of the stock over the cut region — reuses the surface grid
+    // (undisplaced at Y=0) and punches through where the cut goes clean through.
+    this._floorMat = new THREE.MeshLambertMaterial({ color: woodColor, side: THREE.DoubleSide })
+    patchFloorShader(this._floorMat, this._texture)
+
     // Static stock geometry (wood): perimeter walls + bottom face, plus a flat
     // "apron" filling the uncut stock area around the gridded cut region so the
     // block still reads as full-size solid stock.
@@ -231,6 +262,7 @@ export class HeightfieldMaterial {
 
     this.group = new THREE.Group()
     this.group.add(new THREE.Mesh(this._surfaceGeo, this._surfaceMat))
+    this.group.add(new THREE.Mesh(this._surfaceGeo, this._floorMat))
     this.group.add(new THREE.Mesh(this._stockGeo, this._stockMat))
   }
 
@@ -293,6 +325,7 @@ export class HeightfieldMaterial {
   dispose() {
     this._surfaceGeo.dispose()
     this._surfaceMat.dispose()
+    this._floorMat.dispose()
     this._stockGeo.dispose()
     this._stockMat.dispose()
     this._texture.dispose()
@@ -402,23 +435,29 @@ function buildStock(
     idx.push(b, b + 1, b + 2, b, b + 2, b + 3)
   }
 
-  // Bottom + perimeter walls of the full stock.
-  quad([0, 0, 0], [W, 0, 0], [W, 0, -H], [0, 0, -H])      // bottom (y=0)
+  // Perimeter walls of the full stock.
   quad([0, 0, 0], [W, 0, 0], [W, T, 0], [0, T, 0])         // front  z=0
   quad([W, 0, 0], [W, 0, -H], [W, T, -H], [W, T, 0])       // right  x=W
   quad([W, 0, -H], [0, 0, -H], [0, T, -H], [W, T, -H])     // back   z=-H
   quad([0, 0, -H], [0, 0, 0], [0, T, 0], [0, T, -H])       // left   x=0
 
-  // Flat apron strips at the top (y=T), filling the stock minus the cut region.
-  const apron = (rx0: number, ry0: number, rx1: number, ry1: number) => {
+  // Flat apron strips, filling the stock minus the cut region. The top apron (y=T)
+  // is the uncut surface around the gridded region; the bottom apron (y=0) is the
+  // stock underside there. The cut region's top/bottom come from the heightfield
+  // surface and floor meshes, so it's left open here (the floor mesh punches the
+  // hole on a through-cut).
+  const apron = (y: number) => (rx0: number, ry0: number, rx1: number, ry1: number) => {
     if (rx1 - rx0 > 1e-6 && ry1 - ry0 > 1e-6) {
-      quad([rx0, T, -ry0], [rx1, T, -ry0], [rx1, T, -ry1], [rx0, T, -ry1])
+      quad([rx0, y, -ry0], [rx1, y, -ry0], [rx1, y, -ry1], [rx0, y, -ry1])
     }
   }
-  apron(0, 0, gx0, H)        // left of region (full height)
-  apron(gx1, 0, W, H)        // right of region (full height)
-  apron(gx0, 0, gx1, gy0)    // below region (middle column)
-  apron(gx0, gy1, gx1, H)    // above region (middle column)
+  for (const y of [T, 0]) {
+    const a = apron(y)
+    a(0, 0, gx0, H)        // left of region (full height)
+    a(gx1, 0, W, H)        // right of region (full height)
+    a(gx0, 0, gx1, gy0)    // below region (middle column)
+    a(gx0, gy1, gx1, H)    // above region (middle column)
+  }
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
