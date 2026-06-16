@@ -11,7 +11,9 @@ import {
   fromMM,
   toMM,
 } from '../store/workpieceStore'
+import { SPINDLE_INFO, type SpindleType } from '../store/spindle'
 import { NumericInput } from '../components/NumericInput'
+import { rigidityInfo } from '../rigidity'
 
 function DimInput({
   label,
@@ -143,6 +145,11 @@ const AUTO_FEED_HELP =
   "lowered instead (a warning is added to the G-code — set it by hand if your machine has " +
   "no spindle control). When off, the tool's own feeds and your step-down are used."
 
+const RIGIDITY_HELP =
+  "How stiff your machine is. Higher rigidity allows faster feeds and deeper step-downs; " +
+  "lower values back them off so a flexy gantry doesn't chatter or deflect. Pick the level " +
+  "that matches your frame — it scales the auto feeds & speeds."
+
 const SPINDLE_HELP =
   "Auto mode picks a spindle speed in this range — as fast as needed to reach the max feed " +
   "(shorter jobs). Set the min to your spindle's real floor (routers ≈10000) and lower the " +
@@ -153,10 +160,10 @@ export default function WorkpiecePanel() {
   const {
     widthMM, heightMM, thicknessMM, units, origin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM, safeHeightMM,
-    machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
+    machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, spindleType, autoFeedEnabled,
     setWidth, setHeight, setThickness, setOrigin, setMaterial,
     setTableLimitWidth, setTableLimitHeight, setTableLimitDepth, setSafeHeight,
-    setMachineRigidity, setMaxFeed, setMinSpindleRpm, setMaxSpindleRpm, setAutoFeedEnabled,
+    setMachineRigidity, setMaxFeed, setMinSpindleRpm, setMaxSpindleRpm, setSpindleType, setAutoFeedEnabled,
   } = useWorkpieceStore()
 
   return (
@@ -206,10 +213,21 @@ export default function WorkpiecePanel() {
             </span>
           </label>
           <InfoPopover text={AUTO_FEED_HELP} />
+          {(() => {
+            const rig = rigidityInfo(machineRigidity)
+            return (
+              <span className="ml-auto" title={`Rigidity ${machineRigidity} · ${RIGIDITY_LABELS[machineRigidity]}`}>
+                <rig.Icon size={40} className={rig.color} />
+              </span>
+            )
+          })()}
         </div>
 
         <div className="mb-3">
-          <label className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Machine Rigidity</label>
+          <div className="flex items-center gap-2 mb-1">
+            <label className="text-gray-500 dark:text-neutral-400 text-body">Machine Rigidity</label>
+            <InfoPopover text={RIGIDITY_HELP} />
+          </div>
           <select
             value={machineRigidity}
             onChange={(e) => setMachineRigidity(parseInt(e.target.value))}
@@ -241,6 +259,24 @@ export default function WorkpiecePanel() {
         <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
           Hard ceiling — generated feeds never exceed this, even when auto is off.
         </p>
+
+        <div className="mt-3 mb-1">
+          <label className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Spindle / Router</label>
+          <select
+            value={spindleType}
+            onChange={(e) => setSpindleType(e.target.value as SpindleType)}
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
+          >
+            {(Object.keys(SPINDLE_INFO) as SpindleType[]).map((t) => (
+              <option key={t} value={t}>{SPINDLE_INFO[t].label}</option>
+            ))}
+          </select>
+          {SPINDLE_INFO[spindleType].dial && (
+            <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
+              Spindle speeds also show the equivalent dial setting (1–6) in the tool table and simulation.
+            </p>
+          )}
+        </div>
 
         {([
           ['Min Spindle', minSpindleRpm, setMinSpindleRpm] as const,

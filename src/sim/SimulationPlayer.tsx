@@ -3,6 +3,7 @@ import { ICON } from '../theme'
 import { Play, Pause, Square, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
+import { spindleDialLabel } from '../store/spindle'
 import type { ToolType } from '../store/toolStore'
 import { targetChipLoad, rigidityFeedFactor } from '../cam/feeds'
 import { getCurrentSegIdx, interpolatePos, segTool, formatSimTime } from './gcodeParser'
@@ -37,6 +38,7 @@ export default function SimulationPlayer() {
   const material = useWorkpieceStore((s) => s.material)
   const machineRigidity = useWorkpieceStore((s) => s.machineRigidity)
   const minSpindleRpm = useWorkpieceStore((s) => s.minSpindleRpm)
+  const spindleType = useWorkpieceStore((s) => s.spindleType)
   const { play, pause, stop, seekToTime, setSpeed, toggleGcodeViewer, clearSim } = useSimStore()
 
   // Animation loop — reads fresh store state each frame to avoid stale closures
@@ -209,6 +211,7 @@ export default function SimulationPlayer() {
             title={spindleHint || undefined}
           >
             Spindle: {spindleRpm > 0 ? Math.round(spindleRpm) : '—'}
+            {spindleDialLabel(spindleType, spindleRpm) && ` · ${spindleDialLabel(spindleType, spindleRpm)}`}
             {spindleTooFast && ` (${Math.round(surfaceSpeedMMin)} m/min)`}
           </span>
           <span className="flex items-center gap-1.5">

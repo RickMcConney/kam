@@ -1,4 +1,4 @@
-import { Copy, Plus, Trash2 } from 'lucide-react'
+import { Copy, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { ICON } from '../theme'
 import {
   usePostProcessorStore,
@@ -66,10 +66,10 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Start G-code" hint="Emitted once at job start">
-          <textarea value={profile.startGcode} onChange={(e) => up({ startGcode: e.target.value })} className={textareaCls} rows={4} />
+          <textarea value={profile.startGcode} onChange={(e) => up({ startGcode: e.target.value })} className={textareaCls} rows={8} />
         </Field>
         <Field label="End G-code" hint="Emitted once at job end">
-          <textarea value={profile.endGcode} onChange={(e) => up({ endGcode: e.target.value })} className={textareaCls} rows={4} />
+          <textarea value={profile.endGcode} onChange={(e) => up({ endGcode: e.target.value })} className={textareaCls} rows={8} />
         </Field>
       </div>
 
@@ -81,7 +81,7 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
         <Field label="Spindle on" hint="Placeholders: {s} = spindle speed">
           <input type="text" value={profile.spindleOnTemplate} onChange={(e) => up({ spindleOnTemplate: e.target.value })} className={inputCls} />
         </Field>
-        <Field label="Spindle off">
+        <Field label="Spindle off" hint="Emitted to stop the spindle">
           <input type="text" value={profile.spindleOffGcode} onChange={(e) => up({ spindleOffGcode: e.target.value })} className={inputCls} />
         </Field>
       </div>
@@ -117,7 +117,7 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
 }
 
 export default function PostProcessorPanel() {
-  const { profiles, activeId, setActiveId, addProfile, duplicateProfile, deleteProfile } = usePostProcessorStore()
+  const { profiles, activeId, setActiveId, addProfile, duplicateProfile, deleteProfile, resetProfile } = usePostProcessorStore()
   const active = profiles.find((p) => p.id === activeId) ?? profiles[0]
 
   return (
@@ -158,9 +158,25 @@ export default function PostProcessorPanel() {
       {/* Editor */}
       <div className="flex-1 overflow-y-auto">
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-300 dark:border-neutral-700 flex-shrink-0">
-          <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{active.name}</span>
-          <span className="text-label text-gray-400 dark:text-neutral-500">
-            Placeholders: {'{x}'} {'{y}'} {'{z}'} {'{f}'} {'{s}'}
+          <span className="flex items-center gap-2">
+            <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{active.name}</span>
+            {active.builtin && (
+              <span className="text-label text-gray-400 dark:text-neutral-500 border border-gray-300 dark:border-neutral-600 rounded px-1.5 py-0.5 uppercase tracking-wider">Built-in</span>
+            )}
+          </span>
+          <span className="flex items-center gap-3">
+            {active.builtin && (
+              <button
+                onClick={() => resetProfile(active.id)}
+                title="Reset this built-in profile to its factory defaults"
+                className="flex items-center gap-1 text-label text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+              >
+                <RotateCcw size={ICON.sm} /> Reset
+              </button>
+            )}
+            <span className="text-label text-gray-400 dark:text-neutral-500">
+              Placeholders: {'{x}'} {'{y}'} {'{z}'} {'{f}'} {'{s}'}
+            </span>
           </span>
         </div>
         <ProfileEditor profile={active} />

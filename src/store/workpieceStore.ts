@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { SpindleType } from './spindle'
 
 export type Units = 'mm' | 'in'
 
@@ -66,6 +67,7 @@ interface WorkpieceState {
   maxFeedMmMin: number         // hard ceiling the machine can sustain — never exceeded
   minSpindleRpm: number        // machine's lowest usable spindle speed (clamp floor)
   maxSpindleRpm: number        // machine's top spindle speed — auto may raise rpm up to this
+  spindleType: SpindleType     // router/spindle model — drives the RPM→dial readout
   autoFeedEnabled: boolean     // when true, feeds/step-down are computed (cam/feeds.ts)
   setWidth: (mm: number) => void
   setHeight: (mm: number) => void
@@ -81,6 +83,7 @@ interface WorkpieceState {
   setMaxFeed: (mm: number) => void
   setMinSpindleRpm: (rpm: number) => void
   setMaxSpindleRpm: (rpm: number) => void
+  setSpindleType: (t: SpindleType) => void
   setAutoFeedEnabled: (v: boolean) => void
 }
 
@@ -101,6 +104,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       maxFeedMmMin: 3000,
       minSpindleRpm: 8000,
       maxSpindleRpm: 24000,
+      spindleType: 'vfd',
       autoFeedEnabled: false,
       setWidth: (mm) => set({ widthMM: mm }),
       setHeight: (mm) => set({ heightMM: mm }),
@@ -116,6 +120,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       setMaxFeed: (mm) => set({ maxFeedMmMin: mm }),
       setMinSpindleRpm: (rpm) => set({ minSpindleRpm: rpm }),
       setMaxSpindleRpm: (rpm) => set({ maxSpindleRpm: rpm }),
+      setSpindleType: (t) => set({ spindleType: t }),
       setAutoFeedEnabled: (v) => set({ autoFeedEnabled: v }),
     }),
     { name: 'freazykam-workpiece' }
