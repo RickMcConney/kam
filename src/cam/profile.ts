@@ -392,10 +392,16 @@ export function generateProfile(
     }
 
     const oriented = ensureWinding(rawPts, wantCCW)
-    const circle = fitCircle(oriented)
+    // Only take the true-arc circle fast-path when there are no tabs. The fast-path
+    // emits the loop as one or two uninterrupted arcs, which can't carry the per-tab
+    // Z-lifts. With tabs present we fall through to the generic closed-polygon path
+    // (polylinePassWithTabs), which raises the tool over each tab; gcode.ts then
+    // re-fits the tab-free spans back into G2/G3 arcs, so a tabbed circle still
+    // exports as arcs between the tabs.
+    const circle = (tabs && tabs.length > 0) ? null : fitCircle(oriented)
 
     if (circle) {
-      // Circle pass — emitted as true arcs. Tabs aren't supported here (rare edge case).
+      // Circle pass — emitted as true arcs (only when no tabs apply).
       const { cx, cy, r } = circle
       let sx: number, sy: number
       if (params.startNear) {
