@@ -3,10 +3,10 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { useSimStore } from '../store/simStore'
 import { useToolpathStore } from '../store/toolpathStore'
-import { useWorkpieceStore, type Material } from '../store/workpieceStore'
+import { useWorkpieceStore, zDatumOffsetMM, type Material } from '../store/workpieceStore'
 import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
-import { getCurrentSegIdx, interpolatePos, segTool } from '../sim/gcodeParser'
+import { getCurrentSegIdx, interpolatePos, segTool, type SimSegment } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
 import { getBBox } from '../canvas/selectionUtils'
 import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE, MATERIAL_COLORS } from '../colors'
@@ -26,6 +26,14 @@ import type { StlModelBounds } from '../importers/stlImporter'
 
 function cncToThree(x: number, y: number, z: number, T: number): [number, number, number] {
   return [x, T + z, -y]
+}
+
+// Converts datum-relative sim segment Z back to top-referenced (Z=0 = stock top,
+// negative = in material). Uses genZOff — the offset captured at G-code generation
+// time — so results stay correct even if zOrigin changes without regenerating.
+function normalizeSimZ(segments: SimSegment[], zOff: number): SimSegment[] {
+  if (!zOff) return segments
+  return segments.map((s) => ({ ...s, z: s.z - zOff, prevZ: s.prevZ - zOff }))
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -198,6 +206,7 @@ interface SceneRefs {
   voxelCutMesh:  THREE.InstancedMesh | null  // carved voxels, yellow top/sides + wood bottom
   voxelMat: VoxelMaterial | null
   heightfield: HeightfieldMaterial | null    // alternate GPU heightfield strategy
+  simSegments: SimSegment[]                  // top-referenced copy for applyUpTo (uses genZOff)
   simStrategy: SimStrategy
   stlGeoCache: Map<string, StlGeoCacheEntry>  // path.id → parsed raw geometry
   rafId: number
@@ -289,6 +298,7 @@ export default function ThreeView() {
       voxelCutMesh:  null,
       voxelMat: null,
       heightfield: null,
+      simSegments: [],
       // Heightfield is the active strategy. The voxel path (VoxelMaterial,
       // rebuildVoxels, syncDirtyInstances) is retained but inactive — set this to
       // 'voxel' to bring it back.
@@ -374,6 +384,9 @@ export default function ThreeView() {
         const wp     = useWorkpieceStore.getState()
         const T      = wp.thicknessMM
         const org    = originWorldXY(wp.origin, wp.widthMM, wp.heightMM)
+        // Use the offset captured at G-code generation time (not the current workpiece
+        // zOrigin) so the tool stays correct even if zOrigin changed without regenerating.
+        const zOff   = sim.genZOff
 
         // Rebuild tool mesh if the current segment uses a different tool type/size
         const activeSeg = sim.segments[segIdx]
@@ -397,14 +410,14 @@ export default function ThreeView() {
           const toolVis = showToolRef.current
           if (refs.toolMesh.visible !== toolVis) { refs.toolMesh.visible = toolVis; refs.renderNeeded = true }
           if (pos && toolVis) {
-            const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z, T)
+            const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z - zOff, T)
             refs.toolMesh.position.set(tx, ty, tz)
             refs.renderNeeded = true
           }
         }
 
         if (followToolRef.current && pos) {
-          const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z, T)
+          const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z - zOff, T)
           refs.controls.target.set(tx, ty, tz)
         }
 
@@ -415,7 +428,7 @@ export default function ThreeView() {
             : 1
           // Voxel strategy retained but inactive:
           // if (refs.voxelMat) refs.voxelMat.applyUpTo(sim.segments, segIdx, t)
-          refs.heightfield.applyUpTo(sim.segments, segIdx, t)
+          refs.heightfield.applyUpTo(refs.simSegments, segIdx, t)
         }
       } else {
         if (refs.toolMesh && refs.toolMesh.visible) { refs.toolMesh.visible = false; refs.renderNeeded = true }
@@ -561,7 +574,9 @@ function rebuildWorkpiece(refs: SceneRefs) {
   const { widthMM: W, heightMM: H, thicknessMM: T, origin } = wp
   const org = originWorldXY(origin, W, H)
 
-  refs.axesHelper.position.set(org.x, T, -org.y)
+  // Pin the origin gizmo at the chosen Z datum: top surface (Y=T) for top-of-stock,
+  // stock bottom (Y=0) for bottom-of-stock.
+  refs.axesHelper.position.set(org.x, T - zDatumOffsetMM(wp.zOrigin, T), -org.y)
 
   refs.scene.remove(refs.gridHelper)
   refs.gridHelper.geometry.dispose()
@@ -616,11 +631,13 @@ function rebuildHeightfield(refs: SceneRefs) {
   disposeHeightfield(refs)
 
   const wp  = useWorkpieceStore.getState()
-  const { widthMM: W, heightMM: H, thicknessMM: T, material, origin } = wp
+  const { widthMM: W, heightMM: H, thicknessMM: T, material, origin, zOrigin } = wp
   const org = originWorldXY(origin, W, H)
-  const { segments, toolStates } = useSimStore.getState()
+  const { segments: rawSegs, toolStates, genZOff } = useSimStore.getState()
+  const segments = normalizeSimZ(rawSegs, genZOff)
+  refs.simSegments = segments
 
-  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, materialColor(material), SIM_CUT_COLOR_THREE)
+  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, materialColor(material), SIM_CUT_COLOR_THREE, zOrigin)
   refs.heightfield = hf
   refs.scene.add(hf.group)
   console.log(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
@@ -633,8 +650,8 @@ function rebuildVoxels(refs: SceneRefs) {
   const { widthMM: W, heightMM: H, thicknessMM: T, material, origin } = wp
   const org = originWorldXY(origin, W, H)
 
-  const segments = useSimStore.getState().segments
-  const toolStates = useSimStore.getState().toolStates
+  const { segments: rawSegs, toolStates, genZOff } = useSimStore.getState()
+  const segments = normalizeSimZ(rawSegs, genZOff)
 
   // Target 0.05 mm cells; the budget refinement in VoxelMaterial will scale up
   // if the actual voxel count would exceed 2M.

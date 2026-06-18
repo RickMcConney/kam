@@ -32,6 +32,7 @@ export default function SimulationPlayer() {
   const elapsedTimeS = useSimStore((s) => s.elapsedTimeS)
   const totalTimeS = useSimStore((s) => s.totalTimeS)
   const segments = useSimStore((s) => s.segments)
+  const genZOff = useSimStore((s) => s.genZOff)
   const toolStates = useSimStore((s) => s.toolStates)
   const gcode = useSimStore((s) => s.gcode)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
@@ -81,7 +82,8 @@ export default function SimulationPlayer() {
   // ramp-in, plunges, helical entries — run a deliberately reduced feed and have
   // light engagement, so judging them as steady-state would falsely read "rubbing".
   const descending = !!curSeg && curSeg.z < curSeg.prevZ - 1e-3
-  const cutting = !!curSeg && !curSeg.rapid && !!pos && pos.z < -0.001 && !descending
+  // pos.z is datum-relative; subtract genZOff to get top-referenced Z for the in-material check.
+  const cutting = !!curSeg && !curSeg.rapid && !!pos && (pos.z - genZOff) < -0.001 && !descending
   const actualFz = ts && cutting && spindleRpm > 0 && ts.fluteCount > 0
     ? curSeg!.feedRateMmMin / (spindleRpm * ts.fluteCount)
     : null

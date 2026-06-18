@@ -12,7 +12,7 @@ export const PROJECT_VERSION = 1
 export function buildProjectData() {
   const { name } = useProjectStore.getState()
   const {
-    widthMM, heightMM, thicknessMM, units, origin, material,
+    widthMM, heightMM, thicknessMM, units, origin, zOrigin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
     machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
   } = useWorkpieceStore.getState()
@@ -32,7 +32,7 @@ export function buildProjectData() {
     version: PROJECT_VERSION,
     name,
     workpiece: {
-      widthMM, heightMM, thicknessMM, units, origin, material,
+      widthMM, heightMM, thicknessMM, units, origin, zOrigin, material,
       tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
       machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
     },

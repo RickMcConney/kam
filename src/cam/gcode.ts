@@ -1,7 +1,7 @@
 import type { AnyOperation, MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { PostProcessorProfile } from '../store/postProcessorStore'
-import { useWorkpieceStore } from '../store/workpieceStore'
+import { useWorkpieceStore, zDatumOffsetMM } from '../store/workpieceStore'
 import { SPINDLE_INFO, spindleDialLabel } from '../store/spindle'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { feedsForTool } from './feeds'
@@ -143,8 +143,11 @@ export function generateGcode(
 
   // Segments are stored in workpiece-local coords (0→W, 0→H).
   // G-code must be relative to the machine zero (the origin point the user set on the workpiece).
-  const { widthMM, heightMM, origin, spindleType } = useWorkpieceStore.getState()
+  const { widthMM, heightMM, thicknessMM, origin, zOrigin, spindleType } = useWorkpieceStore.getState()
   const org = originWorldXY(origin, widthMM, heightMM)
+  // Z datum offset: segment Z is top-referenced (Z=0 at top surface). For a bottom-of-stock
+  // origin, shift the emitted Z up by the stock thickness so Z=0 lands at the stock bottom.
+  const zOff = zDatumOffsetMM(zOrigin, thicknessMM)
 
   // Comment telling the operator which dial detent to set on a fixed-speed trim
   // router (DeWalt/Makita) for the given RPM. Empty for VFD/manual spindles.
@@ -158,6 +161,7 @@ export function generateGcode(
   c(`Generated: ${date}`)
   c(`Post-processor: ${profile.name}`)
   c(`Origin: ${origin}  offset X${f(org.x)} Y${f(org.y)}`)
+  c(`Z origin: ${zOrigin} of stock (Z0 = ${zOrigin === 'bottom' ? 'stock bottom' : 'top surface'})`)
   if (profile.startGcode.trim()) lines.push(...profile.startGcode.split('\n'))
   lines.push('')
 
@@ -266,7 +270,7 @@ export function generateGcode(
       // Convert workpiece-local → machine-relative by subtracting origin offset
       const x = f(toOut(seg.x - org.x, profile), coordDecimals)
       const y = f(toOut(seg.y - org.y, profile), coordDecimals)
-      const z = f(toOut(seg.z, profile), coordDecimals)
+      const z = f(toOut(seg.z + zOff, profile), coordDecimals)
 
       if (seg.rapid) {
         lines.push(sub(profile.rapidTemplate, { x, y, z }))
@@ -312,7 +316,18 @@ export function generateGcode(
     lines.push('')
   }
 
-  if (profile.endGcode.trim()) lines.push(...profile.endGcode.split('\n'))
+  if (profile.endGcode.trim()) {
+    // Shift literal Z values in endGcode by the datum offset so a hardcoded retract like
+    // "G0 Z10" becomes "G0 Z22" when bottom-of-stock (T=12) is selected.
+    const endBlock = zOff
+      ? (() => {
+          const decs = profile.unitMode === 'in' ? 3 : 2
+          const zOffOut = toOut(zOff, profile)
+          return profile.endGcode.replace(/\bZ(-?[\d.]+)/g, (_, n) => `Z${f(parseFloat(n) + zOffOut, decs)}`)
+        })()
+      : profile.endGcode
+    lines.push(...endBlock.split('\n'))
+  }
 
   console.log(`[perf] generateGcode total ${(performance.now() - _tStart).toFixed(0)}ms | arc-fit ${_arcMs.toFixed(0)}ms | segs ${_segIn}→${_segOut}`)
 

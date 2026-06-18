@@ -9,7 +9,7 @@ import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
-import { effectiveStepDownMM } from './feeds'
+import { effectiveStepDownMM, trochoidalEngagementFraction } from './feeds'
 
 export async function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
@@ -130,7 +130,8 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
       setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
-        side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
+        side: op.side, depthMM: op.depthMM,
+        stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM, trochoidalEngagementFraction(tool, op.trochStepMM)),
         direction: op.direction, trochStepMM: op.trochStepMM, trochRadiusMM: op.trochRadiusMM,
         finishingPass: op.finishingPass, rampIn: op.rampIn, startNear: op.entryHint, safeHeightMM,
       }))

@@ -9,6 +9,19 @@ export type OriginPosition =
   | 'mid-left' | 'center' | 'mid-right'
   | 'bottom-left' | 'bottom-center' | 'bottom-right'
 
+// Where Z=0 sits on the stock. 'top' (default) = Z=0 at the top surface, cuts go
+// negative. 'bottom' = Z=0 at the stock bottom, so the top surface is at +thickness.
+// Internally all toolpath Z stays top-referenced; this only shifts the emitted G-code
+// (and the 3D datum readout) by the stock thickness. See zDatumOffsetMM.
+export type ZOrigin = 'top' | 'bottom'
+
+// Machine-Z offset to add to top-referenced segment Z to express it in the chosen Z
+// datum: 0 for top-of-stock, +thickness for bottom-of-stock. The Z analog of
+// originWorldXY (src/canvas/layers/WorkpieceLayer.tsx) for the XY origin.
+export function zDatumOffsetMM(zOrigin: ZOrigin, thicknessMM: number): number {
+  return zOrigin === 'bottom' ? thicknessMM : 0
+}
+
 export type Material =
   | 'pine' | 'cedar' | 'oak' | 'maple' | 'walnut' | 'cherry'
   | 'mdf' | 'plywood' | 'hdpe' | 'aluminum' | 'brass' | 'other'
@@ -58,6 +71,7 @@ interface WorkpieceState {
   thicknessMM: number
   units: Units
   origin: OriginPosition
+  zOrigin: ZOrigin
   material: Material
   tableLimitWidthMM: number
   tableLimitHeightMM: number
@@ -74,6 +88,7 @@ interface WorkpieceState {
   setThickness: (mm: number) => void
   setUnits: (u: Units) => void
   setOrigin: (o: OriginPosition) => void
+  setZOrigin: (o: ZOrigin) => void
   setMaterial: (m: Material) => void
   setTableLimitWidth: (mm: number) => void
   setTableLimitHeight: (mm: number) => void
@@ -95,6 +110,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       thicknessMM: 18,
       units: 'mm',
       origin: 'bottom-left',
+      zOrigin: 'top',
       material: 'mdf',
       tableLimitWidthMM: 800,
       tableLimitHeightMM: 600,
@@ -111,6 +127,7 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       setThickness: (mm) => set({ thicknessMM: mm }),
       setUnits: (u) => set({ units: u }),
       setOrigin: (o) => set({ origin: o }),
+      setZOrigin: (o) => set({ zOrigin: o }),
       setMaterial: (m) => set({ material: m }),
       setTableLimitWidth: (mm) => set({ tableLimitWidthMM: mm }),
       setTableLimitHeight: (mm) => set({ tableLimitHeightMM: mm }),

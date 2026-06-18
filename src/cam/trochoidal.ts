@@ -58,20 +58,91 @@ function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
   return pts
 }
 
-// Unit tangent at arc-length s along a polyline.
-function tangentAt(pts: Pt2[], lens: number[], s: number): [number, number] {
-  s = Math.max(0, Math.min(lens[lens.length - 1], s))
-  for (let i = 1; i < pts.length; i++) {
-    if (lens[i] >= s - 1e-10) {
-      const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1]
-      const len = Math.hypot(dx, dy)
-      if (len > 1e-10) return [dx / len, dy / len]
+// Build a smooth (G1-continuous) unit-tangent sampler for a closed polyline.
+// A per-segment tangent steps discontinuously at every vertex; over a rounded corner's
+// many short facets those steps rotate the trochoidal perpendicular and staircase the
+// loop stems. Instead we compute a tangent at each vertex (blend of its two edges) and
+// angle-interpolate along each segment, so direction rotates continuously through corners.
+// `closed` has a duplicate closing vertex (closed[last] === closed[0]).
+function makeTangentSampler(closed: Pt2[], lens: number[]): (s: number) => [number, number] {
+  const m = closed.length - 1                 // unique vertices / edges
+  const edgeAng: number[] = []
+  for (let j = 0; j < m; j++) {
+    edgeAng.push(Math.atan2(closed[j + 1][1] - closed[j][1], closed[j + 1][0] - closed[j][0]))
+  }
+  // Angle bisector at each vertex from its incoming and outgoing edge directions.
+  const vertAng: number[] = []
+  for (let j = 0; j < m; j++) {
+    const aPrev = edgeAng[(j - 1 + m) % m]
+    const aCur = edgeAng[j]
+    let d = aCur - aPrev
+    while (d <= -Math.PI) d += 2 * Math.PI
+    while (d > Math.PI) d -= 2 * Math.PI
+    vertAng.push(aPrev + d / 2)
+  }
+  vertAng.push(vertAng[0])                     // for the duplicate closing vertex
+
+  const total = lens[lens.length - 1]
+  return (s: number): [number, number] => {
+    s = Math.max(0, Math.min(total, s))
+    for (let i = 1; i < closed.length; i++) {
+      if (lens[i] >= s - 1e-10) {
+        const segLen = lens[i] - lens[i - 1]
+        const t = segLen > 1e-10 ? (s - lens[i - 1]) / segLen : 0
+        const a0 = vertAng[i - 1]
+        let d = vertAng[i] - a0
+        while (d <= -Math.PI) d += 2 * Math.PI
+        while (d > Math.PI) d -= 2 * Math.PI
+        const a = a0 + d * t
+        return [Math.cos(a), Math.sin(a)]
+      }
+    }
+    return [Math.cos(vertAng[m]), Math.sin(vertAng[m])]
+  }
+}
+
+// Replace each sharp corner of a closed polygon with a tangent fillet arc.
+// Trochoidal loops are placed by arc-length along this center path; a zero-length
+// mitered vertex makes the tangent (and thus loop direction) snap discontinuously,
+// producing sharp kinks/straight chords across corners. Spreading the turn over a
+// short arc lets the tangent rotate gradually so loops stay round and evenly spaced.
+// Roughing-only smoothing: the wall corner is recovered exactly by the finishing pass.
+function roundPolygonCorners(poly: Pt2[], radius: number): Pt2[] {
+  const n = poly.length
+  if (n < 3 || radius <= 1e-6) return poly
+  const out: Pt2[] = []
+  for (let i = 0; i < n; i++) {
+    const prev = poly[(i - 1 + n) % n]
+    const cur = poly[i]
+    const next = poly[(i + 1) % n]
+    let ix = cur[0] - prev[0], iy = cur[1] - prev[1]
+    let ox = next[0] - cur[0], oy = next[1] - cur[1]
+    const inLen = Math.hypot(ix, iy), outLen = Math.hypot(ox, oy)
+    if (inLen < 1e-9 || outLen < 1e-9) { out.push(cur); continue }
+    ix /= inLen; iy /= inLen; ox /= outLen; oy /= outLen
+    const cross = ix * oy - iy * ox
+    const dot = Math.max(-1, Math.min(1, ix * ox + iy * oy))
+    const turn = Math.atan2(cross, dot)         // signed exterior turn angle
+    if (Math.abs(turn) < 0.05) { out.push(cur); continue }   // ~3°, effectively straight
+    const t = Math.min(radius, 0.5 * inLen, 0.5 * outLen)    // trim distance along each edge
+    if (t < 1e-6) { out.push(cur); continue }
+    const ax = cur[0] - ix * t, ay = cur[1] - iy * t         // tangent point on incoming edge
+    const bx = cur[0] + ox * t, by = cur[1] + oy * t         // tangent point on outgoing edge
+    const R = t * Math.tan((Math.PI - Math.abs(turn)) / 2)   // fillet radius for this trim
+    const sign = cross >= 0 ? 1 : -1                         // inward normal direction
+    const cxr = ax + (-iy * sign) * R, cyr = ay + (ix * sign) * R   // arc center
+    const a0 = Math.atan2(ay - cyr, ax - cxr)
+    const a1 = Math.atan2(by - cyr, bx - cxr)
+    let dA = a1 - a0
+    while (dA <= -Math.PI) dA += 2 * Math.PI
+    while (dA > Math.PI) dA -= 2 * Math.PI
+    const arcSteps = Math.max(2, Math.ceil(Math.abs(dA) / (Math.PI / 18)))  // ~10° per step
+    for (let k = 0; k <= arcSteps; k++) {
+      const ang = a0 + dA * (k / arcSteps)
+      out.push([cxr + R * Math.cos(ang), cyr + R * Math.sin(ang)])
     }
   }
-  const n = pts.length
-  const dx = pts[n - 1][0] - pts[n - 2][0], dy = pts[n - 1][1] - pts[n - 2][1]
-  const len = Math.hypot(dx, dy)
-  return len > 1e-10 ? [dx / len, dy / len] : [1, 0]
+  return out
 }
 
 export function generateTrochoidal(
@@ -141,10 +212,33 @@ export function generateTrochoidal(
       ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
       : oriented
 
-    // Close polyline for full loop traversal.
-    const closed: Pt2[] = [...rotated, rotated[0]]
+    // Round sharp corners so trochoidal loops sweep smoothly around them instead of
+    // snapping. Radius is scaled to the loop geometry: large enough to fit a couple of
+    // loops in the corner arc, capped so it never consumes a whole short edge (the
+    // function itself clamps the trim to half each adjacent edge).
+    const cornerR = Math.max(l, 2 * w)
+
+    // Place the start at the midpoint of the first edge rather than on a corner.
+    // rotatePolylineNear starts the path at a vertex; corner-rounding then displaces that
+    // point onto the fillet, so the loops (which start/end at the rounded p0) no longer
+    // meet the finishing pass (which follows the exact wall). A mid-edge point is collinear
+    // — roundPolygonCorners preserves it verbatim — so both paths share an identical start
+    // point and connect cleanly, and the original start corner now gets rounded like the rest.
+    const startList: Pt2[] = [
+      [(rotated[0][0] + rotated[1][0]) / 2, (rotated[0][1] + rotated[1][1]) / 2],
+      ...rotated.slice(1),
+      rotated[0],
+    ]
+    const smoothed = roundPolygonCorners(startList, cornerR)
+
+    // Close polyline for full loop traversal. `closed` (rounded corners) drives the
+    // trochoidal loops; `closedExact` (true offset) is reserved for the finishing pass
+    // so the finished wall holds its real, un-rounded corners. Both start at the same point.
+    const closed: Pt2[] = [...smoothed, smoothed[0]]
+    const closedExact: Pt2[] = [...startList, startList[0]]
     const { lens, total } = arcLengths(closed)
     if (total < 1e-6) continue
+    const tangentAt = makeTangentSampler(closed, lens)
 
     const nLoops = Math.floor(total / w)
     if (nLoops === 0) continue
@@ -185,7 +279,7 @@ export function generateTrochoidal(
         const offsetVal = l * (1 - Math.cos(theta))
 
         const [cx, cy] = interpPt(closed, lens, s)
-        const [tx, ty] = tangentAt(closed, lens, s)
+        const [tx, ty] = tangentAt(s)
         // Outward perpendicular — same sign convention as generateTrochoidalRow in pocket.ts.
         const px = perpSign * (-ty)
         const py = perpSign * tx
@@ -208,7 +302,7 @@ export function generateTrochoidal(
 
       // Optional finishing pass: one clean sweep along the offset path.
       if (params.finishingPass) {
-        const arcSegs = arcFitPolyline(closed, 0.1)
+        const arcSegs = arcFitPolyline(closedExact, 0.1)
         for (const s of arcSegs) {
           segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
         }

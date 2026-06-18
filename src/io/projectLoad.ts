@@ -13,7 +13,7 @@ import { clearFileHandles } from './fileSystem'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
-import type { Units, OriginPosition, Material } from '../store/workpieceStore'
+import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpieceStore'
 
 interface SavedWorkpiece {
   widthMM: number
@@ -21,6 +21,7 @@ interface SavedWorkpiece {
   thicknessMM: number
   units: Units
   origin: OriginPosition
+  zOrigin?: ZOrigin
   material: Material
   tableLimitWidthMM: number
   tableLimitHeightMM: number
@@ -54,6 +55,7 @@ export function loadProject(data: ProjectData) {
   wps.setThickness(wp.thicknessMM ?? 18)
   wps.setUnits(wp.units ?? 'mm')
   wps.setOrigin(wp.origin ?? 'bottom-left')
+  wps.setZOrigin(wp.zOrigin ?? 'top')
   wps.setMaterial(wp.material ?? 'mdf')
   wps.setTableLimitWidth(wp.tableLimitWidthMM ?? 800)
   wps.setTableLimitHeight(wp.tableLimitHeightMM ?? 600)

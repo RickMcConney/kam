@@ -3,6 +3,7 @@ import { Group, Arrow, Circle, Text } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { originWorldXY } from './WorkpieceLayer'
+import { Z_DATUM_COLOR } from '../../colors'
 
 // Draws the XY axis indicator at the origin point in screen coordinates.
 // Being in screen coords means arrows and text are always upright and a
@@ -18,7 +19,7 @@ const PTR = 6    // arrowhead size in pixels
 const FS = 10    // font size in pixels
 
 export const OriginLayer = memo(function OriginLayer({ viewport }: Props) {
-  const { widthMM, heightMM, origin } = useWorkpieceStore()
+  const { widthMM, heightMM, origin, zOrigin } = useWorkpieceStore()
   const org = originWorldXY(origin, widthMM, heightMM)
 
   // Convert world → screen (Y flipped: higher world Y = lower screen Y)
@@ -49,6 +50,13 @@ export const OriginLayer = memo(function OriginLayer({ viewport }: Props) {
 
       {/* Origin dot */}
       <Circle x={sx} y={sy} radius={3} fill="white" />
+
+      {/* Z origin label — which stock face Z0 sits on (top surface vs. bottom) */}
+      <Text
+        x={sx + 6} y={sy + 5}
+        text={`Z ${zOrigin}`}
+        fill={Z_DATUM_COLOR} fontSize={FS}
+      />
     </Group>
   )
 }

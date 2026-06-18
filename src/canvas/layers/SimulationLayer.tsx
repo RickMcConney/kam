@@ -165,7 +165,8 @@ const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy,
 })
 
 export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props) {
-  const segments = useSimStore((s) => s.segments)
+  const rawSegments = useSimStore((s) => s.segments)
+  const genZOff = useSimStore((s) => s.genZOff)
   const toolStates = useSimStore((s) => s.toolStates)
   const elapsedTimeS = useSimStore((s) => s.elapsedTimeS)
   const gcode = useSimStore((s) => s.gcode)
@@ -175,6 +176,13 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const org = originWorldXY(origin, widthMM, heightMM)
   const ox = org.x
   const oy = org.y
+
+  // Normalize datum-relative Z to top-referenced using the offset that was active
+  // when the G-code was generated (genZOff), not the current workpiece zOrigin.
+  const segments = useMemo(() => {
+    if (!genZOff) return rawSegments
+    return rawSegments.map((s) => ({ ...s, z: s.z - genZOff, prevZ: s.prevZ - genZOff }))
+  }, [rawSegments, genZOff])
 
   if (!gcode || segments.length === 0) return null
 

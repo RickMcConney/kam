@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { parseGcode, getCurrentSegIdx, type SimSegment, type ToolState } from '../sim/gcodeParser'
+import { useWorkpieceStore, zDatumOffsetMM } from './workpieceStore'
 
 export type SimSpeed = 1 | 5 | 20 | 100
 
@@ -13,6 +14,10 @@ interface SimState {
   speed: SimSpeed
   elapsedTimeS: number
   gcodeViewerOpen: boolean
+  // Z datum offset that was in effect when this G-code was generated.
+  // Stored here so normalization (segments → top-referenced) uses the correct
+  // offset even if the user later changes zOrigin without regenerating.
+  genZOff: number
 
   loadGcode: (text: string) => void
   play: () => void
@@ -36,9 +41,14 @@ export const useSimStore = create<SimState>()((set, get) => ({
   speed: 20,
   elapsedTimeS: 0,
   gcodeViewerOpen: false,
+  genZOff: 0,
 
   loadGcode: (text) => {
-    const parsed = parseGcode(text)
+    const { zOrigin, thicknessMM, safeHeightMM } = useWorkpieceStore.getState()
+    const genZOff = zDatumOffsetMM(zOrigin, thicknessMM)
+    // Parser's initial cz must match the machine-coord safe height so the tool
+    // starts at the right position when elapsedTimeS = 0 (reset to start).
+    const parsed = parseGcode(text, safeHeightMM + genZOff)
     set({
       gcode: text,
       gcodeLines: parsed.lines,
@@ -47,6 +57,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
       totalTimeS: parsed.totalTimeS,
       elapsedTimeS: 0,
       playing: false,
+      genZOff,
     })
   },
 
@@ -70,7 +81,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
   toggleGcodeViewer: () => set((s) => ({ gcodeViewerOpen: !s.gcodeViewerOpen })),
 
   clearSim: () =>
-    set({ gcode: '', gcodeLines: [], segments: [], toolStates: [], totalTimeS: 0, elapsedTimeS: 0, playing: false }),
+    set({ gcode: '', gcodeLines: [], segments: [], toolStates: [], totalTimeS: 0, elapsedTimeS: 0, playing: false, genZOff: 0 }),
 
   currentLineIdx: () => {
     const { segments, elapsedTimeS } = get()

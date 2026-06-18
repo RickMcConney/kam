@@ -54,3 +54,8 @@ export const SIM_TOOL_OUTLINE_COLOR = '#ffffff'  // white — tool ring
 // 3D view background.
 export const THREE_BG_COLOR       = '#bfdbfe'  // blue-200 (light blue)
 export const THREE_BG_COLOR_THREE = 0xbfdbfe   // Three.js integer format
+
+// Z-datum highlight — gradient on the stock sides (3D) and the Z origin label
+// (2D) that marks which face Z0 sits on (top surface vs. stock bottom).
+export const Z_DATUM_COLOR       = '#38bdf8'   // sky-400
+export const Z_DATUM_COLOR_THREE = 0x38bdf8    // Three.js integer format

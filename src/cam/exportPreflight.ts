@@ -25,6 +25,7 @@ export interface ExportPreflight {
     profileName: string
     outputUnits: 'mm' | 'in'
     origin: string
+    zOrigin: 'top' | 'bottom'
     safeHeightMM: number
     maxFeedMmMin: number
     minSpindleRpm: number
@@ -54,7 +55,7 @@ export function buildExportPreflight(): ExportPreflight {
   const profile = usePostProcessorStore.getState().getActiveProfile()
   const wp = useWorkpieceStore.getState()
   const {
-    widthMM, heightMM, thicknessMM, origin, units, material,
+    widthMM, heightMM, thicknessMM, origin, zOrigin, units, material,
     maxFeedMmMin, minSpindleRpm, maxSpindleRpm, safeHeightMM, machineRigidity, autoFeedEnabled,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
   } = wp
@@ -253,6 +254,7 @@ export function buildExportPreflight(): ExportPreflight {
       profileName: profile.name,
       outputUnits: profile.unitMode,
       origin,
+      zOrigin,
       safeHeightMM,
       maxFeedMmMin,
       minSpindleRpm,

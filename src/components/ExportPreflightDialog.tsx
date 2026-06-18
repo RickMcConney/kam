@@ -112,7 +112,13 @@ export default function ExportPreflightDialog({
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Machine</h3>
                 <Row label="Post-processor" value={machine.profileName} />
                 <Row label="Output units" value={machine.outputUnits === 'in' ? 'inch' : 'mm'} />
-                <Row label="Work origin" value={machine.origin.replace(/-/g, ' ')} />
+                <Row label="Work origin (XY)" value={machine.origin.replace(/-/g, ' ')} />
+                <Row
+                  label="Z origin"
+                  value={machine.zOrigin === 'bottom'
+                    ? `Bottom of stock — set Z0 at the spoilboard/table surface`
+                    : `Top of stock — set Z0 at the top surface`}
+                />
                 <Row label="Safe height" value={fmtMM(machine.safeHeightMM, units)} />
                 <Row label="Max feed" value={`${Math.round(machine.maxFeedMmMin)} mm/min`} />
                 <Row label="Spindle range" value={`${machine.minSpindleRpm}–${machine.maxSpindleRpm} RPM`} />

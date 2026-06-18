@@ -106,11 +106,11 @@ function arcToSegments(
   return segs
 }
 
-export function parseGcode(text: string): ParsedGcode {
+export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
   const rawLines = text.split('\n')
   const segs: SimSegment[] = []
 
-  let cx = 0, cy = 0, cz = 5
+  let cx = 0, cy = 0, cz = initialZMM
   let feedRate = 1000
   let unitScale = 1
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3

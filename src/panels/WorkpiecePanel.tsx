@@ -158,10 +158,10 @@ const SPINDLE_HELP =
 
 export default function WorkpiecePanel() {
   const {
-    widthMM, heightMM, thicknessMM, units, origin, material,
+    widthMM, heightMM, thicknessMM, units, origin, zOrigin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM, safeHeightMM,
     machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, spindleType, autoFeedEnabled,
-    setWidth, setHeight, setThickness, setOrigin, setMaterial,
+    setWidth, setHeight, setThickness, setOrigin, setZOrigin, setMaterial,
     setTableLimitWidth, setTableLimitHeight, setTableLimitDepth, setSafeHeight,
     setMachineRigidity, setMaxFeed, setMinSpindleRpm, setMaxSpindleRpm, setSpindleType, setAutoFeedEnabled,
   } = useWorkpieceStore()
@@ -177,8 +177,33 @@ export default function WorkpiecePanel() {
       <Section title="Work Origin">
         <p className="text-body text-gray-400 dark:text-neutral-500 mb-2">
           Select the X=0, Y=0 reference point on the stock.
+          {zOrigin === 'bottom'
+            ? ' Z=0 is the bottom of the stock (top surface is at +thickness).'
+            : ' Z=0 is the top surface of the stock (cuts go negative).'}
         </p>
         <OriginSelector value={origin} onChange={setOrigin} />
+        <div className="mt-3">
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Z Origin</label>
+          <div className="inline-grid grid-cols-2 gap-1 w-full">
+            {([['top', 'Top of stock'], ['bottom', 'Bottom of stock']] as const).map(([val, label]) => {
+              const active = zOrigin === val
+              return (
+                <button
+                  key={val}
+                  onClick={() => setZOrigin(val)}
+                  className={[
+                    'px-2 py-1.5 rounded text-body transition-colors border',
+                    active
+                      ? 'bg-blue-600 border-blue-400 text-white'
+                      : 'bg-gray-100 dark:bg-neutral-800 border-gray-200 dark:border-neutral-600 text-gray-700 dark:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
       </Section>
 
       <Section title="Material">

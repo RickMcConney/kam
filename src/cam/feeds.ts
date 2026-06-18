@@ -72,6 +72,11 @@ export interface FeedCalcInput {
   userStepDownMM: number
   totalDepthMM: number   // operation's intended total depth — for whole-division of step-down
   enabled: boolean
+  // Radial engagement as a fraction of tool diameter (WOC / D). 1 = full-width slotting
+  // (a plain profile/contour cut), low values = HSM/trochoidal. Low engagement lets the
+  // axial step-down go much deeper (toward the flute length) for the same tool load.
+  // Omitted/undefined ⇒ treated as 1, so non-trochoidal operations are unaffected.
+  radialEngagementFraction?: number
 }
 
 export interface FeedCalcResult {
@@ -84,7 +89,7 @@ export interface FeedCalcResult {
 }
 
 export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
-  const { tool, materialHardness, rigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, maxSurfaceSpeedMMin, userStepDownMM, totalDepthMM, enabled } = input
+  const { tool, materialHardness, rigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, maxSurfaceSpeedMMin, userStepDownMM, totalDepthMM, enabled, radialEngagementFraction } = input
   const maxFeed = maxFeedMmMin > 0 ? maxFeedMmMin : Infinity
 
   // When auto-feed is off we keep the tool's own feeds/speed and the user's
@@ -145,17 +150,28 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
   const diaCap = tool.diameterMM >= SMALL_BIT_THRESHOLD_MM ? tool.diameterMM : 0.5 * tool.diameterMM
   const rigidDepthFactor = RIGIDITY_DEPTH_FACTOR[clamp(Math.round(R), 1, 5) - 1]
   const matDepthFactor = clamp(1 / Math.sqrt(hardness), 0.4, 1.5)
-  const idealDoc = clamp(diaCap * rigidDepthFactor * matDepthFactor, 0.1, diaCap)
+
+  // Light radial engagement (HSM / trochoidal) permits a much deeper axial pass: the
+  // cut is intermittent and the unengaged flute sheds heat, so depth of cut can climb
+  // well past a diameter. Scale both the target DOC and its ceiling by an engagement
+  // boost; full-slot cuts (engagement ≥ 1, e.g. a plain profile) get boost = 1 and the
+  // original diameter-bounded behavior. The ceiling rises only toward the tool's usable
+  // flute length (`maxDepthMM`), never beyond it.
+  const engagement = clamp(radialEngagementFraction ?? 1, 0.05, 1)
+  const depthBoost = clamp(Math.sqrt(1 / engagement), 1, 4)
+  const fluteCap = tool.maxDepthMM > 0 ? Math.max(diaCap, tool.maxDepthMM) : diaCap
+  const depthCap = clamp(diaCap * depthBoost, diaCap, fluteCap)
+  const idealDoc = clamp(diaCap * rigidDepthFactor * matDepthFactor * depthBoost, 0.1, depthCap)
 
   // Favor a whole-number division of the intended total depth so passes come out
   // even (e.g. 10 mm @ ~2.7 ideal → 4 passes of 2.5 mm). Rounding to the nearest
   // pass count can overshoot idealDoc by up to ~50% (e.g. 4 mm @ 2.7 ideal rounds
   // to a single 4 mm pass), so cap the result: idealDoc is the rigidity/material
   // ceiling and may be exceeded only slightly for evenness before forcing another,
-  // shallower pass. The diameter cap is the hard upper bound.
+  // shallower pass. The engagement-aware depth cap is the hard upper bound.
   let stepDown = idealDoc
   if (totalDepthMM > 0) {
-    const stepCap = Math.min(idealDoc * 1.1, diaCap)
+    const stepCap = Math.min(idealDoc * 1.1, depthCap)
     let passes = Math.max(1, Math.round(totalDepthMM / idealDoc))
     stepDown = totalDepthMM / passes
     while (stepDown > stepCap && passes < 1000) { passes += 1; stepDown = totalDepthMM / passes }
@@ -166,7 +182,7 @@ export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
 
 // ─── Store-reading convenience wrappers ────────────────────────────────────────
 
-function calcForTool(tool: Tool, userStepDownMM: number, totalDepthMM: number): FeedCalcResult {
+function calcForTool(tool: Tool, userStepDownMM: number, totalDepthMM: number, radialEngagementFraction?: number): FeedCalcResult {
   const { material, machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled } = useWorkpieceStore.getState()
   return computeFeeds({
     tool,
@@ -179,6 +195,7 @@ function calcForTool(tool: Tool, userStepDownMM: number, totalDepthMM: number): 
     userStepDownMM,
     totalDepthMM,
     enabled: autoFeedEnabled,
+    radialEngagementFraction,
   })
 }
 
@@ -199,6 +216,14 @@ export function feedsForTool(tool: Tool): ToolFeeds {
 
 // Effective step-down for a generator call — used at every toolpath call site.
 // `totalDepthMM` is the operation's intended cut depth (for whole-division).
-export function effectiveStepDownMM(tool: Tool, userStepDownMM: number, totalDepthMM: number): number {
-  return calcForTool(tool, userStepDownMM, totalDepthMM).stepDownMM
+// `radialEngagementFraction` (WOC / D) lets low-engagement ops (trochoidal) step deeper;
+// omit it for full-slot operations (profile, etc.) to keep the diameter-bounded depth.
+export function effectiveStepDownMM(tool: Tool, userStepDownMM: number, totalDepthMM: number, radialEngagementFraction?: number): number {
+  return calcForTool(tool, userStepDownMM, totalDepthMM, radialEngagementFraction).stepDownMM
+}
+
+// Radial engagement (WOC / D) of a trochoidal pass: the forward advance per loop
+// (`trochStepMM`) is the material the tool bites into each revolution of the pattern.
+export function trochoidalEngagementFraction(tool: Tool, trochStepMM: number): number {
+  return tool.diameterMM > 0 ? trochStepMM / tool.diameterMM : 1
 }

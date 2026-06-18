@@ -25,7 +25,7 @@ import { flattenPath } from '../cam/pathFlattener'
 import { type PocketStrategy } from '../cam/pocket'
 import { generatePeckDrill, generateHelicalDrill } from '../cam/drill'
 import { generateSurface } from '../cam/surfacing'
-import { effectiveStepDownMM } from '../cam/feeds'
+import { effectiveStepDownMM, trochoidalEngagementFraction } from '../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
@@ -344,7 +344,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, await runInWorker('generateTrochoidal', selectedPaths[0].d, tool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+            side: form.side, depthMM: form.depthMM,
+            stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
             direction: form.direction, trochStepMM: form.trochStepMM,
             trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
             rampIn: form.rampIn, safeHeightMM,
@@ -374,7 +375,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
           updateOperation(opId, { status: 'generating' })
           try {
             setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
-              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+              side: form.side, depthMM: form.depthMM,
+              stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
               direction: form.direction, trochStepMM: form.trochStepMM,
               trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
               rampIn: form.rampIn, safeHeightMM,
@@ -410,7 +412,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool}
+        engagementFraction={selectedTool ? trochoidalEngagementFraction(selectedTool, form.trochStepMM) : undefined} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -1042,18 +1045,21 @@ function AutoStepField({ label, valueMM }: { label: string; valueMM: number }) {
   )
 }
 
-function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool }: {
+function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool, engagementFraction }: {
   depthMM: number; stepDownMM: number
   onDepth: (v: number) => void; onStep: (v: number) => void
   maxDepthMM?: number
   tool?: Tool
+  // Radial engagement (WOC / D); low values (trochoidal) let the auto step-down go deeper.
+  // Omit for full-slot ops so the displayed value matches the generated one.
+  engagementFraction?: number
 }) {
   // When auto feed is on the step-down is computed and shown read-only. The parent
   // form subscribes to the whole workpiece store, so this recomputes live as the
   // user changes rigidity / material / max feed.
   const autoFeedEnabled = useWorkpieceStore((s) => s.autoFeedEnabled)
   const thicknessMM = useWorkpieceStore((s) => s.thicknessMM)
-  const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM) : null
+  const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM, engagementFraction) : null
   const depthExceeds = maxDepthMM != null && depthMM > maxDepthMM
   // Guard against plunging past the bottom of the stock into the spoilboard.
   const pastStockMM = thicknessMM > 0 ? depthMM - thicknessMM : 0

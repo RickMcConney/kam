@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { segTool, type SimSegment, type ToolState } from '../sim/gcodeParser'
+import type { ZOrigin } from '../store/workpieceStore'
+import { Z_DATUM_COLOR_THREE } from '../colors'
 
 // ─── Heightfield material-removal simulation (alternate to VoxelMaterial) ──────
 //
@@ -100,6 +102,56 @@ function patchFloorShader(mat: THREE.MeshLambertMaterial, texture: THREE.DataTex
   }
 }
 
+// The boundary skirt is a vertical curtain whose bottom vertices sit at Y=0 and
+// whose top vertices ride the sampled heightfield, so the stock edge follows the
+// carve. Per-vertex aTop selects bottom (0) vs. top (sampled height); the diffuse
+// is the same wood→datum gradient as the static walls, keyed on world Y. Columns
+// cut clean through (sampled height ≈ 0) are discarded so the hole stays open.
+function patchSkirtShader(
+  mat: THREE.MeshLambertMaterial,
+  texture: THREE.DataTexture,
+  T: number,
+  woodColor: number,
+  datumColor: number,
+  datumTop: boolean,
+) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uHeight = { value: texture }
+    shader.uniforms.uWood = { value: new THREE.Color(woodColor) }
+    shader.uniforms.uDatum = { value: new THREE.Color(datumColor) }
+    shader.uniforms.uThickness = { value: T }
+    shader.uniforms.uDatumTop = { value: datumTop ? 1 : 0 }
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        uniform sampler2D uHeight;
+        attribute vec2 aHUv;     // texel-centre UV of the edge sample this vertex rides
+        attribute float aTop;    // 1 = top (ride height), 0 = bottom (stay at Y=0)
+        varying float vH;
+        varying float vWorldY;`)
+      .replace('#include <begin_vertex>', /* glsl */ `
+        float _h = texture2D(uHeight, aHUv).r;
+        float _y = aTop > 0.5 ? _h : 0.0;
+        vec3 transformed = vec3(position.x, _y, position.z);
+        vH = _h;
+        vWorldY = _y;`)
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        uniform vec3 uWood;
+        uniform vec3 uDatum;
+        uniform float uThickness;
+        uniform float uDatumTop;
+        varying float vH;
+        varying float vWorldY;`)
+      .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
+        if (vH <= 0.001) discard;
+        float _f = uDatumTop > 0.5 ? vWorldY / uThickness : (uThickness - vWorldY) / uThickness;
+        _f = clamp(_f, 0.0, 1.0);
+        diffuseColor.rgb = mix(uWood, uDatum, _f * _f);`)
+  }
+}
+
 const TARGET_CELL_MM = 0.05            // desired sample spacing where cuts happen
 const MAX_SAMPLES = 4_000_000          // cap total grid samples (texture + vertices)
 const MAX_AXIS = 4096                  // hard cap on samples per axis
@@ -164,6 +216,8 @@ export class HeightfieldMaterial {
   private readonly _floorMat: THREE.MeshLambertMaterial
   private readonly _stockGeo: THREE.BufferGeometry
   private readonly _stockMat: THREE.MeshLambertMaterial
+  private readonly _skirtGeo: THREE.BufferGeometry | null
+  private readonly _skirtMat: THREE.MeshLambertMaterial | null
 
   private _dirty = false
   private _lastFullIdx = -1
@@ -177,6 +231,7 @@ export class HeightfieldMaterial {
     orgX: number, orgY: number,
     woodColor: number,
     cutColor: number,
+    zOrigin: ZOrigin = 'top',
   ) {
     this._T = T
     this._orgX = orgX
@@ -256,14 +311,32 @@ export class HeightfieldMaterial {
 
     // Static stock geometry (wood): perimeter walls + bottom face, plus a flat
     // "apron" filling the uncut stock area around the gridded cut region so the
-    // block still reads as full-size solid stock.
-    this._stockMat = new THREE.MeshLambertMaterial({ color: woodColor, side: THREE.DoubleSide })
-    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+    // block still reads as full-size solid stock. The side walls carry per-vertex
+    // colors that fade from the datum-highlight color at the Z0 edge (top surface
+    // or stock bottom, per zOrigin) into plain wood, giving a visual cue of where
+    // Z0 sits. vertexColors lets the apron/bottom stay wood while walls gradient.
+    this._stockMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
+    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1, zOrigin, woodColor, Z_DATUM_COLOR_THREE)
+
+    // Heightfield-driven "skirt" along any stock edge the cut region reaches (a
+    // surfacing pass or a pocket overlapping the boundary). Its top edge samples
+    // the same heightfield as the surface, so it drops with the carve instead of
+    // leaving a full-height vertical lip where the static wall was omitted.
+    this._skirtGeo = buildSkirt(NX, NY, this._sx, this._sy, gx0, gy0, W, H)
+    if (this._skirtGeo) {
+      this._skirtMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
+      patchSkirtShader(this._skirtMat, this._texture, T, woodColor, Z_DATUM_COLOR_THREE, zOrigin === 'top')
+    } else {
+      this._skirtMat = null
+    }
 
     this.group = new THREE.Group()
     this.group.add(new THREE.Mesh(this._surfaceGeo, this._surfaceMat))
     this.group.add(new THREE.Mesh(this._surfaceGeo, this._floorMat))
     this.group.add(new THREE.Mesh(this._stockGeo, this._stockMat))
+    if (this._skirtGeo && this._skirtMat) {
+      this.group.add(new THREE.Mesh(this._skirtGeo, this._skirtMat))
+    }
   }
 
   reset() {
@@ -328,6 +401,8 @@ export class HeightfieldMaterial {
     this._floorMat.dispose()
     this._stockGeo.dispose()
     this._stockMat.dispose()
+    this._skirtGeo?.dispose()
+    this._skirtMat?.dispose()
     this._texture.dispose()
   }
 
@@ -423,23 +498,54 @@ export class HeightfieldMaterial {
 function buildStock(
   W: number, H: number, T: number,
   gx0: number, gy0: number, gx1: number, gy1: number,
+  zOrigin: ZOrigin, woodColor: number, datumColor: number,
 ): THREE.BufferGeometry {
   const pos: number[] = []
+  const col: number[] = []
   const idx: number[] = []
+
+  const wood = new THREE.Color(woodColor)
+  const datum = new THREE.Color(datumColor)
+  // Per-vertex wall color: 1 at the Z0 edge (y=T for top-origin, y=0 for
+  // bottom-origin) fading to plain wood at the far edge. Squared falloff keeps
+  // the glow concentrated near the datum face. Flat faces (colored=false) stay wood.
+  const wallColor = (y: number): THREE.Color => {
+    const f = zOrigin === 'bottom' ? (T - y) / T : y / T   // 1 at datum edge, 0 at far edge
+    return wood.clone().lerp(datum, f * f)
+  }
   const quad = (
     p0: [number, number, number], p1: [number, number, number],
     p2: [number, number, number], p3: [number, number, number],
+    colored = false,
   ) => {
     const b = pos.length / 3
     pos.push(...p0, ...p1, ...p2, ...p3)
+    for (const p of [p0, p1, p2, p3]) {
+      const c = colored ? wallColor(p[1]) : wood
+      col.push(c.r, c.g, c.b)
+    }
     idx.push(b, b + 1, b + 2, b, b + 2, b + 3)
   }
 
-  // Perimeter walls of the full stock.
-  quad([0, 0, 0], [W, 0, 0], [W, T, 0], [0, T, 0])         // front  z=0
-  quad([W, 0, 0], [W, 0, -H], [W, T, -H], [W, T, 0])       // right  x=W
-  quad([W, 0, -H], [0, 0, -H], [0, T, -H], [W, T, -H])     // back   z=-H
-  quad([0, 0, -H], [0, 0, 0], [0, T, 0], [0, T, -H])       // left   x=0
+  // Perimeter walls of the full stock — gradient-tinted to mark the Z0 face.
+  // Where the gridded cut region reaches a stock edge (no flat pad margin — the
+  // cut runs off the boundary), that stretch of wall is omitted here and rebuilt
+  // as a heightfield-driven skirt (buildSkirt) whose top follows the carved
+  // surface, so no full-height lip is left at the stock edge. Interior cut
+  // regions keep their 1 mm pad, so their grid edges stay at full T and the full
+  // static wall is correct.
+  const eps = 1e-6
+  const touchL = gx0 <= eps, touchR = gx1 >= W - eps
+  const touchF = gy0 <= eps, touchB = gy1 >= H - eps
+  // Vertical wall along footprint segment (x0,v0)→(x1,v1) (world z = -v), full height.
+  const wall = (x0: number, v0: number, x1: number, v1: number) => {
+    if (Math.abs(x1 - x0) < eps && Math.abs(v1 - v0) < eps) return
+    quad([x0, 0, -v0], [x1, 0, -v1], [x1, T, -v1], [x0, T, -v0], true)
+  }
+  if (touchL) { wall(0, 0, 0, gy0); wall(0, gy1, 0, H) } else wall(0, 0, 0, H)   // left   x=0
+  if (touchR) { wall(W, 0, W, gy0); wall(W, gy1, W, H) } else wall(W, 0, W, H)   // right  x=W
+  if (touchF) { wall(0, 0, gx0, 0); wall(gx1, 0, W, 0) } else wall(0, 0, W, 0)   // front  z=0
+  if (touchB) { wall(0, H, gx0, H); wall(gx1, H, W, H) } else wall(0, H, W, H)   // back   z=-H
 
   // Flat apron strips, filling the stock minus the cut region. The top apron (y=T)
   // is the uncut surface around the gridded region; the bottom apron (y=0) is the
@@ -461,7 +567,64 @@ function buildStock(
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3))
   geo.setIndex(idx)
   geo.computeVertexNormals()
+  return geo
+}
+
+// Heightfield-driven side curtain along each stock edge the grid actually reaches
+// (gx0≈0, gx1≈W, gy0≈0, gy1≈H — the edges where buildStock omits the static wall).
+// One vertical strip per touched edge: a top vertex (rides the sampled height via
+// patchSkirtShader) and a bottom vertex (Y=0) per edge sample, with constant
+// outward normals for lighting. Returns null when no edge is reached (interior cut,
+// the static walls already cover it). Three-space: X = localX, Z = -localY.
+function buildSkirt(
+  NX: number, NY: number, sx: number, sy: number,
+  gx0: number, gy0: number, W: number, H: number,
+): THREE.BufferGeometry | null {
+  const eps = 1e-6
+  const gx1 = gx0 + (NX - 1) * sx
+  const gy1 = gy0 + (NY - 1) * sy
+  const touchL = gx0 <= eps, touchR = gx1 >= W - eps
+  const touchF = gy0 <= eps, touchB = gy1 >= H - eps
+  if (!touchL && !touchR && !touchF && !touchB) return null
+
+  const pos: number[] = []
+  const huv: number[] = []
+  const top: number[] = []
+  const nor: number[] = []
+  const idx: number[] = []
+
+  // Add a strip of `count` samples; sampleAt(k) gives the world XZ, the texel UV
+  // of that sample, and (nx,nz) is the edge's outward normal.
+  const strip = (
+    count: number,
+    sampleAt: (k: number) => { x: number; z: number; u: number; v: number },
+    nx: number, nz: number,
+  ) => {
+    const base = pos.length / 3
+    for (let k = 0; k < count; k++) {
+      const s = sampleAt(k)
+      pos.push(s.x, 0, s.z); huv.push(s.u, s.v); top.push(0); nor.push(nx, 0, nz)  // bottom
+      pos.push(s.x, 0, s.z); huv.push(s.u, s.v); top.push(1); nor.push(nx, 0, nz)  // top
+    }
+    for (let k = 0; k < count - 1; k++) {
+      const b = base + k * 2
+      idx.push(b, b + 2, b + 3, b, b + 3, b + 1)
+    }
+  }
+
+  if (touchL) strip(NY, j => ({ x: gx0, z: -(gy0 + j * sy), u: 0.5 / NX, v: (j + 0.5) / NY }), -1, 0)
+  if (touchR) strip(NY, j => ({ x: gx1, z: -(gy0 + j * sy), u: (NX - 0.5) / NX, v: (j + 0.5) / NY }), 1, 0)
+  if (touchF) strip(NX, i => ({ x: gx0 + i * sx, z: -gy0, u: (i + 0.5) / NX, v: 0.5 / NY }), 0, 1)
+  if (touchB) strip(NX, i => ({ x: gx0 + i * sx, z: -gy1, u: (i + 0.5) / NX, v: (NY - 0.5) / NY }), 0, -1)
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+  geo.setAttribute('aHUv', new THREE.BufferAttribute(new Float32Array(huv), 2))
+  geo.setAttribute('aTop', new THREE.BufferAttribute(new Float32Array(top), 1))
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nor), 3))
+  geo.setIndex(idx)
   return geo
 }

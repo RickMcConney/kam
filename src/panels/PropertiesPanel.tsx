@@ -266,14 +266,14 @@ export default function PropertiesPanel() {
           title="Mirror horizontally (flip left/right)"
           className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
         >
-          ↔ Mirror X
+          <span className="inline-block">↔</span> Mirror X
         </button>
         <button
           onClick={() => applyMirror('y')}
           title="Mirror vertically (flip up/down)"
           className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
         >
-          ↕ Mirror Y
+          <span className="inline-block rotate-90">↔</span> Mirror Y
         </button>
       </div>
 
