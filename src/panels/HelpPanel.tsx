@@ -47,7 +47,7 @@ const SHORTCUTS: Section[] = [
 const FEATURES = [
   {
     title: 'Select tool',
-    desc: 'Click to select, drag empty area to box-select. Shift-click to toggle membership in a multi-selection. Drag handles to move, scale, or rotate.',
+    desc: 'Click to select, drag empty area to box-select. Shift-click to toggle membership in a multi-selection. Drag handles to move, scale, or rotate. Hold Alt while dragging a corner handle to skew (shear) instead of scale.',
   },
   {
     title: 'Shape tools',

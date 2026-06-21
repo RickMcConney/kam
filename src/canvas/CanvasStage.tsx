@@ -82,7 +82,7 @@ function closestVisiblePath(
   let bestDist = thresholdMM
   for (const p of paths) {
     let polys = cache.get(p.d)
-    if (!polys) { polys = flattenPath(p.d, 0.5); cache.set(p.d, polys) }
+    if (!polys) { polys = flattenPath(p.d, 0.05); cache.set(p.d, polys) }
     const dist = distToPolylines(px, py, polys)
     if (dist < bestDist) { bestDist = dist; best = p }
   }
@@ -120,7 +120,7 @@ function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: numb
 type CanvasMode =
   | { type: 'idle' }
   | { type: 'pan' }
-  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number } }
+  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox }
   | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean }
   | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
   | { type: 'dragbox'; startScreen: { x: number; y: number } }
@@ -275,6 +275,7 @@ export default function CanvasStage() {
   const setCursorMM = useCanvasStore((s) => s.setCursorMM)
   const setZoomPct = useCanvasStore((s) => s.setZoomPct)
   const setLiveRotationAngle = useCanvasStore((s) => s.setLiveRotationAngle)
+  const setLiveBBox = useCanvasStore((s) => s.setLiveBBox)
   const { paths, selectedIds, selectPath, setSelectedIds } = usePathsStore()
   const addPaths = usePathsStore((s) => s.addPaths)
   const setSidebarTab = useUIStore((s) => s.setSidebarTab)
@@ -627,10 +628,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
   // Start drawing a shape from the given CNC point (used by both stage and path mousedown when shape tool active)
   const startDrawShape = useCallback((pointer: { x: number; y: number }) => {
     const vp = viewportRef.current
-    const cnc = screenToCNC(pointer.x, pointer.y, vp)
+    const cnc = snapCNC(screenToCNC(pointer.x, pointer.y, vp))
     didDragRef.current = false
     setMode2({ type: 'drawshape', startCNC: cnc, currentCNC: cnc })
-  }, [setMode2])
+  }, [setMode2, snapCNC])
 
   // Start placing a pen node from the given screen pointer position
   const startPenDraw = useCallback((pointer: { x: number; y: number }) => {
@@ -948,7 +949,9 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         usePathsStore.getState().selectPath(hit.id, false)
       }
       didDragRef.current = false
-      setMode2({ type: 'move', pathIds: usePathsStore.getState().selectedIds, startCNC: cnc })
+      const moveIds = usePathsStore.getState().selectedIds
+      const moveBbox = getMultiBBox(usePathsStore.getState().paths.filter(p => moveIds.includes(p.id)).map(p => p.d))
+      setMode2({ type: 'move', pathIds: moveIds, startCNC: cnc, initBbox: moveBbox ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 } })
     } else {
       if (neid) { exitNodeEdit(); return }
       selectPath(null)
@@ -996,7 +999,13 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           if (Math.abs(dx) > Math.abs(dy)) finalDy = 0
           else finalDx = 0
         }
+        // Snap by snapping the bbox corner to the grid rather than raw mouse position
+        const ib = m.initBbox
+        const snapped = snapCNC({ x: ib.minX + finalDx, y: ib.minY + finalDy })
+        finalDx = snapped.x - ib.minX
+        finalDy = snapped.y - ib.minY
         setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
+        setLiveBBox({ minX: ib.minX + finalDx, minY: ib.minY + finalDy, width: ib.width, height: ib.height })
       }
       return
     }
@@ -1039,6 +1048,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       if (Math.abs(sy) < 0.001) sy = Math.sign(sy) * 0.001
 
       setLiveTransform({ kind: 'scale', pathIds: new Set(pathIds), sx, sy, ax: anchor.x, ay: anchor.y })
+      const ib = m.initBbox
+      const x1 = anchor.x + (ib.minX - anchor.x) * sx, x2 = anchor.x + (ib.maxX - anchor.x) * sx
+      const y1 = anchor.y + (ib.minY - anchor.y) * sy, y2 = anchor.y + (ib.maxY - anchor.y) * sy
+      setLiveBBox({ minX: Math.min(x1, x2), minY: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) })
       return
     }
 
@@ -1062,13 +1075,14 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
         didDragRef.current = true
       }
+      const snappedCNC = snapCNC(cncMouse)
       // Update currentCNC in the mode ref (no state re-render needed — liveShapeD handles rendering)
-      modeRef.current = { ...m, currentCNC: cncMouse }
+      modeRef.current = { ...m, currentCNC: snappedCNC }
 
       if (didDragRef.current) {
         const { activeTool, shapeToolConfig } = useUIStore.getState()
         if (activeTool !== 'select') {
-          const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, cncMouse, shapeToolConfig)
+          const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, snappedCNC, shapeToolConfig)
           setLiveShapeD(generateShapeD(params))
         }
       }
@@ -1275,6 +1289,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
       setLiveTransform(null)
+      setLiveBBox(null)
       setMode2({ type: 'idle' })
       return
     }
@@ -1310,6 +1325,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       }
       setLiveTransform(null)
+      setLiveBBox(null)
       setMode2({ type: 'idle' })
       return
     }
@@ -1650,7 +1666,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     }
 
     setMode2({ type: 'idle' })
-  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, commitEditNodes, pushLocalUndo])
+  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo])
 
   const getCursor = () => {
     if (nodeEditPathId) return 'default'
@@ -1831,6 +1847,11 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
+        </div>
+      )}
+      {activeTool === 'select' && selectedIds.length > 0 && !nodeEditPathId && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-gray-700/80 text-white text-body px-3 py-1 rounded-full pointer-events-none">
+          Drag to move · corner handles to scale · rotate handle to rotate · Alt+corner to skew
         </div>
       )}
 
