@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ICON } from '../theme'
 import { Stage, Layer, Group, Circle } from 'react-konva'
 import type Konva from 'konva'
@@ -43,6 +43,7 @@ import { TabLayer } from './layers/TabLayer'
 import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath, weldNodes, deleteSegment, joinPaths, joinPathsConnect, endpointToMidpointWeld, connectEndpointToInterior, toggleNodeCurvature } from './nodeUtils'
 import type { PathNode } from './nodeUtils'
 import type { CrossPathEntry } from './layers/NodeEditLayer'
+import { uid } from '../uid'
 
 export interface Viewport {
   x: number
@@ -76,14 +77,12 @@ function closestVisiblePath(
   px: number, py: number,
   paths: ImportedPath[],
   thresholdMM: number,
-  cache: Map<string, [number, number][][]>,
+  getPolys: (p: ImportedPath) => [number, number][][],
 ): ImportedPath | null {
   let best: ImportedPath | null = null
   let bestDist = thresholdMM
   for (const p of paths) {
-    let polys = cache.get(p.d)
-    if (!polys) { polys = flattenPath(p.d, 0.05); cache.set(p.d, polys) }
-    const dist = distToPolylines(px, py, polys)
+    const dist = distToPolylines(px, py, getPolys(p))
     if (dist < bestDist) { bestDist = dist; best = p }
   }
   return best
@@ -129,6 +128,13 @@ type CanvasMode =
   | { type: 'nodedit-drag'; nodeIdx: number; kind: 'anchor' | 'handle-in' | 'handle-out' }
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
+
+// One step in the node-edit local undo stack. `globalStep` marks gestures that
+// ALSO wrote one atomic entry to the global paths history (cross-path join,
+// loop split, trim split): undoing/redoing such a step replays that global
+// entry too, so the other path involved is restored/re-removed in the same
+// keystroke — without leaving point-edit mode.
+type NodeEditEntry = { nodes: PathNode[]; closed: boolean; globalStep?: boolean }
 
 function snapPoint(
   cnc: { x: number; y: number },
@@ -268,16 +274,59 @@ export default function CanvasStage() {
   // one shape, the tool stays selected for more drags and a subsequent click
   // (no drag) exits to select mode instead of placing another shape.
   const shapeDragSessionRef = useRef<{ tool: string | null; dragged: boolean }>({ tool: null, dragged: false })
-  const flatCache = useRef(new Map<string, [number, number][][]>())
+  // Flattened-polyline cache for hit-testing/vertex-snap, keyed by path id and
+  // invalidated when the path's d changes. (The old cache keyed on the full d
+  // string never evicted, so every baked transform grew it — tofix.md H2.)
+  const flatCacheRef = useRef(new Map<string, { d: string; byTol: Map<number, [number, number][][]> }>())
+  const getFlat = useCallback((p: ImportedPath, tol: number): [number, number][][] => {
+    const cache = flatCacheRef.current
+    let entry = cache.get(p.id)
+    if (!entry || entry.d !== p.d) {
+      entry = { d: p.d, byTol: new Map() }
+      cache.set(p.id, entry)
+    }
+    let polys = entry.byTol.get(tol)
+    if (!polys) {
+      polys = flattenPath(p.d, tol)
+      entry.byTol.set(tol, polys)
+    }
+    return polys
+  }, [])
 
-  const { widthMM, heightMM } = useWorkpieceStore()
-  // Use individual selectors for actions — Zustand action refs are stable so these never trigger re-renders
+  // Individual selectors (not whole-store destructuring) so the Stage doesn't
+  // re-render on unrelated store changes — e.g. undo-stack pushes or workpiece
+  // machine settings (tofix.md H3).
+  const widthMM = useWorkpieceStore((s) => s.widthMM)
+  const heightMM = useWorkpieceStore((s) => s.heightMM)
   const setCursorMM = useCanvasStore((s) => s.setCursorMM)
   const setZoomPct = useCanvasStore((s) => s.setZoomPct)
   const setLiveRotationAngle = useCanvasStore((s) => s.setLiveRotationAngle)
   const setLiveBBox = useCanvasStore((s) => s.setLiveBBox)
-  const { paths, selectedIds, selectPath, setSelectedIds } = usePathsStore()
+  const paths = usePathsStore((s) => s.paths)
+  const selectedIds = usePathsStore((s) => s.selectedIds)
+  const selectPath = usePathsStore((s) => s.selectPath)
+  const setSelectedIds = usePathsStore((s) => s.setSelectedIds)
   const addPaths = usePathsStore((s) => s.addPaths)
+
+  // Drop cache entries for paths that no longer exist (updates are already
+  // replaced in place by the id+d check in getFlat).
+  useEffect(() => {
+    const cache = flatCacheRef.current
+    if (cache.size === 0) return
+    const live = new Set(paths.map((p) => p.id))
+    for (const id of [...cache.keys()]) if (!live.has(id)) cache.delete(id)
+  }, [paths])
+
+  const selectedPaths = useMemo(
+    () => paths.filter((p) => selectedIds.includes(p.id)),
+    [paths, selectedIds],
+  )
+  // Selection bbox, computed once per store change instead of per mousemove —
+  // SelectionLayer + SelectionHandleLayer used to each re-flatten every selected
+  // path on every liveTransform frame to derive this themselves (tofix.md H1).
+  const selectionBBox = useMemo(() => getMultiBBox(selectedPaths.map((p) => p.d)), [selectedPaths])
+  const selectionBBoxRef = useRef<BBox | null>(null)
+  selectionBBoxRef.current = selectionBBox
   const setSidebarTab = useUIStore((s) => s.setSidebarTab)
   const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
   const penNodes = useUIStore((s) => s.penNodes)
@@ -317,35 +366,65 @@ export default function CanvasStage() {
   const [crossPathCandidates, setCrossPathCandidates] = useState<CrossPathEntry[]>([])
   const [crossPathWeldTarget, setCrossPathWeldTarget] = useState<CrossPathEntry | null>(null)
   const crossPathWeldTargetRef = useRef<CrossPathEntry | null>(null)
-  const localPast = useRef<PathNode[][]>([])
-  const localFuture = useRef<PathNode[][]>([])
+  const localPast = useRef<NodeEditEntry[]>([])
+  const localFuture = useRef<NodeEditEntry[]>([])
   const drillPast = useRef<{ x: number; y: number }[][]>([])
   const penPast = useRef<PenNode[][]>([])
   const penFuture = useRef<PenNode[][]>([])
 
-  const pushLocalUndo = useCallback((snapshot: PathNode[]) => {
-    localPast.current = [...localPast.current, snapshot]
+  // Snapshot the PRE-gesture nodes+closed. `globalStep: true` for gestures that
+  // also write one atomic global history entry (join/split) — see NodeEditEntry.
+  const pushLocalUndo = useCallback((nodes: PathNode[], closed: boolean, globalStep = false) => {
+    localPast.current = [...localPast.current, { nodes, closed, globalStep }]
     localFuture.current = []
     useUIStore.getState().setNodeEditHistoryFlags(true, false)
   }, [])
 
+  // True while THIS component is writing to the paths store mid-session (join/
+  // split gestures and their local undo/redo), so the external-change
+  // subscription below doesn't re-parse our own writes.
+  const selfWriteRef = useRef(false)
+
   const localUndo = useCallback(() => {
     if (localPast.current.length === 0) return
-    const prev = localPast.current[localPast.current.length - 1]
-    localFuture.current = [editNodesRef.current, ...localFuture.current]
+    const entry = localPast.current[localPast.current.length - 1]
+    localFuture.current = [
+      { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep },
+      ...localFuture.current,
+    ]
     localPast.current = localPast.current.slice(0, -1)
-    setEditNodes(prev)
-    editNodesRef.current = prev
+    if (entry.globalStep) {
+      // Replay the gesture's atomic global entry: restores the joined-away /
+      // split-off path and the edited path's stored d in one step. Guarded so
+      // the store subscription doesn't clobber the local restore below.
+      selfWriteRef.current = true
+      usePathsStore.getState().undo()
+      selfWriteRef.current = false
+    }
+    setEditNodes(entry.nodes)
+    editNodesRef.current = entry.nodes
+    setEditClosed(entry.closed)
+    editClosedRef.current = entry.closed
     useUIStore.getState().setNodeEditHistoryFlags(localPast.current.length > 0, true)
   }, [])
 
   const localRedo = useCallback(() => {
     if (localFuture.current.length === 0) return
-    const next = localFuture.current[0]
-    localPast.current = [...localPast.current, editNodesRef.current]
+    const entry = localFuture.current[0]
+    localPast.current = [
+      ...localPast.current,
+      { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep },
+    ]
     localFuture.current = localFuture.current.slice(1)
-    setEditNodes(next)
-    editNodesRef.current = next
+    if (entry.globalStep) {
+      selfWriteRef.current = true
+      usePathsStore.getState().redo()
+      selfWriteRef.current = false
+    }
+    setEditNodes(entry.nodes)
+    editNodesRef.current = entry.nodes
+    setEditClosed(entry.closed)
+    editClosedRef.current = entry.closed
     useUIStore.getState().setNodeEditHistoryFlags(true, localFuture.current.length > 0)
   }, [])
 
@@ -395,8 +474,7 @@ export default function CanvasStage() {
     let best: { x: number; y: number } | null = null
     for (const p of allPaths) {
       if (!p.visible) continue
-      let polys = flatCache.current.get(p.d)
-      if (!polys) { polys = flattenPath(p.d, 0.5); flatCache.current.set(p.d, polys) }
+      const polys = getFlat(p, 0.5)
       for (const poly of polys) {
         for (const [vx, vy] of poly) {
           const d = Math.hypot(vx - cnc.x, vy - cnc.y)
@@ -406,7 +484,7 @@ export default function CanvasStage() {
     }
     if (best) return best
     return snapCNC(cnc)
-  }, [snapCNC])
+  }, [snapCNC, getFlat])
 
 const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -471,11 +549,14 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
 
   const commitEditNodes = useCallback((pid: string, nodes: PathNode[]) => {
     if (!pid) return
+    const path = usePathsStore.getState().paths.find((p) => p.id === pid)
+    if (!path) return // path removed while editing (e.g. global undo) — nothing to commit
     if (nodes.length < 2) {
       usePathsStore.getState().deletePath(pid)
       return
     }
     const d = nodesToD(nodes, editClosedRef.current)
+    if (d === path.d) return // unchanged (e.g. join already wrote this d) — no history entry
     usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
     regenerateAffected(pid)
   }, [])
@@ -505,7 +586,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             e.stopImmediatePropagation()
             e.preventDefault()
             const idx = hoveredEditNodeRef.current
-            pushLocalUndo(editNodesRef.current)
+            pushLocalUndo(editNodesRef.current, editClosedRef.current)
             const next = removeNode(editNodesRef.current, idx)
             editNodesRef.current = next
             setEditNodes(next)
@@ -517,7 +598,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             e.preventDefault()
             const segIdx = hoverSegIdxRef.current
             const old = editNodesRef.current
-            pushLocalUndo(old)
+            const oldClosed = editClosedRef.current
             const result = deleteSegment(old, segIdx, editClosedRef.current)
             setEditNodes(result.nodes)
             editNodesRef.current = result.nodes
@@ -525,22 +606,30 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
               editClosedRef.current = result.closed
               setEditClosed(result.closed)
             }
-            if (result.secondPath) {
-              // Split: create a new path for the second segment
-              const { nodeEditPathId: currentPid } = useUIStore.getState()
-              const secondD = nodesToD(result.secondPath, false)
-              if (secondD && currentPid) {
-                const newId = `trim-${Date.now()}`
-                const { paths: allPaths } = usePathsStore.getState()
-                const srcPath = allPaths.find((p) => p.id === currentPid)
-                usePathsStore.getState().addPaths([{
-                  id: newId,
+            const { nodeEditPathId: currentPid } = useUIStore.getState()
+            const secondD = result.secondPath ? nodesToD(result.secondPath, false) : null
+            if (secondD && currentPid) {
+              // Trim split also adds a new path — commit remainder + add it as ONE
+              // atomic global entry, and mark this local step as global so a
+              // single local undo removes the split-off path again.
+              pushLocalUndo(old, oldClosed, true)
+              const { paths: allPaths } = usePathsStore.getState()
+              const srcPath = allPaths.find((p) => p.id === currentPid)
+              selfWriteRef.current = true
+              usePathsStore.getState().applyPathEdit({
+                updates: [{ id: currentPid, d: nodesToD(result.nodes, result.closed), shapeParams: null }],
+                add: [{
+                  id: uid('trim'),
                   name: srcPath?.name ?? 'Path',
                   d: secondD,
                   visible: true,
                   color: srcPath?.color ?? nextPathColor(),
-                }])
-              }
+                }],
+              })
+              selfWriteRef.current = false
+            } else {
+              // Plain trim — pure node edit, local undo handles it.
+              pushLocalUndo(old, oldClosed)
             }
             setHoverSegIdx(null)
             hoverSegIdxRef.current = null
@@ -570,7 +659,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           if (nodes.length >= 2) {
             const d = penNodesToPathD(nodes, false, ct)
             if (d) {
-              const id = `pen-${Date.now()}`
+              const id = uid('pen')
               usePathsStore.getState().addPaths([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
               usePathsStore.getState().selectPath(id)
             }
@@ -686,6 +775,45 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     useUIStore.getState().setNodeEditUndoRedo(localUndo, localRedo)
   }, [nodeEditPathId, localUndo, localRedo, commitEditNodes])
 
+  // While a node-edit session is active, a global undo/redo can rewrite or remove
+  // the edited path underneath us (e.g. undoing a cross-path join restores both
+  // source paths). Re-sync the live editNodes from the store, or leave the
+  // session if the path no longer exists. Our own mid-session writes are skipped
+  // via selfWriteRef.
+  useEffect(() => {
+    if (!nodeEditPathId) return
+    return usePathsStore.subscribe((s, prev) => {
+      if (selfWriteRef.current) return
+      if (s.paths === prev.paths) return
+      const cur = s.paths.find((p) => p.id === nodeEditPathId)
+      if (!cur) {
+        // Path gone (undo past its creation / join) — abandon the session.
+        // commitEditNodes finds no path on exit, so nothing is written back.
+        useUIStore.getState().setNodeEditPathId(null)
+        return
+      }
+      const prevPath = prev.paths.find((p) => p.id === nodeEditPathId)
+      if (prevPath && prevPath.d === cur.d) return
+      const { nodes, closed } = parseDToNodes(cur.d)
+      setEditNodes(nodes)
+      editNodesRef.current = nodes
+      setEditClosed(closed)
+      editClosedRef.current = closed
+      // Local snapshots and connect state reference the pre-undo geometry — drop them.
+      localPast.current = []
+      localFuture.current = []
+      useUIStore.getState().setNodeEditHistoryFlags(false, false)
+      connectSourceRef.current = null
+      setConnectSource(null)
+      setConnectPreviewTo(null)
+      setConnectSnapTargetIdx(null)
+      crossPathWeldTargetRef.current = null
+      setCrossPathWeldTarget(null)
+      setCrossPathCandidates([])
+      crossPathEntriesRef.current = []
+    })
+  }, [nodeEditPathId])
+
   // Register drill-local undo only while there are pending drill points to undo.
   // When points are empty (e.g. after generation or after undoing all), unregister so
   // the toolbar button and keyboard shortcut fall through to the global path undo.
@@ -723,7 +851,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       e.evt.preventDefault()
       const old = editNodesRef.current
       const next = toggleNodeCurvature(old, nodeIdx, editClosedRef.current)
-      pushLocalUndo(old)
+      pushLocalUndo(old, editClosedRef.current)
       setEditNodes(next)
       editNodesRef.current = next
       return
@@ -785,7 +913,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     if (!pid) return
     const old = editNodesRef.current
     const next = insertNodeOnSegment(old, segIdx, cncX, cncY, editClosedRef.current)
-    pushLocalUndo(old)
+    pushLocalUndo(old, editClosedRef.current)
     setEditNodes(next)
     editNodesRef.current = next
   }, [pushLocalUndo])
@@ -819,17 +947,17 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     const cnc = screenToCNC(pointer.x, pointer.y, vp)
     const { paths } = usePathsStore.getState()
     const candidates = paths.filter((p) => p.visible && p.id !== neid)
-    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, flatCache.current)
+    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, (p) => getFlat(p, 0.05))
     if (hit) handlePathDblClick(hit.id)
-  }, [handlePathDblClick])
+  }, [handlePathDblClick, getFlat])
 
   // Called by SelectionLayer resize handles
   const handleResizeHandleDown = useCallback((handle: HandleType, e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.evt.button !== 0) return
 
-    const { paths: allPaths, selectedIds: ids } = usePathsStore.getState()
-    const selected = allPaths.filter((p) => ids.includes(p.id))
-    const bbox = getMultiBBox(selected.map((p) => p.d))
+    // Handles only exist for the rendered selection, so the memoized bbox is current.
+    const { selectedIds: ids } = usePathsStore.getState()
+    const bbox = selectionBBoxRef.current
     if (!bbox) return
 
     const { minX, minY, maxX, maxY, cx, cy } = bbox
@@ -866,9 +994,8 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     if (e.evt.button !== 0) return
 
     const vp = viewportRef.current
-    const { paths: allPaths, selectedIds: ids } = usePathsStore.getState()
-    const selected = allPaths.filter((p) => ids.includes(p.id))
-    const bbox = getMultiBBox(selected.map((p) => p.d))
+    const { selectedIds: ids } = usePathsStore.getState()
+    const bbox = selectionBBoxRef.current
     if (!bbox) return
 
     const pointer = e.target.getStage()?.getPointerPosition()
@@ -938,7 +1065,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     // Find the closest visible path within 8 screen pixels
     const { paths } = usePathsStore.getState()
     const candidates = paths.filter((p) => p.visible && p.id !== neid)
-    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, flatCache.current)
+    const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, (p) => getFlat(p, 0.05))
 
     if (hit) {
       if (neid && neid !== hit.id) exitNodeEdit()
@@ -959,7 +1086,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
       setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
     }
-  }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit])
+  }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit, getFlat])
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current
@@ -1238,7 +1365,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
       const cs = connectSourceRef.current
       const crossTarget = crossPathWeldTargetRef.current
       const nodes = editNodesRef.current
-      pushLocalUndo(nodes)
       const joined = joinPathsConnect(
         nodes, cs,
         crossTarget.nodes, crossTarget.nodeIdx, crossTarget.closed,
@@ -1247,8 +1373,12 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         const newD = nodesToD(joined, false)
         const { nodeEditPathId: pid } = useUIStore.getState()
         if (pid && newD) {
-          usePathsStore.getState().batchUpdatePaths([{ id: pid, d: newD }])
-          usePathsStore.getState().deletePath(crossTarget.pathId)
+          // Join deletes the other path via ONE atomic global entry; a global-
+          // marked local step lets Ctrl+Z revert both, in-session, in one press.
+          pushLocalUndo(nodes, editClosedRef.current, true)
+          selfWriteRef.current = true
+          usePathsStore.getState().applyPathEdit({ updates: [{ id: pid, d: newD }], deleteIds: [crossTarget.pathId] })
+          selfWriteRef.current = false
           regenerateAffected(pid)
           setEditNodes(joined)
           editNodesRef.current = joined
@@ -1403,7 +1533,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig)
           : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
 
-        const id = `shape-${Date.now()}`
+        const id = uid('shape')
         const { addPaths: add, selectPath: sel } = usePathsStore.getState()
         const d = generateShapeD(params)
         add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }])
@@ -1447,7 +1577,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
 
       if (crossTgt !== null && didDragRef.current) {
         // Cross-path join: merge the current path with another path at their endpoints
-        if (initSnap) pushLocalUndo(initSnap)
         const joined = joinPaths(
           editNodesRef.current, m.nodeIdx, editClosedRef.current,
           crossTgt.nodes, crossTgt.nodeIdx, crossTgt.closed,
@@ -1456,8 +1585,12 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           const newD = nodesToD(joined, false)
           const { nodeEditPathId: pid } = useUIStore.getState()
           if (pid && newD) {
-            usePathsStore.getState().batchUpdatePaths([{ id: pid, d: newD }])
-            usePathsStore.getState().deletePath(crossTgt.pathId)
+            // Join deletes the other path via ONE atomic global entry; a global-
+            // marked local step lets Ctrl+Z revert both, in-session, in one press.
+            if (initSnap) pushLocalUndo(initSnap, editClosedRef.current, true)
+            selfWriteRef.current = true
+            usePathsStore.getState().applyPathEdit({ updates: [{ id: pid, d: newD }], deleteIds: [crossTgt.pathId] })
+            selfWriteRef.current = false
             regenerateAffected(pid)
             setEditNodes(joined)
             editNodesRef.current = joined
@@ -1466,7 +1599,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           }
         }
       } else if (tgt !== null && didDragRef.current) {
-        if (initSnap) pushLocalUndo(initSnap)
         const curNodes = editNodesRef.current
         const curClosed = editClosedRef.current
         const n = curNodes.length
@@ -1484,16 +1616,21 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           if (pid && remainD) {
             const { paths: allPaths } = usePathsStore.getState()
             const srcPath = allPaths.find((p) => p.id === pid)
-            usePathsStore.getState().batchUpdatePaths([{ id: pid, d: remainD }])
-            if (loopD) {
-              usePathsStore.getState().addPaths([{
-                id: `weld-loop-${Date.now()}`,
+            // Loop split adds a new path via ONE atomic global entry; a global-
+            // marked local step lets Ctrl+Z revert both, in-session, in one press.
+            if (initSnap) pushLocalUndo(initSnap, curClosed, true)
+            selfWriteRef.current = true
+            usePathsStore.getState().applyPathEdit({
+              updates: [{ id: pid, d: remainD }],
+              add: loopD ? [{
+                id: uid('weld-loop'),
                 name: srcPath?.name ?? 'Path',
                 d: loopD,
                 visible: true,
                 color: srcPath?.color ?? nextPathColor(),
-              }])
-            }
+              }] : [],
+            })
+            selfWriteRef.current = false
             regenerateAffected(pid)
             setEditNodes(remainNodes)
             editNodesRef.current = remainNodes
@@ -1501,7 +1638,9 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             setEditClosed(false)
           }
         } else {
-          // Standard same-path weld (endpoint→endpoint close, or mid→any merge)
+          // Standard same-path weld (endpoint→endpoint close, or mid→any merge) —
+          // pure node edit, store untouched until commit, so local undo handles it.
+          if (initSnap) pushLocalUndo(initSnap, curClosed)
           const result = weldNodes(curNodes, m.nodeIdx, tgt, curClosed)
           setEditNodes(result.nodes)
           editNodesRef.current = result.nodes
@@ -1511,7 +1650,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
           }
         }
       } else if (initSnap && didDragRef.current) {
-        pushLocalUndo(initSnap)
+        pushLocalUndo(initSnap, editClosedRef.current)
       }
 
       // No-drag on an anchor: toggle connect mode or complete connection
@@ -1536,7 +1675,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         if (cs !== null && cs !== m.nodeIdx) {
           if (mIsEndpoint) {
             // Connect source endpoint to other endpoint → close path
-            pushLocalUndo(nodes)
+            pushLocalUndo(nodes, editClosedRef.current)
             editClosedRef.current = true
             setEditClosed(true)
             clearConnect()
@@ -1545,7 +1684,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             // both nodes preserved (no merging, no deletion)
             const result = connectEndpointToInterior(nodes, cs, m.nodeIdx)
             if (result) {
-              pushLocalUndo(nodes)
               const { loopNodes, remainNodes } = result
               const loopD = nodesToD(loopNodes, true)
               const remainD = nodesToD(remainNodes, false)
@@ -1553,16 +1691,21 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
               if (pid && remainD) {
                 const { paths: allPaths } = usePathsStore.getState()
                 const srcPath = allPaths.find((p) => p.id === pid)
-                usePathsStore.getState().batchUpdatePaths([{ id: pid, d: remainD }])
-                if (loopD) {
-                  usePathsStore.getState().addPaths([{
-                    id: `connect-loop-${Date.now()}`,
+                // Loop split adds a new path via ONE atomic global entry; a global-
+                // marked local step lets Ctrl+Z revert both, in-session, in one press.
+                pushLocalUndo(nodes, editClosedRef.current, true)
+                selfWriteRef.current = true
+                usePathsStore.getState().applyPathEdit({
+                  updates: [{ id: pid, d: remainD }],
+                  add: loopD ? [{
+                    id: uid('connect-loop'),
                     name: srcPath?.name ?? 'Path',
                     d: loopD,
                     visible: true,
                     color: srcPath?.color ?? nextPathColor(),
-                  }])
-                }
+                  }] : [],
+                })
+                selfWriteRef.current = false
                 regenerateAffected(pid)
                 setEditNodes(remainNodes)
                 editNodesRef.current = remainNodes
@@ -1617,7 +1760,7 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
             : nodes
           const d = penNodesToPathD(closeNodes, true, ct)
           if (d) {
-            const id = `pen-${Date.now()}`
+            const id = uid('pen')
             const { addPaths: add, selectPath: sel } = usePathsStore.getState()
             add([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
             sel(id)
@@ -1690,8 +1833,6 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     width: Math.abs(dragBox.ex - dragBox.sx),
     height: Math.abs(dragBox.ey - dragBox.sy),
   } : null
-
-  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
 
   return (
     <div
@@ -1776,10 +1917,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
         {/* Layer 2: Screen-space overlay — origin indicator, selection outline, rulers. */}
         <Layer listening={false}>
           <OriginLayer viewport={viewport} />
-          {!nodeEditPathId && selectedPaths.length > 0 && (
+          {!nodeEditPathId && selectionBBox && (
             <SelectionLayer
               viewport={viewport}
-              selectedPaths={selectedPaths}
+              bbox={selectionBBox}
               liveTransform={liveTransform}
             />
           )}
@@ -1788,10 +1929,10 @@ const handleCanvasDrop = useCallback((e: React.DragEvent) => {
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}
         <Layer>
-          {!nodeEditPathId && selectedPaths.length > 0 && (
+          {!nodeEditPathId && selectionBBox && (
             <SelectionHandleLayer
               viewport={viewport}
-              selectedPaths={selectedPaths}
+              bbox={selectionBBox}
               liveTransform={liveTransform}
               onResizeHandleDown={handleResizeHandleDown}
               onRotateHandleDown={handleRotateHandleDown}

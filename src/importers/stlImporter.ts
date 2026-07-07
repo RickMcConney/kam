@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { ImportedPath, StlModelBounds } from './svgImporter'
 import { nextPathColor } from './svgImporter'
+import { uid } from '../uid'
 
 export type { StlModelBounds }
 
@@ -57,7 +58,7 @@ export function importStl(
   const d = `M${fmt(workpieceCX - hw)},${fmt(workpieceCY - hh)} L${fmt(workpieceCX + hw)},${fmt(workpieceCY - hh)} L${fmt(workpieceCX + hw)},${fmt(workpieceCY + hh)} L${fmt(workpieceCX - hw)},${fmt(workpieceCY + hh)} Z`
 
   return {
-    id: `stl-${Date.now()}`,
+    id: uid('stl'),
     name: fileName,
     d,
     color: nextPathColor(),

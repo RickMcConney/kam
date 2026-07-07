@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { OP_TYPE_COLORS } from '../colors'
+import { uid } from '../uid'
 import type { CuttingDirection } from './toolStore'
 import type { OriginPosition } from './workpieceStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
@@ -154,8 +155,6 @@ type AddPayload =
   | Omit<TrochoidalOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<GcodeOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
 
-let _idCounter = 0
-
 interface ToolpathState {
   operations: AnyOperation[]
   addOperation: (op: AddPayload) => string
@@ -184,7 +183,7 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
   operations: [],
 
   addOperation: (op) => {
-    const id = `op-${++_idCounter}`
+    const id = uid('op')
     const color = OP_TYPE_COLORS[op.type] ?? '#94a3b8'
     set((s) => ({
       operations: [...s.operations, { ...op, id, status: 'pending', segments: [], color, visible: true } as AnyOperation],

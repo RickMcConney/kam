@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { uid } from '../uid'
 
 export type ToolType = 'endmill' | 'ballnose' | 'vbit' | 'drill'
 export type CuttingDirection = 'climb' | 'conventional'
@@ -27,8 +28,6 @@ const DEFAULT_TOOLS: Tool[] = [
   { id: 'default-5', name: '3mm Drill',       type: 'drill',    diameterMM: 3.0,   fluteCount: 2, rpm: 12000, xyFeedMmMin: 0,    zFeedMmMin: 200, stepDownMM: 3.0, maxDepthMM: 20.0, direction: 'climb' },
 ]
 
-let _idCounter = 100
-
 interface ToolState {
   tools: Tool[]
   selectedToolId: string | null
@@ -46,7 +45,7 @@ export const useToolStore = create<ToolState>()(
       selectedToolId: DEFAULT_TOOLS[0].id,
 
       addTool: () => {
-        const id = `tool-${++_idCounter}`
+        const id = uid('tool')
         const t: Tool = { id, name: 'New End Mill', type: 'endmill', diameterMM: 6.35, fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 500, stepDownMM: 3.0, maxDepthMM: 20.0, direction: 'climb' }
         set((s) => ({ tools: [...s.tools, t], selectedToolId: id }))
       },
@@ -66,6 +65,25 @@ export const useToolStore = create<ToolState>()(
       setTools: (tools) =>
         set({ tools, selectedToolId: tools[0]?.id ?? null }),
     }),
-    { name: 'freazykam-tools' }
+    {
+      name: 'freazykam-tools',
+      // Heal libraries saved while ids came from a session counter that reset
+      // every launch: two sessions could both mint "tool-101", leaving duplicate
+      // ids in localStorage (updateTool/deleteTool then hit both rows). Re-id
+      // every duplicate after the first; operations referencing the shared id
+      // keep resolving to the first (kept) tool. Deferred a microtask because
+      // this callback runs during store creation, before useToolStore exists.
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+        const seen = new Set<string>()
+        let changed = false
+        const tools = state.tools.map((t) => {
+          if (seen.has(t.id)) { changed = true; return { ...t, id: uid('tool') } }
+          seen.add(t.id)
+          return t
+        })
+        if (changed) queueMicrotask(() => useToolStore.setState({ tools }))
+      },
+    }
   )
 )

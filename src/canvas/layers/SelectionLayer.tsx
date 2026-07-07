@@ -3,8 +3,8 @@ import { Group, Line, Circle } from 'react-konva'
 import type Konva from 'konva'
 import type { Viewport } from '../CanvasStage'
 import type { HandleType, LiveTransform } from '../types'
-import { getMultiBBox, transformPoint } from '../selectionUtils'
-import type { ImportedPath } from '../../store/pathsStore'
+import { transformPoint } from '../selectionUtils'
+import type { BBox } from '../selectionUtils'
 
 const HANDLE_R = 8
 const ROT_OFFSET_PX = 22
@@ -16,16 +16,16 @@ function applyLT(x: number, y: number, lt: LiveTransform | null): { x: number; y
 
 interface SharedProps {
   viewport: Viewport
-  selectedPaths: ImportedPath[]
+  // Selection bbox, computed ONCE in CanvasStage (memoized on the selected
+  // paths). Both selection layers re-render every mousemove during a live
+  // transform — computing the bbox here re-flattened every selected path twice
+  // per frame (tofix.md H1).
+  bbox: BBox
   liveTransform: LiveTransform | null
 }
 
-function useHandlePositions(viewport: Viewport, selectedPaths: ImportedPath[], liveTransform: LiveTransform | null) {
+function handlePositions(viewport: Viewport, bbox: BBox, liveTransform: LiveTransform | null) {
   const { x: vx, y: vy, scale } = viewport
-  const ds = selectedPaths.map((p) => p.d)
-  const bbox = getMultiBBox(ds)
-  if (!bbox) return null
-
   const { minX, minY, maxX, maxY, cx, cy } = bbox
 
   function lt(px: number, py: number) { return applyLT(px, py, liveTransform) }
@@ -47,10 +47,8 @@ function useHandlePositions(viewport: Viewport, selectedPaths: ImportedPath[], l
 }
 
 // Decorative layer: bounding box outline + rotation handle line (non-interactive)
-export function SelectionLayer({ viewport, selectedPaths, liveTransform }: SharedProps) {
-  const pos = useHandlePositions(viewport, selectedPaths, liveTransform)
-  if (!pos) return null
-  const { corners: c, rotHandle, rotBase } = pos
+export function SelectionLayer({ viewport, bbox, liveTransform }: SharedProps) {
+  const { corners: c, rotHandle, rotBase } = handlePositions(viewport, bbox, liveTransform)
 
   const outline = [c.tl.x, c.tl.y, c.tr.x, c.tr.y, c.br.x, c.br.y, c.bl.x, c.bl.y, c.tl.x, c.tl.y]
 
@@ -68,11 +66,9 @@ interface HandleLayerProps extends SharedProps {
   onRotateHandleDown: (e: Konva.KonvaEventObject<MouseEvent>) => void
 }
 
-export function SelectionHandleLayer({ viewport, selectedPaths, liveTransform, onResizeHandleDown, onRotateHandleDown }: HandleLayerProps) {
-  const pos = useHandlePositions(viewport, selectedPaths, liveTransform)
+export function SelectionHandleLayer({ viewport, bbox, liveTransform, onResizeHandleDown, onRotateHandleDown }: HandleLayerProps) {
   const [hoveredId, setHoveredId] = useState<HandleType | 'rot' | null>(null)
-  if (!pos) return null
-  const { corners: c, rotHandle } = pos
+  const { corners: c, rotHandle } = handlePositions(viewport, bbox, liveTransform)
 
   const handles: { id: HandleType; pos: { x: number; y: number } }[] = [
     { id: 'tl', pos: c.tl }, { id: 'tr', pos: c.tr },

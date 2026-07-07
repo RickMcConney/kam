@@ -1,6 +1,7 @@
 import DxfParser from 'dxf-parser'
 import type { ImportedPath } from '../store/pathsStore'
 import { PATH_COLOR } from '../colors'
+import { uid } from '../uid'
 import { getMultiBBox, translateD } from '../canvas/selectionUtils'
 import { douglasPeucker } from '../cam/pathFlattener'
 
@@ -231,7 +232,8 @@ function stitchLines(
   return result
 }
 
-let _groupCounter = 0
+// Session-local numbering for display NAMES only ("Polyline 3") — ids come from
+// uid() so they can never collide with ids loaded from a saved project.
 let _pathCounter = 0
 
 export interface DxfImportResult {
@@ -246,7 +248,7 @@ export function importDxf(
   unitsOverride?: DxfUnitsChoice,
   centerMM?: { x: number; y: number },
 ): DxfImportResult {
-  const groupId = `dxf-group-${++_groupCounter}-${Date.now()}`
+  const groupId = uid('dxf-group')
 
   let dxf: ReturnType<InstanceType<typeof DxfParser>['parseSync']>
   try {
@@ -348,8 +350,8 @@ export function importDxf(
     if (!d.trim()) continue
 
     paths.push({
-      id: `dxf-path-${++_pathCounter}`,
-      name: `${name} ${_pathCounter}`,
+      id: uid('dxf-path'),
+      name: `${name} ${++_pathCounter}`,
       d,
       visible: true,
       color: PATH_COLOR,
@@ -361,8 +363,8 @@ export function importDxf(
   // Stitch collected LINE segments into connected polylines
   for (const d of stitchLines(lineSegs)) {
     paths.push({
-      id: `dxf-path-${++_pathCounter}`,
-      name: `Path ${_pathCounter}`,
+      id: uid('dxf-path'),
+      name: `Path ${++_pathCounter}`,
       d,
       visible: true,
       color: PATH_COLOR,

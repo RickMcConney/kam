@@ -4,10 +4,13 @@ import { translateD } from '../canvas/selectionUtils'
 import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
 import { useTabStore, type Tab } from './tabStore'
+import { uid } from '../uid'
 
 export type { ImportedPath }
 
 type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[]; selectedIds: string[]; tabs: Tab[] }
+
+export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
 
 interface PathsState {
   paths: ImportedPath[]
@@ -27,7 +30,11 @@ interface PathsState {
   setSelectedIds: (ids: string[]) => void
   deleteSelected: () => void
   updatePathD: (id: string, newD: string) => void
-  batchUpdatePaths: (updates: { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }[]) => void
+  batchUpdatePaths: (updates: PathUpdate[]) => void
+  // Atomic update + add + delete in ONE history entry. Use for gestures that
+  // touch multiple paths at once (node-edit join/weld) so a single undo reverts
+  // the whole gesture. Deleted paths' operations and tabs are cleaned up.
+  applyPathEdit: (edit: { updates?: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
@@ -41,16 +48,19 @@ interface PathsState {
   canRedo: () => boolean
 }
 
-function pushHistory(past: HistoryEntry[], paths: ImportedPath[], selectedIds: string[]): HistoryEntry[] {
-  return [...past.slice(-49), {
-    paths,
-    operations: useToolpathStore.getState().operations,
-    selectedIds,
-    tabs: useTabStore.getState().tabs,
-  }]
+// Snapshot the current state into the undo stack. Callers that mutate the
+// toolpath/tab stores in the same action MUST pass the pre-mutation operations
+// and tabs explicitly — the defaults read live store state, which by then would
+// already reflect the mutation (undo would restore the mutated ops/tabs).
+function pushHistory(
+  past: HistoryEntry[],
+  paths: ImportedPath[],
+  selectedIds: string[],
+  operations: AnyOperation[] = useToolpathStore.getState().operations,
+  tabs: Tab[] = useTabStore.getState().tabs,
+): HistoryEntry[] {
+  return [...past.slice(-49), { paths, operations, selectedIds, tabs }]
 }
-
-let _dupCounter = 0
 
 export const usePathsStore = create<PathsState>()((set, get) => ({
   paths: [],
@@ -67,11 +77,17 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
 
   deletePath: (id) => {
     const s = get()
-    const ops = useToolpathStore.getState().operations
-    const newOps = ops.filter((op) => !refsPathId(op, id))
-    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
+    // Snapshot ops/tabs into history BEFORE filtering them, so undo restores
+    // the operations and tabs that referenced the deleted path.
+    const opsBefore = useToolpathStore.getState().operations
+    const tabsBefore = useTabStore.getState().tabs
+    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
+    const newOps = opsBefore.filter((op) => !refsPathId(op, id))
+    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
+    const newTabs = tabsBefore.filter((t) => t.pathId !== id)
+    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
     set({
-      past: pushHistory(s.past, s.paths, s.selectedIds),
+      past,
       future: [],
       paths: s.paths.filter((p) => p.id !== id),
       selectedIds: s.selectedIds.filter((sid) => sid !== id),
@@ -98,15 +114,19 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const s = get()
     const ids = s.paths.filter((p) => p.groupId === groupId).map((p) => p.id)
     if (ids.length === 0) return
-    const ops = useToolpathStore.getState().operations
-    const newOps = ops.filter((op) => !ids.some((id) => refsPathId(op, id)))
-    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
-    set((s) => ({
-      past: pushHistory(s.past, s.paths, s.selectedIds),
+    const opsBefore = useToolpathStore.getState().operations
+    const tabsBefore = useTabStore.getState().tabs
+    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
+    const newOps = opsBefore.filter((op) => !ids.some((id) => refsPathId(op, id)))
+    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
+    const newTabs = tabsBefore.filter((t) => !ids.includes(t.pathId))
+    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
+    set({
+      past,
       future: [],
       paths: s.paths.filter((p) => p.groupId !== groupId),
       selectedIds: s.selectedIds.filter((sid) => !ids.includes(sid)),
-    }))
+    })
   },
 
   selectPath: (id, extend = false) => set((s) => {
@@ -123,11 +143,15 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   deleteSelected: () => {
     const s = get()
     if (s.selectedIds.length === 0) return
-    const ops = useToolpathStore.getState().operations
-    const newOps = ops.filter((op) => !s.selectedIds.some((id) => refsPathId(op, id)))
-    if (newOps.length !== ops.length) useToolpathStore.getState().replaceOperations(newOps)
+    const opsBefore = useToolpathStore.getState().operations
+    const tabsBefore = useTabStore.getState().tabs
+    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
+    const newOps = opsBefore.filter((op) => !s.selectedIds.some((id) => refsPathId(op, id)))
+    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
+    const newTabs = tabsBefore.filter((t) => !s.selectedIds.includes(t.pathId))
+    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
     set({
-      past: pushHistory(s.past, s.paths, s.selectedIds),
+      past,
       future: [],
       paths: s.paths.filter((p) => !s.selectedIds.includes(p.id)),
       selectedIds: [],
@@ -140,12 +164,24 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     paths: s.paths.map((p) => p.id === id ? { ...p, d: newD } : p),
   })),
 
-  batchUpdatePaths: (updates) => set((s) => {
+  batchUpdatePaths: (updates) => get().applyPathEdit({ updates }),
+
+  applyPathEdit: ({ updates = [], add = [], deleteIds = [] }) => {
+    const s = get()
+    // Ops/tabs snapshot must precede their cleanup (see pushHistory note).
+    const opsBefore = useToolpathStore.getState().operations
+    const tabsBefore = useTabStore.getState().tabs
+    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
+    if (deleteIds.length > 0) {
+      const newOps = opsBefore.filter((op) => !deleteIds.some((id) => refsPathId(op, id)))
+      if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
+      const newTabs = tabsBefore.filter((t) => !deleteIds.includes(t.pathId))
+      if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
+    }
     const map = new Map(updates.map(({ id, d, shapeParams, name }) => [id, { d, shapeParams, name }]))
-    return {
-      past: pushHistory(s.past, s.paths, s.selectedIds),
-      future: [],
-      paths: s.paths.map((p) => {
+    const paths = s.paths
+      .filter((p) => !deleteIds.includes(p.id))
+      .map((p) => {
         const upd = map.get(p.id)
         if (!upd) return p
         const newPath = { ...p, d: upd.d }
@@ -156,9 +192,19 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
           newPath.name = upd.name
         }
         return newPath
-      }),
-    }
-  }),
+      })
+    set({
+      past,
+      future: [],
+      paths: add.length > 0 ? [...paths, ...add] : paths,
+      // Only touch selection when something was actually deleted — a fresh array
+      // reference here would needlessly re-render every selectedIds subscriber
+      // on plain batch updates.
+      ...(deleteIds.length > 0
+        ? { selectedIds: s.selectedIds.filter((sid) => !deleteIds.includes(sid)) }
+        : {}),
+    })
+  },
 
   updateShapeParams: (id, params) => set((s) => {
     const d = generateShapeD(params)
@@ -177,12 +223,14 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     paths: s.paths.map((p) => p.id === id ? { ...p, hidden: false } : p),
   })),
 
-  splitPath: (id, subDs) => set((s) => {
+  splitPath: (id, subDs) => {
+    const s = get()
+    if (subDs.length <= 1) return
     const idx = s.paths.findIndex((p) => p.id === id)
-    if (idx === -1) return s
+    if (idx === -1) return
     const orig = s.paths[idx]
     const newPaths: ImportedPath[] = subDs.map((subD, i) => ({
-      id: `path-split-${++_dupCounter}-${Date.now()}-${i}`,
+      id: uid('path-split'),
       name: `${orig.name} ${i + 1}`,
       d: subD,
       color: orig.color,
@@ -190,14 +238,37 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       groupId: orig.groupId,
       groupName: orig.groupName,
     }))
-    const paths = [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)]
-    return {
-      past: pushHistory(s.past, s.paths, s.selectedIds),
+    // Snapshot ops/tabs BEFORE mutating them (see pushHistory note).
+    const opsBefore = useToolpathStore.getState().operations
+    const tabsBefore = useTabStore.getState().tabs
+    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
+    // Operations that referenced the split path only as an ISLAND keep working:
+    // swap the old id for all sub-path ids — the combined island geometry is
+    // unchanged, so the generated toolpath is identical. Operations that used it
+    // as their source/boundary can't reference multiple paths — drop them, same
+    // as deletePath (fully restored by one undo).
+    const newIslandIds = newPaths.map((p) => p.id)
+    let opsChanged = false
+    const newOps = opsBefore.flatMap((op): AnyOperation[] => {
+      if (!refsPathId(op, id)) return [op]
+      opsChanged = true
+      if ((op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') && op.pathId !== id) {
+        return [{ ...op, islandIds: op.islandIds.flatMap((iid) => (iid === id ? newIslandIds : [iid])) }]
+      }
+      return []
+    })
+    if (opsChanged) useToolpathStore.getState().replaceOperations(newOps)
+    // Tab positions are arc-length fractions along the whole compound path — they
+    // don't map onto the sub-paths, so drop them.
+    const newTabs = tabsBefore.filter((t) => t.pathId !== id)
+    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
+    set({
+      past,
       future: [],
-      paths,
+      paths: [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)],
       selectedIds: newPaths.map((p) => p.id),
-    }
-  }),
+    })
+  },
 
   duplicateSelected: (offsetMM = 5) => set((s) => {
     if (s.selectedIds.length === 0) return s
@@ -205,7 +276,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       .filter((p) => s.selectedIds.includes(p.id))
       .map((p) => ({
         ...p,
-        id: `path-dup-${++_dupCounter}-${Date.now()}`,
+        id: uid('path-dup'),
         name: `${p.name} copy`,
         d: translateD(p.d, offsetMM, offsetMM),
         shapeParams: p.shapeParams ? translateShapeParams(p.shapeParams, offsetMM, offsetMM) : undefined,

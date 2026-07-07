@@ -107,15 +107,18 @@ function useKeyboardShortcuts() {
       }
       if (mod && e.key === 'z') {
         e.preventDefault()
-        const { nodeEditUndo } = useUIStore.getState()
-        if (nodeEditUndo) { nodeEditUndo(); return }
+        // Local (node-edit/pen/drill) undo only while it has something to undo;
+        // otherwise fall through to global undo — e.g. a cross-path join clears
+        // the local stack and is undone via the global history entry it wrote.
+        const { nodeEditUndo, nodeEditCanUndo } = useUIStore.getState()
+        if (nodeEditUndo && nodeEditCanUndo) { nodeEditUndo(); return }
         undo()
         return
       }
       if (mod && (e.key === 'y' || e.key === 'Z')) {
         e.preventDefault()
-        const { nodeEditRedo } = useUIStore.getState()
-        if (nodeEditRedo) { nodeEditRedo(); return }
+        const { nodeEditRedo, nodeEditCanRedo } = useUIStore.getState()
+        if (nodeEditRedo && nodeEditCanRedo) { nodeEditRedo(); return }
         redo()
         return
       }

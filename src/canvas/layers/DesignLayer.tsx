@@ -293,7 +293,10 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
 
 // ── Main layer ────────────────────────────────────────────────────────────────
 export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
-  const { paths, selectedIds } = usePathsStore()
+  // Individual selectors — whole-store destructuring re-rendered this layer on
+  // every store change, including pure undo-stack pushes (tofix.md H3).
+  const paths = usePathsStore((s) => s.paths)
+  const selectedIds = usePathsStore((s) => s.selectedIds)
   const darkMode = useUIStore((s) => s.darkMode)
   const C = canvasTheme(darkMode)
   const { scale } = viewport

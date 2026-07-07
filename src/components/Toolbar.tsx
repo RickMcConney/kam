@@ -26,6 +26,7 @@ import { importStl } from '../importers/stlImporter'
 import { getMultiBBox, translateD } from '../canvas/selectionUtils'
 import { openProjectFile, newProject } from '../io/projectLoad'
 import HelpPanel from '../panels/HelpPanel'
+import { uid } from '../uid'
 
 function ToolbarButton({
   icon,
@@ -141,10 +142,14 @@ export default function Toolbar() {
   const { snapEnabled, toggleSnap, setWorkspaceTab, setSidebarTab, darkMode, toggleDarkMode,
           nodeEditUndo, nodeEditRedo, nodeEditCanUndo, nodeEditCanRedo, setHelpOpen } = useUIStore()
   const { undo: mainUndo, redo: mainRedo, canUndo, canRedo } = usePathsStore()
-  const undo = nodeEditUndo ?? mainUndo
-  const redo = nodeEditRedo ?? mainRedo
-  const undoDisabled = nodeEditUndo ? !nodeEditCanUndo : !canUndo()
-  const redoDisabled = nodeEditRedo ? !nodeEditCanRedo : !canRedo()
+  // Local (node-edit/pen/drill) undo only while it has something to undo;
+  // otherwise fall through to global undo (matches the Ctrl+Z routing in App).
+  const useLocalUndo = nodeEditUndo !== null && nodeEditCanUndo
+  const useLocalRedo = nodeEditRedo !== null && nodeEditCanRedo
+  const undo = useLocalUndo ? nodeEditUndo : mainUndo
+  const redo = useLocalRedo ? nodeEditRedo : mainRedo
+  const undoDisabled = useLocalUndo ? false : !canUndo()
+  const redoDisabled = useLocalRedo ? false : !canRedo()
   const { operations } = useToolpathStore()
   const { tools } = useToolStore()
   const { name } = useProjectStore()
@@ -313,7 +318,7 @@ export default function Toolbar() {
           const hw = imgW / 2, hh = imgH / 2
           const d = `M${fmt(cx - hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy + hh)} L${fmt(cx - hw)},${fmt(cy + hh)} Z`
           usePathsStore.getState().addPaths([{
-            id: `img-${Date.now()}`,
+            id: uid('img'),
             name: file.name.replace(/\.[^.]+$/, ''),
             d,
             visible: true,

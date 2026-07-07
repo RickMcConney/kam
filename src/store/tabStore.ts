@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { flattenPath, type Pt2 } from '../cam/pathFlattener'
+import { uid } from '../uid'
 
 export interface Tab {
   id: string
@@ -8,8 +9,6 @@ export interface Tab {
   lengthMM: number
   heightMM: number // height above cut bottom (G-code lifts to -(depth - heightMM))
 }
-
-let _tabCounter = 0
 
 interface TabState {
   tabs: Tab[]
@@ -64,7 +63,7 @@ export const useTabStore = create<TabState>()((set, get) => ({
       }
 
       newTabs.push({
-        id: `tab-${++_tabCounter}`,
+        id: uid('tab'),
         pathId,
         t: snappedT,
         lengthMM,

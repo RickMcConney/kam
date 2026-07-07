@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { uid } from '../uid'
 
 export type CommentStyle = 'semicolon' | 'parenthesis' | 'none'
 
@@ -146,7 +147,6 @@ const BUILTIN_PROFILES: PostProcessorProfile[] = [
   GENERIC_MM,
 ]
 
-let _idCounter = 0
 
 interface PostProcessorState {
   profiles: PostProcessorProfile[]
@@ -175,7 +175,7 @@ export const usePostProcessorStore = create<PostProcessorState>()(
       setActiveId: (id) => set({ activeId: id }),
 
       addProfile: () => {
-        const id = `pp-${++_idCounter}-${Date.now()}`
+        const id = uid('pp')
         const newProfile: PostProcessorProfile = { ...GRBL_MM, id, name: 'New Profile', builtin: false }
         set((s) => ({ profiles: [...s.profiles, newProfile], activeId: id }))
       },
@@ -183,7 +183,7 @@ export const usePostProcessorStore = create<PostProcessorState>()(
       duplicateProfile: (id) => {
         const src = get().profiles.find((p) => p.id === id)
         if (!src) return
-        const newId = `pp-${++_idCounter}-${Date.now()}`
+        const newId = uid('pp')
         const dup: PostProcessorProfile = { ...src, id: newId, name: `${src.name} copy`, builtin: false }
         set((s) => ({ profiles: [...s.profiles, dup], activeId: newId }))
       },

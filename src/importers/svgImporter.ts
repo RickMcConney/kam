@@ -1,6 +1,7 @@
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { PATH_COLOR } from '../colors'
 import { splitCompoundPath } from '../canvas/nodeUtils'
+import { uid } from '../uid'
 
 export interface StlModelBounds {
   minX: number; maxX: number
@@ -31,6 +32,8 @@ export interface SvgImportResult {
   groupId: string
 }
 
+// Session-local numbering for display NAMES only ("Path 7") — ids come from
+// uid() so they can never collide with ids loaded from a saved project.
 let pathCounter = 0
 
 export function nextPathColor(): string {
@@ -204,14 +207,45 @@ function parseSvgTransform(attr: string | null): Mat6 {
   return result
 }
 
+// Transform an arc's radii + x-axis-rotation under the linear part of a Mat6.
+// An affine map takes an ellipse to an ellipse. The ellipse is the image of the
+// unit circle under R(ang)·diag(rx,ry), so the transformed ellipse is the image
+// under N = L·R(ang)·diag(rx,ry). The SVD N = R(u)·diag(σ1,σ2)·R(v)ᵀ gives the
+// new axes directly (R(v)ᵀ maps the circle to itself): radii = |σ1|,|σ2| and
+// axis angle = u. The old code scaled rx/ry by the matrix row norms and left
+// ang untouched — correct only for translate/axis-aligned scale/mirror, which
+// is why rotating or skewing an ellipse distorted it (tofix.md B3).
+function xformArcAxes(
+  rx: number, ry: number, angDeg: number,
+  a: number, b: number, c: number, d: number,
+): { rx: number; ry: number; ang: number } {
+  const phi = angDeg * Math.PI / 180
+  const cosP = Math.cos(phi), sinP = Math.sin(phi)
+  // N = L·R(phi)·diag(rx,ry), with L = [[a,c],[b,d]] (x' = ax+cy, y' = bx+dy)
+  const n11 = (a * cosP + c * sinP) * rx
+  const n21 = (b * cosP + d * sinP) * rx
+  const n12 = (c * cosP - a * sinP) * ry
+  const n22 = (d * cosP - b * sinP) * ry
+  // Closed-form 2×2 SVD via rotation sum/difference identities
+  const E = (n11 + n22) / 2, F = (n11 - n22) / 2
+  const G = (n21 + n12) / 2, H = (n21 - n12) / 2
+  const Q = Math.hypot(E, H), R = Math.hypot(F, G)
+  // Left-rotation angle = new ellipse axis angle. For a circle (F=G=0) a1 is
+  // arbitrary — harmless, any angle describes the same circle.
+  const a1 = Math.atan2(G, F), a2 = Math.atan2(H, E)
+  return {
+    rx: Q + R,
+    ry: Math.abs(Q - R),
+    ang: +(((a2 + a1) / 2) * 180 / Math.PI).toFixed(4),
+  }
+}
+
 export function applyMat(cmds: AbsCmd[], m: Mat6): AbsCmd[] {
   const [a,b,c,d,e,f] = m
   const px = (x: number, y: number) => a*x + c*y + e
   const py = (x: number, y: number) => b*x + d*y + f
   const det = a*d - b*c
   const flipSweep = det < 0
-  const scaleX = Math.sqrt(a*a + b*b)
-  const scaleY = Math.sqrt(c*c + d*d)
   return cmds.map((cmd): AbsCmd => {
     switch (cmd.t) {
       case 'M': return { t:'M', x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
@@ -220,30 +254,20 @@ export function applyMat(cmds: AbsCmd[], m: Mat6): AbsCmd[] {
       case 'S': return { t:'S', x2:px(cmd.x2,cmd.y2), y2:py(cmd.x2,cmd.y2), x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
       case 'Q': return { t:'Q', x1:px(cmd.x1,cmd.y1), y1:py(cmd.x1,cmd.y1), x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
       case 'T': return { t:'T', x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
-      case 'A': return { t:'A', rx:cmd.rx*scaleX, ry:cmd.ry*scaleY, ang:cmd.ang, lg:cmd.lg, sw:flipSweep?1-cmd.sw:cmd.sw, x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
+      case 'A': {
+        const ax = xformArcAxes(cmd.rx, cmd.ry, cmd.ang, a, b, c, d)
+        return { t:'A', rx:ax.rx, ry:ax.ry, ang:ax.ang, lg:cmd.lg, sw:flipSweep?1-cmd.sw:cmd.sw, x:px(cmd.x,cmd.y), y:py(cmd.x,cmd.y) }
+      }
       case 'Z': return { t:'Z' }
     }
   })
 }
 
-// Apply simple scale+translate (SVG px → CNC mm with Y-flip)
+// Apply simple scale+translate (SVG px → CNC mm with Y-flip). Just a special
+// case of applyMat — delegating keeps arc axis handling (incl. rotated arcs
+// under non-uniform viewBox scaling) in one place.
 function applyGlobalTransform(cmds: AbsCmd[], sx: number, sy: number, tx: number, ty: number): AbsCmd[] {
-  // sy is negative (Y-flip). sweep must be flipped.
-  const flipSweep = sy < 0
-  const fx = (x: number) => x * sx + tx
-  const fy = (y: number) => y * sy + ty
-  return cmds.map((cmd): AbsCmd => {
-    switch (cmd.t) {
-      case 'M': return { t:'M', x:fx(cmd.x), y:fy(cmd.y) }
-      case 'L': return { t:'L', x:fx(cmd.x), y:fy(cmd.y) }
-      case 'C': return { t:'C', x1:fx(cmd.x1), y1:fy(cmd.y1), x2:fx(cmd.x2), y2:fy(cmd.y2), x:fx(cmd.x), y:fy(cmd.y) }
-      case 'S': return { t:'S', x2:fx(cmd.x2), y2:fy(cmd.y2), x:fx(cmd.x), y:fy(cmd.y) }
-      case 'Q': return { t:'Q', x1:fx(cmd.x1), y1:fy(cmd.y1), x:fx(cmd.x), y:fy(cmd.y) }
-      case 'T': return { t:'T', x:fx(cmd.x), y:fy(cmd.y) }
-      case 'A': return { t:'A', rx:Math.abs(cmd.rx*sx), ry:Math.abs(cmd.ry*sy), ang:cmd.ang, lg:cmd.lg, sw:flipSweep?1-cmd.sw:cmd.sw, x:fx(cmd.x), y:fy(cmd.y) }
-      case 'Z': return { t:'Z' }
-    }
-  })
+  return applyMat(cmds, [sx, 0, 0, sy, tx, ty])
 }
 
 // ── Shape element → d string (SVG coordinate space) ──────────────────────────
@@ -299,10 +323,8 @@ export interface ImportOptions {
   ppi?: number
 }
 
-let _groupCounter = 0
-
 export function importSvg(svgText: string, options?: ImportOptions | number, groupName?: string): SvgImportResult {
-  const groupId = `svg-group-${++_groupCounter}-${Date.now()}`
+  const groupId = uid('svg-group')
   const opts: ImportOptions = typeof options === 'number' ? { ppi: options } : (options ?? {})
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
   if (doc.querySelector('parsererror')) throw new Error('Invalid SVG file')
@@ -385,8 +407,8 @@ export function importSvg(svgText: string, options?: ImportOptions | number, gro
           if (cmd.t !== 'M') continue
           const cx = cmd.x, cy = cmd.y
           const crossD = `M${fmt(cx - ARM)},${fmt(cy)} L${fmt(cx + ARM)},${fmt(cy)} M${fmt(cx)},${fmt(cy - ARM)} L${fmt(cx)},${fmt(cy + ARM)}`
-          const id = `path-${++pathCounter}`
-          const name = baseName || `Marker ${pathCounter}`
+          const id = uid('path')
+          const name = baseName || `Marker ${++pathCounter}`
           paths.push({ id, name, d: crossD, visible: true, color: PATH_COLOR, groupId, groupName })
         }
         return
@@ -397,13 +419,13 @@ export function importSvg(svgText: string, options?: ImportOptions | number, gro
       const subDs = splitCompoundPath(d)
       if (subDs.length > 1) {
         subDs.forEach((subD, i) => {
-          const id = `path-${++pathCounter}`
-          const name = baseName ? `${baseName} ${i + 1}` : `Path ${pathCounter}`
+          const id = uid('path')
+          const name = baseName ? `${baseName} ${i + 1}` : `Path ${++pathCounter}`
           paths.push({ id, name, d: subD, visible: true, color: PATH_COLOR, groupId, groupName })
         })
       } else {
-        const id = `path-${++pathCounter}`
-        const name = baseName || `Path ${pathCounter}`
+        const id = uid('path')
+        const name = baseName || `Path ${++pathCounter}`
         paths.push({ id, name, d, visible: true, color: PATH_COLOR, groupId, groupName })
       }
     } catch {

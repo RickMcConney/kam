@@ -29,6 +29,7 @@ import { effectiveStepDownMM, trochoidalEngagementFraction } from '../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
+import { uid } from '../uid'
 
 const InlayIcon = ({ size = 24 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -39,13 +40,17 @@ const InlayIcon = ({ size = 24 }: { size?: number }) => (
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const flattenCache = new Map<string, [number, number][]>()
-function flattenCached(d: string): [number, number][] {
-  if (!flattenCache.has(d)) {
-    const pts = flattenPath(d, 0.1)
-    flattenCache.set(d, (pts[0] ?? []) as [number, number][])
-  }
-  return flattenCache.get(d)!
+// Keyed by path id, invalidated when the path's d changes. (Keying on the full
+// d string never evicted, so the module-level map grew with every transform
+// bake for the app's lifetime — tofix.md H2.) Size cap covers deleted paths.
+const flattenCache = new Map<string, { d: string; pts: [number, number][] }>()
+function flattenCached(p: ImportedPath): [number, number][] {
+  const entry = flattenCache.get(p.id)
+  if (entry && entry.d === p.d) return entry.pts
+  if (flattenCache.size > 500) flattenCache.clear()
+  const pts = (flattenPath(p.d, 0.1)[0] ?? []) as [number, number][]
+  flattenCache.set(p.id, { d: p.d, pts })
+  return pts
 }
 
 // ─── Containment grouping ─────────────────────────────────────────────────────
@@ -69,7 +74,7 @@ function groupPathsByContainment(
   if (selectedPaths.length === 1) return [{ boundary: selectedPaths[0], islands: [] }]
 
   function getPoly(p: ImportedPath): [number, number][] {
-    return flattenCached(p.d)
+    return flattenCached(p)
   }
 
   // For each path find its smallest (most direct) containing path among the selection
@@ -2220,7 +2225,7 @@ export function BooleanForm({ onClose }: { onClose: () => void }) {
     pushHistoryBoth()
     const label = form.opType.charAt(0).toUpperCase() + form.opType.slice(1)
     const newPath = {
-      id: `path-bool-${Date.now()}`,
+      id: uid('path-bool'),
       name: `${label} result`,
       d: result.resultD,
       visible: true,
@@ -2287,7 +2292,7 @@ export function OffsetForm({ onClose }: { onClose: () => void }) {
       const resultD = applyOffset(p.d, { distanceMM: form.distanceMM, cornerStyle: form.cornerStyle })
       if (!resultD) return null
       return {
-        id: `path-offset-${Date.now()}-${Math.random()}`,
+        id: uid('path-offset'),
         name: `${p.name} offset`,
         d: resultD,
         visible: true,
@@ -2382,7 +2387,7 @@ export function PatternForm({ onClose }: { onClose: () => void }) {
     for (const inst of instancesToCreate) {
       for (const src of selectedPaths) {
         newPaths.push({
-          id: `path-pattern-${Date.now()}-${Math.random()}`,
+          id: uid('path-pattern'),
           name: `${src.name} ${inst.index !== undefined ? inst.index + 1 : `r${inst.row}c${inst.col}`}`,
           d: applyPatternInstance(src.d, inst),
           visible: true,
