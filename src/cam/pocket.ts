@@ -5,6 +5,7 @@ import { morphChainToSpiral } from './spiralMorph'
 import { solveField, type FieldGrid } from './spiralField'
 import { traceIsolines } from './marchingSquares'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
+import { zPasses } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
@@ -59,15 +60,6 @@ function _perfLog(label: string) {
 }
 
 // ─── Shared utilities ──────────────────────────────────────────────────────────
-
-function zPasses(depthMM: number, stepDownMM: number): number[] {
-  const passes: number[] = []
-  const step = Math.abs(stepDownMM)
-  let z = -step
-  while (z > -depthMM) { passes.push(z); z -= step }
-  passes.push(-Math.abs(depthMM))
-  return passes
-}
 
 function pointInPolygon(px: number, py: number, poly: Pt2[]): boolean {
   let inside = false

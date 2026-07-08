@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { parseGcode, getCurrentSegIdx, type SimSegment, type ToolState } from '../sim/gcodeParser'
 import { useWorkpieceStore, zDatumOffsetMM } from './workpieceStore'
+import { useUIStore } from './uiStore'
 
 export type SimSpeed = 1 | 5 | 20 | 100
 
@@ -49,6 +50,9 @@ export const useSimStore = create<SimState>()((set, get) => ({
     // Parser's initial cz must match the machine-coord safe height so the tool
     // starts at the right position when elapsedTimeS = 0 (reset to start).
     const parsed = parseGcode(text, safeHeightMM + genZOff)
+    // App-generated G-code never triggers these; imported external files can.
+    if (parsed.warnings.length > 0)
+      useUIStore.getState().showStatus(`G-code simulation: ${parsed.warnings.join('; ')}`, 'warn')
     set({
       gcode: text,
       gcodeLines: parsed.lines,

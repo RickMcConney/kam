@@ -1,3 +1,4 @@
+import { zPasses } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -9,15 +10,6 @@ export interface SurfaceParams {
   stepoverPercent: number
   passAngleDeg: number
   safeHeightMM?: number
-}
-
-function zPasses(depthMM: number, stepDownMM: number): number[] {
-  const passes: number[] = []
-  const step = Math.abs(stepDownMM)
-  let z = -step
-  while (z > -depthMM) { passes.push(z); z -= step }
-  passes.push(-Math.abs(depthMM))
-  return passes
 }
 
 function workpieceBounds(widthMM: number, heightMM: number) {

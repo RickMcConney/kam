@@ -15,6 +15,7 @@ export function buildProjectData() {
     widthMM, heightMM, thicknessMM, units, origin, zOrigin, material,
     tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
     machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
+    safeHeightMM, spindleType,
   } = useWorkpieceStore.getState()
   const { tools } = useToolStore.getState()
   const { paths } = usePathsStore.getState()
@@ -35,6 +36,7 @@ export function buildProjectData() {
       widthMM, heightMM, thicknessMM, units, origin, zOrigin, material,
       tableLimitWidthMM, tableLimitHeightMM, tableLimitDepthMM,
       machineRigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, autoFeedEnabled,
+      safeHeightMM, spindleType,
     },
     tools,
     paths,

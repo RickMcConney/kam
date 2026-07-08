@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
@@ -20,6 +21,8 @@ export default function StatusBar() {
   const workspaceTab = useUIStore((s) => s.workspaceTab)
   const activeTool = useUIStore((s) => s.activeTool)
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+  const statusMessage = useUIStore((s) => s.statusMessage)
+  const clearStatus = useUIStore((s) => s.clearStatus)
   const cursorMM = useCanvasStore((s) => s.cursorMM)
   const zoomPct = useCanvasStore((s) => s.zoomPct)
   const darkMode = useUIStore((s) => s.darkMode)
@@ -49,6 +52,20 @@ export default function StatusBar() {
 
   const mode = modeLabel(activeTool, nodeEditPathId)
 
+  // Auto-dismiss transient messages; errors/warnings linger longer. Keyed on
+  // seq so re-showing the same text restarts the timer.
+  useEffect(() => {
+    if (!statusMessage) return
+    const ms = statusMessage.kind === 'info' ? 5000 : 10000
+    const t = setTimeout(clearStatus, ms)
+    return () => clearTimeout(t)
+  }, [statusMessage, clearStatus])
+
+  const msgColor =
+    statusMessage?.kind === 'error' ? 'text-red-500 dark:text-red-400'
+    : statusMessage?.kind === 'warn' ? 'text-amber-600 dark:text-amber-400'
+    : 'text-blue-500 dark:text-blue-400'
+
   return (
     <div className="h-7 bg-gray-50 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-[15px] text-gray-500 dark:text-neutral-400 select-none flex-shrink-0">
       {/* Left section */}
@@ -60,6 +77,16 @@ export default function StatusBar() {
         {workspaceTab === '2d' && cnc && (
           <span className="font-mono">
             X: {formatCoord(cnc.x)}&nbsp;&nbsp;Y: {formatCoord(cnc.y)}
+          </span>
+        )}
+
+        {statusMessage && (
+          <span
+            className={`${msgColor} font-medium truncate min-w-0 cursor-pointer`}
+            title={statusMessage.text}
+            onClick={clearStatus}
+          >
+            {statusMessage.text}
           </span>
         )}
       </div>

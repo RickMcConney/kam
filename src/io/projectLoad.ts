@@ -14,6 +14,7 @@ import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpieceStore'
+import type { SpindleType } from '../store/spindle'
 
 interface SavedWorkpiece {
   widthMM: number
@@ -31,6 +32,8 @@ interface SavedWorkpiece {
   minSpindleRpm?: number
   maxSpindleRpm?: number
   autoFeedEnabled?: boolean
+  safeHeightMM?: number
+  spindleType?: SpindleType
 }
 
 interface ProjectData {
@@ -65,6 +68,10 @@ export function loadProject(data: ProjectData) {
   wps.setMinSpindleRpm(wp.minSpindleRpm ?? 8000)
   wps.setMaxSpindleRpm(wp.maxSpindleRpm ?? 24000)
   wps.setAutoFeedEnabled(wp.autoFeedEnabled ?? false)
+  // Absent in projects saved before these were added to the file format — keep
+  // the machine-local (localStorage) values instead of resetting to defaults.
+  if (wp.safeHeightMM !== undefined) wps.setSafeHeight(wp.safeHeightMM)
+  if (wp.spindleType !== undefined) wps.setSpindleType(wp.spindleType)
 
   if (Array.isArray(data.tools) && data.tools.length > 0) {
     useToolStore.getState().setTools(data.tools)

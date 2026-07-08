@@ -1,5 +1,6 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
+import { zPasses } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -21,15 +22,6 @@ export interface TrochoidalParams {
   rampIn?: boolean
   startNear?: { x: number; y: number }
   safeHeightMM?: number
-}
-
-function zPasses(depthMM: number, stepDownMM: number): number[] {
-  const passes: number[] = []
-  const step = Math.abs(stepDownMM)
-  let z = -step
-  while (z > -depthMM) { passes.push(z); z -= step }
-  passes.push(-Math.abs(depthMM))
-  return passes
 }
 
 function arcLengths(pts: Pt2[]): { lens: number[]; total: number } {

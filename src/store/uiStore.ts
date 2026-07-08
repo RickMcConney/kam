@@ -6,6 +6,16 @@ import type { PenCurveType } from '../cam/penCurves'
 export type { PenCurveType }
 
 export type SidebarTab = 'draw' | 'paths'
+export type StatusKind = 'info' | 'warn' | 'error'
+
+// Transient message shown in the StatusBar (import failures, sim warnings, …).
+// `seq` bumps on every showStatus so an identical repeated message still
+// restarts the auto-dismiss timer.
+export interface StatusMessage {
+  text: string
+  kind: StatusKind
+  seq: number
+}
 export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
 export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
 
@@ -39,6 +49,14 @@ interface UIState {
   nodeEditRedo: (() => void) | null
   nodeEditCanUndo: boolean
   nodeEditCanRedo: boolean
+  statusMessage: StatusMessage | null
+  showStatus: (text: string, kind?: StatusKind) => void
+  clearStatus: () => void
+  // DXF file waiting on the units-prompt dialog (no $INSUNITS in the file).
+  // Lives here so both import entry points (toolbar button, canvas drop) can
+  // trigger the dialog; DxfUnitsDialog renders when non-null.
+  pendingDxfImport: { text: string; name: string } | null
+  setPendingDxfImport: (p: { text: string; name: string } | null) => void
   setMachineFormActive: (active: boolean) => void
   setTabsFormActive: (active: boolean) => void
   setShapesPanelOpen: (open: boolean) => void
@@ -87,6 +105,12 @@ export const useUIStore = create<UIState>()(
   nodeEditRedo: null,
   nodeEditCanUndo: false,
   nodeEditCanRedo: false,
+  statusMessage: null,
+  showStatus: (text, kind = 'info') =>
+    set((s) => ({ statusMessage: { text, kind, seq: (s.statusMessage?.seq ?? 0) + 1 } })),
+  clearStatus: () => set({ statusMessage: null }),
+  pendingDxfImport: null,
+  setPendingDxfImport: (p) => set({ pendingDxfImport: p }),
   setMachineFormActive: (active) => set({ machineFormActive: active }),
   setTabsFormActive: (active) => set({ tabsFormActive: active }),
   setShapesPanelOpen: (open) => set({ shapesPanelOpen: open }),

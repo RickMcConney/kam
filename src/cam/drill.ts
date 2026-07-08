@@ -1,3 +1,4 @@
+import { zPasses } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -28,15 +29,6 @@ function nearestNeighbourOrder(pts: DrillPoint[], startX: number, startY: number
     remaining.splice(bestIdx, 1)
   }
   return ordered
-}
-
-function zPasses(depthMM: number, stepDownMM: number): number[] {
-  const passes: number[] = []
-  const step = Math.abs(stepDownMM)
-  let z = -step
-  while (z > -depthMM) { passes.push(z); z -= step }
-  passes.push(-Math.abs(depthMM))
-  return passes
 }
 
 export function generatePeckDrill(

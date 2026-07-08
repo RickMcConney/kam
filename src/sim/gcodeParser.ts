@@ -30,6 +30,10 @@ export interface ParsedGcode {
   segments: SimSegment[]
   totalTimeS: number
   toolStates: ToolState[]
+  // Deduplicated notes about G-code features the simulator can't honor
+  // (non-XY arc planes, absolute arc centers, malformed arcs). Empty for
+  // anything this app generates itself; imported external G-code may hit them.
+  warnings: string[]
 }
 
 const RAPID_MM_PER_MIN = 5000
@@ -114,6 +118,8 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
   let feedRate = 1000
   let unitScale = 1
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3
+  let absolute = true // G90 (default) vs G91 incremental distance mode
+  const warnings = new Set<string>()
   let toolDiameterMM = 3.0
   let toolVbitHalfAngleTan: number | undefined
   let toolBallNose: boolean | undefined
@@ -172,6 +178,19 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     if (gWords.some((v) => Math.abs(v - 20) < 0.001)) unitScale = MM_PER_INCH
     if (gWords.some((v) => Math.abs(v - 21) < 0.001)) unitScale = 1
 
+    // Distance mode. Note the tolerance: G90.1/G91.1 (arc-center distance
+    // mode) must NOT match here — they're handled as a warning below.
+    if (gWords.some((v) => Math.abs(v - 90) < 0.001)) absolute = true
+    if (gWords.some((v) => Math.abs(v - 91) < 0.001)) absolute = false
+
+    // Features the simulator doesn't honor — flag instead of silently mis-simulating.
+    if (gWords.some((v) => Math.abs(v - 18) < 0.001 || Math.abs(v - 19) < 0.001))
+      warnings.add('G18/G19 arc planes are not supported — arcs simulate in the XY plane')
+    if (gWords.some((v) => Math.abs(v - 90.1) < 0.001))
+      warnings.add('G90.1 absolute arc centers are not supported — arcs may render incorrectly')
+    if (gWords.some((v) => Math.abs(v - 41) < 0.001 || Math.abs(v - 42) < 0.001))
+      warnings.add('G41/G42 cutter compensation is ignored')
+
     // G0-G3 motion mode
     const gm = gWords.find((v) => v >= 0 && v <= 3)
     if (gm !== undefined) motionMode = gm
@@ -187,14 +206,40 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     const hasZ = get('Z') !== undefined
     if (!hasX && !hasY && !hasZ) continue
 
-    const toMM = (value: number | undefined, fallback: number) =>
-      value === undefined ? fallback : value * unitScale
+    // Axis words: absolute (G90) coordinates, or deltas from the current
+    // position in G91 incremental mode.
+    const toMM = (value: number | undefined, fallback: number, current: number) =>
+      value === undefined ? fallback : absolute ? value * unitScale : current + value * unitScale
 
-    const nx = toMM(get('X'), cx)
-    const ny = toMM(get('Y'), cy)
-    const nz = toMM(get('Z'), cz)
-    const ii = (get('I') ?? 0) * unitScale
-    const jj = (get('J') ?? 0) * unitScale
+    const nx = toMM(get('X'), cx, cx)
+    const ny = toMM(get('Y'), cy, cy)
+    const nz = toMM(get('Z'), cz, cz)
+
+    // Arc center offsets. I/J are always relative to the start point (Grbl
+    // G91.1 default). R-format arcs derive the center from the radius using
+    // Grbl's formula: positive R = minor arc (≤180°), negative R = major arc.
+    let ii = (get('I') ?? 0) * unitScale
+    let jj = (get('J') ?? 0) * unitScale
+    const rWord = get('R')
+    if ((motionMode === 2 || motionMode === 3) && rWord !== undefined
+        && get('I') === undefined && get('J') === undefined) {
+      let r = rWord * unitScale
+      const dx = nx - cx, dy = ny - cy
+      const chord = Math.hypot(dx, dy)
+      if (chord < 0.0001) {
+        warnings.add('R-format arc with coincident start/end point skipped (use I/J for full circles)')
+        continue
+      }
+      const disc = 4 * r * r - dx * dx - dy * dy
+      if (disc < -0.0001) {
+        warnings.add('R-format arc radius smaller than half the chord — arc flattened')
+      }
+      let h = -Math.sqrt(Math.max(0, disc)) / chord
+      if (motionMode === 3) h = -h
+      if (r < 0) { h = -h; r = -r }
+      ii = 0.5 * (dx - dy * h)
+      jj = 0.5 * (dy + dx * h)
+    }
 
     if (motionMode === 0) {
       const dist = Math.hypot(nx - cx, ny - cy, nz - cz)
@@ -230,6 +275,8 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
         cumT += dur
       }
     } else if (motionMode === 2 || motionMode === 3) {
+      if (get('I') === undefined && get('J') === undefined && rWord === undefined)
+        warnings.add('G2/G3 arc without I/J or R words — treated as no motion')
       const arcSegs = arcToSegments(cx, cy, nx, ny, ii, jj, motionMode === 2, cz, nz, Math.max(feedRate, 1), li, cumT, curStateIdx)
       segs.push(...arcSegs)
       if (arcSegs.length > 0) {
@@ -241,7 +288,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     cx = nx; cy = ny; cz = nz
   }
 
-  return { lines: rawLines, segments: segs, totalTimeS: cumT, toolStates }
+  return { lines: rawLines, segments: segs, totalTimeS: cumT, toolStates, warnings: [...warnings] }
 }
 
 export function getCurrentSegIdx(segments: SimSegment[], elapsedTimeS: number): number {

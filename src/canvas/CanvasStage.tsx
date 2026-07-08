@@ -10,7 +10,8 @@ import { regenerateAffected } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
-import { importSvg, nextPathColor } from '../importers/svgImporter'
+import { nextPathColor } from '../importers/svgImporter'
+import { importFile } from '../io/importFile'
 import { GridLayer } from './layers/GridLayer'
 import { WorkpieceLayer, originWorldXY } from './layers/WorkpieceLayer'
 import { majorStepMM, minorStepMM } from './gridUtils'
@@ -306,7 +307,6 @@ export default function CanvasStage() {
   const selectedIds = usePathsStore((s) => s.selectedIds)
   const selectPath = usePathsStore((s) => s.selectPath)
   const setSelectedIds = usePathsStore((s) => s.setSelectedIds)
-  const addPaths = usePathsStore((s) => s.addPaths)
 
   // Drop cache entries for paths that no longer exist (updates are already
   // replaced in place by the id+d check in getFlat).
@@ -327,7 +327,6 @@ export default function CanvasStage() {
   const selectionBBox = useMemo(() => getMultiBBox(selectedPaths.map((p) => p.d)), [selectedPaths])
   const selectionBBoxRef = useRef<BBox | null>(null)
   selectionBBoxRef.current = selectionBBox
-  const setSidebarTab = useUIStore((s) => s.setSidebarTab)
   const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
   const penNodes = useUIStore((s) => s.penNodes)
   const penCurveType = useUIStore((s) => s.penCurveType)
@@ -486,30 +485,12 @@ export default function CanvasStage() {
     return snapCNC(cnc)
   }, [snapCNC, getFlat])
 
-const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+  // Dropped files go through the same shared import pipeline as the toolbar
+  // Import button (io/importFile.ts) — all formats, same prompts and messages.
+  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    const file = e.dataTransfer.files[0]
-    if (!file) return
-    if (!file.name.endsWith('.svg') && file.type !== 'image/svg+xml') return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      try {
-        const result = importSvg(ev.target?.result as string, {})
-        if (result.paths.length > 0) {
-          const bbox = getMultiBBox(result.paths.map(p => p.d))
-          if (bbox) {
-            const dx = widthMM / 2 - (bbox.minX + bbox.maxX) / 2
-            const dy = heightMM / 2 - (bbox.minY + bbox.maxY) / 2
-            if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001)
-              for (const path of result.paths) path.d = translateD(path.d, dx, dy)
-          }
-          addPaths(result.paths)
-          setSidebarTab('paths')
-        }
-      } catch { /* ignore */ }
-    }
-    reader.readAsText(file)
-  }, [addPaths, setSidebarTab, widthMM, heightMM])
+    for (const file of e.dataTransfer.files) importFile(file)
+  }, [])
 
   const setViewport = useCallback((v: Viewport | ((p: Viewport) => Viewport)) => {
     const next = typeof v === 'function' ? v(viewportRef.current) : v

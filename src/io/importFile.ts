@@ -1,0 +1,191 @@
+import { importSvg } from '../importers/svgImporter'
+import { importDxf, type DxfUnitsChoice } from '../importers/dxfImporter'
+import { importStl } from '../importers/stlImporter'
+import { getMultiBBox, translateD } from '../canvas/selectionUtils'
+import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
+import { usePathsStore } from '../store/pathsStore'
+import { useWorkpieceStore } from '../store/workpieceStore'
+import { useUIStore } from '../store/uiStore'
+import { useSimStore } from '../store/simStore'
+import { useProjectStore } from '../store/projectStore'
+import { useToolpathStore, GCODE_IMPORT_TOOL_ID, type MotionSegment } from '../store/toolpathStore'
+import { uid } from '../uid'
+
+// Shared file-import entry point used by both the toolbar Import button and
+// drag-and-drop onto the canvas. Handles every supported format; anything else
+// gets a status-bar hint instead of silently doing nothing (tofix.md B8).
+
+const fmt = (n: number) => +n.toFixed(4)
+
+// Finish a DXF import once units are known — either straight from the file's
+// $INSUNITS or from the units-prompt dialog (DxfUnitsDialog) after the user
+// picks. Exported for that dialog.
+export function completeDxfImport(text: string, fileName: string, units?: DxfUnitsChoice) {
+  useUIStore.getState().setPendingDxfImport(null)
+  const { widthMM, heightMM } = useWorkpieceStore.getState()
+  const result = importDxf(text, fileName, units, { x: widthMM / 2, y: heightMM / 2 })
+  if (result.paths.length > 0) {
+    const store = usePathsStore.getState()
+    store.addPaths(result.paths)
+    store.toggleGroupCollapsed(result.groupId)
+    useUIStore.getState().setSidebarTab('draw')
+  } else if (result.error) {
+    useUIStore.getState().showStatus(`DXF import failed: ${result.error}`, 'error')
+  } else if (!result.needsUnitsPrompt) {
+    useUIStore.getState().showStatus('DXF import: no supported geometry found in file', 'warn')
+  }
+}
+
+export function importFile(file: File): void {
+  const ui = useUIStore.getState()
+
+  if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
+    void file.text().then((text) => {
+      // Load into sim store for simulation playback
+      useSimStore.getState().loadGcode(text)
+
+      // Convert parsed SimSegments (machine coords) → MotionSegments (workpiece coords)
+      const { widthMM, heightMM, origin } = useWorkpieceStore.getState()
+      const org = originWorldXY(origin, widthMM, heightMM)
+      const simSegs = useSimStore.getState().segments
+      const motionSegs: MotionSegment[] = simSegs.map((s) => ({
+        x: s.x + org.x,
+        y: s.y + org.y,
+        z: s.z,
+        rapid: s.rapid,
+      }))
+
+      // Replace any existing imported G-code operations, then add the new one
+      const tpStore = useToolpathStore.getState()
+      tpStore.replaceOperations(
+        tpStore.operations.filter((o) => o.type !== 'gcode')
+      )
+      const filename = file.name
+      const opName = filename.replace(/\.(gcode|nc|ngc|tap)$/i, '')
+      const opId = tpStore.addOperation({
+        type: 'gcode',
+        name: opName,
+        toolId: GCODE_IMPORT_TOOL_ID,
+        filename,
+      })
+      useToolpathStore.getState().setSegments(opId, motionSegs)
+
+      // Rename project to match the imported file
+      useProjectStore.getState().setName(opName)
+
+      // Open the G-code viewer so the user sees the imported code immediately
+      const simState = useSimStore.getState()
+      if (!simState.gcodeViewerOpen) simState.toggleGcodeViewer()
+
+      useUIStore.getState().setSidebarTab('draw')
+      const cur = useUIStore.getState().workspaceTab
+      if (cur !== '2d' && cur !== '3d') useUIStore.getState().setWorkspaceTab('2d')
+    })
+    return
+  }
+
+  if (file.name.toLowerCase().endsWith('.svg') || file.type === 'image/svg+xml') {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const { widthMM, heightMM } = useWorkpieceStore.getState()
+        const gn = file.name.replace(/\.svg$/i, '')
+        const result = importSvg(ev.target?.result as string, {}, gn)
+        if (result.paths.length > 0) {
+          // Center on workpiece by actual path bbox (handles SVGs where content
+          // is smaller than the declared page size, e.g. tiny art on an A4 canvas)
+          const bbox = getMultiBBox(result.paths.map(p => p.d))
+          if (bbox) {
+            const dx = widthMM / 2 - (bbox.minX + bbox.maxX) / 2
+            const dy = heightMM / 2 - (bbox.minY + bbox.maxY) / 2
+            if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001)
+              for (const path of result.paths) path.d = translateD(path.d, dx, dy)
+          }
+          const store = usePathsStore.getState()
+          store.addPaths(result.paths)
+          store.toggleGroupCollapsed(result.groupId)
+          useUIStore.getState().setSidebarTab('draw')
+        } else {
+          useUIStore.getState().showStatus('SVG import: no usable paths found in file', 'warn')
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'unknown error'
+        useUIStore.getState().showStatus(`SVG import failed: ${msg}`, 'error')
+      }
+    }
+    reader.readAsText(file)
+    return
+  }
+
+  if (file.name.toLowerCase().endsWith('.dxf')) {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string
+      const fileName = file.name.replace(/\.dxf$/i, '')
+      const result = importDxf(text, fileName)
+      if (result.needsUnitsPrompt) {
+        useUIStore.getState().setPendingDxfImport({ text, name: fileName })
+      } else {
+        completeDxfImport(text, fileName)
+      }
+    }
+    reader.readAsText(file)
+    return
+  }
+
+  if (file.name.toLowerCase().endsWith('.stl')) {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const buffer = ev.target?.result as ArrayBuffer
+      try {
+        const { widthMM, heightMM } = useWorkpieceStore.getState()
+        const path = importStl(buffer, file.name.replace(/\.stl$/i, ''), widthMM / 2, heightMM / 2)
+        const store = usePathsStore.getState()
+        store.addPaths([path])
+        store.selectPath(path.id)
+        useUIStore.getState().setSidebarTab('draw')
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'unknown error'
+        useUIStore.getState().showStatus(`STL import failed: ${msg}`, 'error')
+      }
+    }
+    reader.readAsArrayBuffer(file)
+    return
+  }
+
+  if (/\.(png|jpe?g|webp)$/i.test(file.name) || file.type.startsWith('image/')) {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const src = ev.target?.result as string
+      const img = new window.Image()
+      img.onload = () => {
+        const { widthMM, heightMM } = useWorkpieceStore.getState()
+        // Convert natural pixels → mm at 96 DPI, then scale to fit 80% of workpiece
+        const PX_TO_MM = 25.4 / 96
+        const naturalW = img.naturalWidth * PX_TO_MM
+        const naturalH = img.naturalHeight * PX_TO_MM
+        const scl = Math.min((widthMM * 0.8) / naturalW, (heightMM * 0.8) / naturalH, 1)
+        const imgW = naturalW * scl
+        const imgH = naturalH * scl
+        // Center on the workpiece
+        const cx = widthMM / 2, cy = heightMM / 2
+        const hw = imgW / 2, hh = imgH / 2
+        const d = `M${fmt(cx - hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy - hh)} L${fmt(cx + hw)},${fmt(cy + hh)} L${fmt(cx - hw)},${fmt(cy + hh)} Z`
+        usePathsStore.getState().addPaths([{
+          id: uid('img'),
+          name: file.name.replace(/\.[^.]+$/, ''),
+          d,
+          visible: true,
+          color: '#94a3b8',
+          imageSrc: src,
+        }])
+        useUIStore.getState().setSidebarTab('draw')
+      }
+      img.src = src
+    }
+    reader.readAsDataURL(file)
+    return
+  }
+
+  ui.showStatus(`Unsupported file type: ${file.name} — supported: SVG, DXF, STL, image, G-code`, 'warn')
+}

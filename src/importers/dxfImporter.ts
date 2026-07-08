@@ -240,6 +240,7 @@ export interface DxfImportResult {
   paths: ImportedPath[]
   needsUnitsPrompt: boolean
   groupId: string
+  error?: string  // set when the file failed to parse (vs. parsed but empty)
 }
 
 export function importDxf(
@@ -254,9 +255,11 @@ export function importDxf(
   try {
     const parser = new DxfParser()
     dxf = parser.parseSync(text)
-  } catch {
-    return { paths: [], needsUnitsPrompt: false, groupId }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'not a valid DXF file'
+    return { paths: [], needsUnitsPrompt: false, groupId, error: msg }
   }
+  if (!dxf) return { paths: [], needsUnitsPrompt: false, groupId, error: 'not a valid DXF file' }
 
   const insunits: number = (dxf.header as { $INSUNITS?: number })?.$INSUNITS ?? 0
   let toMM: number
