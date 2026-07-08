@@ -6,7 +6,7 @@ import { useToolpathStore, GCODE_IMPORT_TOOL_ID } from '../store/toolpathStore'
 import type { AnyOperation, GcodeOperation, Profile3dOperation, TrochoidalOperation } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { OP_TYPE_COLORS } from '../colors'
-import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './MachinePanel'
+import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './machine'
 
 const STATUS_ICON = {
   pending: <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-neutral-600 flex-shrink-0" />,

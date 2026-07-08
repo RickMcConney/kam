@@ -3,21 +3,20 @@ import { persist } from 'zustand/middleware'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
 import type { PenCurveType } from '../cam/penCurves'
 
-export type { PenCurveType }
 
 export type SidebarTab = 'draw' | 'paths'
-export type StatusKind = 'info' | 'warn' | 'error'
+type StatusKind = 'info' | 'warn' | 'error'
 
 // Transient message shown in the StatusBar (import failures, sim warnings, …).
 // `seq` bumps on every showStatus so an identical repeated message still
 // restarts the auto-dismiss timer.
-export interface StatusMessage {
+interface StatusMessage {
   text: string
   kind: StatusKind
   seq: number
 }
 export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
-export type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
+type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
 
 export type PenNode = {
   x: number

@@ -52,7 +52,6 @@ export const SIM_TOOL_RAPID_COLOR   = '#9ca3af'  // gray  — rapid move
 export const SIM_TOOL_OUTLINE_COLOR = '#ffffff'  // white — tool ring
 
 // 3D view background.
-export const THREE_BG_COLOR       = '#bfdbfe'  // blue-200 (light blue)
 export const THREE_BG_COLOR_THREE = 0xbfdbfe   // Three.js integer format
 
 // Z-datum highlight — gradient on the stock sides (3D) and the Z origin label

@@ -10,7 +10,7 @@ export type { ImportedPath }
 
 type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[]; selectedIds: string[]; tabs: Tab[] }
 
-export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
+type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
 
 interface PathsState {
   paths: ImportedPath[]

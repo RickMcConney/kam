@@ -1,6 +1,6 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { zPasses } from './geom'
+import { zPasses, arcLengths, interpPt, stripClosingDuplicate } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -22,32 +22,6 @@ export interface TrochoidalParams {
   rampIn?: boolean
   startNear?: { x: number; y: number }
   safeHeightMM?: number
-}
-
-function arcLengths(pts: Pt2[]): { lens: number[]; total: number } {
-  const lens: number[] = [0]
-  for (let i = 1; i < pts.length; i++) {
-    lens.push(lens[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
-  }
-  return { lens, total: lens[lens.length - 1] }
-}
-
-function interpPt(pts: Pt2[], lens: number[], s: number): Pt2 {
-  s = Math.max(0, Math.min(lens[lens.length - 1], s))
-  for (let i = 1; i < pts.length; i++) {
-    if (lens[i] >= s - 1e-10) {
-      const t = (lens[i] - lens[i - 1]) > 1e-10 ? (s - lens[i - 1]) / (lens[i] - lens[i - 1]) : 0
-      return [pts[i - 1][0] + t * (pts[i][0] - pts[i - 1][0]), pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1])]
-    }
-  }
-  return [pts[pts.length - 1][0], pts[pts.length - 1][1]]
-}
-
-function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
-  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6) {
-    return pts.slice(0, -1)
-  }
-  return pts
 }
 
 // Build a smooth (G1-continuous) unit-tangent sampler for a closed polyline.

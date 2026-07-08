@@ -8,7 +8,6 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { majorStepMM, minorStepMM } from '../gridUtils'
 import { originWorldXY } from './WorkpieceLayer'
 
-export { penNodesToPathD }
 
 interface Props {
   viewport: Viewport

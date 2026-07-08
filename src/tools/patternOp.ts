@@ -4,7 +4,7 @@
 import { translateD, rotateAroundD } from '../canvas/selectionUtils'
 import { getBBox } from '../canvas/selectionUtils'
 
-export interface LinearPatternParams {
+interface LinearPatternParams {
   type: 'linear'
   rows: number
   cols: number
@@ -12,7 +12,7 @@ export interface LinearPatternParams {
   ySpacingMM: number
 }
 
-export interface CircularPatternParams {
+interface CircularPatternParams {
   type: 'circular'
   count: number
   radiusMM: number

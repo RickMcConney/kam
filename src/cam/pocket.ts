@@ -1,11 +1,12 @@
 import { flattenPath, signedArea, ensureWinding, splitSelfIntersecting, douglasPeucker, type Pt2 } from './pathFlattener'
+import { perfLog } from '../debug'
 import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from './adaptiveClearing'
 import { computeAdaptive2Plan, type Adaptive2Region } from './adaptive2'
 import { morphChainToSpiral } from './spiralMorph'
 import { solveField, type FieldGrid } from './spiralField'
 import { traceIsolines } from './marchingSquares'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { zPasses } from './geom'
+import { zPasses, arcLengths, interpPt, stripClosingDuplicate, pointInPolygon } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 
@@ -56,20 +57,10 @@ function _perfReset() { _perf.clear() }
 function _perfLog(label: string) {
   if (_perf.size === 0) return
   const parts = [..._perf.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(0)}ms`)
-  console.log(`[perf] pocket/${label} substages: ${parts.join(' | ')}`)
+  perfLog(`[perf] pocket/${label} substages: ${parts.join(' | ')}`)
 }
 
 // ─── Shared utilities ──────────────────────────────────────────────────────────
-
-function pointInPolygon(px: number, py: number, poly: Pt2[]): boolean {
-  let inside = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i][0], yi = poly[i][1]
-    const xj = poly[j][0], yj = poly[j][1]
-    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
-  }
-  return inside
-}
 
 function pointOnSegment(p: Pt2, a: Pt2, b: Pt2, eps = 1e-6): boolean {
   const cross = (p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])
@@ -179,32 +170,6 @@ function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacles): boo
   }
 
   return true
-}
-
-function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
-  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6) {
-    return pts.slice(0, -1)
-  }
-  return pts
-}
-
-function arcLengths(pts: Pt2[]): { lens: number[]; total: number } {
-  const lens: number[] = [0]
-  for (let i = 1; i < pts.length; i++) {
-    lens.push(lens[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
-  }
-  return { lens, total: lens[lens.length - 1] }
-}
-
-function interpPt(pts: Pt2[], lens: number[], s: number): Pt2 {
-  s = Math.max(0, Math.min(lens[lens.length - 1], s))
-  for (let i = 1; i < pts.length; i++) {
-    if (lens[i] >= s - 1e-10) {
-      const t = (lens[i] - lens[i - 1]) > 1e-10 ? (s - lens[i - 1]) / (lens[i] - lens[i - 1]) : 0
-      return [pts[i - 1][0] + t * (pts[i][0] - pts[i - 1][0]), pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1])]
-    }
-  }
-  return [pts[pts.length - 1][0], pts[pts.length - 1][1]]
 }
 
 function offsetRing(pts: Pt2[], delta: number): Pt2[] {
@@ -544,23 +509,6 @@ function clipScanlineAgainstIslands(
   return result.filter(s => Math.abs(s.p2[0] - s.p1[0]) >= 0.1)
 }
 
-function segmentsIntersect(a: Pt2, b: Pt2, c: Pt2, d: Pt2): boolean {
-  const det = (b[0] - a[0]) * (d[1] - c[1]) - (b[1] - a[1]) * (d[0] - c[0])
-  if (det === 0) return false
-  const lambda = ((d[1] - c[1]) * (d[0] - a[0]) + (c[0] - d[0]) * (d[1] - a[1])) / det
-  const gamma = ((a[1] - b[1]) * (d[0] - a[0]) + (b[0] - a[0]) * (d[1] - a[1])) / det
-  return 0 < lambda && lambda < 1 && 0 < gamma && gamma < 1
-}
-
-export function doesSegmentCrossBorder(p1: Pt2, p2: Pt2, paths: Pt2[][]): boolean {
-  for (const path of paths) {
-    for (let i = 0; i < path.length; i++) {
-      if (segmentsIntersect(p1, p2, path[i], path[(i + 1) % path.length])) return true
-    }
-  }
-  return false
-}
-
 
 function buildRasterPath(
   scanlines: { p1: Pt2; p2: Pt2 }[],
@@ -753,57 +701,6 @@ function emitLinkedContourRings(
 
 
 // ─── Trochoidal utilities ──────────────────────────────────────────────────────
-
-// Generates a prolate cycloid (trochoidal) toolpath along a guide row.
-// The tool traces tight overlapping loops that advance by stepoverMM per loop,
-// producing the Spirograph-like pattern of trochoidal milling.
-// loopRadius: amplitude of each loop (perpendicular oscillation); use toolRadius.
-// The ratio loopRadius / r (where r = stepoverMM/(2π)) controls loop tightness;
-// at 10–20% stepover the ratio is ~15–30, giving strong Spirograph looping.
-export function generateTrochoidalRow(
-  start: Pt2,
-  end: Pt2,
-  loopRadius: number,
-  stepoverMM: number,
-  wantCCW: boolean,
-  z: number,
-  segs: MotionSegment[],
-  safeZ = 5,
-) {
-  const dx = end[0] - start[0], dy = end[1] - start[1]
-  const len = Math.hypot(dx, dy)
-  if (len < stepoverMM) return
-
-  const ux = dx / len, uy = dy / len   // unit vector along row
-  // Perpendicular: flip sign to control CCW vs CW loop direction
-  const perpSign = wantCCW ? -1 : 1
-  const px = perpSign * (-uy)
-  const py = perpSign * ux
-
-  // Rolling circle radius: at each 2π increment the guide advances stepoverMM
-  const r = stepoverMM / (2 * Math.PI)
-  const nLoops = Math.floor(len / stepoverMM)
-  if (nLoops === 0) return
-
-  const STEPS = 32   // linear segments per trochoidal loop
-  // theta=0 → offset = -loopRadius (start offset perpendicular to row)
-  const startX = start[0] - loopRadius * px
-  const startY = start[1] - loopRadius * py
-
-  segs.push({ x: startX, y: startY, z: safeZ, rapid: true })
-  segs.push({ x: startX, y: startY, z, rapid: false })
-
-  let lastX = startX, lastY = startY
-  for (let i = 1; i <= nLoops * STEPS; i++) {
-    const theta = i * (2 * Math.PI / STEPS)
-    const advance = r * theta - loopRadius * Math.sin(theta)
-    const offset  = -loopRadius * Math.cos(theta)
-    lastX = start[0] + advance * ux + offset * px
-    lastY = start[1] + advance * uy + offset * py
-    segs.push({ x: lastX, y: lastY, z, rapid: false })
-  }
-  segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
-}
 
 // ─── Strategy implementations ──────────────────────────────────────────────────
 
@@ -2073,16 +1970,3 @@ function simplifyMotion(segs: MotionSegment[], tolMM: number): MotionSegment[] {
   return segs.filter((_, i) => keep[i])
 }
 
-export function generateInfillWithBoundary(
-  paths: Pt2[][],
-  diameter: number,
-  stepover: number,
-  angleDeg: number,
-): Pt2[] {
-  const boundary = paths[0]
-  if (!boundary || boundary.length < 3) return []
-  const inset = insetRing(boundary, diameter / 2)
-  const spacing = diameter * (stepover / 100)
-  const segments = generateScanlines(inset, spacing, angleDeg)
-  return segments.flatMap(s => [s.p1, s.p2])
-}

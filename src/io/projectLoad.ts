@@ -50,7 +50,7 @@ interface ProjectData {
   tabs?: Tab[]
 }
 
-export function loadProject(data: ProjectData) {
+function loadProject(data: ProjectData) {
   const wp = data.workpiece ?? {}
   const wps = useWorkpieceStore.getState()
   wps.setWidth(wp.widthMM ?? 300)

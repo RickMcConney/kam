@@ -1,3 +1,4 @@
+import { parseNums } from '../cam/pathFlattener'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { PATH_COLOR } from '../colors'
 import { splitCompoundPath } from '../canvas/nodeUtils'
@@ -38,10 +39,6 @@ let pathCounter = 0
 
 export function nextPathColor(): string {
   return PATH_COLOR
-}
-
-function parseNums(s: string): number[] {
-  return (s.match(/[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g) ?? []).map(Number)
 }
 
 // ── Path command types (absolute only) ───────────────────────────────────────

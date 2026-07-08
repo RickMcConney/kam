@@ -62,5 +62,3 @@ export function canvasTheme(dark: boolean) {
   return dark ? CANVAS_DARK : CANVAS_LIGHT
 }
 
-// Legacy alias — used by layers that haven't been updated yet
-export const CANVAS = CANVAS_LIGHT

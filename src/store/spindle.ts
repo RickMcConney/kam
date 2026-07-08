@@ -48,7 +48,7 @@ export const SPINDLE_INFO: Record<SpindleType, SpindleInfo> = {
 // Interpolated dial setting for a target RPM (e.g. 19800 → 2.5 on the DeWalt). RPM
 // below the slowest / above the fastest detent clamps to the end setting. Returns
 // null for spindles without a dial table or a non-positive RPM.
-export function spindleDial(type: SpindleType, rpm: number): number | null {
+function spindleDial(type: SpindleType, rpm: number): number | null {
   const d = SPINDLE_INFO[type].dial
   if (!d || rpm <= 0) return null
   if (rpm <= d[0].rpm) return d[0].setting

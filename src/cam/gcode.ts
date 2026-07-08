@@ -1,4 +1,5 @@
 import type { AnyOperation, MotionSegment } from '../store/toolpathStore'
+import { perfLog } from '../debug'
 import type { Tool } from '../store/toolStore'
 import type { PostProcessorProfile } from '../store/postProcessorStore'
 import { useWorkpieceStore, zDatumOffsetMM } from '../store/workpieceStore'
@@ -329,7 +330,7 @@ export function generateGcode(
     lines.push(...endBlock.split('\n'))
   }
 
-  console.log(`[perf] generateGcode total ${(performance.now() - _tStart).toFixed(0)}ms | arc-fit ${_arcMs.toFixed(0)}ms | segs ${_segIn}→${_segOut}`)
+  perfLog(`[perf] generateGcode total ${(performance.now() - _tStart).toFixed(0)}ms | arc-fit ${_arcMs.toFixed(0)}ms | segs ${_segIn}→${_segOut}`)
 
   return lines.join('\n')
 }

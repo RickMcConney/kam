@@ -1,4 +1,8 @@
+import { ptSegDistSq } from '../cam/geom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRefState } from './useRefState'
+import { useNodeEditSession } from './useNodeEditSession'
+import { usePenTool } from './usePenTool'
 import { ICON } from '../theme'
 import { Stage, Layer, Group, Circle } from 'react-konva'
 import type Konva from 'konva'
@@ -16,7 +20,6 @@ import { GridLayer } from './layers/GridLayer'
 import { WorkpieceLayer, originWorldXY } from './layers/WorkpieceLayer'
 import { majorStepMM, minorStepMM } from './gridUtils'
 import { OriginLayer } from './layers/OriginLayer'
-import {  RULER_H, RULER_W } from './layers/RulerLayer'
 import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
@@ -26,8 +29,8 @@ import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
 import { SimulationLayer } from './layers/SimulationLayer'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { useSimStore } from '../store/simStore'
-import type { HandleType, LiveTransform } from './types'
-import { getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD, skewAroundD } from './selectionUtils'
+import { HandleType, LiveTransform , RULER_W, RULER_H } from './types'
+import { getMultiBBox, translateD, scaleAroundD, rotateAroundD, skewAroundD } from './selectionUtils'
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
@@ -53,14 +56,6 @@ export interface Viewport {
 }
 
 // ── Path proximity helpers ────────────────────────────────────────────────────
-
-function ptSegDistSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const abx = bx - ax, aby = by - ay
-  const len2 = abx * abx + aby * aby
-  if (len2 === 0) return (px - ax) ** 2 + (py - ay) ** 2
-  const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / len2))
-  return (px - ax - t * abx) ** 2 + (py - ay - t * aby) ** 2
-}
 
 function distToPolylines(px: number, py: number, polys: [number, number][][]): number {
   let minSq = Infinity
@@ -135,7 +130,6 @@ const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 // loop split, trim split): undoing/redoing such a step replays that global
 // entry too, so the other path involved is restored/re-removed in the same
 // keystroke — without leaving point-edit mode.
-type NodeEditEntry = { nodes: PathNode[]; closed: boolean; globalStep?: boolean }
 
 function snapPoint(
   cnc: { x: number; y: number },
@@ -265,11 +259,7 @@ export default function CanvasStage() {
   const [liveTransform, setLiveTransform] = useState<LiveTransform | null>(null)
   const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
   const [liveShapeD, setLiveShapeD] = useState<string | null>(null)
-  const [livePen, setLivePen] = useState<{ anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null>(null)
-  const penClosingRef = useRef(false)
-  const [penClosing, setPenClosing] = useState(false)
-  const altDownRef = useRef(false)
-  const [altDown, setAltDown] = useState(false)
+  const [altDown, altDownRef, setAltDown] = useRefState(false)
   const didDragRef = useRef(false)
   // Tracks the active shape-tool session: once the user has dragged out at least
   // one shape, the tool stays selected for more drags and a subsequent click
@@ -335,121 +325,38 @@ export default function CanvasStage() {
     ? (penCurveType === 'linear' ? 'catmull-rom' : 'linear')
     : penCurveType
 
-  // Node edit state — live editable copy of the path's nodes
-  const [editNodes, setEditNodes] = useState<PathNode[]>([])
-  const [editClosed, setEditClosed] = useState(false)
-  const editNodesRef = useRef<PathNode[]>([])
-  const editClosedRef = useRef(false)
-  useEffect(() => { editNodesRef.current = editNodes }, [editNodes])
-  useEffect(() => { editClosedRef.current = editClosed }, [editClosed])
+  // Node-edit session state + local undo + commit/exit lifecycle (tofix.md R3)
+  const {
+    editNodes, editNodesRef, setEditNodes,
+    editClosed, editClosedRef, setEditClosed,
+    hoveredEditNode, hoveredEditNodeRef, setHoveredEditNode,
+    dragNodeIdx, setDragNodeIdx,
+    hoverSegIdx, hoverSegIdxRef, setHoverSegIdx,
+    weldTargetIdx, weldTargetIdxRef, setWeldTargetIdx,
+    connectSource, connectSourceRef, setConnectSource,
+    connectPreviewTo, setConnectPreviewTo,
+    connectSnapTargetIdx, setConnectSnapTargetIdx,
+    crossPathEntriesRef, crossPathCandidates, setCrossPathCandidates,
+    crossPathWeldTarget, crossPathWeldTargetRef, setCrossPathWeldTarget,
+    editDragInitRef, selfWriteRef,
+    pushLocalUndo,
+    commitEditNodes, exitNodeEdit, clearConnectState,
+  } = useNodeEditSession()
+  // Pen-tool session state + pen-local undo/redo (tofix.md R3)
+  const { livePen, setLivePen, penClosing, penClosingRef, setPenClosing, penPast, penFuture } = usePenTool()
   // Reset the shape-drag session whenever the active tool changes (incl. exit
   // via Escape or re-activating the same shape) so a fresh session starts clean.
   useEffect(() => useUIStore.subscribe((s, prev) => {
     if (s.activeTool !== prev.activeTool) shapeDragSessionRef.current = { tool: null, dragged: false }
   }), [])
 
-  const prevNodeEditPathIdRef = useRef<string | null>(null)
-  const editDragInitRef = useRef<{ initialNodes: PathNode[]; startCNC: { x: number; y: number } } | null>(null)
-  const hoveredEditNodeRef = useRef<number | null>(null)
-  const [hoveredEditNode, setHoveredEditNode] = useState<number | null>(null)
-  const [dragNodeIdx, setDragNodeIdx] = useState<number | null>(null)
-  const [hoverSegIdx, setHoverSegIdx] = useState<number | null>(null)
-  const hoverSegIdxRef = useRef<number | null>(null)
-  const [weldTargetIdx, setWeldTargetIdx] = useState<number | null>(null)
-  const weldTargetIdxRef = useRef<number | null>(null)
-  const [connectSource, setConnectSource] = useState<number | null>(null)
-  const connectSourceRef = useRef<number | null>(null)
-  const [connectPreviewTo, setConnectPreviewTo] = useState<{ x: number; y: number } | null>(null)
-  const [connectSnapTargetIdx, setConnectSnapTargetIdx] = useState<number | null>(null)
-  const crossPathEntriesRef = useRef<CrossPathEntry[]>([])
-  const [crossPathCandidates, setCrossPathCandidates] = useState<CrossPathEntry[]>([])
-  const [crossPathWeldTarget, setCrossPathWeldTarget] = useState<CrossPathEntry | null>(null)
-  const crossPathWeldTargetRef = useRef<CrossPathEntry | null>(null)
-  const localPast = useRef<NodeEditEntry[]>([])
-  const localFuture = useRef<NodeEditEntry[]>([])
   const drillPast = useRef<{ x: number; y: number }[][]>([])
-  const penPast = useRef<PenNode[][]>([])
-  const penFuture = useRef<PenNode[][]>([])
-
-  // Snapshot the PRE-gesture nodes+closed. `globalStep: true` for gestures that
-  // also write one atomic global history entry (join/split) — see NodeEditEntry.
-  const pushLocalUndo = useCallback((nodes: PathNode[], closed: boolean, globalStep = false) => {
-    localPast.current = [...localPast.current, { nodes, closed, globalStep }]
-    localFuture.current = []
-    useUIStore.getState().setNodeEditHistoryFlags(true, false)
-  }, [])
-
-  // True while THIS component is writing to the paths store mid-session (join/
-  // split gestures and their local undo/redo), so the external-change
-  // subscription below doesn't re-parse our own writes.
-  const selfWriteRef = useRef(false)
-
-  const localUndo = useCallback(() => {
-    if (localPast.current.length === 0) return
-    const entry = localPast.current[localPast.current.length - 1]
-    localFuture.current = [
-      { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep },
-      ...localFuture.current,
-    ]
-    localPast.current = localPast.current.slice(0, -1)
-    if (entry.globalStep) {
-      // Replay the gesture's atomic global entry: restores the joined-away /
-      // split-off path and the edited path's stored d in one step. Guarded so
-      // the store subscription doesn't clobber the local restore below.
-      selfWriteRef.current = true
-      usePathsStore.getState().undo()
-      selfWriteRef.current = false
-    }
-    setEditNodes(entry.nodes)
-    editNodesRef.current = entry.nodes
-    setEditClosed(entry.closed)
-    editClosedRef.current = entry.closed
-    useUIStore.getState().setNodeEditHistoryFlags(localPast.current.length > 0, true)
-  }, [])
-
-  const localRedo = useCallback(() => {
-    if (localFuture.current.length === 0) return
-    const entry = localFuture.current[0]
-    localPast.current = [
-      ...localPast.current,
-      { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep },
-    ]
-    localFuture.current = localFuture.current.slice(1)
-    if (entry.globalStep) {
-      selfWriteRef.current = true
-      usePathsStore.getState().redo()
-      selfWriteRef.current = false
-    }
-    setEditNodes(entry.nodes)
-    editNodesRef.current = entry.nodes
-    setEditClosed(entry.closed)
-    editClosedRef.current = entry.closed
-    useUIStore.getState().setNodeEditHistoryFlags(true, localFuture.current.length > 0)
-  }, [])
 
   const drillUndo = useCallback(() => {
     if (drillPast.current.length === 0) return
     const prev = drillPast.current[drillPast.current.length - 1]
     drillPast.current = drillPast.current.slice(0, -1)
     useUIStore.getState().setDrillPoints(prev)
-  }, [])
-
-  const penUndoFn = useCallback(() => {
-    if (penPast.current.length === 0) return
-    const prev = penPast.current[penPast.current.length - 1]
-    penFuture.current = [useUIStore.getState().penNodes, ...penFuture.current]
-    penPast.current = penPast.current.slice(0, -1)
-    useUIStore.getState().setPenNodes(prev)
-    useUIStore.getState().setNodeEditHistoryFlags(penPast.current.length > 0, true)
-  }, [])
-
-  const penRedoFn = useCallback(() => {
-    if (penFuture.current.length === 0) return
-    const next = penFuture.current[0]
-    penPast.current = [...penPast.current, useUIStore.getState().penNodes]
-    penFuture.current = penFuture.current.slice(1)
-    useUIStore.getState().setPenNodes(next)
-    useUIStore.getState().setNodeEditHistoryFlags(true, penFuture.current.length > 0)
   }, [])
 
   const setMode2 = useCallback((m: CanvasMode) => {
@@ -528,26 +435,6 @@ export default function CanvasStage() {
     setViewport(fitViewport(size.width, size.height, widthMM, heightMM))
   }, [size, widthMM, heightMM, setViewport])
 
-  const commitEditNodes = useCallback((pid: string, nodes: PathNode[]) => {
-    if (!pid) return
-    const path = usePathsStore.getState().paths.find((p) => p.id === pid)
-    if (!path) return // path removed while editing (e.g. global undo) — nothing to commit
-    if (nodes.length < 2) {
-      usePathsStore.getState().deletePath(pid)
-      return
-    }
-    const d = nodesToD(nodes, editClosedRef.current)
-    if (d === path.d) return // unchanged (e.g. join already wrote this d) — no history entry
-    usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
-    regenerateAffected(pid)
-  }, [])
-
-  const exitNodeEdit = useCallback(() => {
-    const { nodeEditPathId: pid, setNodeEditPathId } = useUIStore.getState()
-    if (!pid) return
-    setNodeEditPathId(null)  // useEffect handles commit + cleanup
-  }, [])
-
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement
@@ -556,7 +443,6 @@ export default function CanvasStage() {
       if (e.shiftKey) shiftHeldRef.current = true
       if (e.key === 'Alt') {
         if (useUIStore.getState().activeTool === 'pen') e.preventDefault()
-        altDownRef.current = true
         setAltDown(true)
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -569,9 +455,7 @@ export default function CanvasStage() {
             const idx = hoveredEditNodeRef.current
             pushLocalUndo(editNodesRef.current, editClosedRef.current)
             const next = removeNode(editNodesRef.current, idx)
-            editNodesRef.current = next
             setEditNodes(next)
-            hoveredEditNodeRef.current = null
             setHoveredEditNode(null)
           } else if (hoverSegIdxRef.current !== null) {
             // Trim hovered segment
@@ -582,9 +466,7 @@ export default function CanvasStage() {
             const oldClosed = editClosedRef.current
             const result = deleteSegment(old, segIdx, editClosedRef.current)
             setEditNodes(result.nodes)
-            editNodesRef.current = result.nodes
             if (result.closed !== editClosedRef.current) {
-              editClosedRef.current = result.closed
               setEditClosed(result.closed)
             }
             const { nodeEditPathId: currentPid } = useUIStore.getState()
@@ -613,7 +495,6 @@ export default function CanvasStage() {
               pushLocalUndo(old, oldClosed)
             }
             setHoverSegIdx(null)
-            hoverSegIdxRef.current = null
           }
         }
       }
@@ -622,14 +503,7 @@ export default function CanvasStage() {
         const { nodeEditPathId: neid } = useUIStore.getState()
         if (neid) {
           if (connectSourceRef.current !== null) {
-            connectSourceRef.current = null
-            setConnectSource(null)
-            setConnectPreviewTo(null)
-            setConnectSnapTargetIdx(null)
-            crossPathWeldTargetRef.current = null
-            setCrossPathWeldTarget(null)
-            setCrossPathCandidates([])
-            crossPathEntriesRef.current = []
+            clearConnectState()
           } else {
             exitNodeEdit()
           }
@@ -649,7 +523,6 @@ export default function CanvasStage() {
           setActiveTool('select')
           setLivePen(null)
           setPenClosing(false)
-          penClosingRef.current = false
           setMode2({ type: 'idle' })
         } else if (activeTool !== 'select') {
           if (activeTool === 'drill') clearDrillPoints()
@@ -662,7 +535,7 @@ export default function CanvasStage() {
     const onUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') spaceHeldRef.current = false
       if (!e.shiftKey) shiftHeldRef.current = false
-      if (e.key === 'Alt') { altDownRef.current = false; setAltDown(false) }
+      if (e.key === 'Alt') setAltDown(false)
     }
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
@@ -725,76 +598,6 @@ export default function CanvasStage() {
     setLivePen({ anchor: cnc, handle: null })
   }, [setMode2, snapCNC])
 
-  // Parse path nodes when entering node edit mode; commit + clean up on exit
-  useEffect(() => {
-    const prevId = prevNodeEditPathIdRef.current
-    prevNodeEditPathIdRef.current = nodeEditPathId
-    localPast.current = []
-    localFuture.current = []
-    if (!nodeEditPathId) {
-      // Commit using the captured id — nodeEditPathId is already null in the store at this point
-      if (prevId) commitEditNodes(prevId, editNodesRef.current)
-      setEditNodes([])
-      setEditClosed(false)
-      connectSourceRef.current = null
-      setConnectSource(null)
-      setConnectPreviewTo(null)
-      setConnectSnapTargetIdx(null)
-      crossPathWeldTargetRef.current = null
-      setCrossPathWeldTarget(null)
-      setCrossPathCandidates([])
-      crossPathEntriesRef.current = []
-      useUIStore.getState().setNodeEditUndoRedo(null, null)
-      useUIStore.getState().setNodeEditHistoryFlags(false, false)
-      return
-    }
-    const path = usePathsStore.getState().paths.find((p) => p.id === nodeEditPathId)
-    if (!path) { setEditNodes([]); return }
-    const { nodes, closed } = parseDToNodes(path.d)
-    setEditNodes(nodes)
-    setEditClosed(closed)
-    useUIStore.getState().setNodeEditUndoRedo(localUndo, localRedo)
-  }, [nodeEditPathId, localUndo, localRedo, commitEditNodes])
-
-  // While a node-edit session is active, a global undo/redo can rewrite or remove
-  // the edited path underneath us (e.g. undoing a cross-path join restores both
-  // source paths). Re-sync the live editNodes from the store, or leave the
-  // session if the path no longer exists. Our own mid-session writes are skipped
-  // via selfWriteRef.
-  useEffect(() => {
-    if (!nodeEditPathId) return
-    return usePathsStore.subscribe((s, prev) => {
-      if (selfWriteRef.current) return
-      if (s.paths === prev.paths) return
-      const cur = s.paths.find((p) => p.id === nodeEditPathId)
-      if (!cur) {
-        // Path gone (undo past its creation / join) — abandon the session.
-        // commitEditNodes finds no path on exit, so nothing is written back.
-        useUIStore.getState().setNodeEditPathId(null)
-        return
-      }
-      const prevPath = prev.paths.find((p) => p.id === nodeEditPathId)
-      if (prevPath && prevPath.d === cur.d) return
-      const { nodes, closed } = parseDToNodes(cur.d)
-      setEditNodes(nodes)
-      editNodesRef.current = nodes
-      setEditClosed(closed)
-      editClosedRef.current = closed
-      // Local snapshots and connect state reference the pre-undo geometry — drop them.
-      localPast.current = []
-      localFuture.current = []
-      useUIStore.getState().setNodeEditHistoryFlags(false, false)
-      connectSourceRef.current = null
-      setConnectSource(null)
-      setConnectPreviewTo(null)
-      setConnectSnapTargetIdx(null)
-      crossPathWeldTargetRef.current = null
-      setCrossPathWeldTarget(null)
-      setCrossPathCandidates([])
-      crossPathEntriesRef.current = []
-    })
-  }, [nodeEditPathId])
-
   // Register drill-local undo only while there are pending drill points to undo.
   // When points are empty (e.g. after generation or after undoing all), unregister so
   // the toolbar button and keyboard shortcut fall through to the global path undo.
@@ -812,20 +615,6 @@ export default function CanvasStage() {
     }
   }, [activeTool, pendingDrillPoints.length, drillUndo])
 
-  useEffect(() => {
-    if (activeTool === 'pen') {
-      useUIStore.getState().setNodeEditUndoRedo(penUndoFn, penRedoFn)
-      useUIStore.getState().setNodeEditHistoryFlags(false, false)
-    } else {
-      penPast.current = []
-      penFuture.current = []
-      if (useUIStore.getState().nodeEditUndo === penUndoFn) {
-        useUIStore.getState().setNodeEditUndoRedo(null, null)
-        useUIStore.getState().setNodeEditHistoryFlags(false, false)
-      }
-    }
-  }, [activeTool, penUndoFn, penRedoFn])
-
   const handleNodeMouseDown = useCallback((nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => {
     if (kind === 'anchor' && (e.evt.altKey || altDownRef.current)) {
       e.cancelBubble = true
@@ -834,7 +623,6 @@ export default function CanvasStage() {
       const next = toggleNodeCurvature(old, nodeIdx, editClosedRef.current)
       pushLocalUndo(old, editClosedRef.current)
       setEditNodes(next)
-      editNodesRef.current = next
       return
     }
 
@@ -857,7 +645,6 @@ export default function CanvasStage() {
 
     // Gather cross-path weld candidates when dragging an endpoint of an open path
     crossPathEntriesRef.current = []
-    crossPathWeldTargetRef.current = null
     setCrossPathWeldTarget(null)
     if (kind === 'anchor' && !editClosedRef.current) {
       const curNodes = editNodesRef.current
@@ -896,7 +683,6 @@ export default function CanvasStage() {
     const next = insertNodeOnSegment(old, segIdx, cncX, cncY, editClosedRef.current)
     pushLocalUndo(old, editClosedRef.current)
     setEditNodes(next)
-    editNodesRef.current = next
   }, [pushLocalUndo])
 
   const handlePathDblClick = useCallback((id: string) => {
@@ -914,7 +700,6 @@ export default function CanvasStage() {
   }, [])
 
   const handleHoveredNodeChange = useCallback((idx: number | null) => {
-    hoveredEditNodeRef.current = idx
     setHoveredEditNode(idx)
   }, [])
 
@@ -997,14 +782,7 @@ export default function CanvasStage() {
         didDragRef.current = false
         return
       }
-      connectSourceRef.current = null
-      setConnectSource(null)
-      setConnectPreviewTo(null)
-      setConnectSnapTargetIdx(null)
-      crossPathWeldTargetRef.current = null
-      setCrossPathWeldTarget(null)
-      setCrossPathCandidates([])
-      crossPathEntriesRef.current = []
+      clearConnectState()
     }
     if (e.evt.button === 1 || spaceHeldRef.current) {
       e.evt.preventDefault()
@@ -1205,11 +983,9 @@ export default function CanvasStage() {
         const fsy = vp.y - first.y * vp.scale
         const close = Math.hypot(pointer.x - fsx, pointer.y - fsy) < 10
         if (close !== penClosingRef.current) {
-          penClosingRef.current = close
           setPenClosing(close)
         }
       } else if (penClosingRef.current) {
-        penClosingRef.current = false
         setPenClosing(false)
       }
     }
@@ -1247,7 +1023,6 @@ export default function CanvasStage() {
 
         setConnectPreviewTo(snapPos)
         setConnectSnapTargetIdx(snapSameIdx)
-        crossPathWeldTargetRef.current = snapCrossEntry
         setCrossPathWeldTarget(snapCrossEntry)
       }
     }
@@ -1329,9 +1104,7 @@ export default function CanvasStage() {
           : n.handleIn
         return { ...n, handleIn, handleOut }
       })
-      weldTargetIdxRef.current = newWeldTarget
       setWeldTargetIdx(newWeldTarget)
-      crossPathWeldTargetRef.current = newCrossTarget
       setCrossPathWeldTarget(newCrossTarget)
       setEditNodes(updatedNodes)
     }
@@ -1362,19 +1135,10 @@ export default function CanvasStage() {
           selfWriteRef.current = false
           regenerateAffected(pid)
           setEditNodes(joined)
-          editNodesRef.current = joined
-          editClosedRef.current = false
           setEditClosed(false)
         }
       }
-      connectSourceRef.current = null
-      setConnectSource(null)
-      setConnectPreviewTo(null)
-      setConnectSnapTargetIdx(null)
-      crossPathWeldTargetRef.current = null
-      setCrossPathWeldTarget(null)
-      setCrossPathCandidates([])
-      crossPathEntriesRef.current = []
+      clearConnectState()
       return
     }
 
@@ -1479,9 +1243,18 @@ export default function CanvasStage() {
           const { paths: allPaths } = usePathsStore.getState()
           const intersecting = allPaths.filter((p) => {
             if (!p.visible) return false
-            const bb = getBBox(p.d)
-            if (!bb) return false
-            return bb.minX <= cncMax.x && bb.maxX >= cncMin.x && bb.minY <= cncMax.y && bb.maxY >= cncMin.y
+            // bbox from the per-path flatten cache (same 0.5 tolerance as
+            // getBBox) — box-select over hundreds of paths used to re-flatten
+            // every path on every mouseup (tofix.md H5)
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+            for (const poly of getFlat(p, 0.5)) {
+              for (const [x, y] of poly) {
+                if (x < minX) minX = x; if (x > maxX) maxX = x
+                if (y < minY) minY = y; if (y > maxY) maxY = y
+              }
+            }
+            if (!isFinite(minX)) return false
+            return minX <= cncMax.x && maxX >= cncMin.x && minY <= cncMax.y && maxY >= cncMin.y
           })
           setSelectedIds(intersecting.map((p) => p.id))
         }
@@ -1550,10 +1323,8 @@ export default function CanvasStage() {
       setCrossPathCandidates([])
       crossPathEntriesRef.current = []
       const crossTgt = crossPathWeldTargetRef.current
-      crossPathWeldTargetRef.current = null
       setCrossPathWeldTarget(null)
       const tgt = weldTargetIdxRef.current
-      weldTargetIdxRef.current = null
       setWeldTargetIdx(null)
 
       if (crossTgt !== null && didDragRef.current) {
@@ -1574,8 +1345,6 @@ export default function CanvasStage() {
             selfWriteRef.current = false
             regenerateAffected(pid)
             setEditNodes(joined)
-            editNodesRef.current = joined
-            editClosedRef.current = false
             setEditClosed(false)
           }
         }
@@ -1614,8 +1383,6 @@ export default function CanvasStage() {
             selfWriteRef.current = false
             regenerateAffected(pid)
             setEditNodes(remainNodes)
-            editNodesRef.current = remainNodes
-            editClosedRef.current = false
             setEditClosed(false)
           }
         } else {
@@ -1624,9 +1391,7 @@ export default function CanvasStage() {
           if (initSnap) pushLocalUndo(initSnap, curClosed)
           const result = weldNodes(curNodes, m.nodeIdx, tgt, curClosed)
           setEditNodes(result.nodes)
-          editNodesRef.current = result.nodes
           if (result.closed !== curClosed) {
-            editClosedRef.current = result.closed
             setEditClosed(result.closed)
           }
         }
@@ -1642,24 +1407,13 @@ export default function CanvasStage() {
         const n = nodes.length
         const mIsEndpoint = !closed && (m.nodeIdx === 0 || m.nodeIdx === n - 1)
 
-        const clearConnect = () => {
-          connectSourceRef.current = null
-          setConnectSource(null)
-          setConnectPreviewTo(null)
-          setConnectSnapTargetIdx(null)
-          crossPathWeldTargetRef.current = null
-          setCrossPathWeldTarget(null)
-          setCrossPathCandidates([])
-          crossPathEntriesRef.current = []
-        }
 
         if (cs !== null && cs !== m.nodeIdx) {
           if (mIsEndpoint) {
             // Connect source endpoint to other endpoint → close path
             pushLocalUndo(nodes, editClosedRef.current)
-            editClosedRef.current = true
             setEditClosed(true)
-            clearConnect()
+            clearConnectState()
           } else {
             // Connect source endpoint to interior node — split into closed loop + open remainder,
             // both nodes preserved (no merging, no deletion)
@@ -1689,20 +1443,17 @@ export default function CanvasStage() {
                 selfWriteRef.current = false
                 regenerateAffected(pid)
                 setEditNodes(remainNodes)
-                editNodesRef.current = remainNodes
-                editClosedRef.current = false
                 setEditClosed(false)
               }
-              clearConnect()
+              clearConnectState()
             }
             // else: degenerate (adjacent endpoints only, nothing to split) — stay in connect mode
           }
         } else if (cs === m.nodeIdx) {
           // Cancel: click source again
-          clearConnect()
+          clearConnectState()
         } else if (cs === null && mIsEndpoint) {
           // Enter connect mode — populate cross-path candidates
-          connectSourceRef.current = m.nodeIdx
           setConnectSource(m.nodeIdx)
           const { nodeEditPathId: pid } = useUIStore.getState()
           const { paths: allPaths } = usePathsStore.getState()
@@ -1750,7 +1501,6 @@ export default function CanvasStage() {
         clearPenNodes()
         useUIStore.getState().setActiveTool('select')
         setLivePen(null)
-        penClosingRef.current = false
         setPenClosing(false)
         return
       }
@@ -1790,7 +1540,7 @@ export default function CanvasStage() {
     }
 
     setMode2({ type: 'idle' })
-  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo])
+  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo, getFlat])
 
   const getCursor = () => {
     if (nodeEditPathId) return 'default'
@@ -1853,7 +1603,7 @@ export default function CanvasStage() {
               onNodeMouseDown={handleNodeMouseDown}
               onSegmentMouseDown={handleSegmentMouseDown}
               onHoveredNodeChange={handleHoveredNodeChange}
-              onHoverSegChange={(idx) => { hoverSegIdxRef.current = idx; setHoverSegIdx(idx) }}
+              onHoverSegChange={(idx) => setHoverSegIdx(idx)}
               weldTargetIdx={weldTargetIdx}
               crossPathCandidates={crossPathCandidates}
               crossPathWeldTarget={crossPathWeldTarget}
@@ -1905,7 +1655,6 @@ export default function CanvasStage() {
               liveTransform={liveTransform}
             />
           )}
-          {/* <RulerLayer viewport={viewport} stageWidth={size.width} stageHeight={size.height} /> */}
         </Layer>
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}

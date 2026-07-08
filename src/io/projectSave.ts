@@ -7,7 +7,7 @@ import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useTabStore } from '../store/tabStore'
 import { sanitizeFileName } from './filename'
 
-export const PROJECT_VERSION = 1
+const PROJECT_VERSION = 1
 
 export function buildProjectData() {
   const { name } = useProjectStore.getState()

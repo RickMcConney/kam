@@ -19,13 +19,13 @@
 
 const EMPTY = 0, PARTIAL = 1, FULL = 2
 
-export function popcount32(v: number): number {
+function popcount32(v: number): number {
   v = v - ((v >>> 1) & 0x55555555)
   v = (v & 0x33333333) + ((v >>> 2) & 0x33333333)
   return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24
 }
 // set bits in inclusive bit-index range [start,end] of a Uint32Array
-export function popcountRange(arr: Uint32Array, start: number, end: number): number {
+function popcountRange(arr: Uint32Array, start: number, end: number): number {
   if (end < start) return 0
   const w0 = start >>> 5, w1 = end >>> 5
   if (w0 === w1) {
@@ -387,7 +387,7 @@ export class TileRaster {
   }
 }
 
-export function distSqPtSeg(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+function distSqPtSeg(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy
   let t = l2 === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / l2
   t = t < 0 ? 0 : t > 1 ? 1 : t

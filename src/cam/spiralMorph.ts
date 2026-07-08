@@ -11,16 +11,8 @@
 // toolpath stage). Winding of the input loops is preserved, so the caller picks
 // climb/conventional upstream and we never flip it.
 
+import { stripClosingDuplicate, pointInPolygon } from './geom'
 import { type Pt2 } from './pathFlattener'
-
-// Drop a trailing vertex that merely repeats the first (a closed-path artifact),
-// so loops are treated as open vertex rings with implicit wrap-around.
-function stripClosingDuplicate(pts: Pt2[]): Pt2[] {
-  if (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[0][0], pts[pts.length - 1][1] - pts[0][1]) < 1e-6) {
-    return pts.slice(0, -1)
-  }
-  return pts
-}
 
 function ringPerimeter(loop: Pt2[]): number {
   let p = 0
@@ -38,7 +30,7 @@ function ringPerimeter(loop: Pt2[]): number {
 // morph between adjacent loops line up instead of twisting.
 //
 // Traversal direction (winding) is preserved from the input loop.
-export function resampleLoop(loop: Pt2[], n: number, center: Pt2, refAngle: number): Pt2[] {
+function resampleLoop(loop: Pt2[], n: number, center: Pt2, refAngle: number): Pt2[] {
   const ring = stripClosingDuplicate(loop)
   if (ring.length < 2) {
     // Degenerate (collapsed) loop — emit n copies of the single point so the
@@ -92,20 +84,11 @@ export function resampleLoop(loop: Pt2[], n: number, center: Pt2, refAngle: numb
 // Pick a sample count per revolution from the largest loop's perimeter so the
 // outer (longest) turn meets the chord tolerance; inner turns are oversampled,
 // which is harmless. Clamped to keep segment counts sane.
-export function spiralSampleCount(loops: Pt2[][], chordToleranceMM: number): number {
+function spiralSampleCount(loops: Pt2[][], chordToleranceMM: number): number {
   let maxPerim = 0
   for (const l of loops) maxPerim = Math.max(maxPerim, ringPerimeter(l))
   const n = Math.round(maxPerim / Math.max(0.05, chordToleranceMM))
   return Math.max(48, Math.min(1024, n))
-}
-
-function pointInPoly(px: number, py: number, poly: Pt2[]): boolean {
-  let inside = false
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]
-    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
-  }
-  return inside
 }
 
 function distToBoundary(px: number, py: number, poly: Pt2[]): number {
@@ -135,7 +118,7 @@ function inscribedCircle(loop: Pt2[]): { center: Pt2; radius: number } {
     if (y < miny) miny = y; if (y > maxy) maxy = y
   }
   let best: Pt2 = centroidOf(ring)
-  let bestR = pointInPoly(best[0], best[1], ring) ? distToBoundary(best[0], best[1], ring) : -1
+  let bestR = pointInPolygon(best[0], best[1], ring) ? distToBoundary(best[0], best[1], ring) : -1
   let lo: Pt2 = [minx, miny], hi: Pt2 = [maxx, maxy]
   for (let pass = 0; pass < 2; pass++) {
     const cells = 16
@@ -143,7 +126,7 @@ function inscribedCircle(loop: Pt2[]): { center: Pt2; radius: number } {
     for (let i = 0; i <= cells; i++) {
       for (let j = 0; j <= cells; j++) {
         const px = lo[0] + i * sx, py = lo[1] + j * sy
-        if (!pointInPoly(px, py, ring)) continue
+        if (!pointInPolygon(px, py, ring)) continue
         const d = distToBoundary(px, py, ring)
         if (d > bestR) { bestR = d; best = [px, py] }
       }
@@ -295,7 +278,7 @@ export function morphChainToSpiral(
 // Smooth (already-rounded) vertices are left untouched, so the point count grows
 // only at the few sharp corners. Endpoints are preserved. `maxCutMM` caps how far
 // a cut may pull in from a vertex so the fillet radius stays bounded.
-export function roundSharpCorners(pts: Pt2[], iterations: number, maxCutMM: number): Pt2[] {
+function roundSharpCorners(pts: Pt2[], iterations: number, maxCutMM: number): Pt2[] {
   let cur = pts
   for (let it = 0; it < iterations; it++) {
     if (cur.length < 3) return cur

@@ -1,9 +1,9 @@
 import type { MotionSegment } from '../store/toolpathStore'
+import { perfLog } from '../debug'
 import type { Tool } from '../store/toolStore'
 import type { StlModelBounds } from '../importers/svgImporter'
 import type { BBox } from '../canvas/selectionUtils'
 
-export type Profile3dStrategy = 'raster'
 
 export interface Profile3dParams {
   stepoverPercent: number   // % of finishing tool diameter — spacing between passes
@@ -239,7 +239,7 @@ function generateStepDownPasses(
   const effectiveMaxDepth = Math.min(surfaceMaxDepth, maxDepthMM)
   const numPasses = Math.ceil(effectiveMaxDepth / stepDownMM)
 
-  console.log(`[profile3d] roughing: ${numPasses} passes, effectiveMaxDepth=${effectiveMaxDepth.toFixed(2)}mm, stepDown=${stepDownMM}mm, stock=${stockAllowanceMM}mm`)
+  perfLog(`[profile3d] roughing: ${numPasses} passes, effectiveMaxDepth=${effectiveMaxDepth.toFixed(2)}mm, stepDown=${stepDownMM}mm, stock=${stockAllowanceMM}mm`)
 
   const segs: MotionSegment[] = []
   for (let n = 1; n <= numPasses; n++) {
@@ -406,7 +406,7 @@ export function generateProfile3d(
   }
 
   const roughSurface = computeToolSurface(grid, nx, ny, bbox, roughRadius, 350)
-  console.log(`[profile3d] roughSurface ${roughSurface.nx}×${roughSurface.ny} R=${roughRadius}mm stock=${roughStockMM}mm | finishSurface ${finishSurface.nx}×${finishSurface.ny} R=${ballRadius}mm`)
+  perfLog(`[profile3d] roughSurface ${roughSurface.nx}×${roughSurface.ny} R=${roughRadius}mm stock=${roughStockMM}mm | finishSurface ${finishSurface.nx}×${finishSurface.ny} R=${ballRadius}mm`)
 
   const roughAngleDeg = params.roughingRasterAngleDeg ?? (params.rasterAngleDeg + 90)
 

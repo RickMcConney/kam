@@ -1,4 +1,5 @@
 import DxfParser from 'dxf-parser'
+import { perfLog } from '../debug'
 import type { ImportedPath } from '../store/pathsStore'
 import { PATH_COLOR } from '../colors'
 import { uid } from '../uid'
@@ -219,7 +220,7 @@ function stitchLines(
       }
     }
 
-    console.log(`[dxfImporter] chain ${result.length + 1}: ${beforeCount} pts → ${pts.length} pts (closed=${closed})`)
+    perfLog(`[dxfImporter] chain ${result.length + 1}: ${beforeCount} pts → ${pts.length} pts (closed=${closed})`)
 
     let d = `M${fmt(pts[0][0])},${fmt(pts[0][1])}`
     const end = closed ? pts.length - 1 : pts.length

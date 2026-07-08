@@ -2,9 +2,8 @@ import { create } from 'zustand'
 import { OP_TYPE_COLORS } from '../colors'
 import { uid } from '../uid'
 import type { CuttingDirection } from './toolStore'
-import type { OriginPosition } from './workpieceStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
-export type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
+type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
 
 export interface MotionSegment {
   x: number
@@ -17,7 +16,7 @@ export interface MotionSegment {
   feedScale?: number   // multiplier applied to computed feed rate (default 1.0)
 }
 
-export interface DrillPoint {
+interface DrillPoint {
   x: number
   y: number
 }
@@ -237,4 +236,3 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
 }))
 
 // Re-export OriginPosition so callers can get it from one place
-export type { OriginPosition }

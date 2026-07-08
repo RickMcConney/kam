@@ -7,12 +7,12 @@ import { generateGcode } from './gcode'
 import { parseGcode } from '../sim/gcodeParser'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 
-export interface PreflightWarning {
+interface PreflightWarning {
   level: 'warn' | 'info'
   text: string
 }
 
-export interface PreflightTool {
+interface PreflightTool {
   name: string
   diameterMM: number
   rpm: number

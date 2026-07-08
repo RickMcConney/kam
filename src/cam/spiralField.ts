@@ -24,12 +24,6 @@ export interface FieldGrid {
   tMax: number
 }
 
-export interface Seed {
-  x: number
-  y: number
-  t: number
-}
-
 function pointInPolys(px: number, py: number, polys: Pt2[][]): boolean {
   // Even-odd over all rings: a point inside an odd number of rings is "in".
   let inside = false
@@ -118,44 +112,3 @@ export function solveField(outers: Pt2[][], holes: Pt2[][], cell: number): Field
   return { T, inside, gw, gh, x0, y0, cell, tMax }
 }
 
-// Bilinear sample of T at a CNC point (0 outside the grid).
-export function sampleField(g: FieldGrid, x: number, y: number): number {
-  const fx = (x - g.x0) / g.cell, fy = (y - g.y0) / g.cell
-  const ix = Math.floor(fx), iy = Math.floor(fy)
-  if (ix < 0 || iy < 0 || ix >= g.gw - 1 || iy >= g.gh - 1) return 0
-  const tx = fx - ix, ty = fy - iy
-  const a = g.T[iy * g.gw + ix], b = g.T[iy * g.gw + ix + 1]
-  const c = g.T[(iy + 1) * g.gw + ix], d = g.T[(iy + 1) * g.gw + ix + 1]
-  return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty
-}
-
-// Local maxima of T (spiral seeds), with non-maximum suppression so a flat ridge
-// yields a few spaced seeds rather than a cluster. `minSpacingMM` is the
-// suppression radius. Returned highest-T first.
-export function findSeeds(g: FieldGrid, minSpacingMM: number): Seed[] {
-  const cand: Seed[] = []
-  for (let iy = 1; iy < g.gh - 1; iy++) {
-    for (let ix = 1; ix < g.gw - 1; ix++) {
-      const idx = iy * g.gw + ix
-      if (!g.inside[idx]) continue
-      const t = g.T[idx]
-      if (t <= 0) continue
-      // 8-neighbour peak test (>= so plateaus still qualify; suppression dedups).
-      let isPeak = true
-      for (let dy = -1; dy <= 1 && isPeak; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue
-          if (g.T[(iy + dy) * g.gw + (ix + dx)] > t) { isPeak = false; break }
-        }
-      }
-      if (isPeak) cand.push({ x: g.x0 + ix * g.cell, y: g.y0 + iy * g.cell, t })
-    }
-  }
-  cand.sort((a, b) => b.t - a.t)
-  const kept: Seed[] = []
-  const sp2 = minSpacingMM * minSpacingMM
-  for (const c of cand) {
-    if (kept.every(k => (k.x - c.x) ** 2 + (k.y - c.y) ** 2 > sp2)) kept.push(c)
-  }
-  return kept
-}

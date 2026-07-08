@@ -45,3 +45,7 @@ optimizations.md
 # Dev verification/diagnostic harnesses + their transpile output and golden snapshot
 .harness-build/
 scripts/
+
+# local scratch material (moved from repo root) + import-warning test files
+scratch/
+testfiles-b8/

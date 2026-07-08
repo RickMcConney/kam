@@ -30,7 +30,7 @@ import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { signedArea, douglasPeucker, type Pt2 } from './pathFlattener'
 import { distSqPtSeg } from './clearedRaster'
 
-export interface Adaptive2Move {
+interface Adaptive2Move {
   // 'cut' = engagement-controlled material removal; 'link' = stay-down traverse over
   // already-cleared floor (verified ~zero engagement while walking it).
   kind: 'cut' | 'link'

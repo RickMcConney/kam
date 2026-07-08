@@ -19,7 +19,7 @@ import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
 
 // Base chip load (mm per tooth) at the reference diameter, per tool type.
 const REFERENCE_DIAMETER_MM = 6
-export const CHIP_LOAD_TABLE: Record<ToolType, number> = {
+const CHIP_LOAD_TABLE: Record<ToolType, number> = {
   endmill: 0.05,
   ballnose: 0.04,
   vbit: 0.03,
@@ -61,7 +61,7 @@ export function targetChipLoad(toolType: ToolType, diameterMM: number, hardness:
   return (CHIP_LOAD_TABLE[toolType] ?? 0.05) * diaScale / h
 }
 
-export interface FeedCalcInput {
+interface FeedCalcInput {
   tool: Tool
   materialHardness: number
   rigidity: number       // 1..5
@@ -79,7 +79,7 @@ export interface FeedCalcInput {
   radialEngagementFraction?: number
 }
 
-export interface FeedCalcResult {
+interface FeedCalcResult {
   xyFeedMmMin: number
   plungeMmMin: number
   stepDownMM: number
@@ -88,7 +88,7 @@ export interface FeedCalcResult {
   spindleTooFast: boolean // true when the machine's min rpm exceeds the material's safe Vc ceiling
 }
 
-export function computeFeeds(input: FeedCalcInput): FeedCalcResult {
+function computeFeeds(input: FeedCalcInput): FeedCalcResult {
   const { tool, materialHardness, rigidity, maxFeedMmMin, minSpindleRpm, maxSpindleRpm, maxSurfaceSpeedMMin, userStepDownMM, totalDepthMM, enabled, radialEngagementFraction } = input
   const maxFeed = maxFeedMmMin > 0 ? maxFeedMmMin : Infinity
 

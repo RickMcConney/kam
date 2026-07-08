@@ -30,7 +30,7 @@ function getDirPicker(): ShowDirectoryPicker | null {
   return typeof p === 'function' ? p : null
 }
 
-export function supportsFsAccess(): boolean {
+function supportsFsAccess(): boolean {
   return getPicker() !== null
 }
 

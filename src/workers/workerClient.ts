@@ -1,4 +1,5 @@
 import type { WorkerHandlers } from './worker'
+import { perfLog } from '../debug'
 
 let _worker: Worker | null = null
 let _nextId = 0
@@ -33,7 +34,7 @@ export function runInWorker<K extends keyof WorkerHandlers>(
     const _t0 = performance.now()  // [perf] times every worker generation call
     _pending.set(id, {
       resolve: (v: unknown) => {
-        console.log(`[perf] worker ${String(fn)}: ${(performance.now() - _t0).toFixed(0)}ms`)
+        perfLog(`[perf] worker ${String(fn)}: ${(performance.now() - _t0).toFixed(0)}ms`)
         ;(resolve as (v: unknown) => void)(v)
       },
       reject,

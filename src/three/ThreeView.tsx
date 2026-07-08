@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { perfLog } from '../debug'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { useSimStore } from '../store/simStore'
@@ -347,18 +348,18 @@ export default function ThreeView() {
             if (avg < 30) {
               // Too slow — rebuild immediately at a lower budget.
               refs.machineVoxelBudget = Math.max(1000, measured)
-              console.log(`[voxel] slow: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↓ ${refs.machineVoxelBudget}`)
+              perfLog(`[voxel] slow: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↓ ${refs.machineVoxelBudget}`)
               refs.fpsSamples = []
               rebuildVoxels(refs)
               refs.renderNeeded = true
             } else if (refs.machineVoxelBudget === 0) {
               // First calibration — set from current measurement.
               refs.machineVoxelBudget = measured
-              console.log(`[voxel] calibrated: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget → ${refs.machineVoxelBudget}`)
+              perfLog(`[voxel] calibrated: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget → ${refs.machineVoxelBudget}`)
             } else if (measured > refs.machineVoxelBudget) {
               // Headroom available — grow budget (capped at 2×) for future jobs.
               refs.machineVoxelBudget = Math.min(refs.machineVoxelBudget * 2, measured)
-              console.log(`[voxel] fast: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↑ ${refs.machineVoxelBudget}`)
+              perfLog(`[voxel] fast: fps ${Math.round(avg)}, voxels ${refs.voxelMat.leaves.length}, budget ↑ ${refs.machineVoxelBudget}`)
             }
           }
         }
@@ -640,7 +641,7 @@ function rebuildHeightfield(refs: SceneRefs) {
   const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, materialColor(material), SIM_CUT_COLOR_THREE, zOrigin)
   refs.heightfield = hf
   refs.scene.add(hf.group)
-  console.log(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
+  perfLog(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
 }
 
 function rebuildVoxels(refs: SceneRefs) {
@@ -662,7 +663,7 @@ function rebuildVoxels(refs: SceneRefs) {
   const voxelMat = new VoxelMaterial(W, H, T, segments, toolStates, org.x, org.y, minCellMM, voxelBudget)
   refs.voxelMat  = voxelMat
   const N = voxelMat.leaves.length
-  console.log(`[voxel] built ${N.toLocaleString()} voxels @ ${voxelMat.effectiveCellMM.toFixed(3)}mm cell | machine budget: ${refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget.toLocaleString() : 'uncalibrated'}`)
+  perfLog(`[voxel] built ${N.toLocaleString()} voxels @ ${voxelMat.effectiveCellMM.toFixed(3)}mm cell | machine budget: ${refs.machineVoxelBudget > 0 ? refs.machineVoxelBudget.toLocaleString() : 'uncalibrated'}`)
 
   // Wood mesh: all faces wood — for uncut voxels
   const woodColor = materialColor(material)

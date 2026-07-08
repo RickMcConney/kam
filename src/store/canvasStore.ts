@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type LiveBBox = { minX: number; minY: number; width: number; height: number }
+type LiveBBox = { minX: number; minY: number; width: number; height: number }
 
 interface CanvasStore {
   cursorMM: { x: number; y: number } | null

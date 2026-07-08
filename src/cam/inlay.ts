@@ -1,3 +1,4 @@
+import { pointInPolygon } from './geom'
 import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
 import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
@@ -84,7 +85,7 @@ function isExpectedGeometryError(e: unknown): boolean {
 }
 
 // Round all convex (outer) corners of path d to radius r using the corner tool.
-export function roundCornersForEndmill(d: string, r: number): string {
+function roundCornersForEndmill(d: string, r: number): string {
   if (r <= 0.001) return d
   return applyCornerTreatment(d, { type: 'outerRound', radiusMM: r })
 }
@@ -103,17 +104,6 @@ function ptsToD(pts: Pt2[]): string {
   for (let i = 1; i < pts.length; i++) p.push(`L${pts[i][0].toFixed(4)} ${pts[i][1].toFixed(4)}`)
   p.push('Z')
   return p.join(' ')
-}
-
-// Point-in-polygon (ray casting).
-function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
-  let inside = false
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const [xi, yi] = pts[i], [xj, yj] = pts[j]
-    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
-      inside = !inside
-  }
-  return inside
 }
 
 // Split a multi-subpath d string into per-letter regions.
@@ -138,7 +128,7 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
     const outer = sorted[i]
     const cx = outer.reduce((s, p) => s + p[0], 0) / outer.length
     const cy = outer.reduce((s, p) => s + p[1], 0) / outer.length
-    if (regions.some(r => ptInPoly(cx, cy, r.outerPts))) {
+    if (regions.some(r => pointInPolygon(cx, cy, r.outerPts))) {
       usedAsHole.add(i); continue
     }
 
@@ -149,7 +139,7 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
       const hcx = cand.reduce((s, p) => s + p[0], 0) / cand.length
       const hcy = cand.reduce((s, p) => s + p[1], 0) / cand.length
       // Touching loops (shared vertex) are siblings, not holes.
-      if (!sharesVertex(cand, outer) && ptInPoly(hcx, hcy, outer)) {
+      if (!sharesVertex(cand, outer) && pointInPolygon(hcx, hcy, outer)) {
         holes.push(ptsToD(cand))
         usedAsHole.add(j)
       }
@@ -266,7 +256,7 @@ function getOuters(d: string): Pt2[][] {
 // Clearance is applied here and only here: the socket is offset OUTWARD by clearanceMM
 // (offset-then-inset), so the fit gap lives entirely on the socket side — holes grow,
 // plugs stay nominal, and the gap is never doubled across a joint.
-export function computeInlayFemaleOffsets(
+function computeInlayFemaleOffsets(
   d: string,
   params: Pick<InlayParams, 'angleDeg' | 'pocketDepthMM' | 'glueLineMM' | 'clearanceMM'>,
 ): { socketD: string | null; pocketBoundaryD: string | null; vcarveIslandD: string | null } {

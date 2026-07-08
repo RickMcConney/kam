@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 // Which artifact the save dialog is naming.
-export type SaveKind = 'project' | 'gcode'
+type SaveKind = 'project' | 'gcode'
 
 interface SaveDialogState {
   open: boolean

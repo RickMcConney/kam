@@ -88,7 +88,7 @@ function arcFlat(
   }
 }
 
-function parseNums(s: string): number[] {
+export function parseNums(s: string): number[] {
   return (s.match(/[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g) ?? []).map(Number)
 }
 
@@ -378,7 +378,7 @@ export function sharesVertex(a: Pt2[], b: Pt2[], tol = 0.01): boolean {
   return false
 }
 
-export function splitSelfTouching(pts: Pt2[], tol = 0.01): Pt2[][] {
+function splitSelfTouching(pts: Pt2[], tol = 0.01): Pt2[][] {
   const n = pts.length
   const checkLen = (n > 1 &&
     Math.abs(pts[0][0] - pts[n-1][0]) < tol &&
@@ -407,7 +407,7 @@ function segIntersect(
   return [ax + t * (bx - ax), ay + t * (by - ay)]
 }
 
-export function splitAtIntersections(pts: Pt2[], tol = 0.01): Pt2[][] {
+function splitAtIntersections(pts: Pt2[], tol = 0.01): Pt2[][] {
   const n = pts.length
   const isClosedDup = n > 1 &&
     Math.abs(pts[0][0] - pts[n-1][0]) < tol &&

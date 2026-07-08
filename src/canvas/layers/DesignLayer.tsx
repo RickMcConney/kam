@@ -41,6 +41,51 @@ function extractRectInfo(d: string): {
   return { p0: pts[0], widthMM, heightMM, rotationDeg }
 }
 
+// ── Live-transform → Konva node attrs ─────────────────────────────────────────
+// Maps an unbaked LiveTransform (drag/resize/rotate/skew in progress) onto the
+// Konva node attributes that preview it. Identity attrs when lt is null.
+
+interface LiveNodeAttrs {
+  x: number; y: number
+  scaleX: number; scaleY: number
+  offsetX: number; offsetY: number
+  rotation: number
+  skewX: number; skewY: number
+}
+
+function liveTransformToNodeAttrs(lt: LiveTransform | null): LiveNodeAttrs {
+  const a: LiveNodeAttrs = {
+    x: 0, y: 0, scaleX: 1, scaleY: 1,
+    offsetX: 0, offsetY: 0, rotation: 0, skewX: 0, skewY: 0,
+  }
+  if (!lt) return a
+  if (lt.kind === 'translate') {
+    a.x = lt.dx; a.y = lt.dy
+  } else if (lt.kind === 'scale') {
+    a.offsetX = lt.ax; a.offsetY = lt.ay
+    a.x = lt.ax; a.y = lt.ay
+    a.scaleX = lt.sx; a.scaleY = lt.sy
+  } else if (lt.kind === 'rotate') {
+    a.offsetX = lt.cx; a.offsetY = lt.cy
+    a.x = lt.cx; a.y = lt.cy
+    a.rotation = lt.angle
+  } else if (lt.kind === 'skew') {
+    a.offsetX = lt.ax; a.offsetY = lt.ay
+    a.x = lt.ax; a.y = lt.ay
+    a.skewX = lt.kx; a.skewY = lt.ky
+  }
+  return a
+}
+
+// Screen-constant stroke width, compensated during a live scale so the outline
+// doesn't fatten/thin with the preview scale.
+function liveStrokeWidth(lt: LiveTransform | null, attrs: LiveNodeAttrs, isSelected: boolean, scale: number): number {
+  const base = (isSelected ? 2 : 1.5) / scale
+  return lt?.kind === 'scale'
+    ? base / Math.sqrt(Math.abs(attrs.scaleX * attrs.scaleY))
+    : base
+}
+
 // ── Single image-backed path ──────────────────────────────────────────────────
 // Renders the raster image inside the bounding-box rectangle path.
 // Placement proof:
@@ -73,44 +118,13 @@ const ImagePath = memo(function ImagePath({
   }, [p.imageSrc])
 
   const lt = liveTransform?.pathIds.has(p.id) ? liveTransform : null
-
-  let nodeX = 0, nodeY = 0, nodeScaleX = 1, nodeScaleY = 1
-  let nodeOffsetX = 0, nodeOffsetY = 0, nodeRotation = 0
-  let nodeSkewX = 0, nodeSkewY = 0
-  if (lt) {
-    if (lt.kind === 'translate') {
-      nodeX = lt.dx; nodeY = lt.dy
-    } else if (lt.kind === 'scale') {
-      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
-      nodeX = lt.ax; nodeY = lt.ay
-      nodeScaleX = lt.sx; nodeScaleY = lt.sy
-    } else if (lt.kind === 'rotate') {
-      nodeOffsetX = lt.cx; nodeOffsetY = lt.cy
-      nodeX = lt.cx; nodeY = lt.cy
-      nodeRotation = lt.angle
-    } else if (lt.kind === 'skew') {
-      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
-      nodeX = lt.ax; nodeY = lt.ay
-      nodeSkewX = lt.kx; nodeSkewY = lt.ky
-    }
-  }
-
-  const baseStroke = (isSelected ? 2 : 1.5) / scale
-  const strokeWidth = lt?.kind === 'scale'
-    ? baseStroke / Math.sqrt(Math.abs(nodeScaleX * nodeScaleY))
-    : baseStroke
+  const attrs = liveTransformToNodeAttrs(lt)
+  const strokeWidth = liveStrokeWidth(lt, attrs, isSelected, scale)
 
   const rect = extractRectInfo(p.d)
 
   return (
-    <Group
-      x={nodeX} y={nodeY}
-      scaleX={nodeScaleX} scaleY={nodeScaleY}
-      offsetX={nodeOffsetX} offsetY={nodeOffsetY}
-      rotation={nodeRotation}
-      skewX={nodeSkewX} skewY={nodeSkewY}
-      listening={false}
-    >
+    <Group {...attrs} listening={false}>
       {/* Image: sits at p0, rotated along the first edge, Y-un-flipped */}
       {imgEl && rect && (
         <Group x={rect.p0.x} y={rect.p0.y} rotation={rect.rotationDeg} listening={false}>
@@ -210,44 +224,14 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
     return () => clearTimeout(timer)
   }, [p.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  let nodeX = 0, nodeY = 0, nodeScaleX = 1, nodeScaleY = 1
-  let nodeOffsetX = 0, nodeOffsetY = 0, nodeRotation = 0
-  let nodeSkewX = 0, nodeSkewY = 0
-  if (lt) {
-    if (lt.kind === 'translate') {
-      nodeX = lt.dx; nodeY = lt.dy
-    } else if (lt.kind === 'scale') {
-      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
-      nodeX = lt.ax; nodeY = lt.ay
-      nodeScaleX = lt.sx; nodeScaleY = lt.sy
-    } else if (lt.kind === 'rotate') {
-      nodeOffsetX = lt.cx; nodeOffsetY = lt.cy
-      nodeX = lt.cx; nodeY = lt.cy
-      nodeRotation = lt.angle
-    } else if (lt.kind === 'skew') {
-      nodeOffsetX = lt.ax; nodeOffsetY = lt.ay
-      nodeX = lt.ax; nodeY = lt.ay
-      nodeSkewX = lt.kx; nodeSkewY = lt.ky
-    }
-  }
-
-  const baseStroke = (isSelected ? 2 : 1.5) / scale
-  const strokeWidth = lt?.kind === 'scale'
-    ? baseStroke / Math.sqrt(Math.abs(nodeScaleX * nodeScaleY))
-    : baseStroke
+  const attrs = liveTransformToNodeAttrs(lt)
+  const strokeWidth = liveStrokeWidth(lt, attrs, isSelected, scale)
 
   const rect = extractRectInfo(p.d)
   const labelSize = 10 / scale
 
   return (
-    <Group
-      x={nodeX} y={nodeY}
-      scaleX={nodeScaleX} scaleY={nodeScaleY}
-      offsetX={nodeOffsetX} offsetY={nodeOffsetY}
-      rotation={nodeRotation}
-      skewX={nodeSkewX} skewY={nodeSkewY}
-      listening={false}
-    >
+    <Group {...attrs} listening={false}>
       {/* Height map image — same Y-flip placement as ImagePath */}
       {hmCanvas && rect && (
         <Group x={rect.p0.x} y={rect.p0.y} rotation={rect.rotationDeg} listening={false}>
@@ -336,44 +320,8 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
 
         // Normal vector path
         const lt = liveTransform && liveTransform.pathIds.has(p.id) ? liveTransform : null
-
-        let nodeX = 0, nodeY = 0
-        let nodeScaleX = 1, nodeScaleY = 1
-        let nodeOffsetX = 0, nodeOffsetY = 0
-        let nodeRotation = 0
-        let nodeSkewX = 0, nodeSkewY = 0
-
-        if (lt) {
-          if (lt.kind === 'translate') {
-            nodeX = lt.dx
-            nodeY = lt.dy
-          } else if (lt.kind === 'scale') {
-            nodeOffsetX = lt.ax
-            nodeOffsetY = lt.ay
-            nodeX = lt.ax
-            nodeY = lt.ay
-            nodeScaleX = lt.sx
-            nodeScaleY = lt.sy
-          } else if (lt.kind === 'rotate') {
-            nodeOffsetX = lt.cx
-            nodeOffsetY = lt.cy
-            nodeX = lt.cx
-            nodeY = lt.cy
-            nodeRotation = lt.angle
-          } else if (lt.kind === 'skew') {
-            nodeOffsetX = lt.ax
-            nodeOffsetY = lt.ay
-            nodeX = lt.ax
-            nodeY = lt.ay
-            nodeSkewX = lt.kx
-            nodeSkewY = lt.ky
-          }
-        }
-
-        const baseStroke = (isSelected ? 2 : 1.5) / scale
-        const strokeWidth = lt?.kind === 'scale'
-          ? baseStroke / Math.sqrt(Math.abs(nodeScaleX * nodeScaleY))
-          : baseStroke
+        const attrs = liveTransformToNodeAttrs(lt)
+        const strokeWidth = liveStrokeWidth(lt, attrs, isSelected, scale)
 
         return (
           <Path
@@ -382,15 +330,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
             stroke={isSelected ? C.path.selected : p.color}
             strokeWidth={strokeWidth}
             listening={false}
-            x={nodeX}
-            y={nodeY}
-            scaleX={nodeScaleX}
-            scaleY={nodeScaleY}
-            offsetX={nodeOffsetX}
-            offsetY={nodeOffsetY}
-            rotation={nodeRotation}
-            skewX={nodeSkewX}
-            skewY={nodeSkewY}
+            {...attrs}
           />
         )
       })}

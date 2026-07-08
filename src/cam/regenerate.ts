@@ -1,4 +1,5 @@
 import { generatePeckDrill, generateHelicalDrill } from './drill'
+import { perfLog } from '../debug'
 import { generateSurface } from './surfacing'
 import { runInWorker } from '../workers/workerClient'
 import { useToolpathStore } from '../store/toolpathStore'
@@ -168,7 +169,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
     }
     const _segs = useToolpathStore.getState().operations.find((o) => o.id === opId)?.segments.length ?? 0
     const _label = op.type === 'pocket' ? `pocket/${(op as { strategy?: string }).strategy ?? 'raster'}` : op.type
-    console.log(`[perf] toolpath-gen ${_label}: ${(performance.now() - _t0).toFixed(0)}ms → ${_segs} segs`)
+    perfLog(`[perf] toolpath-gen ${_label}: ${(performance.now() - _t0).toFixed(0)}ms → ${_segs} segs`)
   } catch (err) {
     setError(opId, err instanceof Error ? err.message : 'Generation failed')
   }

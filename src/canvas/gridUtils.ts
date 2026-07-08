@@ -1,8 +1,8 @@
 // Shared grid / ruler utilities — both use the same step so lines always
 // align with ruler ticks.
 
-export const MM_STEPS    = [0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
-export const IN_STEPS_MM = [
+const MM_STEPS    = [0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+const IN_STEPS_MM = [
   25.4 / 8,   // 1/8"
   25.4 / 4,   // 1/4"
   25.4 / 2,   // 1/2"

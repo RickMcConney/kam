@@ -10,6 +10,7 @@
 //  6. Convert each skeleton point: r (scaled radius) → Z depth via
 //     Z = -(r/SCALE / tan(halfAngle)), capped at maxDepth.
 
+import { pointInPolygon } from './geom'
 import { jspoly as JSPOLY } from './lib/jspoly.js'
 // jspoly.js's internal methods reference `JSPoly` as a bare global (written for <script> context).
 // In ES module scope it's never defined, so we pin it on globalThis once at import time.
@@ -417,16 +418,6 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
 
 interface Region { outer: Pt2[]; holes: Pt2[][] }
 
-function ptInPoly(px: number, py: number, pts: Pt2[]): boolean {
-  let inside = false
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]
-    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
-      inside = !inside
-  }
-  return inside
-}
-
 function centroidX(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[0], 0) / pts.length }
 function centroidY(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[1], 0) / pts.length }
 
@@ -444,7 +435,7 @@ function classifySubpaths(subpaths: Pt2[][]): Region[] {
       if (usedAsHole.has(j)) continue
       const candidate = sorted[j]
       // Loops touching at a vertex are siblings (e.g. letter K arms), not holes.
-      if (!sharesVertex(candidate, outer) && ptInPoly(centroidX(candidate), centroidY(candidate), outer)) {
+      if (!sharesVertex(candidate, outer) && pointInPolygon(centroidX(candidate), centroidY(candidate), outer)) {
         holes.push(candidate)
         usedAsHole.add(j)
       }
