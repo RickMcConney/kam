@@ -427,11 +427,21 @@ export class HeightfieldMaterial {
     const dx = bx - ax, dy = by - ay
     const lenSq = dx * dx + dy * dy
 
+    // Samples are points on an (sx, sy) grid: a sample within half a cell
+    // diagonal of the swept edge represents material the cut at least partly
+    // removed. Without this coverage margin, two passes whose footprints
+    // exactly touch (inside + outside profile on the same path) leave a chain
+    // of full-height single-cell spikes wherever a sample center lands
+    // epsilon outside both footprints — a ~µm-wide real sliver rendered as a
+    // cell-wide wall. Leftovers wider than a cell still show.
+    const covEps = 0.5 * Math.hypot(this._sx, this._sy)
+    const rPad = r + covEps
+
     const { _NX: NX, _NY: NY, _sx: sx, _sy: sy, _gx0: gx0, _gy0: gy0, topZ } = this
-    const iMin = Math.max(0, Math.floor((Math.min(ax, bx) - r - gx0) / sx))
-    const iMax = Math.min(NX - 1, Math.ceil((Math.max(ax, bx) + r - gx0) / sx))
-    const jMin = Math.max(0, Math.floor((Math.min(ay, by) - r - gy0) / sy))
-    const jMax = Math.min(NY - 1, Math.ceil((Math.max(ay, by) + r - gy0) / sy))
+    const iMin = Math.max(0, Math.floor((Math.min(ax, bx) - rPad - gx0) / sx))
+    const iMax = Math.min(NX - 1, Math.ceil((Math.max(ax, bx) + rPad - gx0) / sx))
+    const jMin = Math.max(0, Math.floor((Math.min(ay, by) - rPad - gy0) / sy))
+    const jMax = Math.min(NY - 1, Math.ceil((Math.max(ay, by) + rPad - gy0) / sy))
 
     for (let j = jMin; j <= jMax; j++) {
       const py = gy0 + j * sy
@@ -469,7 +479,9 @@ export class HeightfieldMaterial {
           const br = toolDiameterMM / 2
           const dt = tc - tc_raw
           const dist = Math.sqrt(dt * dt * lenSq + perp_sq)
-          if (dist > br) continue
+          // Rim cells inside the coverage margin carve to the sphere equator
+          // (the max(0, …) clamp degrades to exactly that past dist = br).
+          if (dist > br + covEps) continue
           newH = Math.max(0, this._T + z_tc + br - Math.sqrt(Math.max(0, br * br - dist * dist)))
         } else {
           const tc = Math.max(0, Math.min(1, tc_raw))
@@ -477,7 +489,7 @@ export class HeightfieldMaterial {
           if (z_tc >= 0) continue
           const dt = tc - tc_raw
           const dist = Math.sqrt(dt * dt * lenSq + perp_sq)
-          if (dist > r) continue
+          if (dist > rPad) continue
           newH = Math.max(0, this._T + z_tc)
         }
 

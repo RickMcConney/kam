@@ -1,4 +1,4 @@
-import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, ARC_FIT_MAX_SPAN, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { zPasses, arcLengths, interpPt, stripClosingDuplicate } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
@@ -290,7 +290,7 @@ export function generateProfile(
             segs.push(...polylinePassWithTabs(cleanPts, zDepth, [], cleanLens))
             // Full cut from pts[0] to far end
             if (activeRanges.length === 0) {
-              const arcSegs = arcFitPolyline(pts, 0.1)
+              const arcSegs = arcFitPolyline(pts, 0.1, ARC_FIT_MAX_SPAN)
               for (const s of arcSegs) {
                 segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
               }
@@ -305,7 +305,7 @@ export function generateProfile(
             const mainPts = forward ? mainFwdPts : mainBwdPts
             const mainLens = forward ? mainFwdLens : mainBwdLens
             if (activeRanges.length === 0) {
-              const arcSegs = arcFitPolyline(mainPts, 0.1)
+              const arcSegs = arcFitPolyline(mainPts, 0.1, ARC_FIT_MAX_SPAN)
               for (const s of arcSegs) {
                 segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
               }
@@ -335,7 +335,7 @@ export function generateProfile(
           segs.push({ x: pts[0][0], y: pts[0][1], z: zDepth, rapid: false })
           const activeRanges = tabRanges.filter(tr => zDepth < tr.tabZ)
           if (activeRanges.length === 0) {
-            const arcSegs = arcFitPolyline(pts, 0.1)
+            const arcSegs = arcFitPolyline(pts, 0.1, ARC_FIT_MAX_SPAN)
             for (const s of arcSegs) {
               segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
             }
@@ -511,7 +511,7 @@ export function generateProfile(
           segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
           const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
           if (activeRanges.length === 0) {
-            const arcSegs = arcFitPolyline(closed, 0.1)
+            const arcSegs = arcFitPolyline(closed, 0.1, ARC_FIT_MAX_SPAN)
             for (const s of arcSegs) {
               segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
             }

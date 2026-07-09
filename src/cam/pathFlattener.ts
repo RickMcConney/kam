@@ -245,6 +245,12 @@ function arcHugsPolyline(
 // runs (spiral/morph/adaptive pockets) an uncapped span makes this quadratic in the
 // run length. Capping bounds the cost to O(n·maxSpan); a longer-than-cap arc is just
 // emitted as a few arcs instead of one. Default Infinity keeps prior callers exact.
+//
+// The standard cap, shared by the gcode emitter and profile generation: 256
+// bounds the quadratic re-validation while still merging genuinely long arcs
+// into a handful of G2/G3 moves (bugs.md H4).
+export const ARC_FIT_MAX_SPAN = 256
+
 export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): ArcFitSeg[] {
   const result: ArcFitSeg[] = []
   const n = pts.length
@@ -383,13 +389,53 @@ function splitSelfTouching(pts: Pt2[], tol = 0.01): Pt2[][] {
   const checkLen = (n > 1 &&
     Math.abs(pts[0][0] - pts[n-1][0]) < tol &&
     Math.abs(pts[0][1] - pts[n-1][1]) < tol) ? n - 1 : n
-  for (let i = 0; i < checkLen - 2; i++) {
-    for (let j = i + 2; j < checkLen; j++) {
-      if (Math.abs(pts[i][0] - pts[j][0]) < tol && Math.abs(pts[i][1] - pts[j][1]) < tol) {
-        const loop1 = pts.slice(i, j + 1)
-        const loop2 = [...pts.slice(j, checkLen), ...pts.slice(0, i + 1)]
-        return [...splitSelfTouching(loop1, tol), ...splitSelfTouching(loop2, tol)]
+  if (checkLen < 3) return [pts]
+
+  // Small loops (incl. the leaves of a deep split recursion): plain scan —
+  // the grid build costs more than it saves below ~a hundred points.
+  if (checkLen < 128) {
+    for (let i = 0; i < checkLen - 2; i++) {
+      for (let j = i + 2; j < checkLen; j++) {
+        if (Math.abs(pts[i][0] - pts[j][0]) < tol && Math.abs(pts[i][1] - pts[j][1]) < tol) {
+          const loop1 = pts.slice(i, j + 1)
+          const loop2 = [...pts.slice(j, checkLen), ...pts.slice(0, i + 1)]
+          return [...splitSelfTouching(loop1, tol), ...splitSelfTouching(loop2, tol)]
+        }
       }
+    }
+    return [pts]
+  }
+
+  // Uniform tol-sized grid over the vertices so each i only tests vertices in
+  // its 3×3 cell neighborhood — the all-pairs scan was O(n²) per subpath per
+  // generation even with no coincident vertices at all (bugs.md H3). Taking
+  // the smallest qualifying j for the smallest i preserves the original
+  // nested-loop pair order exactly, so the recursion (and every toolpath
+  // built from it) is unchanged.
+  const grid = new Map<string, number[]>()
+  for (let j = 0; j < checkLen; j++) {
+    const key = `${Math.floor(pts[j][0] / tol)}|${Math.floor(pts[j][1] / tol)}`
+    const list = grid.get(key)
+    if (list) list.push(j); else grid.set(key, [j])
+  }
+  for (let i = 0; i < checkLen - 2; i++) {
+    const cx = Math.floor(pts[i][0] / tol)
+    const cy = Math.floor(pts[i][1] / tol)
+    let bestJ = -1
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const list = grid.get(`${cx + dx}|${cy + dy}`)
+        if (!list) continue
+        for (const j of list) {
+          if (j < i + 2 || (bestJ !== -1 && j >= bestJ)) continue
+          if (Math.abs(pts[i][0] - pts[j][0]) < tol && Math.abs(pts[i][1] - pts[j][1]) < tol) bestJ = j
+        }
+      }
+    }
+    if (bestJ !== -1) {
+      const loop1 = pts.slice(i, bestJ + 1)
+      const loop2 = [...pts.slice(bestJ, checkLen), ...pts.slice(0, i + 1)]
+      return [...splitSelfTouching(loop1, tol), ...splitSelfTouching(loop2, tol)]
     }
   }
   return [pts]
@@ -415,11 +461,84 @@ function splitAtIntersections(pts: Pt2[], tol = 0.01): Pt2[][] {
   const poly = isClosedDup ? pts.slice(0, -1) : pts
   const m = poly.length
   if (m < 4) return [pts]
+
+  // Small loops (incl. the leaves of a deep split recursion): plain scan —
+  // the bbox/grid build costs more than it saves below ~a hundred segments.
+  if (m < 128) {
+    for (let i = 0; i < m; i++) {
+      const i1 = (i + 1) % m
+      for (let j = i + 2; j < m; j++) {
+        const j1 = (j + 1) % m
+        if (j1 === i) continue
+        const X = segIntersect(
+          poly[i][0], poly[i][1], poly[i1][0], poly[i1][1],
+          poly[j][0], poly[j][1], poly[j1][0], poly[j1][1],
+        )
+        if (!X) continue
+        const loop1: Pt2[] = [X, ...poly.slice(i1, j + 1), X]
+        const loop2: Pt2[] = [...poly.slice(0, i1), X, ...(j1 > 0 ? poly.slice(j1) : []), poly[0]]
+        return [...splitAtIntersections(loop1, tol), ...splitAtIntersections(loop2, tol)]
+      }
+    }
+    return [pts]
+  }
+
+  // Per-segment bboxes + a uniform grid over them: only pairs whose bboxes
+  // share a cell reach segIntersect. The all-pairs scan was O(n²) — millions
+  // of segIntersect calls per generation on a smooth 0.05-tolerance boundary
+  // with no self-intersections at all (bugs.md H3). Candidates are tested in
+  // ascending j for ascending i, matching the original nested-loop order, so
+  // the first intersection found — and the whole recursion — is identical.
+  const minXs = new Float64Array(m), maxXs = new Float64Array(m)
+  const minYs = new Float64Array(m), maxYs = new Float64Array(m)
+  let gMinX = Infinity, gMinY = Infinity, gMaxX = -Infinity, gMaxY = -Infinity
   for (let i = 0; i < m; i++) {
     const i1 = (i + 1) % m
-    for (let j = i + 2; j < m; j++) {
+    minXs[i] = Math.min(poly[i][0], poly[i1][0]); maxXs[i] = Math.max(poly[i][0], poly[i1][0])
+    minYs[i] = Math.min(poly[i][1], poly[i1][1]); maxYs[i] = Math.max(poly[i][1], poly[i1][1])
+    if (minXs[i] < gMinX) gMinX = minXs[i]; if (maxXs[i] > gMaxX) gMaxX = maxXs[i]
+    if (minYs[i] < gMinY) gMinY = minYs[i]; if (maxYs[i] > gMaxY) gMaxY = maxYs[i]
+  }
+  const cell = Math.max(gMaxX - gMinX, gMaxY - gMinY, 1e-9) / 64
+  const cellRange = (i: number): [number, number, number, number] => [
+    Math.floor((minXs[i] - gMinX) / cell), Math.floor((maxXs[i] - gMinX) / cell),
+    Math.floor((minYs[i] - gMinY) / cell), Math.floor((maxYs[i] - gMinY) / cell),
+  ]
+  const grid = new Map<number, number[]>()
+  for (let i = 0; i < m; i++) {
+    const [cx0, cx1, cy0, cy1] = cellRange(i)
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const key = cx * 128 + cy
+        const list = grid.get(key)
+        if (list) list.push(i); else grid.set(key, [i])
+      }
+    }
+  }
+
+  const candidates: number[] = []
+  const seen = new Uint8Array(m)
+  for (let i = 0; i < m; i++) {
+    const i1 = (i + 1) % m
+    candidates.length = 0
+    const [cx0, cx1, cy0, cy1] = cellRange(i)
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const list = grid.get(cx * 128 + cy)
+        if (!list) continue
+        for (const j of list) {
+          if (j < i + 2 || (j + 1) % m === i || seen[j]) continue
+          if (minXs[j] > maxXs[i] || maxXs[j] < minXs[i] ||
+              minYs[j] > maxYs[i] || maxYs[j] < minYs[i]) continue
+          seen[j] = 1
+          candidates.push(j)
+        }
+      }
+    }
+    candidates.sort((a, b) => a - b)
+    for (const j of candidates) seen[j] = 0
+    for (const j of candidates) {
       const j1 = (j + 1) % m
-      if (j1 === i) continue
       const X = segIntersect(
         poly[i][0], poly[i][1], poly[i1][0], poly[i1][1],
         poly[j][0], poly[j][1], poly[j1][0], poly[j1][1],

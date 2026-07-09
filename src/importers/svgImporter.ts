@@ -197,6 +197,8 @@ function parseSvgTransform(attr: string | null): Mat6 {
         mat = [cos,sin,-sin,cos, px-cos*px+sin*py, py-sin*px-cos*py]
         break
       }
+      case 'skewX': mat = [1, 0, Math.tan(((args[0]??0)*Math.PI)/180), 1, 0, 0]; break
+      case 'skewY': mat = [1, Math.tan(((args[0]??0)*Math.PI)/180), 0, 1, 0, 0]; break
     }
     // SVG CTM: T1 T2 → combined = T1 * T2 (T2 applied first to points)
     result = matMul(result, mat)

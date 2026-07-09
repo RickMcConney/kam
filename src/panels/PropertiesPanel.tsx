@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { usePathsStore } from '../store/pathsStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
-import { regenerateAffected } from '../cam/regenerate'
+import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox, rotateAroundD, mirrorD } from '../canvas/selectionUtils'
@@ -235,7 +235,7 @@ export default function PropertiesPanel() {
       .map((p) => ({ id: p.id, d: rotateAroundD(p.d, cx, cy, angle), shapeParams: null as null }))
     if (updates.length) {
       batchUpdatePaths(updates)
-      for (const { id } of selectedPaths) regenerateAffected(id)
+      regenerateAffectedMany(updates.map((u) => u.id))
     }
   }
 
@@ -250,7 +250,7 @@ export default function PropertiesPanel() {
       .map((p) => ({ id: p.id, d: mirrorD(p.d, axis, cx, cy), shapeParams: null as null }))
     if (updates.length) {
       batchUpdatePaths(updates)
-      for (const { id } of selectedPaths) regenerateAffected(id)
+      regenerateAffectedMany(updates.map((u) => u.id))
     }
   }
 

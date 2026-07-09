@@ -10,7 +10,6 @@ import { usePathsStore } from './store/pathsStore'
 import { openProjectFile, newProject } from './io/projectLoad'
 import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
-import { useProjectStore } from './store/projectStore'
 import { useWorkpieceStore } from './store/workpieceStore'
 import { useToolpathStore } from './store/toolpathStore'
 import { regenerateOperation } from './cam/regenerate'
@@ -27,7 +26,10 @@ const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
 ]
 
 function MainWorkspace() {
-  const { workspaceTab, setWorkspaceTab } = useUIStore()
+  // Individual selectors — whole-store destructuring re-rendered the entire
+  // workspace on every uiStore change (bugs.md H5).
+  const workspaceTab = useUIStore((s) => s.workspaceTab)
+  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab)
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -74,10 +76,9 @@ function MainWorkspace() {
 }
 
 function useKeyboardShortcuts() {
-  const { toggleSnap } = useUIStore()
-  const { deleteSelected, undo, redo, duplicateSelected } = usePathsStore()
-  const { isDirty } = useProjectStore()
-
+  // No store subscriptions: the handler reads getState() at keypress time, so
+  // App no longer re-renders its whole subtree on every path edit / selection
+  // change / history push (bugs.md H5).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
@@ -100,9 +101,9 @@ function useKeyboardShortcuts() {
         const sim = useSimStore.getState()
         if (sim.gcode) { e.preventDefault(); sim.playing ? sim.pause() : sim.play(); return }
       }
-      if (e.key === 's' || e.key === 'S') { toggleSnap(); return }
+      if (e.key === 's' || e.key === 'S') { useUIStore.getState().toggleSnap(); return }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (!useUIStore.getState().nodeEditPathId) deleteSelected()
+        if (!useUIStore.getState().nodeEditPathId) usePathsStore.getState().deleteSelected()
         return
       }
       if (mod && e.key === 'z') {
@@ -112,21 +113,21 @@ function useKeyboardShortcuts() {
         // the local stack and is undone via the global history entry it wrote.
         const { nodeEditUndo, nodeEditCanUndo } = useUIStore.getState()
         if (nodeEditUndo && nodeEditCanUndo) { nodeEditUndo(); return }
-        undo()
+        usePathsStore.getState().undo()
         return
       }
       if (mod && (e.key === 'y' || e.key === 'Z')) {
         e.preventDefault()
         const { nodeEditRedo, nodeEditCanRedo } = useUIStore.getState()
         if (nodeEditRedo && nodeEditCanRedo) { nodeEditRedo(); return }
-        redo()
+        usePathsStore.getState().redo()
         return
       }
-      if (mod && e.key === 'd') { e.preventDefault(); duplicateSelected(); return }
+      if (mod && e.key === 'd') { e.preventDefault(); usePathsStore.getState().duplicateSelected(); return }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleSnap, deleteSelected, undo, redo, duplicateSelected, isDirty])
+  }, [])
 }
 
 function useSurfaceWorkpieceSync() {

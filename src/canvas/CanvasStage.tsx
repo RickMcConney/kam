@@ -1,7 +1,7 @@
 import { ptSegDistSq } from '../cam/geom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRefState } from './useRefState'
-import { useNodeEditSession } from './useNodeEditSession'
+import { useNodeEditSession, collectCrossPathEntries } from './useNodeEditSession'
 import { usePenTool } from './usePenTool'
 import { ICON } from '../theme'
 import { Stage, Layer, Group, Circle } from 'react-konva'
@@ -10,9 +10,9 @@ import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { usePathsStore } from '../store/pathsStore'
-import { regenerateAffected } from '../cam/regenerate'
+import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
-import type { ImportedPath } from '../store/pathsStore'
+import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { nextPathColor } from '../importers/svgImporter'
 import { importFile } from '../io/importFile'
@@ -44,7 +44,7 @@ import {
 import type { PenNode } from '../store/uiStore'
 import { NodeEditLayer } from './layers/NodeEditLayer'
 import { TabLayer } from './layers/TabLayer'
-import { parseDToNodes, nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath, weldNodes, deleteSegment, joinPaths, joinPathsConnect, endpointToMidpointWeld, connectEndpointToInterior, toggleNodeCurvature } from './nodeUtils'
+import { nodesToD, removeNode, insertNodeOnSegment, splitCompoundPath, weldNodes, deleteSegment, joinPaths, joinPathsConnect, endpointToMidpointWeld, connectEndpointToInterior, toggleNodeCurvature } from './nodeUtils'
 import type { PathNode } from './nodeUtils'
 import type { CrossPathEntry } from './layers/NodeEditLayer'
 import { uid } from '../uid'
@@ -56,6 +56,11 @@ export interface Viewport {
 }
 
 // ── Path proximity helpers ────────────────────────────────────────────────────
+
+// A path participates in canvas hit-tests/snaps only when it's actually drawn.
+// `hidden` paths (soft-hidden by boolean ops) render nowhere, so they must not
+// be clickable, editable, weldable, or snappable (bugs.md B1).
+const onCanvas = (p: ImportedPath) => p.visible && !p.hidden
 
 function distToPolylines(px: number, py: number, polys: [number, number][][]): number {
   let minSq = Infinity
@@ -256,7 +261,10 @@ export default function CanvasStage() {
   const shiftHeldRef = useRef(false)
 
   const modeRef = useRef<CanvasMode>({ type: 'idle' })
-  const [liveTransform, setLiveTransform] = useState<LiveTransform | null>(null)
+  // Ref pair, not plain state: mouseup bakes from liveTransformRef so a mouseup
+  // that lands before React commits the last mousemove's render still bakes the
+  // final transform, not the previous frame's (bugs.md B6).
+  const [liveTransform, liveTransformRef, setLiveTransform] = useRefState<LiveTransform | null>(null)
   const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
   const [liveShapeD, setLiveShapeD] = useState<string | null>(null)
   const [altDown, altDownRef, setAltDown] = useRefState(false)
@@ -379,7 +387,7 @@ export default function CanvasStage() {
     let bestDist = radiusCNC
     let best: { x: number; y: number } | null = null
     for (const p of allPaths) {
-      if (!p.visible) continue
+      if (!onCanvas(p)) continue
       const polys = getFlat(p, 0.5)
       for (const poly of polys) {
         for (const [vx, vy] of poly) {
@@ -537,9 +545,21 @@ export default function CanvasStage() {
       if (!e.shiftKey) shiftHeldRef.current = false
       if (e.key === 'Alt') setAltDown(false)
     }
+    // Alt+Tab / Cmd+Tab / dialogs swallow the keyup, so a held modifier would
+    // stick until tapped again — clear them all when the window loses focus.
+    const onBlur = () => {
+      spaceHeldRef.current = false
+      shiftHeldRef.current = false
+      setAltDown(false)
+    }
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
-    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onDown)
+      window.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [setMode2, exitNodeEdit, pushLocalUndo])
 
   useEffect(() => {
@@ -650,24 +670,7 @@ export default function CanvasStage() {
       const curNodes = editNodesRef.current
       if (nodeIdx === 0 || nodeIdx === curNodes.length - 1) {
         const { nodeEditPathId: pid } = useUIStore.getState()
-        const { paths: allPaths } = usePathsStore.getState()
-        const entries: CrossPathEntry[] = []
-        for (const p of allPaths) {
-          if (p.id === pid || !p.visible) continue
-          const parsed = parseDToNodes(p.d)
-          if (parsed.nodes.length < 2) continue
-          if (parsed.closed) {
-            // All nodes of a closed path are valid weld targets
-            for (let j = 0; j < parsed.nodes.length; j++) {
-              entries.push({ pathId: p.id, nodeIdx: j, x: parsed.nodes[j].x, y: parsed.nodes[j].y, nodes: parsed.nodes, closed: true })
-            }
-          } else {
-            // Only the two endpoints of an open path
-            entries.push({ pathId: p.id, nodeIdx: 0, x: parsed.nodes[0].x, y: parsed.nodes[0].y, nodes: parsed.nodes, closed: false })
-            const last = parsed.nodes.length - 1
-            entries.push({ pathId: p.id, nodeIdx: last, x: parsed.nodes[last].x, y: parsed.nodes[last].y, nodes: parsed.nodes, closed: false })
-          }
-        }
+        const entries = collectCrossPathEntries(pid)
         crossPathEntriesRef.current = entries
         setCrossPathCandidates(entries)
       }
@@ -712,7 +715,7 @@ export default function CanvasStage() {
     const vp = viewportRef.current
     const cnc = screenToCNC(pointer.x, pointer.y, vp)
     const { paths } = usePathsStore.getState()
-    const candidates = paths.filter((p) => p.visible && p.id !== neid)
+    const candidates = paths.filter((p) => onCanvas(p) && p.id !== neid)
     const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, (p) => getFlat(p, 0.05))
     if (hit) handlePathDblClick(hit.id)
   }, [handlePathDblClick, getFlat])
@@ -823,7 +826,7 @@ export default function CanvasStage() {
 
     // Find the closest visible path within 8 screen pixels
     const { paths } = usePathsStore.getState()
-    const candidates = paths.filter((p) => p.visible && p.id !== neid)
+    const candidates = paths.filter((p) => onCanvas(p) && p.id !== neid)
     const hit = closestVisiblePath(cnc.x, cnc.y, candidates, 8 / vp.scale, (p) => getFlat(p, 0.05))
 
     if (hit) {
@@ -1110,6 +1113,20 @@ export default function CanvasStage() {
     }
   }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC])
 
+  // Shared commit for the move/resize/skew/rotate bakes: batch-update the
+  // touched paths and regenerate each affected operation ONCE (bugs.md H1/R4).
+  const bakeTransform = useCallback((pathIds: string[], makeUpdate: (p: ImportedPath) => PathUpdate) => {
+    const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+    const updates = pathIds.flatMap((id) => {
+      const path = allPaths.find((p) => p.id === id)
+      return path ? [makeUpdate(path)] : []
+    })
+    if (updates.length) {
+      batchUpdatePaths(updates)
+      regenerateAffectedMany(pathIds)
+    }
+  }, [])
+
   const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
     const m = modeRef.current
     const vp = viewportRef.current
@@ -1148,20 +1165,14 @@ export default function CanvasStage() {
     }
 
     if (m.type === 'move' && didDragRef.current) {
-      const lt = liveTransform
+      const lt = liveTransformRef.current
       if (lt && lt.kind === 'translate') {
         const { dx, dy } = lt
-        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
-        const updates = m.pathIds.flatMap((id) => {
-          const path = allPaths.find((p) => p.id === id)
-          if (!path) return []
-          const newD = translateD(path.d, dx, dy)
-          if (path.shapeParams) {
-            return [{ id, d: newD, shapeParams: translateShapeParams(path.shapeParams, dx, dy) }]
-          }
-          return [{ id, d: newD }]
-        })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
+        bakeTransform(m.pathIds, (path) => ({
+          id: path.id,
+          d: translateD(path.d, dx, dy),
+          ...(path.shapeParams ? { shapeParams: translateShapeParams(path.shapeParams, dx, dy) } : {}),
+        }))
       }
       setLiveTransform(null)
       setLiveBBox(null)
@@ -1170,34 +1181,24 @@ export default function CanvasStage() {
     }
 
     if (m.type === 'resize' && didDragRef.current) {
-      const lt = liveTransform
+      const lt = liveTransformRef.current
       if (lt && lt.kind === 'scale') {
         const { sx, sy, ax, ay } = lt
-        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
-        const updates = m.pathIds.flatMap((id) => {
-          const path = allPaths.find((p) => p.id === id)
-          if (!path) return []
+        bakeTransform(m.pathIds, (path) => {
           const newShapeParams = path.shapeParams
             ? scaleShapeParams(path.shapeParams, ax, ay, sx, sy)
             : undefined
           // When params are valid, regenerate d from them to preserve exact geometry (arcs stay circular)
-          const newD = (newShapeParams != null && newShapeParams !== undefined)
+          const newD = newShapeParams != null
             ? generateShapeD(newShapeParams)
             : scaleAroundD(path.d, ax, ay, sx, sy)
           const typeChanged = newShapeParams && path.shapeParams && newShapeParams.type !== path.shapeParams.type
           const name = typeChanged ? shapeDisplayName(newShapeParams!.type) : undefined
-          return [{ id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams, name }]
+          return { id: path.id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams, name }
         })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
       } else if (lt && lt.kind === 'skew') {
         const { kx, ky, ax, ay } = lt
-        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
-        const updates = m.pathIds.flatMap((id) => {
-          const path = allPaths.find((p) => p.id === id)
-          if (!path) return []
-          return [{ id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null as null }]
-        })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
+        bakeTransform(m.pathIds, (path) => ({ id: path.id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null }))
       }
       setLiveTransform(null)
       setLiveBBox(null)
@@ -1206,16 +1207,10 @@ export default function CanvasStage() {
     }
 
     if (m.type === 'rotate' && didDragRef.current) {
-      const lt = liveTransform
+      const lt = liveTransformRef.current
       if (lt && lt.kind === 'rotate') {
         const { angle, cx, cy } = lt
-        const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
-        const updates = m.pathIds.flatMap((id) => {
-          const path = allPaths.find((p) => p.id === id)
-          if (!path) return []
-          return [{ id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null as null }]
-        })
-        if (updates.length) { batchUpdatePaths(updates); for (const id of m.pathIds) regenerateAffected(id) }
+        bakeTransform(m.pathIds, (path) => ({ id: path.id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null }))
       }
       setLiveTransform(null)
       setLiveRotationAngle(null)
@@ -1242,7 +1237,7 @@ export default function CanvasStage() {
 
           const { paths: allPaths } = usePathsStore.getState()
           const intersecting = allPaths.filter((p) => {
-            if (!p.visible) return false
+            if (!onCanvas(p)) return false
             // bbox from the per-path flatten cache (same 0.5 tolerance as
             // getBBox) — box-select over hundreds of paths used to re-flatten
             // every path on every mouseup (tofix.md H5)
@@ -1456,22 +1451,7 @@ export default function CanvasStage() {
           // Enter connect mode — populate cross-path candidates
           setConnectSource(m.nodeIdx)
           const { nodeEditPathId: pid } = useUIStore.getState()
-          const { paths: allPaths } = usePathsStore.getState()
-          const entries: CrossPathEntry[] = []
-          for (const p of allPaths) {
-            if (p.id === pid || !p.visible) continue
-            const parsed = parseDToNodes(p.d)
-            if (parsed.nodes.length < 2) continue
-            if (parsed.closed) {
-              for (let j = 0; j < parsed.nodes.length; j++) {
-                entries.push({ pathId: p.id, nodeIdx: j, x: parsed.nodes[j].x, y: parsed.nodes[j].y, nodes: parsed.nodes, closed: true })
-              }
-            } else {
-              entries.push({ pathId: p.id, nodeIdx: 0, x: parsed.nodes[0].x, y: parsed.nodes[0].y, nodes: parsed.nodes, closed: false })
-              const last = parsed.nodes.length - 1
-              entries.push({ pathId: p.id, nodeIdx: last, x: parsed.nodes[last].x, y: parsed.nodes[last].y, nodes: parsed.nodes, closed: false })
-            }
-          }
+          const entries = collectCrossPathEntries(pid)
           crossPathEntriesRef.current = entries
           setCrossPathCandidates(entries)
         }
@@ -1525,10 +1505,12 @@ export default function CanvasStage() {
       return
     }
 
-    // Drill tool: place a point on any non-drag click
+    // Drill tool: place a point on any non-drag LEFT click — right/middle
+    // releases never placed a mousedown here (button !== 0 returns early), so
+    // without the button check they'd inherit a stale didDragRef (bugs.md B5)
     {
       const { activeTool: curTool } = useUIStore.getState()
-      if (curTool === 'drill' && !didDragRef.current) {
+      if (curTool === 'drill' && !didDragRef.current && _e.evt.button === 0) {
         const pointer = stageRef.current?.getPointerPosition()
         if (pointer) {
           const cnc = screenToCNC(pointer.x, pointer.y, viewportRef.current)
@@ -1540,7 +1522,7 @@ export default function CanvasStage() {
     }
 
     setMode2({ type: 'idle' })
-  }, [liveTransform, livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo, getFlat])
+  }, [livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo, getFlat, bakeTransform])
 
   const getCursor = () => {
     if (nodeEditPathId) return 'default'

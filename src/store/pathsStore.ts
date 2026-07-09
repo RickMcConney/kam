@@ -10,7 +10,7 @@ export type { ImportedPath }
 
 type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[]; selectedIds: string[]; tabs: Tab[] }
 
-type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
+export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
 
 interface PathsState {
   paths: ImportedPath[]
@@ -75,24 +75,10 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     paths: [...s.paths, ...newPaths],
   })),
 
-  deletePath: (id) => {
-    const s = get()
-    // Snapshot ops/tabs into history BEFORE filtering them, so undo restores
-    // the operations and tabs that referenced the deleted path.
-    const opsBefore = useToolpathStore.getState().operations
-    const tabsBefore = useTabStore.getState().tabs
-    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
-    const newOps = opsBefore.filter((op) => !refsPathId(op, id))
-    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
-    const newTabs = tabsBefore.filter((t) => t.pathId !== id)
-    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
-    set({
-      past,
-      future: [],
-      paths: s.paths.filter((p) => p.id !== id),
-      selectedIds: s.selectedIds.filter((sid) => sid !== id),
-    })
-  },
+  // The delete actions all delegate to applyPathEdit — it owns the snapshot-
+  // before-cleanup invariant (history, ops, tabs, selection) so the sequence
+  // exists in exactly one place (bugs.md R1).
+  deletePath: (id) => get().applyPathEdit({ deleteIds: [id] }),
 
   toggleVisibility: (id) => set((s) => ({
     paths: s.paths.map((p) => p.id === id ? { ...p, visible: !p.visible } : p),
@@ -114,19 +100,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const s = get()
     const ids = s.paths.filter((p) => p.groupId === groupId).map((p) => p.id)
     if (ids.length === 0) return
-    const opsBefore = useToolpathStore.getState().operations
-    const tabsBefore = useTabStore.getState().tabs
-    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
-    const newOps = opsBefore.filter((op) => !ids.some((id) => refsPathId(op, id)))
-    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
-    const newTabs = tabsBefore.filter((t) => !ids.includes(t.pathId))
-    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
-    set({
-      past,
-      future: [],
-      paths: s.paths.filter((p) => p.groupId !== groupId),
-      selectedIds: s.selectedIds.filter((sid) => !ids.includes(sid)),
-    })
+    s.applyPathEdit({ deleteIds: ids })
   },
 
   selectPath: (id, extend = false) => set((s) => {
@@ -143,26 +117,10 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   deleteSelected: () => {
     const s = get()
     if (s.selectedIds.length === 0) return
-    const opsBefore = useToolpathStore.getState().operations
-    const tabsBefore = useTabStore.getState().tabs
-    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
-    const newOps = opsBefore.filter((op) => !s.selectedIds.some((id) => refsPathId(op, id)))
-    if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
-    const newTabs = tabsBefore.filter((t) => !s.selectedIds.includes(t.pathId))
-    if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
-    set({
-      past,
-      future: [],
-      paths: s.paths.filter((p) => !s.selectedIds.includes(p.id)),
-      selectedIds: [],
-    })
+    s.applyPathEdit({ deleteIds: s.selectedIds })
   },
 
-  updatePathD: (id, newD) => set((s) => ({
-    past: pushHistory(s.past, s.paths, s.selectedIds),
-    future: [],
-    paths: s.paths.map((p) => p.id === id ? { ...p, d: newD } : p),
-  })),
+  updatePathD: (id, newD) => get().applyPathEdit({ updates: [{ id, d: newD }] }),
 
   batchUpdatePaths: (updates) => get().applyPathEdit({ updates }),
 
@@ -235,6 +193,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       d: subD,
       color: orig.color,
       visible: orig.visible,
+      hidden: orig.hidden,
       groupId: orig.groupId,
       groupName: orig.groupName,
     }))

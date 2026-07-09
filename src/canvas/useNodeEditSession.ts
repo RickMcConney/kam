@@ -17,6 +17,29 @@ import type { CrossPathEntry } from './layers/NodeEditLayer'
 // path involved is restored in the same step.
 export type NodeEditEntry = { nodes: PathNode[]; closed: boolean; globalStep?: boolean }
 
+// Other-path nodes eligible as weld/connect targets: every node of a closed
+// path, only the two endpoints of an open one. Soft-hidden paths (hidden:
+// true) are invisible on canvas and must not attract welds (bugs.md B1).
+export function collectCrossPathEntries(excludePathId: string | null): CrossPathEntry[] {
+  const { paths } = usePathsStore.getState()
+  const entries: CrossPathEntry[] = []
+  for (const p of paths) {
+    if (p.id === excludePathId || !p.visible || p.hidden) continue
+    const parsed = parseDToNodes(p.d)
+    if (parsed.nodes.length < 2) continue
+    if (parsed.closed) {
+      for (let j = 0; j < parsed.nodes.length; j++) {
+        entries.push({ pathId: p.id, nodeIdx: j, x: parsed.nodes[j].x, y: parsed.nodes[j].y, nodes: parsed.nodes, closed: true })
+      }
+    } else {
+      entries.push({ pathId: p.id, nodeIdx: 0, x: parsed.nodes[0].x, y: parsed.nodes[0].y, nodes: parsed.nodes, closed: false })
+      const last = parsed.nodes.length - 1
+      entries.push({ pathId: p.id, nodeIdx: last, x: parsed.nodes[last].x, y: parsed.nodes[last].y, nodes: parsed.nodes, closed: false })
+    }
+  }
+  return entries
+}
+
 export function useNodeEditSession() {
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
 

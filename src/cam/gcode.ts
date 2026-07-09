@@ -6,7 +6,7 @@ import { useWorkpieceStore, zDatumOffsetMM } from '../store/workpieceStore'
 import { SPINDLE_INFO, spindleDialLabel } from '../store/spindle'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { feedsForTool } from './feeds'
-import { arcFitPolyline, douglasPeucker, type Pt2 } from './pathFlattener'
+import { arcFitPolyline, douglasPeucker, ARC_FIT_MAX_SPAN, type Pt2 } from './pathFlattener'
 import { sanitizeFileName } from '../io/filename'
 
 const MM_PER_IN = 25.4
@@ -46,13 +46,6 @@ function toOut(mm: number, profile: PostProcessorProfile): number {
 // inside this; arcFitPolyline's own sagitta/sharp-corner guards reject straights
 // and polygon corners.
 const ARC_FIT_TOLERANCE_MM = 0.1
-
-// Cap how many chords one fitted arc may absorb. arcFitPolyline re-validates the
-// whole candidate span on each growth step, so without a cap a long smooth run
-// (spiral/morph/adaptive pockets emit exactly these) makes arc fitting quadratic
-// in the run length. 256 bounds the cost while still merging genuinely long arcs
-// into just a handful of G2/G3 moves.
-const ARC_FIT_MAX_SPAN = 256
 
 // Simplify the emitted cut moves in two ways so curved and straight passes export
 // compactly. Strategies like profile/trochoidal already arc-fit upstream; this
@@ -295,7 +288,12 @@ export function generateGcode(
         else if (cw) { if (a1 >= a0) a1 -= 2 * Math.PI }
         else { if (a1 <= a0) a1 += 2 * Math.PI }
         const steps = Math.max(4, Math.ceil(Math.abs(a1 - a0) / (5 * Math.PI / 180)))
-        const feed = Math.round(toOut(currentFeeds.xyFeedMmMin, profile))
+        // Same feed selection as the G2/G3 branch above: a helical entry
+        // (ramp/helical drill) must run at plunge feed even when expanded to
+        // chords, or it plunges a full step-down per rev at cutting feed.
+        const isHelical = seg.z !== prevZ
+        const feedMm = (isHelical || currentTool.xyFeedMmMin === 0) ? currentFeeds.plungeMmMin : currentFeeds.xyFeedMmMin
+        const feed = Math.round(toOut(feedMm, profile))
         for (let k = 1; k <= steps; k++) {
           const t = k / steps
           const a = a0 + (a1 - a0) * t

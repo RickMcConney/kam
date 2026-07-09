@@ -89,7 +89,10 @@ function arcToCubics(
 }
 
 export function splitCompoundPath(d: string): string[] {
-  const tokens = d.match(/[MmLlCcSsQqTtAaZz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
+  // Uppercase commands only — the whole pipeline emits absolute uppercase d
+  // strings (see CLAUDE.md Path Data Format). Matching lowercase here would
+  // half-parse malformed input instead of failing visibly (bugs.md R5).
+  const tokens = d.match(/[MLCSQTAZ]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
   const subpaths: string[] = []
   let current: string[] = []
   for (const tok of tokens) {
@@ -104,8 +107,9 @@ export function splitCompoundPath(d: string): string[] {
 }
 
 export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean } {
-  // Tokenize properly: split command letters from numbers (handles compact "M10,20" format)
-  const tokens = d.match(/[MmLlCcSsQqTtAaZz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
+  // Tokenize properly: split command letters from numbers (handles compact "M10,20" format).
+  // Uppercase commands only — see splitCompoundPath.
+  const tokens = d.match(/[MLCSQTAZ]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) ?? []
   const nodes: PathNode[] = []
   let closed = false
   let i = 0
@@ -199,17 +203,22 @@ export function parseDToNodes(d: string): { nodes: PathNode[]; closed: boolean }
   return { nodes, closed }
 }
 
+// 4-decimal rounding, matching every other d producer (stringifyD, shape
+// generators, importFile) — unrounded drag deltas otherwise write
+// full-precision floats into d strings, history snapshots, and .fkam files.
+const fmt = (n: number) => +n.toFixed(4)
+
 export function nodesToD(nodes: PathNode[], closed: boolean): string {
   if (nodes.length === 0) return ''
-  let d = `M ${nodes[0].x} ${nodes[0].y}`
+  let d = `M ${fmt(nodes[0].x)} ${fmt(nodes[0].y)}`
 
   for (let i = 1; i < nodes.length; i++) {
     const prev = nodes[i - 1]
     const curr = nodes[i]
     if (!prev.handleOut && !curr.handleIn) {
-      d += ` L ${curr.x} ${curr.y}`
+      d += ` L ${fmt(curr.x)} ${fmt(curr.y)}`
     } else {
-      d += ` C ${prev.handleOut?.x ?? prev.x} ${prev.handleOut?.y ?? prev.y} ${curr.handleIn?.x ?? curr.x} ${curr.handleIn?.y ?? curr.y} ${curr.x} ${curr.y}`
+      d += ` C ${fmt(prev.handleOut?.x ?? prev.x)} ${fmt(prev.handleOut?.y ?? prev.y)} ${fmt(curr.handleIn?.x ?? curr.x)} ${fmt(curr.handleIn?.y ?? curr.y)} ${fmt(curr.x)} ${fmt(curr.y)}`
     }
   }
 
@@ -219,7 +228,7 @@ export function nodesToD(nodes: PathNode[], closed: boolean): string {
     if (!prev.handleOut && !curr.handleIn) {
       d += ' Z'
     } else {
-      d += ` C ${prev.handleOut?.x ?? prev.x} ${prev.handleOut?.y ?? prev.y} ${curr.handleIn?.x ?? curr.x} ${curr.handleIn?.y ?? curr.y} ${curr.x} ${curr.y} Z`
+      d += ` C ${fmt(prev.handleOut?.x ?? prev.x)} ${fmt(prev.handleOut?.y ?? prev.y)} ${fmt(curr.handleIn?.x ?? curr.x)} ${fmt(curr.handleIn?.y ?? curr.y)} ${fmt(curr.x)} ${fmt(curr.y)} Z`
     }
   }
 

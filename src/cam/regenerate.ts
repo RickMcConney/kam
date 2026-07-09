@@ -2,7 +2,7 @@ import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { perfLog } from '../debug'
 import { generateSurface } from './surfacing'
 import { runInWorker } from '../workers/workerClient'
-import { useToolpathStore } from '../store/toolpathStore'
+import { useToolpathStore, refsPathId } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore, type Tool } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
@@ -65,6 +65,10 @@ export async function regenerateOperation(opId: string): Promise<void> {
               cx = circle.cx
               cy = circle.cy
               r = Math.max(0, circle.radiusMM - tool.diameterMM / 2)
+              // Persist the derived center/radius (yes, regenerate writes op
+              // params here): DrillForm's edit view displays them, and the ??
+              // fallbacks above keep the op regenerable if the source circle
+              // is later deleted or edited into a non-circle.
               updateOperation(opId, { helicalCenterX: cx, helicalCenterY: cy, helicalRadius: r } as Parameters<typeof updateOperation>[1])
             }
           }
@@ -175,21 +179,23 @@ export async function regenerateOperation(opId: string): Promise<void> {
   }
 }
 
-function affectsOp(op: { type: string; pathId?: string; islandIds?: string[] }, pathId: string): boolean {
-  if (op.type === 'profile' || op.type === 'trochoidal' || op.type === 'drill' || op.type === 'profile3d') return op.pathId === pathId
-  if (op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') {
-    return op.pathId === pathId || (op.islandIds?.includes(pathId) ?? false)
-  }
-  return false
-}
-
-export function regenerateAffected(pathId: string): void {
+// Regenerate every operation referencing ANY of the given paths, each op once.
+// Multi-path gestures (move a pocket boundary + its islands, rotate a
+// selection) must use this rather than calling regenerateAffected per path —
+// an op referencing several of the paths would otherwise regenerate once per
+// path, multiplying seconds-long adaptive/morph generations (bugs.md H1).
+export function regenerateAffectedMany(pathIds: string[]): void {
+  if (pathIds.length === 0) return
   const { operations } = useToolpathStore.getState()
-  const affected = operations.filter((op) => affectsOp(op, pathId))
+  const affected = operations.filter((op) => pathIds.some((id) => refsPathId(op, id)))
   if (affected.length > 0) {
     if (useSimStore.getState().gcode) useSimStore.getState().clearSim()
     for (const op of affected) regenerateOperation(op.id)
   }
+}
+
+export function regenerateAffected(pathId: string): void {
+  regenerateAffectedMany([pathId])
 }
 
 export function regenerateAll(): void {

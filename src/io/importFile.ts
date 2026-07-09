@@ -39,6 +39,11 @@ export function completeDxfImport(text: string, fileName: string, units?: DxfUni
 export function importFile(file: File): void {
   const ui = useUIStore.getState()
 
+  // A file that can't be read at all (moved after drag, cloud placeholder,
+  // permissions) must still surface in the status bar (bugs.md B7).
+  const readFailed = () =>
+    useUIStore.getState().showStatus(`Could not read ${file.name}`, 'error')
+
   if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
     void file.text().then((text) => {
       // Load into sim store for simulation playback
@@ -80,7 +85,7 @@ export function importFile(file: File): void {
       useUIStore.getState().setSidebarTab('draw')
       const cur = useUIStore.getState().workspaceTab
       if (cur !== '2d' && cur !== '3d') useUIStore.getState().setWorkspaceTab('2d')
-    })
+    }).catch(readFailed)
     return
   }
 
@@ -113,6 +118,7 @@ export function importFile(file: File): void {
         useUIStore.getState().showStatus(`SVG import failed: ${msg}`, 'error')
       }
     }
+    reader.onerror = readFailed
     reader.readAsText(file)
     return
   }
@@ -129,6 +135,7 @@ export function importFile(file: File): void {
         completeDxfImport(text, fileName)
       }
     }
+    reader.onerror = readFailed
     reader.readAsText(file)
     return
   }
@@ -149,6 +156,7 @@ export function importFile(file: File): void {
         useUIStore.getState().showStatus(`STL import failed: ${msg}`, 'error')
       }
     }
+    reader.onerror = readFailed
     reader.readAsArrayBuffer(file)
     return
   }
@@ -181,8 +189,11 @@ export function importFile(file: File): void {
         }])
         useUIStore.getState().setSidebarTab('draw')
       }
+      img.onerror = () =>
+        useUIStore.getState().showStatus(`Could not decode image ${file.name}`, 'error')
       img.src = src
     }
+    reader.onerror = readFailed
     reader.readAsDataURL(file)
     return
   }

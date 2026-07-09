@@ -81,7 +81,15 @@ function arcToSegments(
   else { if (a1 <= a0) a1 += 2 * Math.PI }
 
   const sweep = Math.abs(a1 - a0)
-  const steps = Math.max(4, Math.ceil(sweep / (5 * Math.PI / 180)))
+  // Chord count from sagitta tolerance, not a fixed angular step. The
+  // heightfield sim carves the chords, not the true arc: at a fixed 5°/chord
+  // the sagitta grows with radius (≈ r·0.001), so on a larger circle the
+  // inside profile's cut edge fell visibly short of the line the outside
+  // profile cut to, leaving an uncut ring at the tangency. 0.01 mm keeps the
+  // chord error well inside the carve's half-cell coverage margin.
+  const ARC_SAGITTA_TOL_MM = 0.01
+  const maxStep = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - ARC_SAGITTA_TOL_MM / r)))
+  const steps = Math.max(4, Math.min(4096, Math.ceil(sweep / Math.max(maxStep, 1e-4))))
   const segs: SimSegment[] = []
   let px = x0, py = y0, pz = z0
   let cumT = startTimeS
