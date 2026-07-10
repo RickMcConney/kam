@@ -338,6 +338,43 @@ function findBestPath(segs: Seg[], entrySX = 0, entrySY = 0): TPoint[] {
 // Removes noisy short branches produced by curve discretization.
 // Leaf endpoints with a very small radius that sit near short outline segments
 // (indicating a curve rather than a sharp corner) are pruned back to the nearest junction.
+//
+// A leaf is only noise when the outline is locally *smooth* — short segments alone
+// don't prove that: genuine corners between two curves (Roboto lowercase terminals,
+// j/y tail tips) also adjoin short flattened segments. A real corner has a large
+// tangent break at its vertex, while flattening noise on a smooth curve stays small.
+// The break must be measured over a ±TURN_WINDOW arc-length window, not one vertex
+// pair: font outlines contain near-duplicate vertices (Bézier joins) that split a
+// corner's angle across two vertices — Roboto 't' reads 15° at a single vertex but
+// 94° over the window, while smooth-curve windows stay under 17°.
+const SHARP_CORNER_TURN = 25 * Math.PI / 180
+const TURN_WINDOW = 0.15 * SCALE
+
+// Direction change of the outline across vertex vi, measured between the points
+// ±window arc length away along the ring (0 = straight through).
+function windowTurnAt(ring: XY[], vi: number, window: number): number {
+  const dir = (step: 1 | -1): XY | null => {
+    const n = ring.length
+    const v = ring[vi]
+    let acc = 0
+    let prev = v
+    for (let s = 1; s <= n; s++) {
+      const p = ring[(((vi + step * s) % n) + n) % n]
+      acc += Math.hypot(p.x - prev.x, p.y - prev.y)
+      prev = p
+      if (acc >= window) return { x: p.x - v.x, y: p.y - v.y }
+    }
+    return null
+  }
+  const din = dir(-1), dout = dir(1)
+  if (!din || !dout) return 0
+  const a1 = Math.atan2(-din.y, -din.x) // incoming direction (window point → vertex)
+  const a2 = Math.atan2(dout.y, dout.x)
+  let t = Math.abs(a2 - a1)
+  if (t > Math.PI) t = 2 * Math.PI - t
+  return t
+}
+
 function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: number): Seg[] {
   const outlines = [path, ...holes]
   const { nodeMap } = buildGraph(segs)
@@ -352,6 +389,7 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
 
   for (const leaf of leafsToCheck) {
     let bestDist = Infinity, bestSegLen = 0
+    let bestOutline: XY[] | null = null, bestIdx = -1
 
     for (const outline of outlines) {
       const nVerts = outline.length
@@ -369,11 +407,14 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
           const len1 = Math.hypot(curr.x - prev.x, curr.y - prev.y)
           const len2 = Math.hypot(next.x - curr.x, next.y - curr.y)
           bestSegLen = Math.max(len1, len2)
+          bestOutline = outline
+          bestIdx = closestIdx
         }
       }
     }
 
-    if (bestSegLen < minSegLength) pruneKeys.add(leaf.key)
+    const turn = bestOutline ? windowTurnAt(bestOutline, bestIdx, TURN_WINDOW) : 0
+    if (turn < SHARP_CORNER_TURN && bestSegLen < minSegLength) pruneKeys.add(leaf.key)
   }
 
   if (!pruneKeys.size) return segs
