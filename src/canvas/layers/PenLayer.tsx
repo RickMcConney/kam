@@ -15,9 +15,12 @@ interface Props {
   livePen: { anchor: { x: number; y: number }; handle: { x: number; y: number } | null } | null
   penClosing: boolean
   curveType: PenCurveType
+  // Object-snapped cursor from CanvasStage (vertex/edge snapping); when set it
+  // replaces the local grid-snap so the preview matches where a click lands.
+  snappedCursor?: { x: number; y: number } | null
 }
 
-export function PenLayer({ viewport, penNodes, livePen, penClosing, curveType }: Props) {
+export function PenLayer({ viewport, penNodes, livePen, penClosing, curveType, snappedCursor }: Props) {
   const rawCursorCNC = useCanvasStore((s) => s.cursorMM)
   const snapEnabled = useUIStore((s) => s.snapEnabled)
   const penCurveType = useUIStore((s) => s.penCurveType)
@@ -25,7 +28,9 @@ export function PenLayer({ viewport, penNodes, livePen, penClosing, curveType }:
   const { scale: s } = viewport
 
   let cursorCNC = rawCursorCNC
-  if (snapEnabled && rawCursorCNC) {
+  if (rawCursorCNC && snappedCursor) {
+    cursorCNC = snappedCursor
+  } else if (snapEnabled && rawCursorCNC) {
     const org = originWorldXY(origin, widthMM, heightMM)
     const step = minorStepMM(majorStepMM(s, units), units)
     if (step > 0) {

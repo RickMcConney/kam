@@ -23,6 +23,8 @@ import { OriginLayer } from './layers/OriginLayer'
 import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
+import { SnapGuideLayer, type SnapGuides } from './layers/SnapGuideLayer'
+import { collectSnapTargets, snapAxisDelta, type SnapTargets } from './objectSnap'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
 import { PenLayer } from './layers/PenLayer'
 import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
@@ -120,7 +122,7 @@ function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: numb
 type CanvasMode =
   | { type: 'idle' }
   | { type: 'pan' }
-  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox }
+  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox; snapTargets: SnapTargets }
   | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean }
   | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
   | { type: 'dragbox'; startScreen: { x: number; y: number } }
@@ -129,6 +131,7 @@ type CanvasMode =
   | { type: 'nodedit-drag'; nodeIdx: number; kind: 'anchor' | 'handle-in' | 'handle-out' }
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
+const OBJECT_SNAP_PX = 8     // screen px within which a dragged bbox edge snaps to another shape's edge
 
 // One step in the node-edit local undo stack. `globalStep` marks gestures that
 // ALSO wrote one atomic entry to the global paths history (cross-path join,
@@ -216,7 +219,7 @@ function NodeEditDimensionOverlay({
   )
 }
 
-function PenLengthOverlay({ viewport, draggingHandle }: { viewport: Viewport; draggingHandle: boolean }) {
+function PenLengthOverlay({ viewport, draggingHandle, snappedCursor }: { viewport: Viewport; draggingHandle: boolean; snappedCursor?: { x: number; y: number } | null }) {
   const activeTool = useUIStore((s) => s.activeTool)
   const penNodes = useUIStore((s) => s.penNodes)
   const snapEnabled = useUIStore((s) => s.snapEnabled)
@@ -226,7 +229,9 @@ function PenLengthOverlay({ viewport, draggingHandle }: { viewport: Viewport; dr
   if (activeTool !== 'pen' || penNodes.length === 0 || !cursorMM || draggingHandle) return null
 
   let cursor = cursorMM
-  if (snapEnabled) {
+  if (snappedCursor) {
+    cursor = snappedCursor
+  } else if (snapEnabled) {
     const org = originWorldXY(origin, widthMM, heightMM)
     cursor = snapPoint(cursorMM, viewport, units, org)
   }
@@ -266,6 +271,10 @@ export default function CanvasStage() {
   // final transform, not the previous frame's (bugs.md B6).
   const [liveTransform, liveTransformRef, setLiveTransform] = useRefState<LiveTransform | null>(null)
   const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
+  const [snapGuides, setSnapGuides] = useState<SnapGuides | null>(null)
+  // Object-snapped cursor while the pen tool is active — feeds the pen live
+  // preview so it shows exactly where a click would land.
+  const [penSnapCursor, setPenSnapCursor] = useState<{ x: number; y: number } | null>(null)
   const [liveShapeD, setLiveShapeD] = useState<string | null>(null)
   const [altDown, altDownRef, setAltDown] = useRefState(false)
   const didDragRef = useRef(false)
@@ -398,6 +407,56 @@ export default function CanvasStage() {
     }
     if (best) return best
     return snapCNC(cnc)
+  }, [snapCNC, getFlat])
+
+  // Pen-tool snapping: nearest path vertex first (crosshair guides through it),
+  // then bbox edge/center axis alignment (same dashed guides as drag snapping),
+  // then grid. Committed pen nodes count as vertices/alignment targets too so
+  // grid-like pen drawings line up with themselves.
+  const snapPenPoint = useCallback((cnc: { x: number; y: number }): { point: { x: number; y: number }; guides: SnapGuides | null } => {
+    const { snapEnabled, penNodes } = useUIStore.getState()
+    if (!snapEnabled) return { point: cnc, guides: null }
+    const vp = viewportRef.current
+    const tolMM = OBJECT_SNAP_PX / vp.scale
+    const { paths: allPaths } = usePathsStore.getState()
+    const { widthMM: wMM, heightMM: hMM } = useWorkpieceStore.getState()
+
+    let bestDist = tolMM
+    let bestVert: { x: number; y: number } | null = null
+    const xs: number[] = [0, wMM, wMM / 2]
+    const ys: number[] = [0, hMM, hMM / 2]
+    for (const p of allPaths) {
+      if (!onCanvas(p)) continue
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const poly of getFlat(p, 0.5)) {
+        for (const [vx, vy] of poly) {
+          const d = Math.hypot(vx - cnc.x, vy - cnc.y)
+          if (d < bestDist) { bestDist = d; bestVert = { x: vx, y: vy } }
+          if (vx < minX) minX = vx; if (vx > maxX) maxX = vx
+          if (vy < minY) minY = vy; if (vy > maxY) maxY = vy
+        }
+      }
+      if (isFinite(minX)) {
+        xs.push(minX, maxX, (minX + maxX) / 2)
+        ys.push(minY, maxY, (minY + maxY) / 2)
+      }
+    }
+    for (const n of penNodes) {
+      const d = Math.hypot(n.x - cnc.x, n.y - cnc.y)
+      if (d < bestDist) { bestDist = d; bestVert = { x: n.x, y: n.y } }
+      xs.push(n.x)
+      ys.push(n.y)
+    }
+    if (bestVert) return { point: bestVert, guides: { x: bestVert.x, y: bestVert.y } }
+
+    const ox = snapAxisDelta([cnc.x], xs, tolMM)
+    const oy = snapAxisDelta([cnc.y], ys, tolMM)
+    let x = cnc.x + (ox?.correction ?? 0)
+    let y = cnc.y + (oy?.correction ?? 0)
+    const grid = snapCNC({ x, y })
+    if (!ox) x = grid.x
+    if (!oy) y = grid.y
+    return { point: { x, y }, guides: ox || oy ? { x: ox?.guide, y: oy?.guide } : null }
   }, [snapCNC, getFlat])
 
   // Dropped files go through the same shared import pipeline as the toolbar
@@ -599,7 +658,7 @@ export default function CanvasStage() {
   // Start placing a pen node from the given screen pointer position
   const startPenDraw = useCallback((pointer: { x: number; y: number }) => {
     const vp = viewportRef.current
-    const cnc = snapCNC(screenToCNC(pointer.x, pointer.y, vp))
+    const cnc = snapPenPoint(screenToCNC(pointer.x, pointer.y, vp)).point
     const { penNodes: nodes } = useUIStore.getState()
 
     if (nodes.length >= 2) {
@@ -616,12 +675,22 @@ export default function CanvasStage() {
     didDragRef.current = false
     setMode2({ type: 'pendraw', anchorCNC: cnc, closing: false })
     setLivePen({ anchor: cnc, handle: null })
-  }, [setMode2, snapCNC])
+  }, [setMode2, snapPenPoint, setLivePen])
 
   // Register drill-local undo only while there are pending drill points to undo.
   // When points are empty (e.g. after generation or after undoing all), unregister so
   // the toolbar button and keyboard shortcut fall through to the global path undo.
   const activeTool = useUIStore((s) => s.activeTool)
+
+  // Clear pen snap feedback whenever the pen tool deactivates (Escape, closing
+  // commit, and toolbar switches all reset activeTool to 'select').
+  useEffect(() => {
+    if (activeTool !== 'pen') {
+      setPenSnapCursor(null)
+      setSnapGuides(null)
+    }
+  }, [activeTool])
+
   useEffect(() => {
     if (activeTool === 'drill' && pendingDrillPoints.length > 0) {
       useUIStore.getState().setNodeEditUndoRedo(drillUndo, null)
@@ -839,8 +908,11 @@ export default function CanvasStage() {
       }
       didDragRef.current = false
       const moveIds = usePathsStore.getState().selectedIds
-      const moveBbox = getMultiBBox(usePathsStore.getState().paths.filter(p => moveIds.includes(p.id)).map(p => p.d))
-      setMode2({ type: 'move', pathIds: moveIds, startCNC: cnc, initBbox: moveBbox ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 } })
+      const allPaths = usePathsStore.getState().paths
+      const moveBbox = getMultiBBox(allPaths.filter(p => moveIds.includes(p.id)).map(p => p.d))
+      const { widthMM, heightMM } = useWorkpieceStore.getState()
+      const snapTargets = collectSnapTargets(allPaths.filter(p => onCanvas(p) && !moveIds.includes(p.id)), { widthMM, heightMM })
+      setMode2({ type: 'move', pathIds: moveIds, startCNC: cnc, initBbox: moveBbox ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 }, snapTargets })
     } else {
       if (neid) { exitNodeEdit(); return }
       selectPath(null)
@@ -888,11 +960,19 @@ export default function CanvasStage() {
           if (Math.abs(dx) > Math.abs(dy)) finalDy = 0
           else finalDx = 0
         }
-        // Snap by snapping the bbox corner to the grid rather than raw mouse position
+        // Object snap first (bbox edges/centers to other shapes' edges/centers),
+        // then grid snap only on the axes that didn't object-snap.
         const ib = m.initBbox
-        const snapped = snapCNC({ x: ib.minX + finalDx, y: ib.minY + finalDy })
-        finalDx = snapped.x - ib.minX
-        finalDy = snapped.y - ib.minY
+        const snapOn = useUIStore.getState().snapEnabled
+        const tolMM = OBJECT_SNAP_PX / vp.scale
+        const ox = snapOn ? snapAxisDelta([ib.minX + finalDx, ib.maxX + finalDx, ib.cx + finalDx], m.snapTargets.xs, tolMM) : null
+        const oy = snapOn ? snapAxisDelta([ib.minY + finalDy, ib.maxY + finalDy, ib.cy + finalDy], m.snapTargets.ys, tolMM) : null
+        if (ox) finalDx += ox.correction
+        if (oy) finalDy += oy.correction
+        const gridSnapped = snapCNC({ x: ib.minX + finalDx, y: ib.minY + finalDy })
+        if (!ox) finalDx = gridSnapped.x - ib.minX
+        if (!oy) finalDy = gridSnapped.y - ib.minY
+        setSnapGuides(ox || oy ? { x: ox?.guide, y: oy?.guide } : null)
         setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
         setLiveBBox({ minX: ib.minX + finalDx, minY: ib.minY + finalDy, width: ib.width, height: ib.height })
       }
@@ -980,6 +1060,11 @@ export default function CanvasStage() {
     // Update pen close-hover indicator (highlight first node when hovering near it)
     if (m.type !== 'pendraw') {
       const { activeTool: at, penNodes: nodes } = useUIStore.getState()
+      if (at === 'pen') {
+        const snap = snapPenPoint(cncMouse)
+        setPenSnapCursor(snap.point)
+        setSnapGuides(snap.guides)
+      }
       if (at === 'pen' && nodes.length >= 2) {
         const first = nodes[0]
         const fsx = vp.x + first.x * vp.scale
@@ -1111,7 +1196,7 @@ export default function CanvasStage() {
       setCrossPathWeldTarget(newCrossTarget)
       setEditNodes(updatedNodes)
     }
-  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC])
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
 
   // Shared commit for the move/resize/skew/rotate bakes: batch-update the
   // touched paths and regenerate each affected operation ONCE (bugs.md H1/R4).
@@ -1176,6 +1261,7 @@ export default function CanvasStage() {
       }
       setLiveTransform(null)
       setLiveBBox(null)
+      setSnapGuides(null)
       setMode2({ type: 'idle' })
       return
     }
@@ -1564,7 +1650,11 @@ export default function CanvasStage() {
         onMouseDown={handleStageMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={() => setCursorMM(null)}
+        onMouseLeave={() => {
+          setCursorMM(null)
+          setPenSnapCursor(null)
+          if (modeRef.current.type === 'idle') setSnapGuides(null)
+        }}
         onDblClick={handleStageDblClick}
       >
         {/* Layer 1: All CNC-space content (Y-flipped). Groups render in z-order within this single canvas. */}
@@ -1607,6 +1697,7 @@ export default function CanvasStage() {
               livePen={livePen}
               penClosing={penClosing}
               curveType={effectiveCurveType}
+              snappedCursor={penSnapCursor}
             />
           )}
           {activeTool === 'drill' && pendingDrillPoints.length > 0 && (
@@ -1637,6 +1728,9 @@ export default function CanvasStage() {
               liveTransform={liveTransform}
             />
           )}
+          {snapGuides && (
+            <SnapGuideLayer viewport={viewport} guides={snapGuides} width={size.width} height={size.height} />
+          )}
         </Layer>
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}
@@ -1662,7 +1756,7 @@ export default function CanvasStage() {
         />
       )}
 
-      <PenLengthOverlay viewport={viewport} draggingHandle={livePen !== null} />
+      <PenLengthOverlay viewport={viewport} draggingHandle={livePen !== null} snappedCursor={penSnapCursor} />
       <NodeEditDimensionOverlay viewport={viewport} nodes={editNodes} closed={editClosed} dragNodeIdx={dragNodeIdx} hoverSegIdx={hoverSegIdx} />
 
       {/* Node edit indicator */}
