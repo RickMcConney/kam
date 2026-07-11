@@ -37,6 +37,16 @@ interface UIState {
   penNodes: PenNode[]
   penCurveType: PenCurveType
   nodeEditPathId: string | null
+  // Corner-pick mode for the Corner Treatment form: while non-null, treatable
+  // corners render as clickable markers; selectedCorners holds the node indices
+  // the treatment applies to (empty = all corners). Markers come from
+  // cornerPickBaseD — a snapshot of the path taken when the session started —
+  // so corners stay pickable after a treatment replaces their geometry;
+  // treatedCorners marks which of them currently carry a treatment.
+  cornerPickPathId: string | null
+  cornerPickBaseD: string | null
+  selectedCorners: number[]
+  treatedCorners: number[]
   darkMode: boolean
   machineFormActive: boolean
   tabsFormActive: boolean
@@ -76,6 +86,10 @@ interface UIState {
   setPenNodes: (nodes: PenNode[]) => void
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
+  setCornerPickSession: (id: string | null, baseD: string | null) => void
+  setTreatedCorners: (idxs: number[]) => void
+  toggleCorner: (idx: number) => void
+  clearSelectedCorners: () => void
   toggleDarkMode: () => void
   setNodeEditUndoRedo: (undo: (() => void) | null, redo: (() => void) | null) => void
   setNodeEditHistoryFlags: (canUndo: boolean, canRedo: boolean) => void
@@ -94,6 +108,10 @@ export const useUIStore = create<UIState>()(
   penNodes: [],
   penCurveType: 'catmull-rom',
   nodeEditPathId: null,
+  cornerPickPathId: null,
+  cornerPickBaseD: null,
+  selectedCorners: [],
+  treatedCorners: [],
   darkMode: true,
   machineFormActive: false,
   tabsFormActive: false,
@@ -130,6 +148,16 @@ export const useUIStore = create<UIState>()(
   setPenNodes: (nodes) => set({ penNodes: nodes }),
   clearPenNodes: () => set({ penNodes: [] }),
   setNodeEditPathId: (id) => set({ nodeEditPathId: id }),
+  setCornerPickSession: (id, baseD) =>
+    set({ cornerPickPathId: id, cornerPickBaseD: baseD, selectedCorners: [], treatedCorners: [] }),
+  setTreatedCorners: (idxs) => set({ treatedCorners: idxs }),
+  toggleCorner: (idx) =>
+    set((s) => ({
+      selectedCorners: s.selectedCorners.includes(idx)
+        ? s.selectedCorners.filter((i) => i !== idx)
+        : [...s.selectedCorners, idx],
+    })),
+  clearSelectedCorners: () => set({ selectedCorners: [] }),
   toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
   setNodeEditUndoRedo: (undo, redo) => set({ nodeEditUndo: undo, nodeEditRedo: redo, nodeEditCanUndo: false, nodeEditCanRedo: false }),
   setNodeEditHistoryFlags: (canUndo, canRedo) => set({ nodeEditCanUndo: canUndo, nodeEditCanRedo: canRedo }),

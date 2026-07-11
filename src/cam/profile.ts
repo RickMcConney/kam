@@ -205,7 +205,9 @@ export function generateProfile(
     ].filter(({ pts }) => pts.length >= 2)
   }
 
-  const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
+  // Climb with an M3 (CW) spindle puts the material on the RIGHT of travel:
+  // inside profile → CCW, outside profile → CW. Conventional is the reverse.
+  const wantCCW = (params.direction === 'climb') === (params.side === 'inside')
 
   for (const { pts: rawPts, isOpen } of offsetPaths) {
     if (isOpen) {

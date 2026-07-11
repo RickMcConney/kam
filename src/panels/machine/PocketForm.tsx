@@ -1,5 +1,5 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn } from './shared'
+import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -53,6 +53,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     allowanceMM: 0,
   }, tools))
   const [generating, setGenerating] = useState(false)
+  const session = useSessionOps()
 
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
@@ -60,6 +61,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     ? [{ boundary: editBoundary, islands: editIslands }]
     : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
   const selectedTool = tools.find((t) => t.id === form.toolId)
+  const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
@@ -111,8 +113,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         }
       } else {
         for (const { boundary, islands } of groups) {
-          const opId = addOperation({
-            name: `Pocket: ${boundary.name} (${tool.name})`,
+          // Re-Generate on a boundary this form already generated for updates that op in place.
+          const existingId = session.liveOpId(boundary.id)
+          const name = `Pocket: ${boundary.name} (${tool.name})`
+          const opId = existingId ?? addOperation({
+            name,
             type: 'pocket',
             toolId: form.toolId,
             strategy: form.strategy,
@@ -126,7 +131,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             rampIn: form.rampIn,
             allowanceMM: form.allowanceMM,
           })
-          updateOperation(opId, { status: 'generating' })
+          if (!existingId) session.remember(boundary.id, opId)
+          updateOperation(opId, existingId ? {
+            name, toolId: form.toolId, strategy: form.strategy,
+            islandIds: islands.map((p) => p.id),
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
+            direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
+            status: 'generating',
+          } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorker('generatePocket', boundary.d, tool, {
               strategy: form.strategy,
@@ -221,7 +234,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )

@@ -1,5 +1,5 @@
 // ─── Surface form ─────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn } from './shared'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
@@ -37,7 +37,9 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
     passAngleDeg: 0,
   }, tools))
   const [generating, setGenerating] = useState(false)
+  const session = useSessionOps()
   const selectedTool = tools.find((t) => t.id === form.toolId)
+  const updating = !editOp && !!session.liveOpId('surface')
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
@@ -73,8 +75,11 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       }, 0)
       return
     }
-    const opId = addOperation({
-      name: `Surface (${selectedTool.name})`,
+    // Re-Generate after this form already made a surface op updates it in place.
+    const existingId = session.liveOpId('surface')
+    const name = `Surface (${selectedTool.name})`
+    const opId = existingId ?? addOperation({
+      name,
       type: 'surface',
       toolId: form.toolId,
       depthMM: form.depthMM,
@@ -82,7 +87,11 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       stepoverPercent: form.stepoverPercent,
       passAngleDeg: form.passAngleDeg,
     })
-    updateOperation(opId, { status: 'generating' })
+    if (!existingId) session.remember('surface', opId)
+    updateOperation(opId, existingId ? {
+      name, toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+      stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, status: 'generating',
+    } as Partial<AnyOperation> : { status: 'generating' })
     setTimeout(() => {
       try {
         setSegments(opId, generateSurface(selectedTool, {
@@ -145,7 +154,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         disabled={!selectedTool || generating || form.depthMM <= 0}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )

@@ -756,7 +756,7 @@ function rebuildShapes(refs: SceneRefs) {
   }
 
   for (const path of paths) {
-    if (!path.visible) continue
+    if (!path.visible || path.hidden) continue
 
     if (path.stlSrc && path.stlModelBounds) {
       let cached = refs.stlGeoCache.get(path.id)

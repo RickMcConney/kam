@@ -1,5 +1,5 @@
 // ─── 3D Profile form ──────────────────────────────────────────────────────────
-import { FormShell, AutoStepField, GenerateBtn } from './shared'
+import { FormShell, AutoStepField, GenerateBtn, useSessionOps } from './shared'
 import { useState, useEffect } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -64,6 +64,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   }, tools))
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const session = useSessionOps()
 
   // Sync pathId: saved defaults use session-specific path IDs that become stale on reload.
   // Also handles importing an STL after the form is already open.
@@ -93,6 +94,8 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
+    // Re-Generate for a model this form already generated for updates that op in place.
+    const existingId = editOp ? undefined : session.liveOpId(form.pathId)
 
     setTimeout(async () => {
       try {
@@ -124,8 +127,9 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           : `3D Profile: ${selectedPath.name} (${selectedTool.name})`
 
         const roughingRasterAngle = hasRoughing && form.roughingRasterAngleDeg !== '' ? form.roughingRasterAngleDeg : undefined
-        if (editOp) {
-          updateOperation(editOp.id, {
+        const updateId = editOp?.id ?? existingId
+        if (updateId) {
+          updateOperation(updateId, {
             toolId: form.toolId,
             stepoverPercent: form.stepoverPercent,
             rasterAngleDeg: form.rasterAngleDeg, maxDepthMM: form.maxDepthMM,
@@ -136,7 +140,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
             roughingRasterAngleDeg: roughingRasterAngle,
             name: opName, status: 'generating',
           } as Partial<AnyOperation>)
-          setSegments(editOp.id, segments)
+          setSegments(updateId, segments)
         } else {
           const newOpId = addOperation({
             name: opName,
@@ -154,12 +158,14 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           })
           updateOperation(newOpId, { status: 'generating' })
           setSegments(newOpId, segments)
+          session.remember(form.pathId, newOpId)
         }
         save('profile3d', form)
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed'
         setErrorMsg(msg)
-        if (editOp) setError(editOp.id, msg)
+        const failId = editOp?.id ?? existingId
+        if (failId) setError(failId, msg)
       } finally {
         setGenerating(false)
       }
@@ -370,7 +376,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         disabled={!canGenerate}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : session.liveOpId(form.pathId) ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )

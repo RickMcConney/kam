@@ -26,6 +26,7 @@ import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
 import { SnapGuideLayer, type SnapGuides } from './layers/SnapGuideLayer'
 import { collectSnapTargets, snapAxisDelta, type SnapTargets } from './objectSnap'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
+import { CornerPickLayer } from './layers/CornerPickLayer'
 import { PenLayer } from './layers/PenLayer'
 import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
 import { SimulationLayer } from './layers/SimulationLayer'
@@ -338,6 +339,7 @@ export default function CanvasStage() {
   const penNodes = useUIStore((s) => s.penNodes)
   const penCurveType = useUIStore((s) => s.penCurveType)
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+  const cornerPickPathId = useUIStore((s) => s.cornerPickPathId)
   const effectiveCurveType: PenCurveType = altDown
     ? (penCurveType === 'linear' ? 'catmull-rom' : 'linear')
     : penCurveType
@@ -1688,6 +1690,7 @@ export default function CanvasStage() {
           <TabLayer viewport={viewport} />
           <SimulationLayer viewport={viewport} />
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
+          <CornerPickLayer viewport={viewport} />
           {activeTool === 'pen' && (
             <PenLayer
               viewport={viewport}
@@ -1721,7 +1724,7 @@ export default function CanvasStage() {
         {/* Layer 2: Screen-space overlay — origin indicator, selection outline, rulers. */}
         <Layer listening={false}>
           <OriginLayer viewport={viewport} />
-          {!nodeEditPathId && selectionBBox && (
+          {!nodeEditPathId && !cornerPickPathId && selectionBBox && (
             <SelectionLayer
               viewport={viewport}
               bbox={selectionBBox}
@@ -1735,7 +1738,7 @@ export default function CanvasStage() {
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}
         <Layer>
-          {!nodeEditPathId && selectionBBox && (
+          {!nodeEditPathId && !cornerPickPathId && selectionBBox && (
             <SelectionHandleLayer
               viewport={viewport}
               bbox={selectionBBox}
@@ -1796,7 +1799,12 @@ export default function CanvasStage() {
           Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
         </div>
       )}
-      {activeTool === 'select' && selectedIds.length > 0 && !nodeEditPathId && (
+      {cornerPickPathId && !nodeEditPathId && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
+          Corner Treatment — click corner markers to pick corners, none picked = all
+        </div>
+      )}
+      {activeTool === 'select' && selectedIds.length > 0 && !nodeEditPathId && !cornerPickPathId && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-gray-700/80 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           Drag to move · corner handles to scale · rotate handle to rotate · Alt+corner to skew
         </div>

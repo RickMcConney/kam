@@ -1,5 +1,5 @@
 // ─── Inlay form ───────────────────────────────────────────────────────────────
-import { FormShell, PathChip, AutoStepField, GenerateBtn } from './shared'
+import { FormShell, PathChip, AutoStepField, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -68,6 +68,19 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const groups = editOp && editBoundary
     ? [{ boundary: editBoundary, islands: editIslands }]
     : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
+  const session = useSessionOps()
+
+  // Session key includes role and pair/solo structure: a female and male op for the same
+  // shape is a legit paired workflow, and toggling "None — roughing only" changes the op
+  // count, so those combinations create fresh ops instead of updating the counterpart.
+  const groupKey = (boundaryId: string) => `${form.role}:${finishIsNone ? 'solo' : 'pair'}:${boundaryId}`
+  const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => {
+    const firstId = session.liveOpId(groupKey(boundary.id))
+    if (!firstId) return false
+    if (finishIsNone) return true
+    const first = operations.find((o) => o.id === firstId) as InlayOperation | undefined
+    return !!first?.linkedOpId && operations.some((o) => o.id === first.linkedOpId)
+  })
 
   function up<K extends keyof InlayFormState>(k: K, v: InlayFormState[K]) {
     setForm((f) => ({ ...f, [k]: v }))
@@ -154,10 +167,18 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       const roleLabel = role === 'female' ? 'Female' : 'Male'
       const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
       const ids = groups.map(({ boundary, islands }) => {
+        // Re-Generate on a boundary this form already generated for updates that op in place.
+        const existingId = session.liveOpId(groupKey(boundary.id))
+        const name = `Inlay ${roleLabel} (End Mill): ${boundary.name}`
+        if (existingId) {
+          updateOperation(existingId, { ...sharedOpFields, phase: 'endmill', toolId: form.pocketToolId,
+            islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+          return existingId
+        }
         const id = addOperation({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
-          pathId: boundary.id, islandIds: islands.map((p) => p.id),
-          name: `Inlay ${roleLabel} (End Mill): ${boundary.name}` })
+          pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
         updateOperation(id, { status: 'generating' })
+        session.remember(groupKey(boundary.id), id)
         return id
       })
       setTimeout(async () => {
@@ -195,18 +216,41 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
     const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
 
+    // Re-Generate on a boundary this form already generated for updates the existing pair
+    // in place (both phases; phase/tool fields are refreshed since the finish tool type
+    // can flip which phase runs first).
+    const existingPairs = groups.map(({ boundary }) => {
+      const firstId = session.liveOpId(groupKey(boundary.id))
+      const first = firstId ? (operations.find((o) => o.id === firstId) as InlayOperation | undefined) : undefined
+      const second = first?.linkedOpId ? (operations.find((o) => o.id === first.linkedOpId) as InlayOperation | undefined) : undefined
+      return first && second ? { firstId: first.id, secondId: second.id } : null
+    })
+
     // Create all first-phase ops, then all second-phase ops.
-    const firstIds = groups.map(({ boundary, islands }) => {
+    const firstIds = groups.map(({ boundary, islands }, i) => {
+      const name = `Inlay ${roleLabel} (${phaseLabel(firstPhase)}): ${boundary.name}`
+      const pair = existingPairs[i]
+      if (pair) {
+        updateOperation(pair.firstId, { ...sharedOpFields, phase: firstPhase, toolId: firstToolId,
+          islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+        return pair.firstId
+      }
       const id = addOperation({ ...opBase, phase: firstPhase, toolId: firstToolId,
-        pathId: boundary.id, islandIds: islands.map((p) => p.id),
-        name: `Inlay ${roleLabel} (${phaseLabel(firstPhase)}): ${boundary.name}` })
+        pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
       updateOperation(id, { status: 'generating' })
+      session.remember(groupKey(boundary.id), id)
       return id
     })
-    const secondIds = groups.map(({ boundary, islands }) => {
+    const secondIds = groups.map(({ boundary, islands }, i) => {
+      const name = `Inlay ${roleLabel} (${phaseLabel(secondPhase)}): ${boundary.name}`
+      const pair = existingPairs[i]
+      if (pair) {
+        updateOperation(pair.secondId, { ...sharedOpFields, phase: secondPhase, toolId: secondToolId,
+          islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+        return pair.secondId
+      }
       const id = addOperation({ ...opBase, phase: secondPhase, toolId: secondToolId,
-        pathId: boundary.id, islandIds: islands.map((p) => p.id),
-        name: `Inlay ${roleLabel} (${phaseLabel(secondPhase)}): ${boundary.name}` })
+        pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
       updateOperation(id, { status: 'generating' })
       return id
     })
@@ -417,7 +461,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate}
         label={editOp
           ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}`
-          : `Generate ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
+          : `${updating ? 'Update' : 'Generate'} ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
     </FormShell>
   )
 }

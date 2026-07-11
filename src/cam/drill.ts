@@ -57,8 +57,10 @@ export function generatePeckDrill(
   return segs
 }
 
-// Helical drilling: spiral down at outermost radius (G3/CCW arc), then concentric flat
-// arc passes inward to clear the full hole interior.
+// Helical drilling: spiral down at the innermost radius (G3/CCW arc), then a
+// flat Archimedean spiral outward (chained semicircular G3 arcs) ending with
+// one full circle at the wall, so the finished wall only sees a light cut and
+// the cutter never plunges radially into fresh stock.
 // helicalRadius = holeRadius - tool.diameterMM / 2 (must be > 0)
 export function generateHelicalDrill(
   centerX: number,
@@ -76,13 +78,19 @@ export function generateHelicalDrill(
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const stepoverMM = tool.diameterMM * 0.4
 
-  // Radii for flat cleanup passes: outermost first, stepping inward to center
-  const radii: number[] = []
-  for (let r = helicalRadius; r > stepoverMM / 2; r -= stepoverMM) radii.push(r)
-  radii.push(0) // center peck to ensure core is cleared
+  // Helix radius: just under the tool radius so the helical bore clears its
+  // own core (no center plunge needed). Holes up to ~2× tool diameter helix
+  // directly at the wall radius.
+  const r0 = Math.min(helicalRadius, tool.diameterMM * 0.475)
+
+  // Spiral pitch: radius growth per revolution, ≤ stepover, sized so a whole
+  // number of revolutions lands exactly on the wall radius.
+  const span = helicalRadius - r0
+  const nRevs = span > 1e-9 ? Math.ceil(span / stepoverMM) : 0
+  const pitch = nRevs > 0 ? span / nRevs : 0
 
   // Start point: rightmost point of helix circle (I = -r, J = 0 → clean G-code)
-  const sx = centerX + helicalRadius
+  const sx = centerX + r0
 
   const segs: MotionSegment[] = []
   segs.push({ x: sx, y: centerY, z: safeZ, rapid: true })
@@ -91,8 +99,8 @@ export function generateHelicalDrill(
   let firstPass = true
 
   for (const zDepth of zLevels) {
-    // Between passes, machine is at (cx, cy, prevZ) after center peck.
-    // Move back to helix start position at the same Z before descending.
+    // Between passes the machine is at the wall. Feed back to the helix start
+    // at the same Z (through already-cleared stock) before descending.
     if (!firstPass) {
       segs.push({ x: sx, y: centerY, z: prevZ, rapid: false })
     }
@@ -102,24 +110,33 @@ export function generateHelicalDrill(
     segs.push({ x: sx, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
     prevZ = zDepth
 
-    // Flat cleanup arc passes working inward.
-    for (const r of radii) {
-      if (r === 0) {
-        segs.push({ x: centerX, y: centerY, z: zDepth, rapid: false })
-      } else {
-        // After the helical descent we're already at (sx, cy) = (cx+helicalRadius, cy).
-        // For smaller radii, move to the new start position first.
-        if (r !== helicalRadius) {
-          segs.push({ x: centerX + r, y: centerY, z: zDepth, rapid: false })
-        }
-        // Full flat circle arc (CCW = G3).
-        segs.push({ x: centerX + r, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
-      }
+    // Flat circle at r0 to flatten the ramp floor left by the helical descent.
+    segs.push({ x: sx, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
+
+    // Spiral outward to the wall as chained 180° G3 arcs: each semicircle grows
+    // the radius by pitch/2, with centers alternating ±pitch/4 along the X axis
+    // through the hole center. Junction points and both arc centers are
+    // collinear, so tangents match — a smooth Archimedean spiral with no radial
+    // plunge moves, two arcs of G-code per revolution.
+    let r = r0
+    let side = 1 // +1 = at right crossing (x = cx + r), −1 = at left crossing
+    for (let k = 0; k < nRevs * 2; k++) {
+      const rNext = r + pitch / 2
+      segs.push({
+        x: centerX - side * rNext, y: centerY, z: zDepth, rapid: false,
+        arc: { cx: centerX - side * (pitch / 4), cy: centerY, cw: false },
+      })
+      r = rNext
+      side = -side
     }
+
+    // The spiral ends at the right crossing exactly on the wall radius; finish
+    // with one full flat circle taking the light cut at the finished wall.
+    segs.push({ x: centerX + helicalRadius, y: centerY, z: zDepth, rapid: false, arc: { cx: centerX, cy: centerY, cw: false } })
   }
 
-  // Retract from center
-  segs.push({ x: centerX, y: centerY, z: safeZ, rapid: true })
+  // Retract from the wall
+  segs.push({ x: centerX + helicalRadius, y: centerY, z: safeZ, rapid: true })
 
   return segs
 }

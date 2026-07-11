@@ -131,21 +131,23 @@ export function generateTrochoidal(
   const passes = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
-  const wantCCW = (params.direction === 'climb') !== (params.side === 'inside')
+  // Climb with an M3 (CW) spindle puts the material on the RIGHT of travel:
+  // inside → CCW, outside → CW. Conventional is the reverse.
+  const wantCCW = (params.direction === 'climb') === (params.side === 'inside')
 
   // perpSign controls which side of the offset path the loops swing into (into material,
   // away from the boundary wall). This is NOT the same as pocket.ts's generateTrochoidalRow
   // perpSign — that function operates on straight raster rows where wantCCW means loop
   // direction, not polygon winding. For a polygon boundary the correct sign depends only
-  // on direction: climb always needs -1 and conventional always needs +1, regardless of
+  // on direction: climb always needs +1 and conventional always needs -1, regardless of
   // whether the cut is inside or outside.
   //
   // Proof by case:
-  //   outside+climb:        CCW polygon, RIGHT of travel = outward → (ty,-tx) → perpSign=-1
-  //   outside+conventional: CW polygon,  LEFT of travel  = outward → (-ty,tx) → perpSign=+1
-  //   inside+climb:         CW polygon,  RIGHT of travel = inward  → (ty,-tx) → perpSign=-1
-  //   inside+conventional:  CCW polygon, LEFT of travel  = inward  → (-ty,tx) → perpSign=+1
-  const perpSign = params.direction === 'climb' ? -1 : 1
+  //   outside+climb:        CW polygon,  LEFT of travel  = outward → (-ty,tx) → perpSign=+1
+  //   outside+conventional: CCW polygon, RIGHT of travel = outward → (ty,-tx) → perpSign=-1
+  //   inside+climb:         CCW polygon, LEFT of travel  = inward  → (-ty,tx) → perpSign=+1
+  //   inside+conventional:  CW polygon,  RIGHT of travel = inward  → (ty,-tx) → perpSign=-1
+  const perpSign = params.direction === 'climb' ? 1 : -1
 
   // Compute offset paths via Clipper2 (same as profile.ts).
   interface OffsetPath { pts: Pt2[] }

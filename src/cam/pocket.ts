@@ -717,7 +717,7 @@ function rasterPocket(
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
   // Island obstacles: offset ALL island rings together so that sub-rings from a
@@ -851,7 +851,7 @@ function contourPocket(
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
   const levels = buildOffsetLevels(boundary, islands, toolRadius, stepoverMM, wantCCW)
@@ -1061,7 +1061,7 @@ function spiralPocket(
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
   const chordTol = Math.max(0.1, Math.min(0.4, tool.diameterMM * 0.04))
 
@@ -1455,7 +1455,7 @@ let fieldPlanCache: { key: string; plan: FieldSpiralPlan | null } | null = null
 function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, params: PocketParams): FieldSpiralPlan | null {
   const toolRadius = tool.diameterMM / 2
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   // Coarser chord on the spiral body keeps gcode size sane; sub-0.4 mm facets are
   // invisible on a roughing pass.
   const chordTol = Math.max(0.3, Math.min(0.6, tool.diameterMM * 0.07))
@@ -1553,7 +1553,7 @@ function fieldSpiralPocket(
 ): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
   const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
   const plan = _timed('computeFieldSpiralPlan', () => computeFieldSpiralPlan(boundary, islands, tool, params))
@@ -1633,16 +1633,17 @@ function adaptivePocket(
 ): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
   const dia = tool.diameterMM
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampIn = params.rampIn ?? false
 
   // Winding control via geometric reflection. The engine's engagement steering always winds CCW
-  // (its tuned, clean path = conventional for an inside pocket). To get the CW/climb path we mirror
-  // the geometry across X, clear in the engine's natural mode, then mirror the toolpath back:
-  // reflection reverses orientation (CCW→CW) and swaps climb↔conventional, so the flipped result is
-  // exactly as clean as the natural one. (Inverting the engine's conventional test instead left the
-  // flipped spiral hunting — the angle/interpolation conventions don't invert with it.) wantCCW is
-  // true for conventional on an inside pocket, so reflect exactly when we want CW (climb).
+  // (its tuned, clean path = climb for an inside pocket with an M3 spindle). To get the
+  // CW/conventional path we mirror the geometry across X, clear in the engine's natural mode, then
+  // mirror the toolpath back: reflection reverses orientation (CCW→CW) and swaps
+  // climb↔conventional, so the flipped result is exactly as clean as the natural one. (Inverting
+  // the engine's conventional test instead left the flipped spiral hunting — the
+  // angle/interpolation conventions don't invert with it.) wantCCW is true for climb on an inside
+  // pocket, so reflect exactly when we want CW (conventional).
   const reflect = !wantCCW
   const mx = reflect ? -1 : 1
 
@@ -1795,7 +1796,7 @@ function adaptive2Pocket(
 ): Pt2 | null {
   const safeZ = params.safeHeightMM ?? 5
   const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'conventional'
+  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
   const plan = adaptive2PlanFor(boundary, islands, tool, params)

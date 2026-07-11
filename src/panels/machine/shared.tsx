@@ -1,12 +1,30 @@
 // Shared widgets used by the operation forms (extracted from MachinePanel — tofix.md R1).
 // ─── Shared sub-components ───────────────────────────────────────────────────
+import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle, Loader2 } from 'lucide-react'
 import type { Tool } from '../../store/toolStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useToolpathStore } from '../../store/toolpathStore'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import type { ImportedPath } from '../../store/pathsStore'
+
+// Tracks operations created by this form instance, keyed by target (path/group id), so a
+// repeat Generate on the same target updates the existing operation instead of adding a
+// duplicate. The map survives selection changes but not closing the form; entries whose
+// operation has since been deleted (or undone away) are treated as absent.
+export function useSessionOps() {
+  const operations = useToolpathStore((s) => s.operations)
+  const [byKey, setByKey] = useState<Record<string, string>>({})
+  return {
+    liveOpId: (key: string): string | undefined => {
+      const id = byKey[key]
+      return id && operations.some((o) => o.id === id) ? id : undefined
+    },
+    remember: (key: string, opId: string) => setByKey((m) => ({ ...m, [key]: opId })),
+  }
+}
 
 export function FormShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (

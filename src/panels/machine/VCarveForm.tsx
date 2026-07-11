@@ -1,5 +1,5 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, GenerateBtn } from './shared'
+import { FormShell, PathChip, ToolSelector, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -14,7 +14,6 @@ import { groupPathsByContainment } from './containment'
 
 interface VCarveFormState {
   toolId: string
-  angleDeg: number
   maxDepthMM: number
 }
 
@@ -28,15 +27,15 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
   const [form, setForm] = useState<VCarveFormState>(() => editOp
-    ? { toolId: editOp.toolId, angleDeg: editOp.angleDeg, maxDepthMM: editOp.maxDepthMM }
+    ? { toolId: editOp.toolId, maxDepthMM: editOp.maxDepthMM }
     : mergeWithDefaults(load('vcarve'), {
         toolId: defaultTool?.id ?? '',
-        angleDeg: defaultTool?.vbitAngleDeg ?? 60,
         // Default to the full stock thickness; the tool's max Z is only a warning.
         maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
       }, tools)
   )
   const [generating, setGenerating] = useState(false)
+  const session = useSessionOps()
 
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
@@ -44,10 +43,13 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     ? [{ boundary: editBoundary, islands: editIslands }]
     : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
   const selectedTool = tools.find((t) => t.id === form.toolId)
+  // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
+  const angleDeg = selectedTool?.vbitAngleDeg ?? 60
+  const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, angleDeg: t.vbitAngleDeg ?? f.angleDeg }))
+    if (t) setForm((f) => ({ ...f, toolId }))
   }
 
   function up<K extends keyof VCarveFormState>(k: K, v: VCarveFormState[K]) {
@@ -62,11 +64,11 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     try {
       if (editOp && editBoundary) {
         updateOperation(editOp.id, {
-          toolId: form.toolId, angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
+          toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, await runInWorker('generateVCarve', editBoundary.d, tool, {
-            angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
+            angleDeg, maxDepthMM: form.maxDepthMM,
             islandDs: editIslands.map((p) => p.d), safeHeightMM,
           }))
         } catch (err) {
@@ -74,19 +76,26 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         }
       } else {
         for (const { boundary, islands } of groups) {
-          const opId = addOperation({
-            name: `V-Carve: ${boundary.name} (${tool.name})`,
+          // Re-Generate on a boundary this form already generated for updates that op in place.
+          const existingId = session.liveOpId(boundary.id)
+          const name = `V-Carve: ${boundary.name} (${tool.name})`
+          const opId = existingId ?? addOperation({
+            name,
             type: 'vcarve',
             toolId: form.toolId,
             pathId: boundary.id,
             islandIds: islands.map((p) => p.id),
             maxDepthMM: form.maxDepthMM,
-            angleDeg: form.angleDeg,
+            angleDeg,
           })
-          updateOperation(opId, { status: 'generating' })
+          if (!existingId) session.remember(boundary.id, opId)
+          updateOperation(opId, existingId ? {
+            name, toolId: form.toolId, islandIds: islands.map((p) => p.id),
+            maxDepthMM: form.maxDepthMM, angleDeg, status: 'generating',
+          } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorker('generateVCarve', boundary.d, tool, {
-              angleDeg: form.angleDeg, maxDepthMM: form.maxDepthMM,
+              angleDeg, maxDepthMM: form.maxDepthMM,
               islandDs: islands.map((p) => p.d), safeHeightMM,
             }))
           } catch (err) {
@@ -125,18 +134,11 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           <AlertCircle size={ICON.xs} /> V-carve requires a V-bit tool.
         </p>
       )}
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          V-Bit Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.angleDeg}°</span>
-        </label>
-        <input
-          type="range" min={10} max={120} step={5}
-          value={form.angleDeg}
-          onChange={(e) => up('angleDeg', parseInt(e.target.value))}
-          className="w-full accent-blue-500"
-        />
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Full included angle of the V-bit.</p>
-      </div>
+      {selectedTool?.type === 'vbit' && (
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          V-bit angle: {angleDeg}° (set on tool)
+        </p>
+      )}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
         <div className="flex items-center gap-1">
@@ -153,14 +155,14 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           </p>
         )}
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
-          Bit cuts at most {((form.maxDepthMM) * Math.tan((form.angleDeg / 2) * Math.PI / 180) * 2).toFixed(2)} mm wide at full depth.
+          Bit cuts at most {((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2).toFixed(2)} mm wide at full depth.
         </p>
       </div>
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.maxDepthMM <= 0 || selectedTool.type !== 'vbit'}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )

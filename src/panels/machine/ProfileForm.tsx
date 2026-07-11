@@ -1,5 +1,5 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn } from './shared'
+import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
@@ -43,11 +43,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   }, tools))
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const session = useSessionOps()
 
   const selectedPaths = editOp
     ? paths.filter((p) => p.id === editOp.pathId)
     : paths.filter((p) => selectedIds.includes(p.id))
   const selectedTool = tools.find((t) => t.id === form.toolId)
+  const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
@@ -84,8 +86,11 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         }
       } else {
         for (const path of selectedPaths) {
-          const opId = addOperation({
-            name: `Profile: ${path.name} (${tool.name})`,
+          // Re-Generate on a path this form already generated for updates that op in place.
+          const existingId = session.liveOpId(path.id)
+          const name = `Profile: ${path.name} (${tool.name})`
+          const opId = existingId ?? addOperation({
+            name,
             type: 'profile',
             toolId: form.toolId,
             pathId: path.id,
@@ -95,15 +100,21 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             direction: form.direction,
             rampIn: form.rampIn,
           })
-          updateOperation(opId, { status: 'generating' })
+          updateOperation(opId, existingId ? {
+            name, toolId: form.toolId, side: form.side, depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
+          } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, safeHeightMM,
             }))
+            if (!existingId) session.remember(path.id, opId)
           } catch (err) {
-            deleteOperation(opId)
-            setErrorMsg(err instanceof Error ? err.message : 'Generation failed')
+            const msg = err instanceof Error ? err.message : 'Generation failed'
+            if (existingId) setError(opId, msg)
+            else deleteOperation(opId)
+            setErrorMsg(msg)
             failed = true
           }
         }
@@ -150,7 +161,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         disabled={selectedPaths.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )

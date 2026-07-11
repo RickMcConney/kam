@@ -1,5 +1,5 @@
 // ─── Drill form ───────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn } from './shared'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps } from './shared'
 import { useState, useEffect } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle, X } from 'lucide-react'
@@ -23,7 +23,7 @@ interface DrillFormState {
 export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: DrillOperation }) {
   const { tools } = useToolStore()
   const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -40,6 +40,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     stepDownMM: defaultTool?.stepDownMM ?? 3,
   }, tools))
   const [generating, setGenerating] = useState(false)
+  const session = useSessionOps()
 
   // Auto-enter/exit drill-placing mode based on selected mode
   useEffect(() => {
@@ -83,6 +84,13 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     onClose()
   }
 
+  // Points are cleared after generating, so with no new points pending a re-Generate
+  // updates the peck op this form created, reusing its stored points. Placing new
+  // points switches back to creating a fresh operation.
+  const sessionPeckOp = !editOp && form.drillMode === 'peck' && pendingDrillPoints.length === 0
+    ? (operations.find((o) => o.id === session.liveOpId('peck')) as DrillOperation | undefined)
+    : undefined
+
   function handleGenerate() {
     if (!selectedTool) return
     pushHistoryBoth()
@@ -114,15 +122,18 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       return
     }
 
-    if (form.drillMode === 'peck' && pendingDrillPoints.length === 0) { setGenerating(false); return }
+    if (form.drillMode === 'peck' && pendingDrillPoints.length === 0 && !sessionPeckOp) { setGenerating(false); return }
     if (form.drillMode === 'helical' && selectedCircles.length === 0) { setGenerating(false); return }
 
     setTimeout(() => {
       if (form.drillMode === 'helical') {
         for (const { path, circle } of selectedCircles) {
           const r = Math.max(0, circle.radiusMM - selectedTool.diameterMM / 2)
-          const opId = addOperation({
-            name: `Helical Drill: ${path.name} (${selectedTool.name})`,
+          // Re-Generate on a circle this form already generated for updates that op in place.
+          const existingId = session.liveOpId(path.id)
+          const name = `Helical Drill: ${path.name} (${selectedTool.name})`
+          const opId = existingId ?? addOperation({
+            name,
             type: 'drill',
             toolId: form.toolId,
             drillMode: 'helical',
@@ -134,7 +145,12 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             depthMM: form.depthMM,
             stepDownMM: form.stepDownMM,
           })
-          updateOperation(opId, { status: 'generating' })
+          if (!existingId) session.remember(path.id, opId)
+          updateOperation(opId, existingId ? {
+            name, toolId: form.toolId,
+            helicalCenterX: circle.cx, helicalCenterY: circle.cy, helicalRadius: r,
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+          } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, generateHelicalDrill(circle.cx, circle.cy, r, selectedTool, {
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
@@ -142,6 +158,18 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
           }
+        }
+      } else if (sessionPeckOp) {
+        updateOperation(sessionPeckOp.id, {
+          name: `Peck Drill (${selectedTool.name}) ×${sessionPeckOp.points.length}`,
+          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+        } as Partial<AnyOperation>)
+        try {
+          setSegments(sessionPeckOp.id, generatePeckDrill(sessionPeckOp.points, selectedTool, {
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+          }))
+        } catch (err) {
+          setError(sessionPeckOp.id, err instanceof Error ? err.message : 'Generation failed')
         }
       } else {
         const opId = addOperation({
@@ -153,6 +181,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           depthMM: form.depthMM,
           stepDownMM: form.stepDownMM,
         })
+        session.remember('peck', opId)
         updateOperation(opId, { status: 'generating' })
         try {
           setSegments(opId, generatePeckDrill(pendingDrillPoints, selectedTool, {
@@ -170,10 +199,13 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
   const isNonDrillTool = !!selectedTool && selectedTool.type !== 'drill'
   const isDrillTool = selectedTool?.type === 'drill'
-  const peckReady = editOp ? editOp.points.length > 0 : pendingDrillPoints.length > 0
+  const peckReady = editOp ? editOp.points.length > 0 : pendingDrillPoints.length > 0 || !!sessionPeckOp
   const helicalReady = editOp ? !!editHelicalInfo : selectedCircles.length > 0
   const canGenerate = !!selectedTool && !generating && form.depthMM > 0 &&
     ((form.drillMode === 'peck' && peckReady) || (form.drillMode === 'helical' && helicalReady && !isDrillTool))
+  const updating = !editOp && (form.drillMode === 'peck'
+    ? !!sessionPeckOp
+    : selectedCircles.length > 0 && selectedCircles.every(({ path }) => session.liveOpId(path.id)))
 
   return (
     <FormShell title={editOp ? 'Edit Drill' : 'New Drill Operation'} onClose={handleClose}>
@@ -213,6 +245,10 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
                 <X size={ICON.xs} />
               </button>
             </div>
+          ) : sessionPeckOp ? (
+            <p className="text-label text-gray-400 dark:text-neutral-500">
+              {sessionPeckOp.points.length} point{sessionPeckOp.points.length !== 1 ? 's' : ''} in the generated operation — Update regenerates them, or click the canvas to start a new set.
+            </p>
           ) : (
             <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points.</p>
           )}
@@ -274,7 +310,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         disabled={!canGenerate}
         generating={generating}
         onClick={handleGenerate}
-        label={editOp ? 'Regenerate Toolpath' : 'Generate Toolpath'}
+        label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
     </FormShell>
   )
