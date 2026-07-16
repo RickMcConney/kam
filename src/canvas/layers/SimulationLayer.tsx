@@ -1,10 +1,11 @@
 import { memo, useMemo } from 'react'
-import { SIM_CUT_COLOR, SIM_TOOL_CUTTING_COLOR, SIM_TOOL_RAPID_COLOR, SIM_TOOL_OUTLINE_COLOR } from '../../colors'
-import { Group, Circle, Line, Shape } from 'react-konva'
+import { SIM_CUT_COLOR, SIM_TOOL_CUTTING_COLOR, SIM_TOOL_RAPID_COLOR } from '../../colors'
+import { Group, Line, Shape } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { getCurrentSegIdx, interpolatePos, segTool, type SimSegment, type ToolState } from '../../sim/gcodeParser'
+import { SPINDLE_VIS_RPS } from '../../sim/spindleVis'
 import { originWorldXY } from '../layers/WorkpieceLayer'
 
 interface Props {
@@ -81,6 +82,27 @@ function computeTrail(
 
   flushLine()
   return { lineSections, frustumSegs }
+}
+
+// Top-down cross-section of an N-flute cutter: body circle with one gullet
+// notch per flute (outer arc, then a shallower arc at the gullet radius; the
+// radial jumps between them read as the flute faces). Built at the origin in
+// CNC mm — position and spin are applied via the Shape's x/y/rotation props.
+function makeToolSectionFunc(r: number, flutes: number) {
+  const n = Math.max(1, Math.min(flutes, 8))
+  const span = (2 * Math.PI) / n
+  const gulletR = r * 0.55
+  return (ctx: any, shape: any) => {
+    ctx.beginPath()
+    ctx.moveTo(r, 0)
+    for (let i = 0; i < n; i++) {
+      const a0 = i * span
+      ctx.arc(0, 0, r, a0, a0 + span * 0.65, false)
+      ctx.arc(0, 0, gulletR, a0 + span * 0.65, a0 + span, false)
+    }
+    ctx.closePath()
+    ctx.fillStrokeShape(shape)
+  }
 }
 
 // Backward-facing semicircle cap at the start of a frustum segment.
@@ -169,6 +191,7 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
   const genZOff = useSimStore((s) => s.genZOff)
   const toolStates = useSimStore((s) => s.toolStates)
   const elapsedTimeS = useSimStore((s) => s.elapsedTimeS)
+  const simSpeed = useSimStore((s) => s.speed)
   const gcode = useSimStore((s) => s.gcode)
   const { scale } = viewport
 
@@ -236,19 +259,19 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
         )
       })()}
 
-      {/* Tool dot */}
-      <Circle
+      {/* Tool indicator: rotating cutter cross-section.
+          Konva rotation inside the Y-flipped layer appears CCW on screen, so
+          the negative angle spins M3-clockwise as seen from above. Angle is
+          sim time normalized by playback speed — wall-clock rate during
+          playback (matching the 3D view), but frozen on zoom/pan redraws and
+          while paused, since it only advances when elapsedTimeS advances. */}
+      <Shape
         x={tx} y={ty}
-        radius={toolRadius + 1.5 / scale}
-        stroke={SIM_TOOL_OUTLINE_COLOR}
-        strokeWidth={1.5 / scale}
-        opacity={0.75}
-      />
-      <Circle
-        x={tx} y={ty}
-        radius={toolRadius}
+        rotation={-((elapsedTimeS / simSpeed) * SPINDLE_VIS_RPS * 360) % 360}
+        sceneFunc={makeToolSectionFunc(toolRadius, curSeg ? segTool(curSeg, toolStates).fluteCount : 2)}
         fill={isCutting ? SIM_TOOL_CUTTING_COLOR : SIM_TOOL_RAPID_COLOR}
         opacity={0.95}
+        listening={false}
       />
     </Group>
   )

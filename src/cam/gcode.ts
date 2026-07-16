@@ -188,6 +188,7 @@ export function generateGcode(
       c(`Finishing: ${finishTool.name}  ${opDesc(op)}`)
       c(`Roughing: ${rt.name}  dia ${f(rt.diameterMM)}mm  flutes:${rt.fluteCount}`)
       if (rt.type === 'ballnose') c(`ballnose`)
+      if (rt.type === 'drill') c(`drillbit`)
     } else {
       c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  flutes:${finishTool.fluteCount}  ${opDesc(op)}`)
       if (finishTool.type === 'vbit') {
@@ -197,6 +198,7 @@ export function generateGcode(
         c(`vbit-angle:${f(angleDeg / 2)}`)
       }
       if (finishTool.type === 'ballnose') c(`ballnose`)
+      if (finishTool.type === 'drill') c(`drillbit`)
     }
 
     if (lastToolId !== firstToolId) {
@@ -241,6 +243,7 @@ export function generateGcode(
             c(`vbit-angle:${f(vbitAngle / 2)}`)
           }
           if (newTool.type === 'ballnose') c(`ballnose`)
+          if (newTool.type === 'drill') c(`drillbit`)
           const newFeeds = feedsForTool(newTool)
           if (profile.spindleOnTemplate.trim()) {
             const dc = dialComment(newFeeds.rpm); if (dc) c(dc)

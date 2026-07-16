@@ -3,6 +3,17 @@ import { ICON } from '../theme'
 import { useToolStore, type Tool, type ToolType, type CuttingDirection } from '../store/toolStore'
 import { useWorkpieceStore, toMM, fromMM, type Units } from '../store/workpieceStore'
 import { spindleDialLabel, type SpindleType } from '../store/spindle'
+import endmillIcon from '../icons/endmill.svg'
+import ballnoseIcon from '../icons/ballnose.svg'
+import vbitIcon from '../icons/vbit.svg'
+import drillIcon from '../icons/drill.svg'
+
+const TOOL_TYPE_ICON: Record<ToolType, string> = {
+  endmill: endmillIcon,
+  ballnose: ballnoseIcon,
+  vbit: vbitIcon,
+  drill: drillIcon,
+}
 
 const COLUMNS: { key: keyof Omit<Tool, 'id'>; label: string; title: string; width: string; unit?: string; numeric?: boolean }[] = [
   { key: 'name',        label: 'Name',    title: 'Tool name',                 width: 'w-40' },
@@ -49,6 +60,9 @@ function ToolRow({ tool, units, spindleType }: { tool: Tool; units: Units; spind
 
   return (
     <tr className="border-b border-gray-300/60 dark:border-neutral-700/60 hover:bg-gray-100/40 dark:hover:bg-neutral-800/40 group">
+      <td className="px-2 py-1">
+        <img src={TOOL_TYPE_ICON[tool.type]} alt={tool.type} title={tool.type} className="h-8 w-20 object-contain" />
+      </td>
       <td className="px-2 py-1">
         <input type="text" value={tool.name} onChange={(e) => up({ name: e.target.value })} className={cellCls} />
       </td>
@@ -151,6 +165,7 @@ export default function ToolLibraryPanel() {
         <table className="w-full border-collapse text-body" style={{ minWidth: '860px' }}>
           <thead>
             <tr className="border-b border-gray-200 dark:border-neutral-600 sticky top-0 bg-gray-100 dark:bg-neutral-800">
+              <th className="px-2 py-1.5 w-24" />
               {COLUMNS.map((col) => (
                 <th key={col.key} title={col.title}
                   className={`px-2 py-1.5 ${col.numeric ? 'text-right' : 'text-left'} text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider whitespace-nowrap select-none`}>

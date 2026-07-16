@@ -14,6 +14,8 @@ import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE, MATERIAL_COLORS } from '../c
 import { VoxelMaterial } from './VoxelMaterial'
 import { HeightfieldMaterial } from './HeightfieldMaterial'
 import SimulationPlayer from '../sim/SimulationPlayer'
+// M3 (clockwise viewed from above) is negative rotation about three's +Y.
+import { SPINDLE_VIS_RPS } from '../sim/spindleVis'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import type { StlModelBounds } from '../importers/stlImporter'
@@ -28,6 +30,7 @@ import type { StlModelBounds } from '../importers/stlImporter'
 function cncToThree(x: number, y: number, z: number, T: number): [number, number, number] {
   return [x, T + z, -y]
 }
+
 
 // Converts datum-relative sim segment Z back to top-referenced (Z=0 = stock top,
 // negative = in material). Uses genZOff — the offset captured at G-code generation
@@ -60,65 +63,175 @@ function materialColor(mat: Material): number {
   return MATERIAL_COLORS[mat]?.three ?? 0xc8c8c8
 }
 
-// Builds a tool indicator mesh/group.
-// V-bit:    sharp cone tip + cylindrical shank (cone height derived from included angle)
-// Ball nose: hemisphere tip + cylindrical shank
-// Flat/drill: plain cylinder
-function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60): THREE.Object3D {
+// One dark groove drawn per tile; texture.repeat.x = fluteCount wraps it around
+// the flute cylinder so the groove count matches the tool. Helical grooves climb
+// one full tile width over the tile height (each flute advances 1/fluteCount of
+// a turn over the cutting length); straight grooves run vertically — on a sphere
+// they converge at the pole like meridians, matching ball-nose tip flutes.
+function makeFluteTexture(fluteCount: number, helical: boolean): THREE.CanvasTexture {
+  const W = 64, H = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#b9bec4'
+  ctx.fillRect(0, 0, W, H)
+  ctx.strokeStyle = '#2a6ea0' // same blue as the src/icons/*.svg flute outlines
+  ctx.lineWidth = W * 0.38
+  if (helical) {
+    // Draw at x offsets -W/0/+W so the diagonal tiles seamlessly across the wrap
+    for (const off of [-W, 0, W]) {
+      ctx.beginPath()
+      ctx.moveTo(off, H)
+      ctx.lineTo(off + W, 0)
+      ctx.stroke()
+    }
+  } else {
+    ctx.beginPath()
+    ctx.moveTo(W / 2, 0)
+    ctx.lineTo(W / 2, H)
+    ctx.stroke()
+  }
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.repeat.set(fluteCount, 1)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
+// Builds a tool indicator group, tip at Y=0, extending up +Y.
+// Cutting section shows fluteCount helical grooves; shank is polished steel
+// (small tools get a standard ~3.2mm shank) topped with a dark collet nut.
+// V-bit:     striped cone (height from included angle) + shank
+// Ball nose: striped hemisphere tip + striped flute cylinder + shank
+// Drill:     striped 118° point + striped flute cylinder + shank
+// Flat:      striped flute cylinder with dark end face + shank
+function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60, fluteCount = 2): THREE.Object3D {
   const r = diamMM / 2
-  const shankH = diamMM * 4
-  const mat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.85 })
+  const isBall = type === 'ball' || type === 'ballnose'
+  // Real-world shank sizing: never thinner than ~3.2mm; V-bits step down from a
+  // wide cutting diameter to a narrower shank (capped at 80% of the cutting
+  // radius so the cone rim always shows); ball noses neck down slightly so the
+  // ball reads as a ball.
+  const shankR = type === 'vbit' ? Math.max(Math.min(r * 0.8, 3.175), 1.6)
+    : isBall ? Math.max(r * 0.8, 1.6)
+    : Math.max(r, 1.6)
+  const fluteLen = Math.max(diamMM * 3, 6)
+  const shankH = Math.max(diamMM * 2.5, 12)
+  const SEGS = 32
 
-  if (type === 'vbit' || type === 'drill') {
-    const halfAngle = (vbitAngleDeg / 2) * Math.PI / 180
-    const coneH = r / Math.tan(halfAngle)
-    const group = new THREE.Group()
+  const opts = { transparent: true, opacity: 0.9 }
+  // Drills/V-bits read best with helical grooves; end mills and ball noses with
+  // straight vertical grooves (per user preference).
+  const helical = type === 'drill' || type === 'vbit'
+  const fluteMat  = new THREE.MeshPhongMaterial({ map: makeFluteTexture(fluteCount, helical), specular: 0x555555, shininess: 60, ...opts })
+  const shankMat  = new THREE.MeshPhongMaterial({ color: 0xd4d7db, specular: 0x777777, shininess: 90, ...opts })
+  const capMat    = new THREE.MeshPhongMaterial({ color: 0x565b62, specular: 0x333333, shininess: 40, ...opts })
+  const colletMat = new THREE.MeshPhongMaterial({ color: 0x3a3d42, specular: 0x444444, shininess: 70, ...opts })
 
-    // Cone: Three.js ConeGeometry apex is at +Y/2 by default.
-    // rotateX(π) flips apex to -Y/2, then translate puts apex at Y=0 and base at Y=coneH.
-    const coneGeo = new THREE.ConeGeometry(r, coneH, 24)
+  const group = new THREE.Group()
+  let y = 0 // top of what's been built so far
+
+  // Radius at the top of the section directly below the shank (ball noses neck
+  // down to 80% of the ball radius).
+  const belowShankR = isBall ? r * 0.8 : r
+
+  const addShank = () => {
+    let bodyStart = y
+    let bodyH = shankH
+    // When the shank is wider than the section below it (small bits on a
+    // standard shank), taper up to it with a 45° chamfer instead of a step.
+    if (shankR > belowShankR + 0.01) {
+      const chamferH = Math.min(shankR - belowShankR, shankH * 0.3)
+      const chamferGeo = new THREE.CylinderGeometry(shankR, belowShankR, chamferH, SEGS)
+      chamferGeo.translate(0, y + chamferH / 2, 0)
+      group.add(new THREE.Mesh(chamferGeo, shankMat))
+      bodyStart += chamferH
+      bodyH -= chamferH
+    }
+    const shankGeo = new THREE.CylinderGeometry(shankR, shankR, bodyH, SEGS)
+    shankGeo.translate(0, bodyStart + bodyH / 2, 0)
+    group.add(new THREE.Mesh(shankGeo, shankMat))
+    y += shankH
+    const colletR = shankR * 1.4
+    const colletH = Math.max(diamMM * 0.8, 5)
+    // Chamfered bottom: truncated cone from shank radius up to full collet
+    // radius, then the cylindrical body above it.
+    const chamferH = colletH * 0.4
+    const chamferGeo = new THREE.CylinderGeometry(colletR, shankR, chamferH, SEGS)
+    chamferGeo.translate(0, y + chamferH / 2, 0)
+    group.add(new THREE.Mesh(chamferGeo, colletMat))
+    const colletBodyH = colletH - chamferH
+    const colletGeo = new THREE.CylinderGeometry(colletR, colletR, colletBodyH, SEGS)
+    colletGeo.translate(0, y + chamferH + colletBodyH / 2, 0)
+    group.add(new THREE.Mesh(colletGeo, colletMat))
+  }
+
+  const addFluteCylinder = (h: number) => {
+    const geo = new THREE.CylinderGeometry(r, r, h, SEGS)
+    geo.translate(0, y + h / 2, 0)
+    // Material array: [side, top cap, bottom cap] — dark end face, striped side
+    group.add(new THREE.Mesh(geo, [fluteMat, capMat, capMat]))
+    y += h
+  }
+
+  // Cone with apex at current y, base at y+coneH. ConeGeometry's apex is at
+  // +Y/2 by default; rotateX(π) flips it down, translate puts apex at y.
+  const addTipCone = (coneH: number) => {
+    const coneGeo = new THREE.ConeGeometry(r, coneH, SEGS)
     coneGeo.rotateX(Math.PI)
-    coneGeo.translate(0, coneH / 2, 0)
-    group.add(new THREE.Mesh(coneGeo, mat))
-
-    // Shank cylinder sitting on top of the cone base
-    const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
-    shankGeo.translate(0, coneH + shankH / 2, 0)
-    group.add(new THREE.Mesh(shankGeo, mat))
-
-    return group
+    coneGeo.translate(0, y + coneH / 2, 0)
+    group.add(new THREE.Mesh(coneGeo, fluteMat))
+    y += coneH
   }
 
-  if (type === 'ball') {
-    const group = new THREE.Group()
-
-    // Lower hemisphere: thetaStart=π/2 → equator (Y=0), thetaLength=π/2 → south pole (Y=-r).
-    // translate(0, r, 0) moves south pole to Y=0 and equator to Y=r.
-    const hemiGeo = new THREE.SphereGeometry(r, 24, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)
-    hemiGeo.translate(0, r, 0)
-    group.add(new THREE.Mesh(hemiGeo, mat))
-
-    // Shank cylinder from equator (Y=r) upward
-    const shankGeo = new THREE.CylinderGeometry(r, r, shankH, 24)
-    shankGeo.translate(0, r + shankH / 2, 0)
-    group.add(new THREE.Mesh(shankGeo, mat))
-
-    return group
+  if (type === 'vbit') {
+    const halfAngle = (vbitAngleDeg / 2) * Math.PI / 180
+    addTipCone(r / Math.tan(halfAngle))
+    // 45° chamfer easing the cone base into the narrower shank
+    if (shankR < r - 0.01) {
+      const taperH = r - shankR
+      const taperGeo = new THREE.CylinderGeometry(shankR, r, taperH, SEGS)
+      taperGeo.translate(0, y + taperH / 2, 0)
+      group.add(new THREE.Mesh(taperGeo, shankMat))
+      y += taperH
+    }
+  } else if (type === 'drill') {
+    addTipCone(r / Math.tan(59 * Math.PI / 180)) // standard 118° point
+    addFluteCylinder(fluteLen)
+  } else if (isBall) {
+    // Sphere portion from the south pole up past the equator to the latitude
+    // where it necks down to belowShankR, so most of the ball is visible.
+    // thetaStart is measured from the north pole; translate(0, r, 0) puts the
+    // south pole at Y=0. Grooves only on the ball; the neck is plain steel.
+    const neckTheta = Math.asin(belowShankR / r)
+    const ballGeo = new THREE.SphereGeometry(r, SEGS, 16, 0, Math.PI * 2, neckTheta, Math.PI - neckTheta)
+    ballGeo.translate(0, r, 0)
+    group.add(new THREE.Mesh(ballGeo, fluteMat))
+    y = r + Math.cos(neckTheta) * r // top of the sphere portion
+    const bodyH = Math.max(fluteLen - y, 0)
+    const bodyGeo = new THREE.CylinderGeometry(belowShankR, belowShankR, bodyH, SEGS)
+    bodyGeo.translate(0, y + bodyH / 2, 0)
+    group.add(new THREE.Mesh(bodyGeo, shankMat))
+    y += bodyH
+  } else {
+    addFluteCylinder(fluteLen)
   }
 
-  // Flat end mill: plain cylinder, bottom at Y=0
-  const length = r * 2 + shankH
-  const geo = new THREE.CylinderGeometry(r, r, length, 24)
-  geo.translate(0, length / 2, 0)
-  return new THREE.Mesh(geo, mat)
+  addShank()
+  return group
 }
 
 function disposeObject3D(obj: THREE.Object3D) {
   obj.traverse(child => {
     if (child instanceof THREE.Mesh) {
       child.geometry.dispose()
-      if (Array.isArray(child.material)) child.material.forEach((m: THREE.Material) => m.dispose())
-      else (child.material as THREE.Material).dispose()
+      const disposeMat = (m: THREE.Material) => {
+        ;(m as THREE.MeshPhongMaterial).map?.dispose()
+        m.dispose()
+      }
+      if (Array.isArray(child.material)) child.material.forEach(disposeMat)
+      else disposeMat(child.material as THREE.Material)
     }
   })
 }
@@ -399,10 +512,12 @@ export default function ThreeView() {
             tAngle = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
           } else if (ts.toolBallNose) {
             tType = 'ball'
+          } else if (ts.toolDrill) {
+            tType = 'drill'
           }
-          const key = `${tType}|${tDiam}|${tAngle}`
+          const key = `${tType}|${tDiam}|${tAngle}|${ts.fluteCount}`
           if (key !== refs.activeToolKey) {
-            buildToolIndicatorForParams(refs, tType, tDiam, tAngle)
+            buildToolIndicatorForParams(refs, tType, tDiam, tAngle, ts.fluteCount)
             refs.activeToolKey = key
           }
         }
@@ -413,6 +528,10 @@ export default function ThreeView() {
           if (pos && toolVis) {
             const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z - zOff, T)
             refs.toolMesh.position.set(tx, ty, tz)
+            refs.renderNeeded = true
+          }
+          if (toolVis && sim.playing && dt > 0 && dt < 500) {
+            refs.toolMesh.rotation.y -= 2 * Math.PI * SPINDLE_VIS_RPS * (dt / 1000)
             refs.renderNeeded = true
           }
         }
@@ -693,13 +812,13 @@ function rebuildVoxels(refs: SceneRefs) {
   refs.scene.add(cutMesh)
 }
 
-function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: number, vbitAngleDeg: number) {
+function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: number, vbitAngleDeg: number, fluteCount = 2) {
   if (refs.toolMesh) {
     refs.scene.remove(refs.toolMesh)
     disposeObject3D(refs.toolMesh)
     refs.toolMesh = null
   }
-  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg)
+  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg, fluteCount)
   mesh.visible = false
   refs.scene.add(mesh)
   refs.toolMesh = mesh
@@ -711,17 +830,20 @@ function buildToolIndicator(refs: SceneRefs) {
   refs.activeToolKey = ''
 
   const { segments, toolStates } = useSimStore.getState()
-  let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60
+  let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60, fluteCount = 2
 
   for (const seg of segments) {
     if (!seg.rapid) {
       const ts = segTool(seg, toolStates)
       diamMM = ts.toolDiameterMM
+      fluteCount = ts.fluteCount
       if (ts.toolVbitHalfAngleTan) {
         toolType = 'vbit'
         vbitAngleDeg = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
       } else if (ts.toolBallNose) {
         toolType = 'ball'
+      } else if (ts.toolDrill) {
+        toolType = 'drill'
       }
       break
     }
@@ -730,12 +852,13 @@ function buildToolIndicator(refs: SceneRefs) {
   if (!segments.length) {
     const t = useToolStore.getState().tools[0]
     if (!t) return
-    toolType = t.type
-    diamMM   = t.diameterMM
+    toolType   = t.type
+    diamMM     = t.diameterMM
+    fluteCount = t.fluteCount
     if (t.type === 'vbit') vbitAngleDeg = (t as any).vbitAngleDeg ?? 60
   }
 
-  buildToolIndicatorForParams(refs, toolType, diamMM, vbitAngleDeg)
+  buildToolIndicatorForParams(refs, toolType, diamMM, vbitAngleDeg, fluteCount)
 }
 
 function rebuildShapes(refs: SceneRefs) {
