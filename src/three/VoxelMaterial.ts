@@ -297,7 +297,10 @@ export class VoxelMaterial {
           // Closest point on the 2D segment to the leaf centre.
           const ex = leaf.cx - ax, ey = leaf.cy - ay
           const proj = ex * dx + ey * dy
-          const tc_raw = lenSq < 1e-8 ? 0 : proj / lenSq
+          // Vertical segment (peck-drill plunge): no XY travel to parameterize,
+          // so evaluate at the deepest end — the tip reaches min(prevZ, endZ)
+          // over the whole footprint (same fix as HeightfieldMaterial).
+          const tc_raw = lenSq < 1e-8 ? (dz < 0 ? 1 : 0) : proj / lenSq
           // perp_sq = d(tc_raw)² = dist0² - proj²/lenSq (squared perp distance at unclamped tc)
           const dist0sq = ex * ex + ey * ey
           const perp_sq = Math.max(0, dist0sq - tc_raw * proj)

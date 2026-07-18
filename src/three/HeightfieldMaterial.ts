@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { segTool, type SimSegment, type ToolState } from '../sim/gcodeParser'
 import type { ZOrigin } from '../store/workpieceStore'
 import { Z_DATUM_COLOR_THREE } from '../colors'
+import { WOOD_TILE_MM } from './woodTexture'
 
 // ─── Heightfield material-removal simulation (alternate to VoxelMaterial) ──────
 //
@@ -23,24 +24,24 @@ function isCuttingSeg(seg: SimSegment): boolean {
 }
 
 // The surface uses a stock MeshLambertMaterial (same as the voxel meshes) so its
-// colours and lighting are identical to the voxel renderer. onBeforeCompile only
-// injects the heightfield displacement and per-vertex normals, and swaps the
-// diffuse colour between wood (uncut) and cut based on the sampled height.
+// lighting matches the voxel renderer. onBeforeCompile injects the heightfield
+// displacement and per-vertex normals, and samples the planar world-mm-mapped
+// wood texture for the diffuse colour — carved surfaces read as wood too,
+// distinguished by depth and lighting rather than a highlight colour.
 function patchSurfaceShader(
   mat: THREE.MeshLambertMaterial,
   texture: THREE.DataTexture,
   NX: number, NY: number,
   sx: number, sy: number,
   T: number,
-  woodColor: number,
-  cutColor: number,
+  woodTex: THREE.Texture,
 ) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHeight = { value: texture }
     shader.uniforms.uTexel = { value: new THREE.Vector2(1 / NX, 1 / NY) }
     shader.uniforms.uSpacing = { value: new THREE.Vector2(sx, sy) }
-    shader.uniforms.uWood = { value: new THREE.Color(woodColor) }
-    shader.uniforms.uCut = { value: new THREE.Color(cutColor) }
+    shader.uniforms.uWoodTex = { value: woodTex }
+    shader.uniforms.uWoodScale = { value: 1 / WOOD_TILE_MM }
     shader.uniforms.uThickness = { value: T }
 
     shader.vertexShader = shader.vertexShader
@@ -49,7 +50,8 @@ function patchSurfaceShader(
         uniform vec2 uTexel;     // 1/NX, 1/NY
         uniform vec2 uSpacing;   // sample spacing in world mm (sx, sy)
         attribute vec2 aHUv;     // texel-centre UV for this vertex
-        varying float vH;`)
+        varying float vH;
+        varying vec2 vWUv;       // planar wood UV in mm: (localX, localY)`)
       // Per-vertex normal from neighbouring texels (smooth shading at any res).
       // Tangents in three-space: +u → +X, +v(row) → +cncY → -threeZ.
       .replace('#include <beginnormal_vertex>', /* glsl */ `
@@ -64,19 +66,32 @@ function patchSurfaceShader(
       .replace('#include <begin_vertex>', /* glsl */ `
         float _h = texture2D(uHeight, aHUv).r;
         vec3 transformed = vec3(position.x, _h, position.z);
-        vH = _h;`)
+        vH = _h;
+        vWUv = vec2(position.x, -position.z);`)
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', /* glsl */ `#include <common>
-        uniform vec3 uWood;
-        uniform vec3 uCut;
+        uniform sampler2D uWoodTex;
+        uniform float uWoodScale;
         uniform float uThickness;
-        varying float vH;`)
+        varying float vH;
+        varying vec2 vWUv;`)
       .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
         // Cut all the way through the stock (height collapsed to 0) → drop the
         // fragment so the scene background shows through the hole instead of a floor.
         if (vH <= 0.001) discard;
-        diffuseColor.rgb = mix(uWood, uCut, vH < uThickness - 0.001 ? 1.0 : 0.0);`)
+        vec3 _wood = texture2D(uWoodTex, vWUv * uWoodScale).rgb;
+        // Freshly machined surfaces read lighter than the oxidized/aged outer
+        // face: slightly desaturate, then gamma-lift carved fragments. The
+        // gamma curve lightens dark species (walnut, cherry) strongly while
+        // barely moving already-pale stock (maple), so the carve stays visible
+        // on any wood without washing light ones out.
+        if (vH < uThickness - 0.001) {
+          float _lum = dot(_wood, vec3(0.299, 0.587, 0.114));
+          _wood = mix(_wood, vec3(_lum), 0.2);
+          _wood = pow(_wood, vec3(0.5));
+        }
+        diffuseColor.rgb = _wood;`)
   }
 }
 
@@ -102,6 +117,29 @@ function patchFloorShader(mat: THREE.MeshLambertMaterial, texture: THREE.DataTex
   }
 }
 
+// The static stock (walls + aprons) uses the wood texture via the standard
+// Lambert map path (planar mm UVs baked in buildStock). This patch adds the
+// Z0-datum highlight: each vertex carries aDatum (1 at the datum edge, 0 at the
+// far edge; 0 on flat faces) and the fragment lerps the textured diffuse toward
+// the datum color with squared falloff, matching the skirt's gradient.
+function patchStockShader(mat: THREE.MeshLambertMaterial, datumColor: number) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uDatum = { value: new THREE.Color(datumColor) }
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        attribute float aDatum;
+        varying float vDatum;`)
+      .replace('#include <begin_vertex>', /* glsl */ `#include <begin_vertex>
+        vDatum = aDatum;`)
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', /* glsl */ `#include <common>
+        uniform vec3 uDatum;
+        varying float vDatum;`)
+      .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
+        diffuseColor.rgb = mix(diffuseColor.rgb, uDatum, vDatum * vDatum);`)
+  }
+}
+
 // The boundary skirt is a vertical curtain whose bottom vertices sit at Y=0 and
 // whose top vertices ride the sampled heightfield, so the stock edge follows the
 // carve. Per-vertex aTop selects bottom (0) vs. top (sampled height); the diffuse
@@ -111,13 +149,14 @@ function patchSkirtShader(
   mat: THREE.MeshLambertMaterial,
   texture: THREE.DataTexture,
   T: number,
-  woodColor: number,
+  woodTex: THREE.Texture,
   datumColor: number,
   datumTop: boolean,
 ) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHeight = { value: texture }
-    shader.uniforms.uWood = { value: new THREE.Color(woodColor) }
+    shader.uniforms.uWoodTex = { value: woodTex }
+    shader.uniforms.uWoodScale = { value: 1 / WOOD_TILE_MM }
     shader.uniforms.uDatum = { value: new THREE.Color(datumColor) }
     shader.uniforms.uThickness = { value: T }
     shader.uniforms.uDatumTop = { value: datumTop ? 1 : 0 }
@@ -128,27 +167,32 @@ function patchSkirtShader(
         attribute vec2 aHUv;     // texel-centre UV of the edge sample this vertex rides
         attribute float aTop;    // 1 = top (ride height), 0 = bottom (stay at Y=0)
         varying float vH;
-        varying float vWorldY;`)
+        varying float vWorldY;
+        varying vec2 vWUv;       // wall wood UV in mm: (along-edge, height) — matches buildStock's wall UVs`)
       .replace('#include <begin_vertex>', /* glsl */ `
         float _h = texture2D(uHeight, aHUv).r;
         float _y = aTop > 0.5 ? _h : 0.0;
         vec3 transformed = vec3(position.x, _y, position.z);
         vH = _h;
-        vWorldY = _y;`)
+        vWorldY = _y;
+        vWUv = vec2(position.x - position.z, _y);`)
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', /* glsl */ `#include <common>
-        uniform vec3 uWood;
+        uniform sampler2D uWoodTex;
+        uniform float uWoodScale;
         uniform vec3 uDatum;
         uniform float uThickness;
         uniform float uDatumTop;
         varying float vH;
-        varying float vWorldY;`)
+        varying float vWorldY;
+        varying vec2 vWUv;`)
       .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
         if (vH <= 0.001) discard;
         float _f = uDatumTop > 0.5 ? vWorldY / uThickness : (uThickness - vWorldY) / uThickness;
         _f = clamp(_f, 0.0, 1.0);
-        diffuseColor.rgb = mix(uWood, uDatum, _f * _f);`)
+        vec3 _wood = texture2D(uWoodTex, vWUv * uWoodScale).rgb;
+        diffuseColor.rgb = mix(_wood, uDatum, _f * _f);`)
   }
 }
 
@@ -229,8 +273,7 @@ export class HeightfieldMaterial {
     segments: SimSegment[],
     toolStates: ToolState[],
     orgX: number, orgY: number,
-    woodColor: number,
-    cutColor: number,
+    woodTex: THREE.Texture,
     zOrigin: ZOrigin = 'top',
   ) {
     this._T = T
@@ -276,6 +319,7 @@ export class HeightfieldMaterial {
     // sampling fetches that sample exactly.
     const positions = new Float32Array(NX * NY * 3)
     const uvs = new Float32Array(NX * NY * 2)
+    const woodUvs = new Float32Array(NX * NY * 2)   // planar mm/tile mapping for the floor's standard map
     for (let j = 0; j < NY; j++) {
       for (let i = 0; i < NX; i++) {
         const k = j * NX + i
@@ -284,6 +328,8 @@ export class HeightfieldMaterial {
         positions[k * 3 + 2] = -(gy0 + j * this._sy)
         uvs[k * 2] = (i + 0.5) / NX
         uvs[k * 2 + 1] = (j + 0.5) / NY
+        woodUvs[k * 2] = (gx0 + i * this._sx) / WOOD_TILE_MM
+        woodUvs[k * 2 + 1] = (gy0 + j * this._sy) / WOOD_TILE_MM
       }
     }
     const indexCount = (NX - 1) * (NY - 1) * 6
@@ -299,24 +345,26 @@ export class HeightfieldMaterial {
     this._surfaceGeo = new THREE.BufferGeometry()
     this._surfaceGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     this._surfaceGeo.setAttribute('aHUv', new THREE.BufferAttribute(uvs, 2))
+    this._surfaceGeo.setAttribute('uv', new THREE.BufferAttribute(woodUvs, 2))
     this._surfaceGeo.setIndex(new THREE.BufferAttribute(indices, 1))
 
     this._surfaceMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodColor, cutColor)
+    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodTex)
 
     // Flat bottom of the stock over the cut region — reuses the surface grid
     // (undisplaced at Y=0) and punches through where the cut goes clean through.
-    this._floorMat = new THREE.MeshLambertMaterial({ color: woodColor, side: THREE.DoubleSide })
+    this._floorMat = new THREE.MeshLambertMaterial({ map: woodTex, side: THREE.DoubleSide })
     patchFloorShader(this._floorMat, this._texture)
 
     // Static stock geometry (wood): perimeter walls + bottom face, plus a flat
     // "apron" filling the uncut stock area around the gridded cut region so the
-    // block still reads as full-size solid stock. The side walls carry per-vertex
-    // colors that fade from the datum-highlight color at the Z0 edge (top surface
-    // or stock bottom, per zOrigin) into plain wood, giving a visual cue of where
-    // Z0 sits. vertexColors lets the apron/bottom stay wood while walls gradient.
-    this._stockMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
-    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1, zOrigin, woodColor, Z_DATUM_COLOR_THREE)
+    // block still reads as full-size solid stock. All faces carry planar world-mm
+    // UVs into the wood texture; the side walls additionally carry an aDatum
+    // factor that fades the datum-highlight color in at the Z0 edge (top surface
+    // or stock bottom, per zOrigin), giving a visual cue of where Z0 sits.
+    this._stockMat = new THREE.MeshLambertMaterial({ map: woodTex, side: THREE.DoubleSide })
+    patchStockShader(this._stockMat, Z_DATUM_COLOR_THREE)
+    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1, zOrigin)
 
     // Heightfield-driven "skirt" along any stock edge the cut region reaches (a
     // surfacing pass or a pocket overlapping the boundary). Its top edge samples
@@ -325,7 +373,7 @@ export class HeightfieldMaterial {
     this._skirtGeo = buildSkirt(NX, NY, this._sx, this._sy, gx0, gy0, W, H)
     if (this._skirtGeo) {
       this._skirtMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-      patchSkirtShader(this._skirtMat, this._texture, T, woodColor, Z_DATUM_COLOR_THREE, zOrigin === 'top')
+      patchSkirtShader(this._skirtMat, this._texture, T, woodTex, Z_DATUM_COLOR_THREE, zOrigin === 'top')
     } else {
       this._skirtMat = null
     }
@@ -454,7 +502,11 @@ export class HeightfieldMaterial {
 
         const ex = px - ax, ey = py - ay
         const proj = ex * dx + ey * dy
-        const tc_raw = lenSq < 1e-8 ? 0 : proj / lenSq
+        // Vertical segment (peck-drill plunge): no XY travel to parameterize,
+        // so evaluate at the deepest end — the tip reaches min(prevZ, endZ)
+        // over the whole footprint. Falling back to t=0 (start Z) left the
+        // final peck depth uncarved, so drills never punched through.
+        const tc_raw = lenSq < 1e-8 ? (dz < 0 ? 1 : 0) : proj / lenSq
         const dist0sq = ex * ex + ey * ey
         const perp_sq = Math.max(0, dist0sq - tc_raw * proj)
 
@@ -510,21 +562,22 @@ export class HeightfieldMaterial {
 function buildStock(
   W: number, H: number, T: number,
   gx0: number, gy0: number, gx1: number, gy1: number,
-  zOrigin: ZOrigin, woodColor: number, datumColor: number,
+  zOrigin: ZOrigin,
 ): THREE.BufferGeometry {
   const pos: number[] = []
-  const col: number[] = []
+  const uv: number[] = []
+  const datum: number[] = []
   const idx: number[] = []
 
-  const wood = new THREE.Color(woodColor)
-  const datum = new THREE.Color(datumColor)
-  // Per-vertex wall color: 1 at the Z0 edge (y=T for top-origin, y=0 for
-  // bottom-origin) fading to plain wood at the far edge. Squared falloff keeps
-  // the glow concentrated near the datum face. Flat faces (colored=false) stay wood.
-  const wallColor = (y: number): THREE.Color => {
-    const f = zOrigin === 'bottom' ? (T - y) / T : y / T   // 1 at datum edge, 0 at far edge
-    return wood.clone().lerp(datum, f * f)
-  }
+  // Per-vertex datum factor: 1 at the Z0 edge (y=T for top-origin, y=0 for
+  // bottom-origin) fading to 0 at the far edge; patchStockShader applies the
+  // squared-falloff lerp toward the datum color. Flat faces (colored=false) stay 0.
+  const wallDatum = (y: number): number => (zOrigin === 'bottom' ? (T - y) / T : y / T)
+  // Planar world-mm wood UVs: horizontal faces map (localX, localY); vertical
+  // walls map (along-edge, height). The wall form (x - z = localX + localY, one
+  // term constant per wall) matches the skirt shader's mapping so the textures
+  // agree where a static wall meets a skirt strip.
+  const s = 1 / WOOD_TILE_MM
   const quad = (
     p0: [number, number, number], p1: [number, number, number],
     p2: [number, number, number], p3: [number, number, number],
@@ -533,8 +586,9 @@ function buildStock(
     const b = pos.length / 3
     pos.push(...p0, ...p1, ...p2, ...p3)
     for (const p of [p0, p1, p2, p3]) {
-      const c = colored ? wallColor(p[1]) : wood
-      col.push(c.r, c.g, c.b)
+      if (colored) uv.push((p[0] - p[2]) * s, p[1] * s)
+      else uv.push(p[0] * s, -p[2] * s)
+      datum.push(colored ? wallDatum(p[1]) : 0)
     }
     idx.push(b, b + 1, b + 2, b, b + 2, b + 3)
   }
@@ -579,7 +633,8 @@ function buildStock(
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3))
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
+  geo.setAttribute('aDatum', new THREE.BufferAttribute(new Float32Array(datum), 1))
   geo.setIndex(idx)
   geo.computeVertexNormals()
   return geo

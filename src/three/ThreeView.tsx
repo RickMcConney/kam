@@ -13,6 +13,7 @@ import { getBBox } from '../canvas/selectionUtils'
 import { SIM_CUT_COLOR_THREE, THREE_BG_COLOR_THREE, MATERIAL_COLORS } from '../colors'
 import { VoxelMaterial } from './VoxelMaterial'
 import { HeightfieldMaterial } from './HeightfieldMaterial'
+import { getWoodTexture, setWoodTextureListener } from './woodTexture'
 import SimulationPlayer from '../sim/SimulationPlayer'
 // M3 (clockwise viewed from above) is negative rotation about three's +Y.
 import { SPINDLE_VIS_RPS } from '../sim/spindleVis'
@@ -600,9 +601,13 @@ export default function ThreeView() {
       rebuildShapes(refs)
     })
 
+    // Repaint when an async wood photo texture finishes loading (render-on-demand).
+    setWoodTextureListener(() => { refs.renderNeeded = true })
+
     return () => {
       cancelAnimationFrame(refs.rafId)
       ro.disconnect()
+      setWoodTextureListener(null)
       unsubWP(); unsubTP(); unsubSim(); unsubPaths()
       if (refs.voxelWoodMesh) { refs.voxelWoodMesh.geometry.dispose(); (refs.voxelWoodMesh.material as THREE.Material).dispose() }
       if (refs.voxelCutMesh) { refs.voxelCutMesh.geometry.dispose(); (refs.voxelCutMesh.material as THREE.Material).dispose() }
@@ -757,7 +762,7 @@ function rebuildHeightfield(refs: SceneRefs) {
   const segments = normalizeSimZ(rawSegs, genZOff)
   refs.simSegments = segments
 
-  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, materialColor(material), SIM_CUT_COLOR_THREE, zOrigin)
+  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, getWoodTexture(material), zOrigin)
   refs.heightfield = hf
   refs.scene.add(hf.group)
   perfLog(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
