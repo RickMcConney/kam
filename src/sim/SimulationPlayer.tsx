@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { ICON } from '../theme'
 import { Play, Pause, Square, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
+import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
 import { spindleDialLabel } from '../store/spindle'
 import type { ToolType } from '../store/toolStore'
@@ -195,10 +196,14 @@ export default function SimulationPlayer() {
 
         <div className="w-px h-4 bg-gray-200 dark:bg-neutral-700 mx-0.5" />
 
-        {/* Close simulation */}
+        {/* Close simulation — from the 3D view this also returns to 2D */}
         <button
           title="Close simulation"
-          onClick={clearSim}
+          onClick={() => {
+            clearSim()
+            const ui = useUIStore.getState()
+            if (ui.workspaceTab === '3d') ui.setWorkspaceTab('2d')
+          }}
           className="text-gray-400 dark:text-neutral-500 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors p-0.5"
         >
           <X size={ICON.sm} />

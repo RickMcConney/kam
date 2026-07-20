@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { flattenPath, type Pt2 } from '../cam/pathFlattener'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { uid } from '../uid'
 
 export interface Tab {
@@ -72,14 +73,43 @@ export const useTabStore = create<TabState>()((set, get) => ({
     }
 
     set({ tabs: [...existing, ...newTabs] })
+    // Tab edits are in-place: a path's Tabs chip holds its CURRENT tabs. The
+    // first apply records the chip; later applies/moves/deletes amend it.
+    const tl = useTimelineStore.getState()
+    if (!tl.amendTabsForPath(pathId, newTabs)) {
+      tl.record({ kind: 'tabs.apply', pathId, tabs: newTabs })
+    }
   },
 
-  deleteTab: (id) => set((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) })),
+  deleteTab: (id) => {
+    const pathId = get().tabs.find((t) => t.id === id)?.pathId
+    set((s) => ({ tabs: s.tabs.filter((t) => t.id !== id) }))
+    const tl = useTimelineStore.getState()
+    const remaining = pathId ? get().tabs.filter((t) => t.pathId === pathId) : []
+    if (!pathId || !tl.amendTabsForPath(pathId, remaining)) {
+      tl.record({ kind: 'tabs.delete', tabIds: [id] })
+    }
+  },
 
-  deletePathTabs: (pathId) => set((s) => ({ tabs: s.tabs.filter((t) => t.pathId !== pathId) })),
+  deletePathTabs: (pathId) => {
+    const ids = get().tabs.filter((t) => t.pathId === pathId).map((t) => t.id)
+    if (ids.length === 0) return
+    set((s) => ({ tabs: s.tabs.filter((t) => t.pathId !== pathId) }))
+    const tl = useTimelineStore.getState()
+    if (!tl.amendTabsForPath(pathId, [])) {
+      tl.record({ kind: 'tabs.delete', tabIds: ids })
+    }
+  },
 
-  updateTabT: (id, t) =>
-    set((s) => ({ tabs: s.tabs.map((tab) => tab.id === id ? { ...tab, t: Math.max(0, Math.min(1, t)) } : tab) })),
+  updateTabT: (id, t) => {
+    const clamped = Math.max(0, Math.min(1, t))
+    set((s) => ({ tabs: s.tabs.map((tab) => tab.id === id ? { ...tab, t: clamped } : tab) }))
+    const tab = get().tabs.find((x) => x.id === id)
+    const tl = useTimelineStore.getState()
+    if (!tab || !tl.amendTabsForPath(tab.pathId, get().tabs.filter((x) => x.pathId === tab.pathId))) {
+      tl.record({ kind: 'tabs.moveT', tabId: id, t01: clamped })
+    }
+  },
 
   getPathTabs: (pathId) => get().tabs.filter((t) => t.pathId === pathId),
 

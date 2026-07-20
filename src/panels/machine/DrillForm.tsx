@@ -22,7 +22,7 @@ interface DrillFormState {
 
 export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: DrillOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
@@ -93,7 +93,6 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
   function handleGenerate() {
     if (!selectedTool) return
-    pushHistoryBoth()
     setGenerating(true)
 
     if (editOp) {

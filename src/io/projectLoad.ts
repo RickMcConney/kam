@@ -9,6 +9,8 @@ import { useSimStore } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { useTabStore, type Tab } from '../store/tabStore'
+import { useTimelineStore } from '../timeline/timelineStore'
+import type { Checkpoint, TimelineEvent } from '../timeline/events'
 import { clearFileHandles } from './fileSystem'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
@@ -48,6 +50,14 @@ interface ProjectData {
     activeId: string
   }
   tabs?: Tab[]
+  // v2: operation timeline. paths/operations/tabs above are the materialized
+  // state at timeline.cursor — the loader installs both, so undo history
+  // survives save/load. Absent or invalid → snapshot-only fallback.
+  timeline?: {
+    events: TimelineEvent[]
+    cursor: number
+    genesis: Checkpoint
+  }
 }
 
 function loadProject(data: ProjectData) {
@@ -90,6 +100,17 @@ function loadProject(data: ProjectData) {
   useTabStore.getState().replaceTabs(data.tabs ?? [])
 
   useProjectStore.getState().markClean()
+  // v2 files carry their event log: install it (stores already hold the state
+  // at cursor via the snapshot above). Anything invalid — v1 file, corrupt log,
+  // unknown event kinds from a newer version — falls back to a fresh genesis
+  // at the loaded snapshot; the project still opens, only its history is gone.
+  const tl = data.timeline
+  const timelineRestored = !!tl &&
+    useTimelineStore.getState().loadTimeline(tl.genesis, tl.events, tl.cursor)
+  if (!timelineRestored) {
+    useTimelineStore.getState().resetToCurrentState()
+    if (tl) useUIStore.getState().showStatus('Project timeline could not be restored — history starts from the loaded state', 'warn')
+  }
   // Drop any prior file handle so a later Ctrl+S prompts for this project's own
   // file rather than overwriting whatever was saved before.
   clearFileHandles()
@@ -109,6 +130,7 @@ export function newProject() {
   useTabStore.getState().replaceTabs([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
+  useTimelineStore.getState().resetToCurrentState()
   clearFileHandles()
   useCanvasStore.getState().requestFit()
   // Workpiece settings (size, origin, thickness, material) are persisted in

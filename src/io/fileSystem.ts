@@ -1,4 +1,5 @@
 import { buildProjectData } from './projectSave'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { sanitizeFileName } from './filename'
 import { useProjectStore } from '../store/projectStore'
 import { useSaveDialogStore } from '../store/saveDialogStore'
@@ -74,6 +75,7 @@ async function saveProjectNative(saveAs: boolean): Promise<boolean> {
     const json = JSON.stringify(buildProjectData(), null, 2)
     await writeFile(projectHandle, json)
     useProjectStore.getState().markClean()
+    useTimelineStore.getState().markSaved()
     return true
   } catch (e) {
     if (isAbort(e)) return true

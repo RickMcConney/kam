@@ -3,24 +3,24 @@ import type { ImportedPath } from '../importers/svgImporter'
 import { translateD } from '../canvas/selectionUtils'
 import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
-import { useTabStore, type Tab } from './tabStore'
+import { useTabStore } from './tabStore'
+import { useTimelineStore } from '../timeline/timelineStore'
+import { serializeOp, type PathsAddSource, type PathEditGesture, type OffsetEventMeta, type PatternEventMeta } from '../timeline/events'
+import type { BooleanOpType } from '../tools/booleanOps'
 import { uid } from '../uid'
 
 export type { ImportedPath }
 
-type HistoryEntry = { paths: ImportedPath[]; operations: AnyOperation[]; selectedIds: string[]; tabs: Tab[] }
+export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string; hidden?: boolean }
 
-export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string }
+export type PathsAddMeta = { source?: PathsAddSource; label?: string; offset?: OffsetEventMeta; pattern?: PatternEventMeta }
 
 interface PathsState {
   paths: ImportedPath[]
   selectedIds: string[]
   collapsedGroups: Set<string>
 
-  past: HistoryEntry[]
-  future: HistoryEntry[]
-
-  addPaths: (newPaths: ImportedPath[]) => void
+  addPaths: (newPaths: ImportedPath[], meta?: PathsAddMeta) => void
   deletePath: (id: string) => void
   deleteGroup: (groupId: string) => void
   toggleVisibility: (id: string) => void
@@ -30,50 +30,52 @@ interface PathsState {
   setSelectedIds: (ids: string[]) => void
   deleteSelected: () => void
   updatePathD: (id: string, newD: string) => void
-  batchUpdatePaths: (updates: PathUpdate[]) => void
+  batchUpdatePaths: (updates: PathUpdate[], gesture?: PathEditGesture) => void
   // Atomic update + add + delete in ONE history entry. Use for gestures that
   // touch multiple paths at once (node-edit join/weld) so a single undo reverts
   // the whole gesture. Deleted paths' operations and tabs are cleaned up.
-  applyPathEdit: (edit: { updates?: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
+  applyPathEdit: (edit: { updates?: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[]; label?: string; gesture?: PathEditGesture; selectAfter?: string[]; boolOp?: BooleanOpType }) => void
+  // Raw, NON-recording path rewrite for edit-in-place flows that amend the
+  // timeline themselves (e.g. BooleanForm edit mode) — never use for normal
+  // edits, which must record events.
+  rewritePathRaw: (id: string, upd: { d: string; name?: string }) => void
+  // Raw, NON-recording bulk update+add+delete (Offset/Pattern chip edit —
+  // pattern cardinality changes add/remove result paths). Cleans up ops, tabs,
+  // and selection for deleted ids like applyPathEdit, but records nothing.
+  rewriteGeneratedRaw: (edit: { updates?: { id: string; d: string; name?: string }[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
-  hidePathIds: (ids: string[]) => void
   showPath: (id: string) => void
-  undo: () => void
-  redo: () => void
   replacePaths: (paths: ImportedPath[]) => void
-  pushHistoryBoth: () => void
-  canUndo: () => boolean
-  canRedo: () => boolean
 }
 
-// Snapshot the current state into the undo stack. Callers that mutate the
-// toolpath/tab stores in the same action MUST pass the pre-mutation operations
-// and tabs explicitly — the defaults read live store state, which by then would
-// already reflect the mutation (undo would restore the mutated ops/tabs).
-function pushHistory(
-  past: HistoryEntry[],
-  paths: ImportedPath[],
-  selectedIds: string[],
-  operations: AnyOperation[] = useToolpathStore.getState().operations,
-  tabs: Tab[] = useTabStore.getState().tabs,
-): HistoryEntry[] {
-  return [...past.slice(-49), { paths, operations, selectedIds, tabs }]
-}
+// Undo/redo lives in the timeline (src/timeline/timelineStore.ts): every
+// mutating action here records a TimelineEvent, and undo/redo scrub the
+// timeline cursor. There is no separate history stack anymore.
 
 export const usePathsStore = create<PathsState>()((set, get) => ({
   paths: [],
   selectedIds: [],
   collapsedGroups: new Set<string>(),
-  past: [],
-  future: [],
 
-  addPaths: (newPaths) => set((s) => ({
-    past: pushHistory(s.past, s.paths, s.selectedIds),
-    future: [],
-    paths: [...s.paths, ...newPaths],
-  })),
+  addPaths: (newPaths, meta) => {
+    set((s) => ({
+      paths: [...s.paths, ...newPaths],
+    }))
+    useTimelineStore.getState().record(
+      {
+        kind: 'paths.add',
+        paths: newPaths,
+        source: meta?.source,
+        ...(meta?.offset ? { offset: meta.offset } : {}),
+        ...(meta?.pattern ? { pattern: meta.pattern } : {}),
+      },
+      // Scrubbing to an add-event selects what it created (the caller's own
+      // selectPath often runs after this record — see RecordMeta.selectionAfter)
+      { label: meta?.label, selectionAfter: newPaths.map((p) => p.id) },
+    )
+  },
 
   // The delete actions all delegate to applyPathEdit — it owns the snapshot-
   // before-cleanup invariant (history, ops, tabs, selection) so the sequence
@@ -122,21 +124,50 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
 
   updatePathD: (id, newD) => get().applyPathEdit({ updates: [{ id, d: newD }] }),
 
-  batchUpdatePaths: (updates) => get().applyPathEdit({ updates }),
+  batchUpdatePaths: (updates, gesture) => get().applyPathEdit({ updates, gesture }),
 
-  applyPathEdit: ({ updates = [], add = [], deleteIds = [] }) => {
+  rewritePathRaw: (id, upd) => set((s) => ({
+    paths: s.paths.map((p) => p.id === id ? { ...p, d: upd.d, ...(upd.name !== undefined ? { name: upd.name } : {}) } : p),
+  })),
+
+  rewriteGeneratedRaw: ({ updates = [], add = [], deleteIds = [] }) => {
     const s = get()
-    // Ops/tabs snapshot must precede their cleanup (see pushHistory note).
-    const opsBefore = useToolpathStore.getState().operations
-    const tabsBefore = useTabStore.getState().tabs
-    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
     if (deleteIds.length > 0) {
+      const opsBefore = useToolpathStore.getState().operations
+      const tabsBefore = useTabStore.getState().tabs
       const newOps = opsBefore.filter((op) => !deleteIds.some((id) => refsPathId(op, id)))
       if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
       const newTabs = tabsBefore.filter((t) => !deleteIds.includes(t.pathId))
       if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
     }
-    const map = new Map(updates.map(({ id, d, shapeParams, name }) => [id, { d, shapeParams, name }]))
+    const map = new Map(updates.map((u) => [u.id, u]))
+    const paths = s.paths
+      .filter((p) => !deleteIds.includes(p.id))
+      .map((p) => {
+        const upd = map.get(p.id)
+        if (!upd) return p
+        return { ...p, d: upd.d, ...(upd.name !== undefined ? { name: upd.name } : {}) }
+      })
+    set({
+      paths: add.length > 0 ? [...paths, ...add] : paths,
+      ...(deleteIds.length > 0
+        ? { selectedIds: s.selectedIds.filter((sid) => !deleteIds.includes(sid)) }
+        : {}),
+    })
+  },
+
+  applyPathEdit: ({ updates = [], add = [], deleteIds = [], label, gesture, selectAfter, boolOp }) => {
+    if (updates.length === 0 && add.length === 0 && deleteIds.length === 0) return
+    const s = get()
+    if (deleteIds.length > 0) {
+      const opsBefore = useToolpathStore.getState().operations
+      const tabsBefore = useTabStore.getState().tabs
+      const newOps = opsBefore.filter((op) => !deleteIds.some((id) => refsPathId(op, id)))
+      if (newOps.length !== opsBefore.length) useToolpathStore.getState().replaceOperations(newOps)
+      const newTabs = tabsBefore.filter((t) => !deleteIds.includes(t.pathId))
+      if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
+    }
+    const map = new Map(updates.map(({ id, d, shapeParams, name, hidden }) => [id, { d, shapeParams, name, hidden }]))
     const paths = s.paths
       .filter((p) => !deleteIds.includes(p.id))
       .map((p) => {
@@ -149,37 +180,58 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         if (upd.name !== undefined) {
           newPath.name = upd.name
         }
+        if (upd.hidden !== undefined) {
+          newPath.hidden = upd.hidden
+        }
         return newPath
       })
     set({
-      past,
-      future: [],
       paths: add.length > 0 ? [...paths, ...add] : paths,
-      // Only touch selection when something was actually deleted — a fresh array
-      // reference here would needlessly re-render every selectedIds subscriber
-      // on plain batch updates.
-      ...(deleteIds.length > 0
-        ? { selectedIds: s.selectedIds.filter((sid) => !deleteIds.includes(sid)) }
-        : {}),
+      // Only touch selection when the caller asks (selectAfter) or something
+      // was deleted — a fresh array reference here would needlessly re-render
+      // every selectedIds subscriber on plain batch updates.
+      ...(selectAfter
+        ? { selectedIds: selectAfter }
+        : deleteIds.length > 0
+          ? { selectedIds: s.selectedIds.filter((sid) => !deleteIds.includes(sid)) }
+          : {}),
     })
+    useTimelineStore.getState().record(
+      {
+        kind: 'paths.edit',
+        updates,
+        ...(add.length > 0 ? { add } : {}),
+        ...(deleteIds.length > 0 ? { deleteIds } : {}),
+        ...(gesture ? { gesture } : {}),
+        ...(boolOp ? { boolOp } : {}),
+      },
+      { label, selectionAfter: selectAfter },
+    )
   },
 
-  updateShapeParams: (id, params) => set((s) => {
+  updateShapeParams: (id, params) => {
     const d = generateShapeD(params)
-    return {
-      past: pushHistory(s.past, s.paths, s.selectedIds),
-      future: [],
+    set((s) => ({
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
+    }))
+    // Parameter edits amend the chip that created/last-defined the shape —
+    // changing text or a star's point count is an argument edit to that call,
+    // not a new timeline entry. Fallback records normally if no definer exists.
+    const tl = useTimelineStore.getState()
+    if (!tl.amendPathDefinition(id, { d, shapeParams: params })) {
+      tl.record({ kind: 'shape.params', pathId: id, params })
     }
-  }),
+  },
 
-  hidePathIds: (ids) => set((s) => ({
-    paths: s.paths.map((p) => ids.includes(p.id) ? { ...p, hidden: true } : p),
-  })),
-
-  showPath: (id) => set((s) => ({
-    paths: s.paths.map((p) => p.id === id ? { ...p, hidden: false } : p),
-  })),
+  // Soft-HIDING is not a standalone action anymore — the boolean op (its only
+  // user) hides originals inside its atomic applyPathEdit via PathUpdate.hidden.
+  // Un-hiding from the paths panel stays a user-visible event.
+  showPath: (id) => {
+    set((s) => ({
+      paths: s.paths.map((p) => p.id === id ? { ...p, hidden: false } : p),
+    }))
+    useTimelineStore.getState().record({ kind: 'paths.setHidden', ids: [id], hidden: false })
+  },
 
   splitPath: (id, subDs) => {
     const s = get()
@@ -197,15 +249,13 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       groupId: orig.groupId,
       groupName: orig.groupName,
     }))
-    // Snapshot ops/tabs BEFORE mutating them (see pushHistory note).
     const opsBefore = useToolpathStore.getState().operations
     const tabsBefore = useTabStore.getState().tabs
-    const past = pushHistory(s.past, s.paths, s.selectedIds, opsBefore, tabsBefore)
     // Operations that referenced the split path only as an ISLAND keep working:
     // swap the old id for all sub-path ids — the combined island geometry is
     // unchanged, so the generated toolpath is identical. Operations that used it
     // as their source/boundary can't reference multiple paths — drop them, same
-    // as deletePath (fully restored by one undo).
+    // as deletePath (fully restored by one undo of the paths.split event).
     const newIslandIds = newPaths.map((p) => p.id)
     let opsChanged = false
     const newOps = opsBefore.flatMap((op): AnyOperation[] => {
@@ -222,15 +272,20 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const newTabs = tabsBefore.filter((t) => t.pathId !== id)
     if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
     set({
-      past,
-      future: [],
       paths: [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)],
       selectedIds: newPaths.map((p) => p.id),
     })
+    useTimelineStore.getState().record({
+      kind: 'paths.split',
+      pathId: id,
+      subPaths: newPaths,
+      opsAfter: opsChanged ? newOps.map(serializeOp) : null,
+    })
   },
 
-  duplicateSelected: (offsetMM = 5) => set((s) => {
-    if (s.selectedIds.length === 0) return s
+  duplicateSelected: (offsetMM = 5) => {
+    const s = get()
+    if (s.selectedIds.length === 0) return
     const newPaths: ImportedPath[] = s.paths
       .filter((p) => s.selectedIds.includes(p.id))
       .map((p) => ({
@@ -240,60 +295,12 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         d: translateD(p.d, offsetMM, offsetMM),
         shapeParams: p.shapeParams ? translateShapeParams(p.shapeParams, offsetMM, offsetMM) : undefined,
       }))
-    return {
-      past: pushHistory(s.past, s.paths, s.selectedIds),
-      future: [],
+    set({
       paths: [...s.paths, ...newPaths],
       selectedIds: newPaths.map((p) => p.id),
-    }
-  }),
-
-  undo: () => {
-    const s = get()
-    if (s.past.length === 0) return
-    const prev = s.past[s.past.length - 1]
-    const currentOps = useToolpathStore.getState().operations
-    const currentTabs = useTabStore.getState().tabs
-    useToolpathStore.getState().replaceOperations(prev.operations)
-    useTabStore.getState().replaceTabs(prev.tabs)
-    const prevIds = new Set(prev.paths.map((p) => p.id))
-    const restoredSelection = prev.selectedIds.filter((id) => prevIds.has(id))
-    set({
-      past: s.past.slice(0, -1),
-      future: [{ paths: s.paths, operations: currentOps, selectedIds: s.selectedIds, tabs: currentTabs }, ...s.future.slice(0, 49)],
-      paths: prev.paths,
-      selectedIds: restoredSelection,
     })
+    useTimelineStore.getState().record({ kind: 'paths.add', paths: newPaths, source: 'duplicate' })
   },
 
-  redo: () => {
-    const s = get()
-    if (s.future.length === 0) return
-    const next = s.future[0]
-    const currentOps = useToolpathStore.getState().operations
-    const currentTabs = useTabStore.getState().tabs
-    useToolpathStore.getState().replaceOperations(next.operations)
-    useTabStore.getState().replaceTabs(next.tabs)
-    const nextIds = new Set(next.paths.map((p) => p.id))
-    const restoredSelection = next.selectedIds.filter((id) => nextIds.has(id))
-    set({
-      past: [...s.past.slice(-49), { paths: s.paths, operations: currentOps, selectedIds: s.selectedIds, tabs: currentTabs }],
-      future: s.future.slice(1),
-      paths: next.paths,
-      selectedIds: restoredSelection,
-    })
-  },
-
-  replacePaths: (paths) => set({ paths, selectedIds: [], past: [], future: [] }),
-
-  pushHistoryBoth: () => {
-    const s = get()
-    set({
-      past: pushHistory(s.past, s.paths, s.selectedIds),
-      future: [],
-    })
-  },
-
-  canUndo: () => get().past.length > 0,
-  canRedo: () => get().future.length > 0,
+  replacePaths: (paths) => set({ paths, selectedIds: [] }),
 }))

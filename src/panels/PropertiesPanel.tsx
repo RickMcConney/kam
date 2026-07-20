@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePathsStore } from '../store/pathsStore'
+import { useUIStore } from '../store/uiStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
@@ -201,6 +202,16 @@ export default function PropertiesPanel() {
   const { paths, selectedIds } = usePathsStore()
   const liveRotationAngle = useCanvasStore((s) => s.liveRotationAngle)
   const liveBBox = useCanvasStore((s) => s.liveBBox)
+  // Brief highlight when a timeline path-chip is clicked — this panel is where
+  // that chip's shape/text parameters get amended.
+  const flashSeq = useUIStore((s) => s.propertiesFlashSeq)
+  const [flashing, setFlashing] = useState(false)
+  useEffect(() => {
+    if (flashSeq === 0) return
+    setFlashing(true)
+    const t = setTimeout(() => setFlashing(false), 1200)
+    return () => clearTimeout(t)
+  }, [flashSeq])
   const { units, origin, widthMM, heightMM } = useWorkpieceStore()
   const orgWorld = originWorldXY(origin, widthMM, heightMM)
   const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
@@ -234,7 +245,7 @@ export default function PropertiesPanel() {
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map((p) => ({ id: p.id, d: rotateAroundD(p.d, cx, cy, angle), shapeParams: null as null }))
     if (updates.length) {
-      batchUpdatePaths(updates)
+      batchUpdatePaths(updates, 'rotate')
       regenerateAffectedMany(updates.map((u) => u.id))
     }
   }
@@ -249,13 +260,16 @@ export default function PropertiesPanel() {
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map((p) => ({ id: p.id, d: mirrorD(p.d, axis, cx, cy), shapeParams: null as null }))
     if (updates.length) {
-      batchUpdatePaths(updates)
+      batchUpdatePaths(updates, 'mirror')
       regenerateAffectedMany(updates.map((u) => u.id))
     }
   }
 
   return (
-    <div className="border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0">
+    <div className={[
+      'border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0 transition-shadow duration-300',
+      flashing ? 'ring-2 ring-inset ring-blue-500' : '',
+    ].join(' ')}>
       <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">
         {selectedPaths.length === 1 ? selectedPaths[0].name : `${selectedPaths.length} paths`}
       </p>

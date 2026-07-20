@@ -1,0 +1,222 @@
+import type { ImportedPath } from '../importers/svgImporter'
+import type { PathUpdate } from '../store/pathsStore'
+import type { AnyOperation, MotionSegment } from '../store/toolpathStore'
+import type { Tab } from '../store/tabStore'
+import { shapeDisplayName, type ShapeParams } from '../shapes/shapeGenerators'
+import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpieceStore'
+import type { BooleanOpType } from '../tools/booleanOps'
+import type { OffsetCornerStyle } from '../tools/offsetOp'
+import type { PatternParams } from '../tools/patternOp'
+
+// Omit distributed over a union (plain Omit collapses AnyOperation to common keys)
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never
+
+// An operation as stored in timeline events and checkpoints: settings only.
+// segments/status/errorMessage are derived and regenerated after replay.
+// Exception: 'gcode' ops keep their segments — they came from a parsed file and
+// cannot be regenerated from the op's settings.
+export type SerializedOperation = DistributiveOmit<AnyOperation, 'segments' | 'status' | 'errorMessage'> & {
+  segments?: MotionSegment[]
+}
+
+export function serializeOp(op: AnyOperation): SerializedOperation {
+  const { segments, status: _status, errorMessage: _err, ...rest } = op
+  return op.type === 'gcode' ? { ...rest, segments } : rest
+}
+
+export function hydrateOp(sop: SerializedOperation): AnyOperation {
+  const segments = sop.segments ?? []
+  return {
+    ...sop,
+    segments,
+    status: sop.type === 'gcode' && segments.length > 0 ? 'done' : 'needs-update',
+  } as AnyOperation
+}
+
+// Fields regenerate/setSegments/optimizeStartPoints write back onto ops
+// outside any user action (entryHint is rewritten on EVERY sim run / G-code
+// export). They are stripped from op.update event payloads and ignored by the
+// replay diff — post-scrub regeneration recomputes them.
+export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint'] as const
+
+export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' | 'boolean' | 'offset' | 'pattern'
+
+// What kind of gesture produced a paths.edit event — names the chip and picks
+// its icon. Display metadata only; replay ignores it.
+export type PathEditGesture = 'move' | 'scale' | 'rotate' | 'skew' | 'mirror' | 'corner' | 'points' | 'join' | 'weld' | 'trim' | 'text' | 'boolean'
+
+export const GESTURE_LABELS: Record<PathEditGesture, string> = {
+  move: 'Move',
+  scale: 'Scale',
+  rotate: 'Rotate',
+  skew: 'Skew',
+  mirror: 'Mirror',
+  corner: 'Corner',
+  points: 'Edit Points',
+  join: 'Join',
+  weld: 'Weld',
+  trim: 'Trim',
+  text: 'Text',
+  boolean: 'Boolean',
+}
+
+// Project-scoped workpiece settings (machine-local settings — table limits,
+// rigidity, feeds, spindle, safe height — stay out of the timeline).
+export interface WorkpieceEventChanges {
+  widthMM?: number
+  heightMM?: number
+  thicknessMM?: number
+  units?: Units
+  origin?: OriginPosition
+  zOrigin?: ZOrigin
+  material?: Material
+}
+
+export interface Checkpoint {
+  paths: ImportedPath[]
+  operations: SerializedOperation[]
+  tabs: Tab[]
+  // Full snapshot of the project-scoped workpiece fields. Optional because
+  // timelines saved before Phase 6 lack it — scrubbing then leaves the
+  // workpiece untouched.
+  workpiece?: WorkpieceEventChanges
+}
+
+export interface TimelineEventBase {
+  seq: number               // 1-based, monotonic; seq === index + 1
+  id: string                // uid('ev')
+  t: number                 // epoch ms (display only; replay ignores it)
+  label: string             // human-readable: "Rotate 2 paths", "Add Pocket op"
+  selectionAfter: string[]  // pathsStore.selectedIds after the event
+  gestureId?: string        // shared across events emitted by one user gesture
+}
+
+// Generator metadata on paths.add events (offset/pattern): records the inputs
+// so the chip can be re-edited (form edit modes recompute + amend in place).
+// Replay ignores these — the materialized paths are the truth.
+export interface OffsetEventMeta {
+  pairs: { sourceId: string; resultId: string }[]
+  distanceMM: number
+  cornerStyle: OffsetCornerStyle
+}
+export interface PatternEventMeta {
+  sourceIds: string[]
+  params: PatternParams
+}
+
+export type TimelineEventPayload =
+  // ---- paths ----
+  | { kind: 'paths.add'; paths: ImportedPath[]; source?: PathsAddSource; offset?: OffsetEventMeta; pattern?: PatternEventMeta }
+  // boolOp on gesture:'boolean' events records which boolean was applied so
+  // the chip can be re-edited (BooleanForm edit mode); replay ignores it.
+  | { kind: 'paths.edit'; updates: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[]; gesture?: PathEditGesture; boolOp?: BooleanOpType }
+  | { kind: 'paths.split'; pathId: string; subPaths: ImportedPath[]; opsAfter: SerializedOperation[] | null }
+  | { kind: 'paths.setHidden'; ids: string[]; hidden: boolean }
+  | { kind: 'shape.params'; pathId: string; params: ShapeParams }
+  // ---- CAM operations ----
+  // opType on update/delete is display metadata (chip icon/label survives the
+  // op being gone) — replay ignores it.
+  | { kind: 'op.add'; op: SerializedOperation }
+  | { kind: 'op.update'; opId: string; opType?: string; updates: Partial<SerializedOperation> }
+  | { kind: 'op.delete'; opIds: string[]; opType?: string }
+  | { kind: 'op.reorder'; order: string[] }
+  // ---- tabs ----
+  | { kind: 'tabs.apply'; pathId: string; tabs: Tab[] }  // replaces all tabs of pathId
+  | { kind: 'tabs.delete'; tabIds: string[] }
+  | { kind: 'tabs.moveT'; tabId: string; t01: number }
+  // ---- project ----
+  | { kind: 'workpiece.set'; changes: WorkpieceEventChanges }
+  | { kind: 'snapshot'; state: Checkpoint; reason: 'genesis' | 'migration' | 'compaction' }
+
+export type TimelineEvent = TimelineEventBase & TimelineEventPayload
+
+// Runtime registry of event kinds this build can replay. The project loader
+// rejects a saved timeline containing unknown kinds (from a newer version)
+// rather than replaying it incorrectly.
+export const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set([
+  'paths.add', 'paths.edit', 'paths.split', 'paths.setHidden', 'shape.params',
+  'op.add', 'op.update', 'op.delete', 'op.reorder',
+  'tabs.apply', 'tabs.delete', 'tabs.moveT',
+  'workpiece.set', 'snapshot',
+])
+
+export const OP_DISPLAY_NAMES: Record<string, string> = {
+  profile: 'Profile',
+  trochoidal: 'Trochoidal',
+  pocket: 'Pocket',
+  drill: 'Drill',
+  surface: 'Surface',
+  vcarve: 'V-Carve',
+  inlay: 'Inlay',
+  profile3d: '3D Profile',
+  gcode: 'G-code',
+}
+
+export const opDisplayName = (type: string | undefined): string =>
+  (type && OP_DISPLAY_NAMES[type]) || 'Operation'
+
+// Chip labels name the THING, not the verb — "Circle", "Pocket" — matching
+// the names used in the shape panel and the CAM operations menu.
+export function labelFor(ev: TimelineEventPayload): string {
+  switch (ev.kind) {
+    case 'paths.add': {
+      const n = ev.paths.length
+      switch (ev.source) {
+        case 'import': return n === 1 ? 'Import' : `Import ×${n}`
+        case 'shape':
+        case 'text': {
+          const t = ev.paths[0]?.shapeParams?.type
+          return t ? shapeDisplayName(t) : ev.source === 'text' ? 'Text' : 'Shape'
+        }
+        case 'pen': return 'Pen Path'
+        case 'duplicate': return n === 1 ? 'Duplicate' : `Duplicate ×${n}`
+        case 'boolean': return 'Boolean'
+        case 'offset': return n === 1 ? 'Offset' : `Offset ×${n}`
+        case 'pattern': return `Pattern ×${n}`
+        default: return n === 1 ? 'Path' : `${n} Paths`
+      }
+    }
+    case 'paths.edit': {
+      if (ev.gesture) return GESTURE_LABELS[ev.gesture]
+      const nUpd = ev.updates.length
+      const nDel = ev.deleteIds?.length ?? 0
+      const nAdd = ev.add?.length ?? 0
+      if (nDel > 0 && nUpd === 0 && nAdd === 0) return `Delete ${nDel === 1 ? 'path' : `${nDel} paths`}`
+      if (nUpd > 0 && nDel === 0 && nAdd === 0) return `Edit ${nUpd === 1 ? 'path' : `${nUpd} paths`}`
+      return 'Modify paths'
+    }
+    case 'paths.split': return 'Split path'
+    case 'paths.setHidden': return ev.hidden ? 'Hide paths' : 'Show path'
+    case 'shape.params': return shapeDisplayName(ev.params.type)
+    case 'op.add': return opDisplayName(ev.op.type)
+    case 'op.update': return opDisplayName(ev.opType)
+    case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} ops`
+    case 'op.reorder': return 'Reorder ops'
+    case 'tabs.apply': return `Tabs ×${ev.tabs.length}`
+    case 'tabs.delete': return ev.tabIds.length === 1 ? 'Delete tab' : `Delete ${ev.tabIds.length} tabs`
+    case 'tabs.moveT': return 'Move tab'
+    case 'workpiece.set': {
+      const keys = Object.keys(ev.changes)
+      const dims = ['widthMM', 'heightMM', 'thicknessMM']
+      if (keys.length > 0 && keys.every((k) => dims.includes(k))) return 'Stock Size'
+      if (keys.length === 1) {
+        if (keys[0] === 'units') return 'Units'
+        if (keys[0] === 'origin') return 'Origin'
+        if (keys[0] === 'zOrigin') return 'Z Origin'
+        if (keys[0] === 'material') return 'Material'
+      }
+      return 'Workpiece'
+    }
+    case 'snapshot': return ev.reason === 'compaction' ? 'History start (compacted)' : 'Project start'
+  }
+}
+
+// Broad family used for chip coloring in the timeline UI.
+export type EventFamily = 'path' | 'op' | 'tab' | 'project'
+
+export function familyOf(kind: TimelineEvent['kind']): EventFamily {
+  if (kind.startsWith('paths.') || kind === 'shape.params') return 'path'
+  if (kind.startsWith('op.')) return 'op'
+  if (kind.startsWith('tabs.')) return 'tab'
+  return 'project'
+}

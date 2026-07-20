@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { useTimelineStore } from '../timeline/timelineStore'
+import type { WorkpieceEventChanges } from '../timeline/events'
 import type { SpindleType } from './spindle'
 
 export type Units = 'mm' | 'in'
@@ -104,7 +106,18 @@ interface WorkpieceState {
 
 export const useWorkpieceStore = create<WorkpieceState>()(
   persist(
-    (set) => ({
+    (set, get) => {
+      // Project-scoped setters record a workpiece.set timeline event (skipped
+      // when the value is unchanged, so form re-commits don't spam the log).
+      // Machine-local setters below (table limits, rigidity, feeds, spindle,
+      // safe height) stay OFF the timeline — they're machine config, not
+      // project history. Scrub restores bypass these via setState directly.
+      const setProj = <K extends keyof WorkpieceEventChanges>(key: K, value: Required<WorkpieceEventChanges>[K]) => {
+        if (get()[key] === value) return
+        set({ [key]: value } as Partial<WorkpieceState>)
+        useTimelineStore.getState().record({ kind: 'workpiece.set', changes: { [key]: value } })
+      }
+      return ({
       widthMM: 300,
       heightMM: 200,
       thicknessMM: 18,
@@ -122,13 +135,13 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       maxSpindleRpm: 24000,
       spindleType: 'vfd',
       autoFeedEnabled: false,
-      setWidth: (mm) => set({ widthMM: mm }),
-      setHeight: (mm) => set({ heightMM: mm }),
-      setThickness: (mm) => set({ thicknessMM: mm }),
-      setUnits: (u) => set({ units: u }),
-      setOrigin: (o) => set({ origin: o }),
-      setZOrigin: (o) => set({ zOrigin: o }),
-      setMaterial: (m) => set({ material: m }),
+      setWidth: (mm) => setProj('widthMM', mm),
+      setHeight: (mm) => setProj('heightMM', mm),
+      setThickness: (mm) => setProj('thicknessMM', mm),
+      setUnits: (u) => setProj('units', u),
+      setOrigin: (o) => setProj('origin', o),
+      setZOrigin: (o) => setProj('zOrigin', o),
+      setMaterial: (m) => setProj('material', m),
       setTableLimitWidth: (mm) => set({ tableLimitWidthMM: mm }),
       setTableLimitHeight: (mm) => set({ tableLimitHeightMM: mm }),
       setTableLimitDepth: (mm) => set({ tableLimitDepthMM: mm }),
@@ -139,7 +152,8 @@ export const useWorkpieceStore = create<WorkpieceState>()(
       setMaxSpindleRpm: (rpm) => set({ maxSpindleRpm: rpm }),
       setSpindleType: (t) => set({ spindleType: t }),
       setAutoFeedEnabled: (v) => set({ autoFeedEnabled: v }),
-    }),
+      })
+    },
     { name: 'freazykam-workpiece' }
   )
 )

@@ -5,9 +5,14 @@ import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useTabStore } from '../store/tabStore'
+import { useTimelineStore, nearestCheckpoint } from '../timeline/timelineStore'
 import { sanitizeFileName } from './filename'
 
-const PROJECT_VERSION = 1
+// v2: adds the `timeline` block (event log + cursor + genesis checkpoint) so
+// the operation history survives save/load. The materialized paths/operations/
+// tabs snapshot is still written — v1-era readers and the loader's fallback
+// path (corrupt/newer timeline) use it.
+const PROJECT_VERSION = 2
 
 export function buildProjectData() {
   const { name } = useProjectStore.getState()
@@ -28,6 +33,7 @@ export function buildProjectData() {
   }))
   const { profiles, activeId } = usePostProcessorStore.getState()
   const { tabs } = useTabStore.getState()
+  const { events, cursor } = useTimelineStore.getState()
 
   return {
     version: PROJECT_VERSION,
@@ -43,6 +49,11 @@ export function buildProjectData() {
     operations,
     postProcessors: { profiles, activeId },
     tabs,
+    timeline: {
+      events,
+      cursor,
+      genesis: nearestCheckpoint(0).state,
+    },
   }
 }
 
@@ -64,4 +75,5 @@ export function saveProject(explicitName?: string) {
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
   useProjectStore.getState().markClean()
+  useTimelineStore.getState().markSaved()
 }

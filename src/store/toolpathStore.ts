@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { OP_TYPE_COLORS } from '../colors'
 import { uid } from '../uid'
+import { useTimelineStore } from '../timeline/timelineStore'
+import { serializeOp, DERIVED_OP_KEYS, type SerializedOperation } from '../timeline/events'
 import type { CuttingDirection } from './toolStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
 type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
@@ -156,9 +158,17 @@ type AddPayload =
 
 interface ToolpathState {
   operations: AnyOperation[]
-  addOperation: (op: AddPayload) => string
-  updateOperation: (id: string, updates: Partial<AnyOperation>) => void
+  // opts.record=false skips timeline recording — for derived/system writes
+  // (regenerate's helical-center write-back, G-code import which records its
+  // own event after segments are attached).
+  addOperation: (op: AddPayload, opts?: { record?: boolean }) => string
+  updateOperation: (id: string, updates: Partial<AnyOperation>, opts?: { record?: boolean }) => void
   deleteOperation: (id: string) => void
+  // Recorded variants of replaceOperations for user-facing reorder /
+  // group-delete (PathsPanel). replaceOperations itself stays raw — it's for
+  // load/undo/import machinery and view-state rewrites.
+  reorderOperations: (operations: AnyOperation[]) => void
+  deleteOperations: (ids: string[]) => void
   setSegments: (id: string, segments: MotionSegment[]) => void
   setError: (id: string, error: string) => void
   toggleVisibility: (id: string) => void
@@ -178,23 +188,53 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   return false
 }
 
-export const useToolpathStore = create<ToolpathState>()((set) => ({
+export const useToolpathStore = create<ToolpathState>()((set, get) => ({
   operations: [],
 
-  addOperation: (op) => {
+  addOperation: (op, opts) => {
     const id = uid('op')
     const color = OP_TYPE_COLORS[op.type] ?? '#94a3b8'
-    set((s) => ({
-      operations: [...s.operations, { ...op, id, status: 'pending', segments: [], color, visible: true } as AnyOperation],
-    }))
+    const newOp = { ...op, id, status: 'pending', segments: [], color, visible: true } as AnyOperation
+    set((s) => ({ operations: [...s.operations, newOp] }))
+    if (opts?.record !== false) {
+      useTimelineStore.getState().record({ kind: 'op.add', op: serializeOp(newOp) })
+    }
     return id
   },
 
-  updateOperation: (id, updates) =>
-    set((s) => ({ operations: s.operations.map((o) => o.id === id ? { ...o, ...updates } as AnyOperation : o) })),
+  updateOperation: (id, updates, opts) => {
+    const opType = get().operations.find((o) => o.id === id)?.type
+    set((s) => ({ operations: s.operations.map((o) => o.id === id ? { ...o, ...updates } as AnyOperation : o) }))
+    if (opts?.record === false) return
+    const recordable = { ...updates } as Record<string, unknown>
+    for (const k of DERIVED_OP_KEYS) delete recordable[k]
+    if (Object.keys(recordable).length > 0) {
+      // Settings edits amend the op's defining chip (usually its op.add) —
+      // changing a pocket's depth is an argument edit to that call, not a new
+      // timeline entry. Fallback records normally if no definer exists.
+      const tl = useTimelineStore.getState()
+      if (!tl.amendOpSettings(id, recordable as Partial<SerializedOperation>)) {
+        tl.record({ kind: 'op.update', opId: id, opType, updates: recordable as Partial<SerializedOperation> })
+      }
+    }
+  },
 
-  deleteOperation: (id) =>
-    set((s) => ({ operations: s.operations.filter((o) => o.id !== id) })),
+  deleteOperation: (id) => {
+    const opType = get().operations.find((o) => o.id === id)?.type
+    set((s) => ({ operations: s.operations.filter((o) => o.id !== id) }))
+    useTimelineStore.getState().record({ kind: 'op.delete', opIds: [id], opType })
+  },
+
+  reorderOperations: (operations) => {
+    set({ operations })
+    useTimelineStore.getState().record({ kind: 'op.reorder', order: operations.map((o) => o.id) })
+  },
+
+  deleteOperations: (ids) => {
+    if (ids.length === 0) return
+    set((s) => ({ operations: s.operations.filter((o) => !ids.includes(o.id)) }))
+    useTimelineStore.getState().record({ kind: 'op.delete', opIds: ids })
+  },
 
   setSegments: (id, segments) =>
     set((s) => ({
@@ -213,17 +253,17 @@ export const useToolpathStore = create<ToolpathState>()((set) => ({
   toggleVisibility: (id) =>
     set((s) => ({ operations: s.operations.map((o) => o.id === id ? { ...o, visible: !o.visible } as AnyOperation : o) })),
 
-  moveOperation: (id, dir) =>
-    set((s) => {
-      const idx = s.operations.findIndex((o) => o.id === id)
-      if (idx < 0) return s
-      const newIdx = dir === 'up' ? idx - 1 : idx + 1
-      if (newIdx < 0 || newIdx >= s.operations.length) return s
-      const ops = [...s.operations]
-      const [removed] = ops.splice(idx, 1)
-      ops.splice(newIdx, 0, removed)
-      return { operations: ops }
-    }),
+  moveOperation: (id, dir) => {
+    const s = get()
+    const idx = s.operations.findIndex((o) => o.id === id)
+    if (idx < 0) return
+    const newIdx = dir === 'up' ? idx - 1 : idx + 1
+    if (newIdx < 0 || newIdx >= s.operations.length) return
+    const ops = [...s.operations]
+    const [removed] = ops.splice(idx, 1)
+    ops.splice(newIdx, 0, removed)
+    s.reorderOperations(ops)
+  },
 
   replaceOperations: (operations) => set({ operations }),
 

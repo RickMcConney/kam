@@ -17,7 +17,7 @@ interface TabsFormState {
 }
 
 export function TabsForm({ onClose }: { onClose: () => void }) {
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { tabs, applyTabs, deleteTab, deletePathTabs } = useTabStore()
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
@@ -40,21 +40,18 @@ export function TabsForm({ onClose }: { onClose: () => void }) {
 
   function handleApply() {
     if (!singlePath) return
-    pushHistoryBoth()
     applyTabs(singlePath.id, form.count, singlePath.d, form.lengthMM, form.heightMM)
     regenerateAffected(singlePath.id)
     save('tabs', form)
   }
 
   function handleDelete(id: string) {
-    pushHistoryBoth()
     deleteTab(id)
     if (singlePath) regenerateAffected(singlePath.id)
   }
 
   function handleClearAll() {
     if (!singlePath) return
-    pushHistoryBoth()
     deletePathTabs(singlePath.id)
     regenerateAffected(singlePath.id)
   }

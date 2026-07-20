@@ -64,9 +64,9 @@ export default function PathsPanel() {
     paths, selectedIds, collapsedGroups,
     selectPath, toggleVisibility, deletePath,
     toggleGroupVisibility, toggleGroupCollapsed, deleteGroup,
-    pushHistoryBoth, showPath,
+    showPath,
   } = usePathsStore()
-  const { operations, toggleVisibility: toggleOpVisibility, deleteOperation, replaceOperations } = useToolpathStore()
+  const { operations, toggleVisibility: toggleOpVisibility, deleteOperation, replaceOperations, reorderOperations, deleteOperations } = useToolpathStore()
   const toolsById = useToolStore((s) => Object.fromEntries(s.tools.map((t) => [t.id, t])))
   const [editingOpId, setEditingOpId] = useState<string | null>(null)
   const [collapsedOpGroups, setCollapsedOpGroups] = useState<Set<string>>(new Set())
@@ -100,7 +100,7 @@ export default function PathsPanel() {
     if (newIdx < 0 || newIdx >= opGroupOrder.length) return
     const newOrder = [...opGroupOrder]
     ;[newOrder[idx], newOrder[newIdx]] = [newOrder[newIdx], newOrder[idx]]
-    replaceOperations(newOrder.flatMap((tid) => opGroupMap.get(tid)!))
+    reorderOperations(newOrder.flatMap((tid) => opGroupMap.get(tid)!))
   }
 
   function moveWithinGroup(opId: string, toolId: string, dir: 'up' | 'down') {
@@ -109,7 +109,7 @@ export default function PathsPanel() {
     const newIdx = dir === 'up' ? idx - 1 : idx + 1
     if (newIdx < 0 || newIdx >= groupOps.length) return
     ;[groupOps[idx], groupOps[newIdx]] = [groupOps[newIdx], groupOps[idx]]
-    replaceOperations(opGroupOrder.flatMap((tid) => tid === toolId ? groupOps : opGroupMap.get(tid)!))
+    reorderOperations(opGroupOrder.flatMap((tid) => tid === toolId ? groupOps : opGroupMap.get(tid)!))
   }
 
   function toggleGroupVisible(toolId: string, groupOps: AnyOperation[]) {
@@ -119,8 +119,8 @@ export default function PathsPanel() {
     ))
   }
 
-  function confirmDeleteGroup(toolId: string, groupOps: AnyOperation[]) {
-    replaceOperations(operations.filter((o) => o.toolId !== toolId))
+  function confirmDeleteGroup(groupOps: AnyOperation[]) {
+    deleteOperations(groupOps.map((o) => o.id))
     if (groupOps.some((o) => o.id === editingOpId)) setEditingOpId(null)
     setConfirmDeleteGroupId(null)
   }
@@ -324,7 +324,7 @@ export default function PathsPanel() {
                         Cancel
                       </button>
                       <button
-                        onClick={() => confirmDeleteGroup(toolId, groupOps)}
+                        onClick={() => confirmDeleteGroup(groupOps)}
                         className="px-1.5 py-0.5 text-xs rounded bg-red-700 hover:bg-red-600 text-white flex-shrink-0"
                       >
                         Delete
@@ -430,7 +430,7 @@ export default function PathsPanel() {
                             </button>
                             <button
                               title="Delete"
-                              onClick={(e) => { e.stopPropagation(); pushHistoryBoth(); deleteOperation(op.id); if (op.id === editingOpId) setEditingOpId(null) }}
+                              onClick={(e) => { e.stopPropagation(); deleteOperation(op.id); if (op.id === editingOpId) setEditingOpId(null) }}
                               className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-900/40 text-gray-500 dark:text-neutral-400 hover:text-red-400 transition-opacity flex-shrink-0"
                             >
                               <Trash2 size={ICON.sm} />

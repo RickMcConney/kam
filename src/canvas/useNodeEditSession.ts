@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRefState } from './useRefState'
 import { usePathsStore } from '../store/pathsStore'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { useUIStore } from '../store/uiStore'
 import { regenerateAffected } from '../cam/regenerate'
 import { parseDToNodes, nodesToD, type PathNode } from './nodeUtils'
@@ -95,11 +96,11 @@ export function useNodeEditSession() {
     ]
     localPast.current = localPast.current.slice(0, -1)
     if (entry.globalStep) {
-      // Replay the gesture's atomic global entry: restores the joined-away /
+      // Replay the gesture's atomic timeline event: restores the joined-away /
       // split-off path and the edited path's stored d in one step. Guarded so
       // the store subscription doesn't clobber the local restore below.
       selfWriteRef.current = true
-      usePathsStore.getState().undo()
+      useTimelineStore.getState().undo()
       selfWriteRef.current = false
     }
     setEditNodes(entry.nodes)
@@ -117,7 +118,7 @@ export function useNodeEditSession() {
     localFuture.current = localFuture.current.slice(1)
     if (entry.globalStep) {
       selfWriteRef.current = true
-      usePathsStore.getState().redo()
+      useTimelineStore.getState().redo()
       selfWriteRef.current = false
     }
     setEditNodes(entry.nodes)
@@ -135,7 +136,7 @@ export function useNodeEditSession() {
     }
     const d = nodesToD(nodes, editClosedRef.current)
     if (d === path.d) return // unchanged (e.g. join already wrote this d) — no history entry
-    usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }])
+    usePathsStore.getState().batchUpdatePaths([{ id: pid, d, shapeParams: null }], 'points')
     regenerateAffected(pid)
   }, [])
 

@@ -28,7 +28,7 @@ interface InlayFormState {
 
 export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: InlayOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
@@ -88,7 +88,6 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
   function handleGenerate() {
     if (groups.length === 0 || !pocketTool || (!vbitTool && !finishIsNone)) return
-    pushHistoryBoth()
     setGenerating(true)
 
     // After the guard, the wall tool is present unless finishIsNone (roughing-only); the

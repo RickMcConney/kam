@@ -1,10 +1,12 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { zPasses, arcLengths, interpPt, stripClosingDuplicate } from './geom'
+import { designPathAtT, nearestArcLen, polylinePassWithTabs } from './profile'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
 import type { CuttingDirection } from '../store/toolStore'
+import type { Tab } from '../store/tabStore'
 
 export interface TrochoidalParams {
   side: CutSide
@@ -115,8 +117,10 @@ export function generateTrochoidal(
   d: string,
   tool: Tool,
   params: TrochoidalParams,
+  tabs?: Tab[],
 ): MotionSegment[] {
-  const subpaths = splitSelfIntersecting(flattenPath(d, 0.05))
+  const designSubs = flattenPath(d, 0.05)
+  const subpaths = splitSelfIntersecting(designSubs)
   if (subpaths.length === 0) throw new Error('No geometry found in path')
 
   const safeZ = params.safeHeightMM ?? 5
@@ -208,6 +212,27 @@ export function generateTrochoidal(
     if (total < 1e-6) continue
     const tangentAt = makeTangentSampler(closed, lens)
 
+    // Tab ranges (same design-path t → offset-path arc-length mapping as
+    // profile.ts). Two range sets: the loop guide path (`closed`, corners
+    // rounded) widened by the loop amplitude — during a loop the tool wanders
+    // up to ~l along-path from its guide position — and the exact wall path
+    // for the finishing pass.
+    const tabRanges: { start: number; end: number; tabZ: number }[] = []
+    const exactLens = arcLengths(closedExact)
+    const tabRangesExact: { start: number; end: number; tabZ: number }[] = []
+    if (tabs && tabs.length > 0) {
+      for (const tab of tabs) {
+        const pos = designPathAtT(designSubs, tab.t)
+        if (!pos) continue
+        const tabZ = Math.min(0, -params.depthMM + tab.heightMM)
+        const half = tab.lengthMM / 2 + tool.diameterMM / 2
+        const center = nearestArcLen(closed, lens, pos[0], pos[1])
+        tabRanges.push({ start: center - half - l, end: center + half + l, tabZ })
+        const centerExact = nearestArcLen(closedExact, exactLens.lens, pos[0], pos[1])
+        tabRangesExact.push({ start: centerExact - half, end: centerExact + half, tabZ })
+      }
+    }
+
     const nLoops = Math.floor(total / w)
     if (nLoops === 0) continue
 
@@ -226,6 +251,9 @@ export function generateTrochoidal(
     for (let pi = 0; pi < passes.length; pi++) {
       const zDepth = passes[pi]
       const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+      // Tabs only constrain passes that cut below the tab top
+      const activeRanges = tabRanges.filter((tr) => zDepth < tr.tabZ)
+      const inTabRange = (s: number) => activeRanges.some((tr) => s >= tr.start && s <= tr.end)
 
       if (params.rampIn) {
         // Rapid to ramp start Z (surface on first pass, previous depth thereafter).
@@ -259,20 +287,36 @@ export function generateTrochoidal(
           z = rampStartZ + (zDepth - rampStartZ) * (i / rampSteps)
           feedScale = 0.5
         }
+        // Lift the whole loop over tab zones — the tab bridges the kerf, so
+        // any cutting there below tab height would sever it.
+        if (activeRanges.length > 0 && inTabRange(s)) {
+          const tabZ = activeRanges.find((tr) => s >= tr.start && s <= tr.end)!.tabZ
+          if (z < tabZ) z = tabZ
+        }
 
         const seg: MotionSegment = { x: cx + offsetVal * px, y: cy + offsetVal * py, z, rapid: false }
         if (feedScale !== undefined) seg.feedScale = feedScale
         segs.push(seg)
       }
 
-      // Return to start to close the loop at full depth.
-      segs.push({ x: p0x, y: p0y, z: zDepth, rapid: false })
+      // Return to start to close the loop at full depth (lifted if a tab
+      // covers the start of the guide path).
+      const startTab = activeRanges.find((tr) => 0 >= tr.start && 0 <= tr.end)
+      segs.push({ x: p0x, y: p0y, z: startTab ? Math.max(zDepth, startTab.tabZ) : zDepth, rapid: false })
 
       // Optional finishing pass: one clean sweep along the offset path.
+      // With active tabs, use the generic tab-lifting polyline pass instead of
+      // arc fitting (same trade-off as profile.ts — arcs can't carry Z-lifts;
+      // gcode.ts re-fits arcs between the tabs).
       if (params.finishingPass) {
-        const arcSegs = arcFitPolyline(closedExact, 0.1)
-        for (const s of arcSegs) {
-          segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+        const activeExact = tabRangesExact.filter((tr) => zDepth < tr.tabZ)
+        if (activeExact.length > 0) {
+          segs.push(...polylinePassWithTabs(closedExact, zDepth, activeExact, exactLens.lens))
+        } else {
+          const arcSegs = arcFitPolyline(closedExact, 0.1)
+          for (const s of arcSegs) {
+            segs.push({ x: s.x, y: s.y, z: zDepth, rapid: false, ...(s.arc ? { arc: s.arc } : {}) })
+          }
         }
       }
     }

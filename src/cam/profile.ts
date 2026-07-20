@@ -29,7 +29,7 @@ function fitCircle(pts: Pt2[]): { cx: number; cy: number; r: number } | null {
 }
 
 // Evaluate XY at arc-length fraction t across all subpaths (matches TabLayer's evalPathAtT convention).
-function designPathAtT(subpaths: Pt2[][], t: number): [number, number] | null {
+export function designPathAtT(subpaths: Pt2[][], t: number): [number, number] | null {
   let totalLen = 0
   const segs: { pts: Pt2[]; startLen: number; segLen: number }[] = []
   for (const sp of subpaths) {
@@ -57,7 +57,7 @@ function designPathAtT(subpaths: Pt2[][], t: number): [number, number] | null {
 }
 
 // Project (tx, ty) onto a polyline and return the arc-length of the nearest point.
-function nearestArcLen(pts: Pt2[], arcLens: number[], tx: number, ty: number): number {
+export function nearestArcLen(pts: Pt2[], arcLens: number[], tx: number, ty: number): number {
   let bestDist = Infinity, bestLen = 0
   for (let i = 1; i < pts.length; i++) {
     const ax = pts[i - 1][0], ay = pts[i - 1][1]
@@ -75,7 +75,7 @@ function nearestArcLen(pts: Pt2[], arcLens: number[], tx: number, ty: number): n
 }
 
 // Generate segments for one polyline pass with tab support.
-function polylinePassWithTabs(
+export function polylinePassWithTabs(
   pts: Pt2[],
   zDepth: number,
   tabRanges: { start: number; end: number; tabZ: number }[],

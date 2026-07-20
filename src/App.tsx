@@ -12,11 +12,13 @@ import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
 import { useWorkpieceStore } from './store/workpieceStore'
 import { useToolpathStore } from './store/toolpathStore'
+import { useTimelineStore } from './timeline/timelineStore'
 import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const ThreeView = lazy(() => import('./three/ThreeView'))
+const TimelinePanel = lazy(() => import('./panels/TimelinePanel'))
 
 const WORKSPACE_TABS: { id: WorkspaceTab; label: string }[] = [
   { id: '2d', label: '2D View' },
@@ -70,6 +72,11 @@ function MainWorkspace() {
           {workspaceTab === 'postprocessor' && <PostProcessorPanel />}
         </div>
 
+        {workspaceTab === '2d' && (
+          <Suspense fallback={null}>
+            <TimelinePanel />
+          </Suspense>
+        )}
       </div>
     </div>
   )
@@ -109,18 +116,18 @@ function useKeyboardShortcuts() {
       if (mod && e.key === 'z') {
         e.preventDefault()
         // Local (node-edit/pen/drill) undo only while it has something to undo;
-        // otherwise fall through to global undo — e.g. a cross-path join clears
-        // the local stack and is undone via the global history entry it wrote.
+        // otherwise fall through to timeline undo — e.g. a cross-path join clears
+        // the local stack and is undone via the timeline event it wrote.
         const { nodeEditUndo, nodeEditCanUndo } = useUIStore.getState()
         if (nodeEditUndo && nodeEditCanUndo) { nodeEditUndo(); return }
-        usePathsStore.getState().undo()
+        useTimelineStore.getState().undo()
         return
       }
       if (mod && (e.key === 'y' || e.key === 'Z')) {
         e.preventDefault()
         const { nodeEditRedo, nodeEditCanRedo } = useUIStore.getState()
         if (nodeEditRedo && nodeEditCanRedo) { nodeEditRedo(); return }
-        usePathsStore.getState().redo()
+        useTimelineStore.getState().redo()
         return
       }
       if (mod && e.key === 'd') { e.preventDefault(); usePathsStore.getState().duplicateSelected(); return }

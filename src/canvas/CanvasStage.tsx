@@ -13,6 +13,7 @@ import { usePathsStore } from '../store/pathsStore'
 import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
+import type { PathEditGesture } from '../timeline/events'
 import { useUIStore } from '../store/uiStore'
 import { nextPathColor } from '../importers/svgImporter'
 import { importFile } from '../io/importFile'
@@ -549,6 +550,7 @@ export default function CanvasStage() {
               const srcPath = allPaths.find((p) => p.id === currentPid)
               selfWriteRef.current = true
               usePathsStore.getState().applyPathEdit({
+                gesture: 'trim',
                 updates: [{ id: currentPid, d: nodesToD(result.nodes, result.closed), shapeParams: null }],
                 add: [{
                   id: uid('trim'),
@@ -584,7 +586,7 @@ export default function CanvasStage() {
             const d = penNodesToPathD(nodes, false, ct)
             if (d) {
               const id = uid('pen')
-              usePathsStore.getState().addPaths([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
+              usePathsStore.getState().addPaths([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }], { source: 'pen' })
               usePathsStore.getState().selectPath(id)
             }
           }
@@ -1202,14 +1204,15 @@ export default function CanvasStage() {
 
   // Shared commit for the move/resize/skew/rotate bakes: batch-update the
   // touched paths and regenerate each affected operation ONCE (bugs.md H1/R4).
-  const bakeTransform = useCallback((pathIds: string[], makeUpdate: (p: ImportedPath) => PathUpdate) => {
+  // `gesture` names the timeline chip (Move/Scale/Rotate/Skew).
+  const bakeTransform = useCallback((pathIds: string[], gesture: PathEditGesture, makeUpdate: (p: ImportedPath) => PathUpdate) => {
     const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
     const updates = pathIds.flatMap((id) => {
       const path = allPaths.find((p) => p.id === id)
       return path ? [makeUpdate(path)] : []
     })
     if (updates.length) {
-      batchUpdatePaths(updates)
+      batchUpdatePaths(updates, gesture)
       regenerateAffectedMany(pathIds)
     }
   }, [])
@@ -1235,7 +1238,7 @@ export default function CanvasStage() {
           // marked local step lets Ctrl+Z revert both, in-session, in one press.
           pushLocalUndo(nodes, editClosedRef.current, true)
           selfWriteRef.current = true
-          usePathsStore.getState().applyPathEdit({ updates: [{ id: pid, d: newD }], deleteIds: [crossTarget.pathId] })
+          usePathsStore.getState().applyPathEdit({ gesture: 'join', updates: [{ id: pid, d: newD }], deleteIds: [crossTarget.pathId] })
           selfWriteRef.current = false
           regenerateAffected(pid)
           setEditNodes(joined)
@@ -1255,7 +1258,7 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'translate') {
         const { dx, dy } = lt
-        bakeTransform(m.pathIds, (path) => ({
+        bakeTransform(m.pathIds, 'move', (path) => ({
           id: path.id,
           d: translateD(path.d, dx, dy),
           ...(path.shapeParams ? { shapeParams: translateShapeParams(path.shapeParams, dx, dy) } : {}),
@@ -1272,7 +1275,7 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'scale') {
         const { sx, sy, ax, ay } = lt
-        bakeTransform(m.pathIds, (path) => {
+        bakeTransform(m.pathIds, 'scale', (path) => {
           const newShapeParams = path.shapeParams
             ? scaleShapeParams(path.shapeParams, ax, ay, sx, sy)
             : undefined
@@ -1286,7 +1289,7 @@ export default function CanvasStage() {
         })
       } else if (lt && lt.kind === 'skew') {
         const { kx, ky, ax, ay } = lt
-        bakeTransform(m.pathIds, (path) => ({ id: path.id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null }))
+        bakeTransform(m.pathIds, 'skew', (path) => ({ id: path.id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null }))
       }
       setLiveTransform(null)
       setLiveBBox(null)
@@ -1298,7 +1301,7 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'rotate') {
         const { angle, cx, cy } = lt
-        bakeTransform(m.pathIds, (path) => ({ id: path.id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null }))
+        bakeTransform(m.pathIds, 'rotate', (path) => ({ id: path.id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null }))
       }
       setLiveTransform(null)
       setLiveRotationAngle(null)
@@ -1373,15 +1376,17 @@ export default function CanvasStage() {
         const id = uid('shape')
         const { addPaths: add, selectPath: sel } = usePathsStore.getState()
         const d = generateShapeD(params)
-        add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }])
+        add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }], { source: shapeType === 'text' ? 'text' : 'shape' })
         sel(id)
 
-        // If text font wasn't loaded yet, update d once it loads
+        // If text font wasn't loaded yet, update d once it loads — via
+        // updateShapeParams so the fix amends the Text chip in place rather
+        // than recording a separate edit event.
         if (params.type === 'text' && !d) {
           import('../shapes/textGenerator').then(({ loadFont }) => {
             loadFont(params.fontFamily).then(() => {
               const newD = generateShapeD(params)
-              if (newD) usePathsStore.getState().batchUpdatePaths([{ id, d: newD }])
+              if (newD) usePathsStore.getState().updateShapeParams(id, params)
             })
           })
         }
@@ -1424,7 +1429,7 @@ export default function CanvasStage() {
             // marked local step lets Ctrl+Z revert both, in-session, in one press.
             if (initSnap) pushLocalUndo(initSnap, editClosedRef.current, true)
             selfWriteRef.current = true
-            usePathsStore.getState().applyPathEdit({ updates: [{ id: pid, d: newD }], deleteIds: [crossTgt.pathId] })
+            usePathsStore.getState().applyPathEdit({ gesture: 'join', updates: [{ id: pid, d: newD }], deleteIds: [crossTgt.pathId] })
             selfWriteRef.current = false
             regenerateAffected(pid)
             setEditNodes(joined)
@@ -1454,6 +1459,7 @@ export default function CanvasStage() {
             if (initSnap) pushLocalUndo(initSnap, curClosed, true)
             selfWriteRef.current = true
             usePathsStore.getState().applyPathEdit({
+              gesture: 'weld',
               updates: [{ id: pid, d: remainD }],
               add: loopD ? [{
                 id: uid('weld-loop'),
@@ -1514,6 +1520,7 @@ export default function CanvasStage() {
                 pushLocalUndo(nodes, editClosedRef.current, true)
                 selfWriteRef.current = true
                 usePathsStore.getState().applyPathEdit({
+                  gesture: 'weld',
                   updates: [{ id: pid, d: remainD }],
                   add: loopD ? [{
                     id: uid('connect-loop'),
@@ -1562,7 +1569,7 @@ export default function CanvasStage() {
           if (d) {
             const id = uid('pen')
             const { addPaths: add, selectPath: sel } = usePathsStore.getState()
-            add([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }])
+            add([{ id, name: 'Pen Path', d, visible: true, color: nextPathColor() }], { source: 'pen' })
             sel(id)
           }
         }

@@ -69,7 +69,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
               // params here): DrillForm's edit view displays them, and the ??
               // fallbacks above keep the op regenerable if the source circle
               // is later deleted or edited into a non-circle.
-              updateOperation(opId, { helicalCenterX: cx, helicalCenterY: cy, helicalRadius: r } as Parameters<typeof updateOperation>[1])
+              updateOperation(opId, { helicalCenterX: cx, helicalCenterY: cy, helicalRadius: r } as Parameters<typeof updateOperation>[1], { record: false })
             }
           }
         }
@@ -134,12 +134,13 @@ export async function regenerateOperation(opId: string): Promise<void> {
     } else if (op.type === 'trochoidal') {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
+      const trochTabs = useTabStore.getState().getPathTabs(op.pathId)
       setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
         side: op.side, depthMM: op.depthMM,
         stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM, trochoidalEngagementFraction(tool, op.trochStepMM)),
         direction: op.direction, trochStepMM: op.trochStepMM, trochRadiusMM: op.trochRadiusMM,
         finishingPass: op.finishingPass, rampIn: op.rampIn, startNear: op.entryHint, safeHeightMM,
-      }))
+      }, trochTabs.length > 0 ? trochTabs : undefined))
 
     } else if (op.type === 'inlay') {
       const path = paths.find((p) => p.id === op.pathId)

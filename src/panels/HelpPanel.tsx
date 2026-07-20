@@ -69,6 +69,10 @@ const FEATURES = [
     title: 'Toolpaths',
     desc: 'Select paths, then open the Machine panel to add Profile, Pocket, Drill, Surfacing, or 3D Profile operations. Run Simulate to preview the motion, or Export G-code to download Grbl-compatible output.',
   },
+  {
+    title: 'Timeline',
+    desc: 'The strip under the canvas records every action — shapes, edits, CAM operations, tabs, and workpiece changes — as chips. Click or drag across chips to travel to any point in time; the timeline is saved with the project. Undo (Ctrl+Z) steps back and discards the future when you make a new edit; clicking the timeline instead INSERTS new edits, keeping later events replayable on top. Hover a chip and click its ✕ to remove that action from history, or use the fold button to flatten old history into a snapshot. Both are permanent.',
+  },
 ]
 
 function Kbd({ children }: { children: string }) {

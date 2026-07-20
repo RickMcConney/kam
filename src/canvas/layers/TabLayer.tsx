@@ -162,7 +162,6 @@ export function TabLayer({ viewport }: Props) {
               e.cancelBubble = true
               const stage = e.target.getStage()
               if (!stage) return
-              usePathsStore.getState().pushHistoryBoth()
               setDraggingTabId(v.id)
               document.body.style.cursor = 'grabbing'
 

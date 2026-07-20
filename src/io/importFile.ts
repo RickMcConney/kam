@@ -9,6 +9,8 @@ import { useUIStore } from '../store/uiStore'
 import { useSimStore } from '../store/simStore'
 import { useProjectStore } from '../store/projectStore'
 import { useToolpathStore, GCODE_IMPORT_TOOL_ID, type MotionSegment } from '../store/toolpathStore'
+import { useTimelineStore } from '../timeline/timelineStore'
+import { serializeOp } from '../timeline/events'
 import { uid } from '../uid'
 
 // Shared file-import entry point used by both the toolbar Import button and
@@ -26,7 +28,7 @@ export function completeDxfImport(text: string, fileName: string, units?: DxfUni
   const result = importDxf(text, fileName, units, { x: widthMM / 2, y: heightMM / 2 })
   if (result.paths.length > 0) {
     const store = usePathsStore.getState()
-    store.addPaths(result.paths)
+    store.addPaths(result.paths, { source: 'import', label: `Import DXF (${fileName})` })
     store.toggleGroupCollapsed(result.groupId)
     useUIStore.getState().setSidebarTab('draw')
   } else if (result.error) {
@@ -62,18 +64,32 @@ export function importFile(file: File): void {
 
       // Replace any existing imported G-code operations, then add the new one
       const tpStore = useToolpathStore.getState()
+      const oldGcodeIds = tpStore.operations.filter((o) => o.type === 'gcode').map((o) => o.id)
       tpStore.replaceOperations(
         tpStore.operations.filter((o) => o.type !== 'gcode')
       )
+      if (oldGcodeIds.length > 0) {
+        useTimelineStore.getState().record({ kind: 'op.delete', opIds: oldGcodeIds }, { label: 'Replace imported G-code' })
+      }
       const filename = file.name
       const opName = filename.replace(/\.(gcode|nc|ngc|tap)$/i, '')
+      // record:false — the op.add event is recorded manually below AFTER segments
+      // are attached; a G-code op's segments live in the event (they can't be
+      // regenerated from settings like other op types).
       const opId = tpStore.addOperation({
         type: 'gcode',
         name: opName,
         toolId: GCODE_IMPORT_TOOL_ID,
         filename,
-      })
+      }, { record: false })
       useToolpathStore.getState().setSegments(opId, motionSegs)
+      const gcodeOp = useToolpathStore.getState().operations.find((o) => o.id === opId)
+      if (gcodeOp) {
+        useTimelineStore.getState().record(
+          { kind: 'op.add', op: serializeOp(gcodeOp) },
+          { label: `Import G-code (${filename})` },
+        )
+      }
 
       // Rename project to match the imported file
       useProjectStore.getState().setName(opName)
@@ -107,7 +123,7 @@ export function importFile(file: File): void {
               for (const path of result.paths) path.d = translateD(path.d, dx, dy)
           }
           const store = usePathsStore.getState()
-          store.addPaths(result.paths)
+          store.addPaths(result.paths, { source: 'import', label: `Import SVG (${file.name})` })
           store.toggleGroupCollapsed(result.groupId)
           useUIStore.getState().setSidebarTab('draw')
         } else {
@@ -148,7 +164,7 @@ export function importFile(file: File): void {
         const { widthMM, heightMM } = useWorkpieceStore.getState()
         const path = importStl(buffer, file.name.replace(/\.stl$/i, ''), widthMM / 2, heightMM / 2)
         const store = usePathsStore.getState()
-        store.addPaths([path])
+        store.addPaths([path], { source: 'import', label: `Import STL (${file.name})` })
         store.selectPath(path.id)
         useUIStore.getState().setSidebarTab('draw')
       } catch (err) {
@@ -186,7 +202,7 @@ export function importFile(file: File): void {
           visible: true,
           color: '#94a3b8',
           imageSrc: src,
-        }])
+        }], { source: 'import', label: `Import image (${file.name})` })
         useUIStore.getState().setSidebarTab('draw')
       }
       img.onerror = () =>

@@ -53,6 +53,19 @@ interface UIState {
   shapesPanelOpen: boolean
   setupPanelOpen: boolean
   helpOpen: boolean
+  timelineOpen: boolean
+  // Ask MachinePanel to open an operation's edit form (set by TimelinePanel
+  // when an op chip is clicked, consumed + cleared by MachinePanel).
+  requestEditOpId: string | null
+  // Ask MachinePanel to open a generator form (boolean/offset/pattern) in edit
+  // mode for a timeline event (by event id — seqs shift under inserts/removals).
+  requestEditEventId: string | null
+  // Ask MachinePanel to open a specific form (timeline tabs/corner chips —
+  // those forms edit the current selection, which the chip click sets).
+  requestMachineForm: string | null
+  // Bumped when a path chip is clicked so PropertiesPanel briefly highlights —
+  // it's the editor for the chip's shape/text parameters.
+  propertiesFlashSeq: number
   // Local undo/redo for point-edit sessions — registered by CanvasStage, used by Toolbar + App
   nodeEditUndo: (() => void) | null
   nodeEditRedo: (() => void) | null
@@ -71,6 +84,11 @@ interface UIState {
   setShapesPanelOpen: (open: boolean) => void
   setSetupPanelOpen: (open: boolean) => void
   setHelpOpen: (open: boolean) => void
+  setTimelineOpen: (open: boolean) => void
+  setRequestEditOpId: (id: string | null) => void
+  setRequestEditEventId: (id: string | null) => void
+  setRequestMachineForm: (form: string | null) => void
+  flashProperties: () => void
   setSidebarTab: (tab: SidebarTab) => void
   setWorkspaceTab: (tab: WorkspaceTab) => void
   toggleSnap: () => void
@@ -118,6 +136,11 @@ export const useUIStore = create<UIState>()(
   shapesPanelOpen: false,
   setupPanelOpen: false,
   helpOpen: false,
+  timelineOpen: true,
+  requestEditOpId: null,
+  requestEditEventId: null,
+  requestMachineForm: null,
+  propertiesFlashSeq: 0,
   nodeEditUndo: null,
   nodeEditRedo: null,
   nodeEditCanUndo: false,
@@ -133,6 +156,11 @@ export const useUIStore = create<UIState>()(
   setShapesPanelOpen: (open) => set({ shapesPanelOpen: open }),
   setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
   setHelpOpen: (open) => set({ helpOpen: open }),
+  setTimelineOpen: (open) => set({ timelineOpen: open }),
+  setRequestEditOpId: (id) => set({ requestEditOpId: id }),
+  setRequestEditEventId: (id) => set({ requestEditEventId: id }),
+  setRequestMachineForm: (form) => set({ requestMachineForm: form }),
+  flashProperties: () => set((s) => ({ propertiesFlashSeq: s.propertiesFlashSeq + 1 })),
   setSidebarTab: (tab) => set({ sidebarTab: tab, activeTool: 'select' }),
   setWorkspaceTab: (tab) => set({ workspaceTab: tab }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
@@ -164,7 +192,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'freazykam-ui',
-      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType }),
+      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen }),
     }
   )
 )

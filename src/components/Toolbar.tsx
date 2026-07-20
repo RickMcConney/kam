@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
 import { useUIStore } from '../store/uiStore'
-import { usePathsStore } from '../store/pathsStore'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
@@ -135,9 +135,9 @@ function ProjectNameEditor() {
 export default function Toolbar() {
   const { snapEnabled, toggleSnap, setWorkspaceTab, darkMode, toggleDarkMode,
           nodeEditUndo, nodeEditRedo, nodeEditCanUndo, nodeEditCanRedo, setHelpOpen } = useUIStore()
-  const { undo: mainUndo, redo: mainRedo, canUndo, canRedo } = usePathsStore()
+  const { undo: mainUndo, redo: mainRedo, canUndo, canRedo } = useTimelineStore()
   // Local (node-edit/pen/drill) undo only while it has something to undo;
-  // otherwise fall through to global undo (matches the Ctrl+Z routing in App).
+  // otherwise fall through to timeline undo (matches the Ctrl+Z routing in App).
   const useLocalUndo = nodeEditUndo !== null && nodeEditCanUndo
   const useLocalRedo = nodeEditRedo !== null && nodeEditCanRedo
   const undo = useLocalUndo ? nodeEditUndo : mainUndo

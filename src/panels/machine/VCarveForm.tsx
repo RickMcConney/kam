@@ -19,7 +19,7 @@ interface VCarveFormState {
 
 export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: VCarveOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -59,7 +59,6 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   async function handleGenerate() {
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
-    pushHistoryBoth()
     setGenerating(true)
     try {
       if (editOp && editBoundary) {

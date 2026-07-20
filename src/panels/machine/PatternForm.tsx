@@ -5,9 +5,12 @@ import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
-import { usePathsStore } from '../../store/pathsStore'
+import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
+import { useUIStore } from '../../store/uiStore'
+import { useTimelineStore } from '../../timeline/timelineStore'
+import { regenerateAffectedMany } from '../../cam/regenerate'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
-import { computePatternInstances, applyPatternInstance } from '../../tools/patternOp'
+import { computePatternInstances, applyPatternInstance, type PatternParams } from '../../tools/patternOp'
 import { uid } from '../../uid'
 
 interface PatternLinParams { rows: number; cols: number; xSpacingMM: number; ySpacingMM: number }
@@ -18,22 +21,43 @@ interface PatternFormState {
   cirParams: PatternCirParams
 }
 
-export function PatternForm({ onClose }: { onClose: () => void }) {
-  const { paths, selectedIds, addPaths, pushHistoryBoth } = usePathsStore()
+// Edit mode (timeline pattern-chip click): recompute the pattern from its
+// recorded sources with new parameters, amending the chip. Result path ids
+// are reused index-by-index so ops on existing copies survive count changes
+// where possible.
+export interface PatternEditCtx {
+  eventId: string
+  resultIds: string[]
+  sourceIds: string[]
+  params: PatternParams
+}
+
+export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx?: PatternEditCtx }) {
+  const { paths, selectedIds, addPaths } = usePathsStore()
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
 
   const [form, setForm] = useState<PatternFormState>(() => {
     const saved = load('pattern') as Partial<PatternFormState> | null
-    return {
+    const base: PatternFormState = {
       mode: saved?.mode ?? 'linear',
       linParams: saved?.linParams ?? { rows: 2, cols: 3, xSpacingMM: 20, ySpacingMM: 20 },
       cirParams: saved?.cirParams ?? { count: 6, radiusMM: 30, startAngleDeg: 0, endAngleDeg: 360, rotateItems: true },
     }
+    if (editCtx) {
+      const p = editCtx.params
+      if (p.type === 'linear') {
+        return { ...base, mode: 'linear', linParams: { rows: p.rows, cols: p.cols, xSpacingMM: p.xSpacingMM, ySpacingMM: p.ySpacingMM } }
+      }
+      return { ...base, mode: 'circular', cirParams: { count: p.count, radiusMM: p.radiusMM, startAngleDeg: p.startAngleDeg, endAngleDeg: p.endAngleDeg, rotateItems: p.rotateItems } }
+    }
+    return base
   })
   const [error, setError] = useState<string | null>(null)
 
-  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const selectedPaths = editCtx
+    ? editCtx.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
+    : paths.filter((p) => selectedIds.includes(p.id))
   const canApply = selectedPaths.length >= 1
 
   function upLin<K extends keyof PatternLinParams>(k: K, v: PatternLinParams[K]) {
@@ -45,27 +69,61 @@ export function PatternForm({ onClose }: { onClose: () => void }) {
 
   function handleApply() {
     setError(null)
-    const params = form.mode === 'linear'
+    const params: PatternParams = form.mode === 'linear'
       ? { type: 'linear' as const, ...form.linParams }
       : { type: 'circular' as const, ...form.cirParams }
     const instances = computePatternInstances(params)
     if (instances.length === 0) { setError('Pattern produced no instances'); return }
     const instancesToCreate = form.mode === 'linear' ? instances.slice(1) : instances
-    const newPaths: Parameters<typeof addPaths>[0] = []
+    const defs: { name: string; d: string; color: string }[] = []
     for (const inst of instancesToCreate) {
       for (const src of selectedPaths) {
-        newPaths.push({
-          id: uid('path-pattern'),
+        defs.push({
           name: `${src.name} ${inst.index !== undefined ? inst.index + 1 : `r${inst.row}c${inst.col}`}`,
           d: applyPatternInstance(src.d, inst),
-          visible: true,
           color: src.color,
         })
       }
     }
-    if (newPaths.length === 0) { setError('Pattern produced no geometry'); return }
-    pushHistoryBoth()
-    addPaths(newPaths)
+    if (defs.length === 0) { setError('Pattern produced no geometry'); return }
+
+    if (editCtx) {
+      // Rework in place: reuse existing result ids by index (ops on surviving
+      // copies keep working), add/remove for count changes, amend the chip.
+      const tl = useTimelineStore.getState()
+      const ev = tl.events.find((e) => e.id === editCtx.eventId)
+      const oldPaths = ev?.kind === 'paths.add' ? ev.paths : []
+      const newPaths: ImportedPath[] = defs.map((def, i) => oldPaths[i]
+        ? { ...oldPaths[i], d: def.d, name: def.name }
+        : { id: uid('path-pattern'), name: def.name, d: def.d, visible: true, color: def.color })
+      const deleteIds = oldPaths.slice(defs.length).map((p) => p.id)
+      usePathsStore.getState().rewriteGeneratedRaw({
+        updates: newPaths.slice(0, Math.min(oldPaths.length, defs.length)).map((p) => ({ id: p.id, d: p.d, name: p.name })),
+        add: newPaths.slice(oldPaths.length),
+        deleteIds,
+      })
+      tl.amendAddEvent(editCtx.eventId, {
+        paths: newPaths,
+        pattern: { sourceIds: editCtx.sourceIds, params },
+      })
+      usePathsStore.getState().setSelectedIds(newPaths.map((p) => p.id))
+      regenerateAffectedMany(newPaths.map((p) => p.id))
+      useUIStore.getState().showStatus('Pattern updated', 'info')
+      save('pattern', form)
+      return
+    }
+
+    const newPaths: ImportedPath[] = defs.map((def) => ({
+      id: uid('path-pattern'),
+      name: def.name,
+      d: def.d,
+      visible: true,
+      color: def.color,
+    }))
+    addPaths(newPaths, {
+      source: 'pattern',
+      pattern: { sourceIds: selectedPaths.map((p) => p.id), params },
+    })
     save('pattern', form)
   }
 
@@ -73,15 +131,19 @@ export function PatternForm({ onClose }: { onClose: () => void }) {
   const u = units
 
   return (
-    <FormShell title="Pattern" onClose={onClose}>
+    <FormShell title={editCtx ? 'Edit Pattern' : 'Pattern'} onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Paths</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          {editCtx ? 'Source paths' : 'Paths'}
+        </label>
         {canApply ? (
           <div className="space-y-0.5">
-            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
+            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label={editCtx ? 'source' : 'selected'} />)}
           </div>
         ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a path first</p>
+          <p className="text-body text-amber-400 flex items-center gap-1">
+            <AlertCircle size={ICON.sm} /> {editCtx ? 'Source paths no longer exist' : 'Select a path first'}
+          </p>
         )}
       </div>
       <ToggleRow label="Mode" options={['linear', 'circular'] as const} value={form.mode} onChange={(v) => setForm((f) => ({ ...f, mode: v }))} />
@@ -132,7 +194,7 @@ export function PatternForm({ onClose }: { onClose: () => void }) {
         </div>
       )}
       {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
-      <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label="Apply Pattern" />
+      <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label={editCtx ? 'Update Pattern' : 'Apply Pattern'} />
     </FormShell>
   )
 }

@@ -29,7 +29,7 @@ interface Profile3dFormState {
 
 export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp?: Profile3dOperation }) {
   const { tools } = useToolStore()
-  const { paths, pushHistoryBoth } = usePathsStore()
+  const { paths } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled, thicknessMM } = useWorkpieceStore()
@@ -91,7 +91,6 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
   function handleGenerate() {
     if (!selectedTool || !selectedPath || !selectedPath.stlSrc || !selectedPath.stlModelBounds) return
-    pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
     // Re-Generate for a model this form already generated for updates that op in place.

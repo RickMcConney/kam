@@ -1,0 +1,661 @@
+import { create } from 'zustand'
+import { uid } from '../uid'
+import { hydrateOp, labelFor, serializeOp, KNOWN_EVENT_KINDS, type Checkpoint, type SerializedOperation, type TimelineEvent, type TimelineEventPayload } from './events'
+import { replay } from './applyEvent'
+import type { ImportedPath, PathUpdate } from '../store/pathsStore'
+import { usePathsStore } from '../store/pathsStore'
+import type { ShapeParams } from '../shapes/shapeGenerators'
+import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
+import { useTabStore, type Tab } from '../store/tabStore'
+import { useUIStore } from '../store/uiStore'
+import { useWorkpieceStore } from '../store/workpieceStore'
+import type { OffsetEventMeta, PatternEventMeta, WorkpieceEventChanges } from './events'
+import type { BooleanOpType } from '../tools/booleanOps'
+
+// The operation timeline: an append-only event log ("the program") with a
+// cursor. Every project mutation records one TimelineEvent; undo/redo and the
+// TimelinePanel scrub the cursor. Replay correctness can be checked any time
+// with window.__fkamReplayCheck().
+
+const CHECKPOINT_INTERVAL = 25
+const COALESCE_MS = 800
+// Auto-compaction: past this many events, the oldest are folded into one
+// snapshot(compaction) event so the log (memory + .fkam size) stays bounded.
+const COMPACT_THRESHOLD = 500
+const COMPACT_KEEP = 250
+
+// Checkpoints are derived caches, not UI state — kept out of the reactive store.
+// Key = seq the checkpoint captures state AFTER (0 = genesis).
+const checkpoints = new Map<number, Checkpoint>()
+checkpoints.set(0, { paths: [], operations: [], tabs: [] })
+
+// The boot genesis above can't capture the workpiece: this module evaluates
+// inside an import cycle with the stores, so reading them here would hit
+// uninitialized bindings. Backfill once the module graph has finished loading
+// (before any user interaction) — otherwise scrubbing back past the first
+// workpiece.set event has no baseline to restore and leaves the new value.
+queueMicrotask(() => {
+  const g = checkpoints.get(0)
+  if (g && !g.workpiece && useTimelineStore.getState().events.length === 0) {
+    checkpoints.set(0, captureCheckpoint())
+  }
+})
+
+function captureWorkpiece(): Required<WorkpieceEventChanges> {
+  const { widthMM, heightMM, thicknessMM, units, origin, zOrigin, material } = useWorkpieceStore.getState()
+  return { widthMM, heightMM, thicknessMM, units, origin, zOrigin, material }
+}
+
+function captureCheckpoint(): Checkpoint {
+  return {
+    paths: usePathsStore.getState().paths,
+    operations: useToolpathStore.getState().operations.map(serializeOp),
+    tabs: useTabStore.getState().tabs,
+    workpiece: captureWorkpiece(),
+  }
+}
+
+export function nearestCheckpoint(seq: number): { seq: number; state: Checkpoint } {
+  let best = 0
+  for (const k of checkpoints.keys()) {
+    if (k <= seq && k > best) best = k
+  }
+  return { seq: best, state: checkpoints.get(best)! }
+}
+
+export interface RecordMeta {
+  label?: string
+  gestureId?: string
+  // Override the captured selection. Needed when the selection change lands
+  // AFTER the recording store action (CanvasStage does addPaths → selectPath),
+  // and for add-events generally: scrubbing to one should select what it created.
+  selectionAfter?: string[]
+}
+
+export type ScrubIntent = 'undo' | 'browse'
+
+// How the cursor last moved into the past — set by scrubTo, read by record()
+// to choose truncate vs insert. Not reactive state; no UI depends on it.
+let lastScrubIntent: ScrubIntent = 'undo'
+
+interface TimelineState {
+  events: TimelineEvent[]
+  cursor: number    // seq of last applied event; invariant: events[i].seq === i + 1
+  savedSeq: number  // seq at last project save (dirty = cursor !== savedSeq)
+
+  record: (payload: TimelineEventPayload, meta?: RecordMeta) => void
+  // Rebuild the log as an empty program whose genesis is the CURRENT store
+  // state. Used by new project, and by project load when the file carries no
+  // usable timeline (v1 files, corrupt/newer-version logs).
+  resetToCurrentState: () => void
+  markSaved: () => void
+  // Install a timeline from a saved project (v2 .fkam). The stores must
+  // already hold the state at `cursor` (the file's snapshot block) — nothing is
+  // replayed here. Returns false when the timeline is invalid or from a newer
+  // version, in which case the caller should resetToCurrentState() instead.
+  loadTimeline: (genesis: Checkpoint, events: TimelineEvent[], cursor: number) => boolean
+
+  // Time travel: restore project state as of event `seq` (0 = genesis).
+  // Replays from the nearest checkpoint, preserves toolpath segments for ops
+  // whose settings + source geometry are unchanged, and schedules debounced
+  // regeneration for the rest.
+  //
+  // `intent` decides what a NEW edit does while the cursor sits in the past:
+  //   'undo'   — classic undo semantics: the edit truncates the future
+  //   'browse' — timeline browsing: the edit is INSERTED at the cursor and the
+  //              later events are kept, renumbered, and replayable on top
+  //              (self-contained payloads make this safe: events about other
+  //              paths/ops apply unchanged; events whose target was removed
+  //              no-op).
+  scrubTo: (seq: number, intent?: ScrubIntent) => void
+  // Delete one event from the timeline: later events are renumbered and state
+  // is re-derived by replaying without it. NOT undoable — it edits the history
+  // itself, not the project.
+  removeEvent: (seq: number) => void
+  // Fold events 1..uptoSeq (clamped to the cursor — ghosts are never baked in)
+  // into a single snapshot(compaction) event. Auto-invoked past
+  // COMPACT_THRESHOLD; flattenHistory() is the manual "compact everything up
+  // to here" action. NOT undoable.
+  compact: (uptoSeq: number) => void
+  flattenHistory: () => void
+
+  // Edit-in-place: parameter changes (shape/text params, op settings) are
+  // argument edits to the call that created the thing — they AMEND the payload
+  // of the last event ≤ cursor that wrote the target instead of appending a
+  // new chip. Replay stays consistent because nothing between that event and
+  // the cursor touches those fields (it wouldn't be the last writer otherwise).
+  // Returns false when no defining event exists (caller falls back to
+  // recording a normal event). NOT undoable — the chip IS the record.
+  amendPathDefinition: (pathId: string, upd: { d: string; shapeParams?: ShapeParams | null; name?: string }) => boolean
+  amendOpSettings: (opId: string, updates: Partial<SerializedOperation>) => boolean
+  // BooleanForm edit mode: rewrite a boolean chip's op type + result geometry.
+  // Keyed by event id (seqs shift on insert/remove/compact while the form is
+  // open). The live result path is rewritten by the caller (rewritePathRaw).
+  amendBooleanEvent: (eventId: string, patch: { boolOp: BooleanOpType; resultD: string; resultName: string }) => boolean
+  // Offset/Pattern edit modes: replace a paths.add chip's generated paths and
+  // generator metadata wholesale. The live paths are rewritten by the caller
+  // (rewriteGeneratedRaw).
+  amendAddEvent: (eventId: string, patch: { paths: ImportedPath[]; offset?: OffsetEventMeta; pattern?: PatternEventMeta }) => boolean
+  // Tab edits are in-place: the last tabs.apply chip (or snapshot/genesis
+  // entry) that defined this path's tabs gets its payload replaced with the
+  // path's CURRENT tabs. Returns false when a legacy tabs.moveT/tabs.delete
+  // chip sits in between (amending beneath it would be overridden on replay) —
+  // the caller then records a normal event.
+  amendTabsForPath: (pathId: string, tabs: Tab[]) => boolean
+  undo: () => void
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
+}
+
+function mergePathUpdate(older: PathUpdate, newer: PathUpdate): PathUpdate {
+  return {
+    id: newer.id,
+    d: newer.d,
+    // undefined means "leave untouched" — the older event's value survives
+    shapeParams: newer.shapeParams !== undefined ? newer.shapeParams : older.shapeParams,
+    name: newer.name !== undefined ? newer.name : older.name,
+    hidden: newer.hidden !== undefined ? newer.hidden : older.hidden,
+  }
+}
+
+// Merge a rapid-fire follow-up event into the tip event (numeric spinners,
+// tab drags) so the timeline records gestures, not keystrokes. Returns the
+// merged event, or null when the pair is not coalescible.
+function coalesce(last: TimelineEvent, payload: TimelineEventPayload): TimelineEvent | null {
+  if (last.kind !== payload.kind) return null
+  switch (payload.kind) {
+    case 'op.update': {
+      if (last.kind !== 'op.update' || last.opId !== payload.opId) return null
+      return { ...last, updates: { ...last.updates, ...payload.updates } }
+    }
+    case 'tabs.moveT': {
+      if (last.kind !== 'tabs.moveT' || last.tabId !== payload.tabId) return null
+      return { ...last, t01: payload.t01 }
+    }
+    case 'shape.params': {
+      if (last.kind !== 'shape.params' || last.pathId !== payload.pathId) return null
+      return { ...last, params: payload.params }
+    }
+    case 'workpiece.set': {
+      if (last.kind !== 'workpiece.set') return null
+      const changes = { ...last.changes, ...payload.changes }
+      // Recompute the label — merging can widen it (width-only → Stock Size → Workpiece)
+      return { ...last, changes, label: labelFor({ kind: 'workpiece.set', changes }) }
+    }
+    case 'paths.edit': {
+      if (last.kind !== 'paths.edit') return null
+      // Different gestures stay separate chips (a Move must not merge into a
+      // Rotate); only pure update↔update pairs over the same path set merge.
+      if (last.gesture !== payload.gesture) return null
+      const pureLast = !(last.add?.length) && !(last.deleteIds?.length)
+      const pureNew = !(payload.add?.length) && !(payload.deleteIds?.length)
+      if (!pureLast || !pureNew) return null
+      const lastIds = last.updates.map((u) => u.id).sort().join(' ')
+      const newIds = payload.updates.map((u) => u.id).sort().join(' ')
+      if (lastIds !== newIds) return null
+      const olderById = new Map(last.updates.map((u) => [u.id, u]))
+      return {
+        ...last,
+        updates: payload.updates.map((u) => mergePathUpdate(olderById.get(u.id)!, u)),
+      }
+    }
+    default:
+      return null
+  }
+}
+
+// Paths an op's toolpath depends on — used to decide whether generated
+// segments survive a scrub.
+function refPathIdsOf(op: SerializedOperation): string[] {
+  const ids: string[] = []
+  if ('pathId' in op && op.pathId) ids.push(op.pathId)
+  if ('islandIds' in op && op.islandIds) ids.push(...op.islandIds)
+  return ids
+}
+
+const tabsFor = (tabs: Tab[], pathId: string) => tabs.filter((t) => t.pathId === pathId)
+
+// Debounced regeneration after scrubbing — rapid scrubs (drag across the
+// timeline) only regenerate once the cursor settles.
+let regenTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRegen() {
+  if (regenTimer) clearTimeout(regenTimer)
+  regenTimer = setTimeout(() => {
+    regenTimer = null
+    // Dynamic import avoids a module cycle (regenerate → stores → timelineStore)
+    void import('../cam/regenerate').then(({ regenerateOperation }) => {
+      for (const op of useToolpathStore.getState().operations) {
+        if (op.status === 'needs-update') void regenerateOperation(op.id)
+      }
+    })
+  }, 300)
+}
+
+// Write the project state as of event `seq` (folded over `events`) into the
+// stores. Shared by scrubTo and removeEvent — the latter re-derives the SAME
+// cursor position over a changed event list, so this never early-outs on
+// cursor equality. Does not touch the timeline store itself.
+function restoreStateAt(seq: number, events: TimelineEvent[]): void {
+  const cp = nearestCheckpoint(seq)
+  const state = replay(cp.state, events.slice(cp.seq), seq)
+
+  // Preserve generated segments where the op's settings, source paths, and
+  // (for profile ops) tabs are unchanged — scrubbing over unrelated events
+  // must not throw away seconds-long adaptive/vcarve generations.
+  const currentOps = new Map(useToolpathStore.getState().operations.map((o) => [o.id, o]))
+  const curPathD = new Map(usePathsStore.getState().paths.map((p) => [p.id, p.d]))
+  const newPathD = new Map(state.paths.map((p) => [p.id, p.d]))
+  const curTabs = useTabStore.getState().tabs
+  const hydrated: AnyOperation[] = state.operations.map((sop) => {
+    const cur = currentOps.get(sop.id)
+    if (cur && cur.status === 'done') {
+      const sameSettings = JSON.stringify(serializeOp(cur)) === JSON.stringify(sop)
+      const samePaths = refPathIdsOf(sop).every((id) =>
+        newPathD.has(id) && curPathD.get(id) === newPathD.get(id))
+      const sameTabs = (sop.type !== 'profile' && sop.type !== 'trochoidal') ||
+        JSON.stringify(tabsFor(curTabs, sop.pathId)) === JSON.stringify(tabsFor(state.tabs, sop.pathId))
+      if (sameSettings && samePaths && sameTabs) return cur
+    }
+    return hydrateOp(sop)
+  })
+
+  const pathIds = new Set(state.paths.map((p) => p.id))
+  const selection = (seq > 0 ? events[seq - 1].selectionAfter : [])
+    .filter((id) => pathIds.has(id))
+
+  usePathsStore.setState({ paths: state.paths, selectedIds: selection })
+  useToolpathStore.setState({ operations: hydrated })
+  useTabStore.setState({ tabs: state.tabs })
+
+  // Restore workpiece fields when the checkpoint era carries them (timelines
+  // from before Phase 6 don't — leave the workpiece as-is then). setState
+  // bypasses the recording setters; the surface-op auto-regen subscription
+  // (App.useSurfaceWorkpieceSync) fires only on actual width/height/origin
+  // changes, which is exactly when surface toolpaths need a rebuild.
+  const wp = state.workpiece
+  if (wp) {
+    const cur = useWorkpieceStore.getState()
+    const changed = (Object.keys(wp) as (keyof WorkpieceEventChanges)[])
+      .some((k) => wp[k] !== undefined && cur[k] !== wp[k])
+    if (changed) useWorkpieceStore.setState({ ...wp })
+  }
+
+  if (hydrated.some((o) => o.status === 'needs-update')) scheduleRegen()
+}
+
+export const useTimelineStore = create<TimelineState>()((set, get) => ({
+  events: [],
+  cursor: 0,
+  savedSeq: 0,
+
+  record: (payload, meta) => {
+    const s = get()
+    const atTip = s.cursor === s.events.length
+    const selectionAfter = meta?.selectionAfter ?? [...usePathsStore.getState().selectedIds]
+    const now = Date.now()
+
+    // Any change at/before the cursor invalidates checkpoints past it — they
+    // captured states derived from the old event content.
+    const dropFutureCheckpoints = () => {
+      for (const k of checkpoints.keys()) if (k > s.cursor) checkpoints.delete(k)
+    }
+
+    // Coalesce with the event AT the cursor (the one just applied) — covers
+    // both tip appends and mid-timeline inserts (spinner edits on an old shape
+    // must merge, not insert one event per keystroke). The 800 ms window means
+    // a mid-timeline merge target can only be an event we just inserted, never
+    // a genuinely old one. Never merge into an event a checkpoint or the last
+    // save captured — rewriting it would silently invalidate that snapshot.
+    const prev = s.cursor > 0 ? s.events[s.cursor - 1] : undefined
+    if (
+      prev &&
+      now - prev.t < COALESCE_MS &&
+      prev.seq !== s.savedSeq &&
+      !checkpoints.has(prev.seq)
+    ) {
+      const merged = coalesce(prev, payload)
+      if (merged) {
+        if (!atTip) dropFutureCheckpoints()
+        const events = [...s.events]
+        events[s.cursor - 1] = { ...merged, t: now, selectionAfter }
+        set({ events })
+        return
+      }
+    }
+
+    const event: TimelineEvent = {
+      ...payload,
+      seq: s.cursor + 1,
+      id: uid('ev'),
+      t: now,
+      label: meta?.label ?? labelFor(payload),
+      selectionAfter,
+      ...(meta?.gestureId ? { gestureId: meta.gestureId } : {}),
+    }
+
+    if (atTip) {
+      set({ events: [...s.events, event], cursor: event.seq })
+      if (event.seq % CHECKPOINT_INTERVAL === 0) checkpoints.set(event.seq, captureCheckpoint())
+      if (event.seq > COMPACT_THRESHOLD) {
+        get().compact(event.seq - COMPACT_KEEP)
+        useUIStore.getState().showStatus(`Timeline compacted — oldest ${event.seq - COMPACT_KEEP} events folded into a snapshot`, 'info')
+      }
+      return
+    }
+
+    dropFutureCheckpoints()
+    if (lastScrubIntent === 'undo') {
+      // Classic undo semantics: the discarded branch is gone
+      set({ events: [...s.events.slice(0, s.cursor), event], cursor: event.seq })
+      return
+    }
+
+    // Timeline browsing: INSERT the edit and keep the future, renumbered.
+    // The later events remain ghost chips — scrub/redo replays them on top of
+    // this change. A later event that rewrites the same target still wins when
+    // replayed (its payload is materialized), like a later line reassigning a
+    // variable.
+    const future = s.events.slice(s.cursor).map((ev) => ({ ...ev, seq: ev.seq + 1 }))
+    set({
+      events: [...s.events.slice(0, s.cursor), event, ...future],
+      cursor: event.seq,
+      // A save that pointed into the shifted future no longer matches any seq
+      ...(s.savedSeq > s.cursor ? { savedSeq: -1 } : {}),
+    })
+    useUIStore.getState().showStatus('Edit inserted into the timeline — later events are kept and replay on top', 'info')
+  },
+
+  resetToCurrentState: () => {
+    checkpoints.clear()
+    checkpoints.set(0, captureCheckpoint())
+    lastScrubIntent = 'undo'
+    set({ events: [], cursor: 0, savedSeq: 0 })
+  },
+
+  markSaved: () => set({ savedSeq: get().cursor }),
+
+  loadTimeline: (genesis, events, cursor) => {
+    const valid =
+      genesis && Array.isArray(genesis.paths) && Array.isArray(genesis.operations) && Array.isArray(genesis.tabs) &&
+      Array.isArray(events) &&
+      Number.isInteger(cursor) && cursor >= 0 && cursor <= events.length &&
+      events.every((ev, i) => ev && ev.seq === i + 1 && KNOWN_EVENT_KINDS.has(ev.kind))
+    if (!valid) return false
+    checkpoints.clear()
+    checkpoints.set(0, genesis)
+    lastScrubIntent = 'undo'
+    set({ events, cursor, savedSeq: cursor })
+    return true
+  },
+
+  scrubTo: (seq, intent = 'browse') => {
+    lastScrubIntent = intent
+    const s = get()
+    const target = Math.max(0, Math.min(s.events.length, Math.round(seq)))
+    if (target === s.cursor) return
+    restoreStateAt(target, s.events)
+    set({ cursor: target })
+  },
+
+  compact: (uptoSeq) => {
+    const s = get()
+    // Never fold unapplied ghost events into the snapshot
+    const upto = Math.min(Math.max(1, Math.round(uptoSeq)), s.cursor)
+    if (upto < 1 || s.events.length === 0) return
+    if (upto === 1 && s.events[0].kind === 'snapshot') return // already compacted to here
+    const cp = nearestCheckpoint(upto)
+    const folded = replay(cp.state, s.events.slice(cp.seq), upto)
+    const last = s.events[upto - 1]
+    const snapEvent: TimelineEvent = {
+      kind: 'snapshot',
+      state: folded,
+      reason: 'compaction',
+      seq: 1,
+      id: uid('ev'),
+      t: last.t,
+      label: labelFor({ kind: 'snapshot', state: folded, reason: 'compaction' }),
+      selectionAfter: last.selectionAfter,
+    }
+    const events = [snapEvent, ...s.events.slice(upto).map((ev) => ({ ...ev, seq: ev.seq - upto + 1 }))]
+    // Rebase checkpoints: original genesis keeps seq 0 (scrub-to-start still
+    // works — the snapshot event restores everything on redo), the folded
+    // state becomes checkpoint 1, kept-range checkpoints shift down.
+    const genesis = checkpoints.get(0)!
+    const kept = [...checkpoints.entries()]
+      .filter(([k]) => k > upto)
+      .map(([k, v]) => [k - upto + 1, v] as const)
+    checkpoints.clear()
+    checkpoints.set(0, genesis)
+    checkpoints.set(1, folded)
+    for (const [k, v] of kept) checkpoints.set(k, v)
+    set({
+      events,
+      cursor: s.cursor - upto + 1,
+      // A save inside the folded range no longer matches any seq
+      savedSeq: s.savedSeq >= upto ? s.savedSeq - upto + 1 : -1,
+    })
+  },
+
+  flattenHistory: () => {
+    const s = get()
+    if (s.cursor < 1) return
+    const folded = s.cursor
+    get().compact(folded)
+    useUIStore.getState().showStatus(`History flattened — ${folded} events folded into one snapshot`, 'info')
+  },
+
+  removeEvent: (seq) => {
+    const s = get()
+    if (!Number.isInteger(seq) || seq < 1 || seq > s.events.length) return
+    const removed = s.events[seq - 1]
+    if (removed.kind === 'snapshot') {
+      useUIStore.getState().showStatus('History-start snapshots hold everything before them and cannot be removed', 'warn')
+      return
+    }
+    // Drop the event and renumber everything after it. Later events that
+    // depended on what it created simply no-op on replay (ops referencing a
+    // removed path end up in error status — remove those events too).
+    const events = [
+      ...s.events.slice(0, seq - 1),
+      ...s.events.slice(seq).map((ev) => ({ ...ev, seq: ev.seq - 1 })),
+    ]
+    // Checkpoints at/after the removed event captured states that included it
+    for (const k of checkpoints.keys()) if (k >= seq) checkpoints.delete(k)
+    const cursor = s.cursor >= seq ? s.cursor - 1 : s.cursor
+    set({
+      events,
+      cursor,
+      // A save at/after the removed event no longer matches any seq
+      ...(s.savedSeq >= seq ? { savedSeq: -1 } : {}),
+    })
+    // Only re-derive state when the removed event was inside the applied range
+    if (s.cursor >= seq) restoreStateAt(cursor, events)
+    useUIStore.getState().showStatus(`Removed "${removed.label}" from the timeline`, 'info')
+  },
+
+  amendPathDefinition: (pathId, upd) => {
+    const s = get()
+    const amendPath = (p: ImportedPath): ImportedPath => ({
+      ...p,
+      d: upd.d,
+      ...(upd.shapeParams !== undefined ? { shapeParams: upd.shapeParams ?? undefined } : {}),
+      ...(upd.name !== undefined ? { name: upd.name } : {}),
+    })
+    const amendUpdate = (u: PathUpdate): PathUpdate => ({
+      ...u,
+      d: upd.d,
+      ...(upd.shapeParams !== undefined ? { shapeParams: upd.shapeParams } : {}),
+      ...(upd.name !== undefined ? { name: upd.name } : {}),
+    })
+
+    const commit = (idx: number, amended: TimelineEvent) => {
+      const events = [...s.events]
+      events[idx] = amended
+      // Checkpoints at/after the amended event captured the old payload's state
+      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    }
+
+    for (let i = s.cursor - 1; i >= 0; i--) {
+      const ev = s.events[i]
+      if (ev.kind === 'paths.add' && ev.paths.some((p) => p.id === pathId)) {
+        commit(i, { ...ev, paths: ev.paths.map((p) => p.id === pathId ? amendPath(p) : p) })
+        return true
+      }
+      if (ev.kind === 'shape.params' && ev.pathId === pathId) {
+        if (!upd.shapeParams) return false // a bare-d change can't live in a params event
+        commit(i, { ...ev, params: upd.shapeParams })
+        return true
+      }
+      if (ev.kind === 'paths.edit' && ev.updates.some((u) => u.id === pathId)) {
+        commit(i, { ...ev, updates: ev.updates.map((u) => u.id === pathId ? amendUpdate(u) : u) })
+        return true
+      }
+      if (ev.kind === 'paths.split' && ev.subPaths.some((p) => p.id === pathId)) {
+        commit(i, { ...ev, subPaths: ev.subPaths.map((p) => p.id === pathId ? amendPath(p) : p) })
+        return true
+      }
+      if (ev.kind === 'snapshot' && ev.state.paths.some((p) => p.id === pathId)) {
+        commit(i, { ...ev, state: { ...ev.state, paths: ev.state.paths.map((p) => p.id === pathId ? amendPath(p) : p) } })
+        return true
+      }
+    }
+    // The path predates recorded history (loaded/compacted project) — amend genesis
+    const g = checkpoints.get(0)
+    if (g && g.paths.some((p) => p.id === pathId)) {
+      const amended = { ...g, paths: g.paths.map((p) => p.id === pathId ? amendPath(p) : p) }
+      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      checkpoints.set(0, amended)
+      set({ savedSeq: -1 }) // genesis is part of the saved file
+      return true
+    }
+    return false
+  },
+
+  amendOpSettings: (opId, updates) => {
+    const s = get()
+    const commit = (idx: number, amended: TimelineEvent) => {
+      const events = [...s.events]
+      events[idx] = amended
+      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    }
+
+    for (let i = s.cursor - 1; i >= 0; i--) {
+      const ev = s.events[i]
+      if (ev.kind === 'op.update' && ev.opId === opId) {
+        commit(i, { ...ev, updates: { ...ev.updates, ...updates } })
+        return true
+      }
+      if (ev.kind === 'op.add' && ev.op.id === opId) {
+        commit(i, { ...ev, op: { ...ev.op, ...updates } as SerializedOperation })
+        return true
+      }
+      if (ev.kind === 'snapshot' && ev.state.operations.some((o) => o.id === opId)) {
+        commit(i, {
+          ...ev,
+          state: {
+            ...ev.state,
+            operations: ev.state.operations.map((o) => o.id === opId ? { ...o, ...updates } as SerializedOperation : o),
+          },
+        })
+        return true
+      }
+    }
+    const g = checkpoints.get(0)
+    if (g && g.operations.some((o) => o.id === opId)) {
+      const amended = {
+        ...g,
+        operations: g.operations.map((o) => o.id === opId ? { ...o, ...updates } as SerializedOperation : o),
+      }
+      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      checkpoints.set(0, amended)
+      set({ savedSeq: -1 })
+      return true
+    }
+    return false
+  },
+
+  amendBooleanEvent: (eventId, patch) => {
+    const s = get()
+    const idx = s.events.findIndex((ev) => ev.id === eventId)
+    if (idx === -1) return false
+    const ev = s.events[idx]
+    if (ev.kind !== 'paths.edit' || !ev.add?.length) return false
+    const amended: TimelineEvent = {
+      ...ev,
+      boolOp: patch.boolOp,
+      add: [{ ...ev.add[0], d: patch.resultD, name: patch.resultName }, ...ev.add.slice(1)],
+    }
+    const events = [...s.events]
+    events[idx] = amended
+    for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+    set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    return true
+  },
+
+  amendAddEvent: (eventId, patch) => {
+    const s = get()
+    const idx = s.events.findIndex((ev) => ev.id === eventId)
+    if (idx === -1) return false
+    const ev = s.events[idx]
+    if (ev.kind !== 'paths.add') return false
+    const amended: TimelineEvent = {
+      ...ev,
+      paths: patch.paths,
+      ...(patch.offset ? { offset: patch.offset } : {}),
+      ...(patch.pattern ? { pattern: patch.pattern } : {}),
+      selectionAfter: patch.paths.map((p) => p.id),
+    }
+    const events = [...s.events]
+    events[idx] = amended
+    for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+    set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    return true
+  },
+
+  amendTabsForPath: (pathId, tabs) => {
+    const s = get()
+    const commit = (idx: number, amended: TimelineEvent) => {
+      const events = [...s.events]
+      events[idx] = amended
+      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    }
+    for (let i = s.cursor - 1; i >= 0; i--) {
+      const ev = s.events[i]
+      // Legacy per-gesture tab chips in the way — amending beneath them would
+      // be overridden on replay; bail to normal recording.
+      if (ev.kind === 'tabs.moveT' || ev.kind === 'tabs.delete') return false
+      if (ev.kind === 'tabs.apply' && ev.pathId === pathId) {
+        commit(i, {
+          ...ev,
+          tabs,
+          label: labelFor({ kind: 'tabs.apply', pathId, tabs }),
+        })
+        return true
+      }
+      if (ev.kind === 'snapshot' && ev.state.tabs.some((t) => t.pathId === pathId)) {
+        commit(i, {
+          ...ev,
+          state: { ...ev.state, tabs: [...ev.state.tabs.filter((t) => t.pathId !== pathId), ...tabs] },
+        })
+        return true
+      }
+    }
+    const g = checkpoints.get(0)
+    if (g && g.tabs.some((t) => t.pathId === pathId)) {
+      checkpoints.set(0, { ...g, tabs: [...g.tabs.filter((t) => t.pathId !== pathId), ...tabs] })
+      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      set({ savedSeq: -1 })
+      return true
+    }
+    return false
+  },
+
+  undo: () => get().scrubTo(get().cursor - 1, 'undo'),
+  redo: () => get().scrubTo(get().cursor + 1, 'undo'),
+  canUndo: () => get().cursor > 0,
+  canRedo: () => get().cursor < get().events.length,
+}))

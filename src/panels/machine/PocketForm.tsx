@@ -28,7 +28,7 @@ interface PocketFormState {
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -86,7 +86,6 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   async function handleGenerate() {
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
-    pushHistoryBoth()
     setGenerating(true)
     // Run the (potentially slow, e.g. adaptive) pocket generation off the main thread so the
     // browser stays responsive — same worker pattern as regenerate.ts. Awaiting the worker also

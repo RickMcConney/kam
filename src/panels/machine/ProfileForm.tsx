@@ -22,7 +22,7 @@ interface ProfileFormState {
 
 export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?: ProfileOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -63,7 +63,6 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   async function handleGenerate() {
     if (selectedPaths.length === 0 || !selectedTool) return
     const tool = selectedTool
-    pushHistoryBoth()
     setGenerating(true)
     setErrorMsg(null)
     let failed = false

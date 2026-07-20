@@ -37,7 +37,7 @@ const CORNER_TREATMENTS: { type: TreatmentChoice; label: string; desc: string; p
 ]
 
 export function NodeEditForm({ onClose }: { onClose: () => void }) {
-  const { paths, selectedIds, batchUpdatePaths, pushHistoryBoth } = usePathsStore()
+  const { paths, selectedIds, batchUpdatePaths } = usePathsStore()
   const { setNodeEditPathId, setCornerPickSession, setTreatedCorners, selectedCorners, clearSelectedCorners } = useUIStore()
   const { load, save } = useFormDefaultsStore()
 
@@ -129,9 +129,8 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
     }
     const newD = applyCornerTreatments(baseD, treatmentsRef.current)
     if (newD !== activePath.d) {
-      pushHistoryBoth()
       lastWrittenDRef.current = newD
-      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null }])
+      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null }], 'corner')
       regenerateAffected(activePath.id)
     }
     sessionCache.set(activePath.id, { baseD, treatments: [...treatmentsRef.current] })

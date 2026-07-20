@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
-import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { generateSurface } from '../../cam/surfacing'
 import { effectiveStepDownMM } from '../../cam/feeds'
@@ -20,7 +19,6 @@ interface SurfaceFormState {
 export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?: SurfaceOperation }) {
   const { tools } = useToolStore()
   const { widthMM, heightMM, safeHeightMM } = useWorkpieceStore()
-  const { pushHistoryBoth } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
 
@@ -52,7 +50,6 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   function handleGenerate() {
     if (!selectedTool) return
-    pushHistoryBoth()
     setGenerating(true)
     if (editOp) {
       updateOperation(editOp.id, {
