@@ -24,8 +24,8 @@ export const AVAILABLE_FONTS: FontDef[] = [
 { label: 'Comic Sans MS', family: 'Comic Sans MS', url: `${BASE}fonts/Comic%20Sans%20MS.ttf` },
   { label: 'Courier New Bold', family: 'Courier New Bold', url: `${BASE}fonts/Courier%20New%20Bold.ttf` },
   { label: 'Times New Roman', family: 'Times New Roman', url: `${BASE}fonts/Times%20New%20Roman.ttf` },
-  { label: 'Roboto Mono', family: 'Roboto Mono', url: 'https://cdn.jsdelivr.net/npm/@fontsource/roboto-mono@4.5.10/files/roboto-mono-latin-400-normal.woff' },
-  { label: 'Open Sans', family: 'Open Sans', url: 'https://cdn.jsdelivr.net/npm/@fontsource/open-sans@4.5.14/files/open-sans-latin-400-normal.woff' },
+  { label: 'Roboto Mono', family: 'Roboto Mono', url: `${BASE}fonts/roboto-mono-regular.woff` },
+  { label: 'Open Sans', family: 'Open Sans', url: `${BASE}fonts/open-sans-regular.woff` },
   // Single-stroke engraving font (Relief SingleLine, OFL) — open strokes ideal for V-bit/engrave
   { label: 'Relief SingleLine (single-line)', family: 'Relief SingleLine', svg: `${BASE}fonts/ReliefSingleLineSVG-Regular.svg` },
 ]

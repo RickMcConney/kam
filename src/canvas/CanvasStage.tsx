@@ -14,6 +14,7 @@ import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import type { PathEditGesture } from '../timeline/events'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { useUIStore } from '../store/uiStore'
 import { nextPathColor } from '../importers/svgImporter'
 import { importFile } from '../io/importFile'
@@ -34,15 +35,13 @@ import { SimulationLayer } from './layers/SimulationLayer'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { useSimStore } from '../store/simStore'
 import { HandleType, LiveTransform , RULER_W, RULER_H } from './types'
-import { getMultiBBox, translateD, scaleAroundD, rotateAroundD, skewAroundD } from './selectionUtils'
+import { getMultiBBox, applyTransformStep, type TransformStep } from './selectionUtils'
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
   shapeParamsFromDrag,
   shapeParamsFromConfig,
   shapeDisplayName,
-  translateShapeParams,
-  scaleShapeParams,
   type ShapeType,
 } from '../shapes/shapeGenerators'
 import type { PenNode } from '../store/uiStore'
@@ -1214,6 +1213,15 @@ export default function CanvasStage() {
     if (updates.length) {
       batchUpdatePaths(updates, gesture)
       regenerateAffectedMany(pathIds)
+      // Open the Properties panel's transform editor for the chip this just
+      // wrote/merged into — otherwise it only appears after a later,
+      // unrelated timeline click (bugs.md-style gap: nothing surfaces it the
+      // first time a transform chip exists).
+      const tl = useTimelineStore.getState()
+      const ev = tl.events[tl.cursor - 1]
+      if (ev && ev.kind === 'paths.edit' && ev.updates.every((u) => u.transforms?.length)) {
+        useUIStore.getState().setTransformEditEventId(ev.id)
+      }
     }
   }, [])
 
@@ -1258,11 +1266,11 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'translate') {
         const { dx, dy } = lt
-        bakeTransform(m.pathIds, 'move', (path) => ({
-          id: path.id,
-          d: translateD(path.d, dx, dy),
-          ...(path.shapeParams ? { shapeParams: translateShapeParams(path.shapeParams, dx, dy) } : {}),
-        }))
+        const step: TransformStep = { kind: 'translate', dx, dy }
+        bakeTransform(m.pathIds, 'move', (path) => {
+          const r = applyTransformStep(path, step)
+          return { id: path.id, d: r.d, shapeParams: r.shapeParams, transforms: [step] }
+        })
       }
       setLiveTransform(null)
       setLiveBBox(null)
@@ -1275,21 +1283,18 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'scale') {
         const { sx, sy, ax, ay } = lt
+        const step: TransformStep = { kind: 'scale', sx, sy, ax, ay }
         bakeTransform(m.pathIds, 'scale', (path) => {
-          const newShapeParams = path.shapeParams
-            ? scaleShapeParams(path.shapeParams, ax, ay, sx, sy)
-            : undefined
-          // When params are valid, regenerate d from them to preserve exact geometry (arcs stay circular)
-          const newD = newShapeParams != null
-            ? generateShapeD(newShapeParams)
-            : scaleAroundD(path.d, ax, ay, sx, sy)
-          const typeChanged = newShapeParams && path.shapeParams && newShapeParams.type !== path.shapeParams.type
-          const name = typeChanged ? shapeDisplayName(newShapeParams!.type) : undefined
-          return { id: path.id, d: newD, shapeParams: newShapeParams === null ? null : newShapeParams, name }
+          const r = applyTransformStep(path, step)
+          return { id: path.id, d: r.d, shapeParams: r.shapeParams, name: r.name, transforms: [step] }
         })
       } else if (lt && lt.kind === 'skew') {
         const { kx, ky, ax, ay } = lt
-        bakeTransform(m.pathIds, 'skew', (path) => ({ id: path.id, d: skewAroundD(path.d, kx, ky, ax, ay), shapeParams: null }))
+        const step: TransformStep = { kind: 'skew', kx, ky, ax, ay }
+        bakeTransform(m.pathIds, 'skew', (path) => {
+          const r = applyTransformStep(path, step)
+          return { id: path.id, d: r.d, shapeParams: r.shapeParams, transforms: [step] }
+        })
       }
       setLiveTransform(null)
       setLiveBBox(null)
@@ -1301,7 +1306,11 @@ export default function CanvasStage() {
       const lt = liveTransformRef.current
       if (lt && lt.kind === 'rotate') {
         const { angle, cx, cy } = lt
-        bakeTransform(m.pathIds, 'rotate', (path) => ({ id: path.id, d: rotateAroundD(path.d, cx, cy, angle), shapeParams: null }))
+        const step: TransformStep = { kind: 'rotate', angle, cx, cy }
+        bakeTransform(m.pathIds, 'rotate', (path) => {
+          const r = applyTransformStep(path, step)
+          return { id: path.id, d: r.d, shapeParams: r.shapeParams, transforms: [step] }
+        })
       }
       setLiveTransform(null)
       setLiveRotationAngle(null)

@@ -1,17 +1,35 @@
 import { create } from 'zustand'
 import type { ImportedPath } from '../importers/svgImporter'
-import { translateD } from '../canvas/selectionUtils'
+import { translateD, type TransformStep } from '../canvas/selectionUtils'
 import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
 import { useTabStore } from './tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
-import { serializeOp, type PathsAddSource, type PathEditGesture, type OffsetEventMeta, type PatternEventMeta } from '../timeline/events'
+import { serializeOp, type PathsAddSource, type PathEditGesture, type OffsetEventMeta, type PatternEventMeta, type DuplicateEventMeta } from '../timeline/events'
 import type { BooleanOpType } from '../tools/booleanOps'
+import type { CornerTreatmentType } from '../tools/cornerTreatment'
 import { uid } from '../uid'
 
 export type { ImportedPath }
 
-export type PathUpdate = { id: string; d: string; shapeParams?: ShapeParams | null; name?: string; hidden?: boolean }
+// `transforms`: the geometric-transform recipe that produced `d`/`shapeParams`
+// (move/scale/rotate/skew/mirror only) — see selectionUtils.ts's
+// applyTransformStep. `corner`: the per-corner treatment recipe (gesture
+// 'corner' only) — see tools/cornerTreatment.ts's applyCornerTreatments.
+// `d`/`shapeParams` remain the immediately-applied baked value for live
+// editing and for gestures with no recipe concept (points/join/weld/trim/
+// text/boolean); timeline replay prefers a recipe when present so it
+// recomposes against the CURRENT geometry at that point in history instead
+// of stamping back a stale absolute value.
+export type PathUpdate = {
+  id: string
+  d: string
+  shapeParams?: ShapeParams | null
+  name?: string
+  hidden?: boolean
+  transforms?: TransformStep[]
+  corner?: { idx: number; type: CornerTreatmentType; radiusMM: number }[]
+}
 
 export type PathsAddMeta = { source?: PathsAddSource; label?: string; offset?: OffsetEventMeta; pattern?: PatternEventMeta }
 
@@ -286,20 +304,28 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   duplicateSelected: (offsetMM = 5) => {
     const s = get()
     if (s.selectedIds.length === 0) return
+    const pairs: DuplicateEventMeta['pairs'] = []
     const newPaths: ImportedPath[] = s.paths
       .filter((p) => s.selectedIds.includes(p.id))
-      .map((p) => ({
-        ...p,
-        id: uid('path-dup'),
-        name: `${p.name} copy`,
-        d: translateD(p.d, offsetMM, offsetMM),
-        shapeParams: p.shapeParams ? translateShapeParams(p.shapeParams, offsetMM, offsetMM) : undefined,
-      }))
+      .map((p) => {
+        const id = uid('path-dup')
+        pairs.push({ sourceId: p.id, resultId: id })
+        return {
+          ...p,
+          id,
+          name: `${p.name} copy`,
+          d: translateD(p.d, offsetMM, offsetMM),
+          shapeParams: p.shapeParams ? translateShapeParams(p.shapeParams, offsetMM, offsetMM) : undefined,
+        }
+      })
     set({
       paths: [...s.paths, ...newPaths],
       selectedIds: newPaths.map((p) => p.id),
     })
-    useTimelineStore.getState().record({ kind: 'paths.add', paths: newPaths, source: 'duplicate' })
+    // `duplicate` metadata lets replay recompute each copy from its source's
+    // CURRENT d instead of the stale snapshot in `paths` — same staleness
+    // fix already applied to offset/pattern/boolean/corner.
+    useTimelineStore.getState().record({ kind: 'paths.add', paths: newPaths, source: 'duplicate', duplicate: { pairs, offsetMM } })
   },
 
   replacePaths: (paths) => set({ paths, selectedIds: [] }),

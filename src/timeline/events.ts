@@ -43,7 +43,10 @@ export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' |
 
 // What kind of gesture produced a paths.edit event — names the chip and picks
 // its icon. Display metadata only; replay ignores it.
-export type PathEditGesture = 'move' | 'scale' | 'rotate' | 'skew' | 'mirror' | 'corner' | 'points' | 'join' | 'weld' | 'trim' | 'text' | 'boolean'
+// 'transform' is synthetic: timelineStore's coalesce() stamps it on a chip
+// that chained two or more DIFFERENT pure-geometry gestures (e.g. Move then
+// Rotate on the same path, nothing else in between) into one entry.
+export type PathEditGesture = 'move' | 'scale' | 'rotate' | 'skew' | 'mirror' | 'transform' | 'corner' | 'points' | 'join' | 'weld' | 'trim' | 'text' | 'boolean'
 
 export const GESTURE_LABELS: Record<PathEditGesture, string> = {
   move: 'Move',
@@ -51,6 +54,7 @@ export const GESTURE_LABELS: Record<PathEditGesture, string> = {
   rotate: 'Rotate',
   skew: 'Skew',
   mirror: 'Mirror',
+  transform: 'Transform',
   corner: 'Corner',
   points: 'Edit Points',
   join: 'Join',
@@ -59,6 +63,14 @@ export const GESTURE_LABELS: Record<PathEditGesture, string> = {
   text: 'Text',
   boolean: 'Boolean',
 }
+
+// Pure-geometry transform gestures: each one fully rewrites a path's `d` from
+// its own inputs, so a chain of these on the same path set with nothing else
+// in between (no other selection, no other edit) has no use for its
+// intermediate steps — only the net result matters. timelineStore's
+// coalesce() merges runs of these into one chip regardless of how much time
+// passes between them, unlike the generic keystroke-rate coalescing.
+export const TRANSFORM_GESTURES: ReadonlySet<PathEditGesture> = new Set(['move', 'scale', 'rotate', 'skew', 'mirror', 'transform'])
 
 // Project-scoped workpiece settings (machine-local settings — table limits,
 // rigidity, feeds, spindle, safe height — stay out of the timeline).
@@ -91,9 +103,12 @@ export interface TimelineEventBase {
   gestureId?: string        // shared across events emitted by one user gesture
 }
 
-// Generator metadata on paths.add events (offset/pattern): records the inputs
-// so the chip can be re-edited (form edit modes recompute + amend in place).
-// Replay ignores these — the materialized paths are the truth.
+// Generator metadata on paths.add events (offset/pattern/duplicate): records
+// the inputs so the chip can be re-edited (form edit modes recompute + amend
+// in place) AND so applyEvent.ts's replay can recompute the result from the
+// source's CURRENT geometry instead of trusting the materialized `paths`,
+// which are only a record-time snapshot (used as the fallback when this
+// metadata is absent — pre-fix saves, or a source that's since been deleted).
 export interface OffsetEventMeta {
   pairs: { sourceId: string; resultId: string }[]
   distanceMM: number
@@ -103,10 +118,14 @@ export interface PatternEventMeta {
   sourceIds: string[]
   params: PatternParams
 }
+export interface DuplicateEventMeta {
+  pairs: { sourceId: string; resultId: string }[]
+  offsetMM: number
+}
 
 export type TimelineEventPayload =
   // ---- paths ----
-  | { kind: 'paths.add'; paths: ImportedPath[]; source?: PathsAddSource; offset?: OffsetEventMeta; pattern?: PatternEventMeta }
+  | { kind: 'paths.add'; paths: ImportedPath[]; source?: PathsAddSource; offset?: OffsetEventMeta; pattern?: PatternEventMeta; duplicate?: DuplicateEventMeta }
   // boolOp on gesture:'boolean' events records which boolean was applied so
   // the chip can be re-edited (BooleanForm edit mode); replay ignores it.
   | { kind: 'paths.edit'; updates: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[]; gesture?: PathEditGesture; boolOp?: BooleanOpType }

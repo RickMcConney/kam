@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { uid } from '../uid'
-import { hydrateOp, labelFor, serializeOp, KNOWN_EVENT_KINDS, type Checkpoint, type SerializedOperation, type TimelineEvent, type TimelineEventPayload } from './events'
+import { hydrateOp, labelFor, serializeOp, KNOWN_EVENT_KINDS, TRANSFORM_GESTURES, type Checkpoint, type SerializedOperation, type TimelineEvent, type TimelineEventPayload } from './events'
 import { replay } from './applyEvent'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -11,6 +11,7 @@ import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import type { OffsetEventMeta, PatternEventMeta, WorkpieceEventChanges } from './events'
 import type { BooleanOpType } from '../tools/booleanOps'
+import { applyTransformSteps, consolidateSteps, gestureForSteps, getBBox, getMultiBBox, type BBox, type TransformStep } from '../canvas/selectionUtils'
 
 // The operation timeline: an append-only event log ("the program") with a
 // cursor. Every project mutation records one TimelineEvent; undo/redo and the
@@ -61,6 +62,24 @@ export function nearestCheckpoint(seq: number): { seq: number; state: Checkpoint
     if (k <= seq && k > best) best = k
   }
   return { seq: best, state: checkpoints.get(best)! }
+}
+
+// Bounding box of the given paths' geometry BEFORE event `seq` (i.e. as of
+// seq-1) — the stable reference a transform chip's editor uses as the
+// default pivot for a scale/rotate/skew step it's introducing for the first
+// time. Deliberately NOT the paths' current/live bbox: that moves every time
+// an existing field (dx/dy in particular) is edited, which would make a
+// freshly-introduced step's pivot drift on every render — the exact
+// instability this function exists to avoid.
+export function bboxBeforeEvent(seq: number, pathIds: string[]): BBox | null {
+  const { events } = useTimelineStore.getState()
+  const cp = nearestCheckpoint(seq - 1)
+  const before = replay(cp.state, events.slice(cp.seq), seq - 1)
+  const ds = pathIds.flatMap((id) => {
+    const p = before.paths.find((pp) => pp.id === id)
+    return p ? [p.d] : []
+  })
+  return getMultiBBox(ds)
 }
 
 export interface RecordMeta {
@@ -142,6 +161,13 @@ interface TimelineState {
   // chip sits in between (amending beneath it would be overridden on replay) —
   // the caller then records a normal event.
   amendTabsForPath: (pathId: string, tabs: Tab[]) => boolean
+  // PropertiesPanel's transform-chip editor: replace a move/scale/rotate/
+  // skew/mirror (or merged 'transform') event's TransformStep recipe,
+  // recomposing every affected path from its state just BEFORE this event —
+  // not its current state — so this stays a true in-place edit of that one
+  // historical step rather than stacking a new transform on top. Returns
+  // false when the event isn't a transform-recipe paths.edit event.
+  amendTransformSteps: (eventId: string, steps: TransformStep[]) => boolean
   undo: () => void
   redo: () => void
   canUndo: () => boolean
@@ -149,13 +175,32 @@ interface TimelineState {
 }
 
 function mergePathUpdate(older: PathUpdate, newer: PathUpdate): PathUpdate {
+  // Transform recipes concatenate (older steps first) rather than the newer
+  // one winning — replay needs the FULL step chain to recompose correctly
+  // against whatever the base geometry is at that point; dropping the older
+  // steps would reintroduce the stale-absolute-d bug for merged chips. The
+  // concatenated chain then collapses to its canonical net scale/skew/
+  // rotate/mirror/translate parameters, pivoted at the path's own (current,
+  // fully-baked) bounding box — see consolidateSteps. Gestures with no
+  // recipe concept (corner/points/join/…) never set `transforms`, so this
+  // stays undefined for them, same as before.
+  const transforms = (older.transforms?.length || newer.transforms?.length)
+    ? consolidateSteps(
+        [...(older.transforms ?? []), ...(newer.transforms ?? [])],
+        getBBox(newer.d) ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 },
+      )
+    : undefined
   return {
     id: newer.id,
     d: newer.d,
-    // undefined means "leave untouched" — the older event's value survives
+    // undefined means "leave untouched" — the older event's value survives.
+    // `corner` is newer-wins-outright (not concatenated like transforms) —
+    // NodeEditForm always sends the full current per-corner map, not a delta.
     shapeParams: newer.shapeParams !== undefined ? newer.shapeParams : older.shapeParams,
     name: newer.name !== undefined ? newer.name : older.name,
     hidden: newer.hidden !== undefined ? newer.hidden : older.hidden,
+    corner: newer.corner !== undefined ? newer.corner : older.corner,
+    ...(transforms ? { transforms } : {}),
   }
 }
 
@@ -185,19 +230,28 @@ function coalesce(last: TimelineEvent, payload: TimelineEventPayload): TimelineE
     }
     case 'paths.edit': {
       if (last.kind !== 'paths.edit') return null
-      // Different gestures stay separate chips (a Move must not merge into a
-      // Rotate); only pure update↔update pairs over the same path set merge.
-      if (last.gesture !== payload.gesture) return null
+      // A chain of pure-geometry transforms (Move/Scale/Rotate/Skew/Mirror) on
+      // the same path set merges even when the gesture kind changes — only
+      // the net geometry matters, so Move-then-Rotate-then-Move collapses to
+      // one "Transform" chip. Anything else (corner/points/join/weld/trim/
+      // text/boolean, or an untagged edit) still requires an exact gesture
+      // match, matching the old keystroke-rate-only behavior.
+      const bothTransforms = last.gesture !== undefined && payload.gesture !== undefined &&
+        TRANSFORM_GESTURES.has(last.gesture) && TRANSFORM_GESTURES.has(payload.gesture)
+      if (!bothTransforms && last.gesture !== payload.gesture) return null
       const pureLast = !(last.add?.length) && !(last.deleteIds?.length)
       const pureNew = !(payload.add?.length) && !(payload.deleteIds?.length)
       if (!pureLast || !pureNew) return null
-      const lastIds = last.updates.map((u) => u.id).sort().join(' ')
-      const newIds = payload.updates.map((u) => u.id).sort().join(' ')
+      const lastIds = last.updates.map((u) => u.id).sort().join(' ')
+      const newIds = payload.updates.map((u) => u.id).sort().join(' ')
       if (lastIds !== newIds) return null
       const olderById = new Map(last.updates.map((u) => [u.id, u]))
+      const gesture = bothTransforms && last.gesture !== payload.gesture ? 'transform' : payload.gesture
       return {
         ...last,
+        gesture,
         updates: payload.updates.map((u) => mergePathUpdate(olderById.get(u.id)!, u)),
+        label: labelFor({ ...payload, gesture }),
       }
     }
     default:
@@ -307,10 +361,28 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     // a mid-timeline merge target can only be an event we just inserted, never
     // a genuinely old one. Never merge into an event a checkpoint or the last
     // save captured — rewriting it would silently invalidate that snapshot.
+    //
+    // Exception: a run of pure-geometry transforms (Move/Scale/Rotate/Skew/
+    // Mirror) on the same path set merges regardless of elapsed time — a
+    // reposition done in several separate drags is still just one net move
+    // as long as nothing else happened between them, so the 800 ms window
+    // doesn't apply here.
+    //
+    // Exception: consecutive workpiece.set events merge regardless of
+    // elapsed time too — each one just overwrites whichever fields it
+    // touched (coalesce's workpiece.set case is a plain object spread), so
+    // there's never anything meaningful in an intermediate value; setting
+    // width, then later setting height, then later still changing width
+    // again should end up as one "Workpiece" chip holding the final values,
+    // not three chips where the first two are dead weight.
     const prev = s.cursor > 0 ? s.events[s.cursor - 1] : undefined
+    const isTransformChain = prev?.kind === 'paths.edit' && payload.kind === 'paths.edit' &&
+      prev.gesture !== undefined && payload.gesture !== undefined &&
+      TRANSFORM_GESTURES.has(prev.gesture) && TRANSFORM_GESTURES.has(payload.gesture)
+    const isWorkpieceChain = prev?.kind === 'workpiece.set' && payload.kind === 'workpiece.set'
     if (
       prev &&
-      now - prev.t < COALESCE_MS &&
+      (isTransformChain || isWorkpieceChain || now - prev.t < COALESCE_MS) &&
       prev.seq !== s.savedSeq &&
       !checkpoints.has(prev.seq)
     ) {
@@ -652,6 +724,42 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       return true
     }
     return false
+  },
+
+  amendTransformSteps: (eventId, steps) => {
+    const s = get()
+    const idx = s.events.findIndex((ev) => ev.id === eventId)
+    if (idx === -1) return false
+    const ev = s.events[idx]
+    if (ev.kind !== 'paths.edit' || ev.updates.length === 0 || !ev.updates.every((u) => u.transforms?.length)) {
+      return false
+    }
+    // Recompute each path from its state just BEFORE this event (not its
+    // current/live state) — the recipe is being edited in place, not
+    // stacked, so it must recompose against the same base it always did.
+    const beforeSeq = ev.seq - 1
+    const cp = nearestCheckpoint(beforeSeq)
+    const before = replay(cp.state, s.events.slice(cp.seq), beforeSeq)
+    const beforeById = new Map(before.paths.map((p) => [p.id, p]))
+    const updates = ev.updates.map((u) => {
+      const bp = beforeById.get(u.id)
+      if (!bp) return u // path didn't exist yet at this point — leave untouched
+      const r = applyTransformSteps(bp, steps)
+      return { ...u, d: r.d, shapeParams: r.shapeParams, ...(r.name !== undefined ? { name: r.name } : {}), transforms: steps }
+    })
+    // The chip's kind/label must track what the steps actually are now —
+    // e.g. mirroring a plain Move chip from the editor makes it a Transform
+    // chip, same as if that mirror had been dragged in originally.
+    const gesture = gestureForSteps(steps)
+    const amended: TimelineEvent = { ...ev, updates, gesture, label: labelFor({ ...ev, gesture }) }
+    const events = [...s.events]
+    events[idx] = amended
+    for (const k of checkpoints.keys()) if (k >= ev.seq) checkpoints.delete(k)
+    set({ events, ...(s.savedSeq >= ev.seq ? { savedSeq: -1 } : {}) })
+    // This event is currently applied (its effects are part of live state) —
+    // re-derive from here so the canvas reflects the edit immediately.
+    if (ev.seq <= s.cursor) restoreStateAt(s.cursor, events)
+    return true
   },
 
   undo: () => get().scrubTo(get().cursor - 1, 'undo'),

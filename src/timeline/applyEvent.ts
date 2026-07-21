@@ -1,6 +1,11 @@
 import type { Checkpoint, SerializedOperation, TimelineEvent } from './events'
 import { refsPathId, type AnyOperation } from '../store/toolpathStore'
-import { generateShapeD } from '../shapes/shapeGenerators'
+import { generateShapeD, translateShapeParams } from '../shapes/shapeGenerators'
+import { applyTransformSteps, translateD } from '../canvas/selectionUtils'
+import { applyCornerTreatments } from '../tools/cornerTreatment'
+import { applyBooleanOp } from '../tools/booleanOps'
+import { applyOffset } from '../tools/offsetOp'
+import { computePatternInstances, applyPatternInstance } from '../tools/patternOp'
 
 // Pure event interpreter: fold events over a Checkpoint-shaped state without
 // touching any store. Used by the replay checker (compare against live stores)
@@ -16,8 +21,58 @@ const refsPath = (op: SerializedOperation, pathId: string) =>
 
 export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
   switch (ev.kind) {
-    case 'paths.add':
-      return { ...state, paths: [...state.paths, ...ev.paths] }
+    case 'paths.add': {
+      // Offset/pattern results recompute from their source(s)' CURRENT d (as
+      // already folded into state.paths by prior events) rather than
+      // trusting the baked ev.paths — same reasoning as the boolean fix
+      // below. Falls back to the stored path if its source can't be found
+      // (legacy save, deleted source) or the instance/source count no
+      // longer lines up with how many result paths were recorded.
+      let paths = ev.paths
+      const offset = ev.offset
+      if (offset && offset.pairs.length > 0) {
+        const bySource = new Map(state.paths.map((p) => [p.id, p]))
+        paths = paths.map((rp) => {
+          const pair = offset.pairs.find((pr) => pr.resultId === rp.id)
+          const src = pair && bySource.get(pair.sourceId)
+          if (!src) return rp
+          const d = applyOffset(src.d, { distanceMM: offset.distanceMM, cornerStyle: offset.cornerStyle })
+          return d ? { ...rp, d } : rp
+        })
+      }
+      const pattern = ev.pattern
+      if (pattern && pattern.sourceIds.length > 0) {
+        const { sourceIds, params } = pattern
+        const instances = computePatternInstances(params)
+        // Mirrors PatternForm.tsx's handleApply exactly: linear mode skips
+        // the first (identity) instance — that "copy" is the source itself,
+        // not a new path — circular mode creates one for every instance.
+        const instancesToCreate = params.type === 'linear' ? instances.slice(1) : instances
+        const bySource = new Map(state.paths.map((p) => [p.id, p]))
+        if (instancesToCreate.length * sourceIds.length === paths.length) {
+          paths = paths.map((rp, i) => {
+            const inst = instancesToCreate[Math.floor(i / sourceIds.length)]
+            const src = bySource.get(sourceIds[i % sourceIds.length])
+            return src ? { ...rp, d: applyPatternInstance(src.d, inst) } : rp
+          })
+        }
+      }
+      const duplicate = ev.duplicate
+      if (duplicate && duplicate.pairs.length > 0) {
+        const bySource = new Map(state.paths.map((p) => [p.id, p]))
+        paths = paths.map((rp) => {
+          const pair = duplicate.pairs.find((pr) => pr.resultId === rp.id)
+          const src = pair && bySource.get(pair.sourceId)
+          if (!src) return rp
+          return {
+            ...rp,
+            d: translateD(src.d, duplicate.offsetMM, duplicate.offsetMM),
+            shapeParams: src.shapeParams ? translateShapeParams(src.shapeParams, duplicate.offsetMM, duplicate.offsetMM) : undefined,
+          }
+        })
+      }
+      return { ...state, paths: [...state.paths, ...paths] }
+    }
 
     case 'paths.edit': {
       const deleteIds = ev.deleteIds ?? []
@@ -27,13 +82,58 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
         .map((p) => {
           const upd = map.get(p.id)
           if (!upd) return p
-          const np = { ...p, d: upd.d }
-          if (upd.shapeParams !== undefined) np.shapeParams = upd.shapeParams ?? undefined
-          if (upd.name !== undefined) np.name = upd.name
+          // A transform or corner recipe recomposes against THIS path's
+          // current (already-folded) d/shapeParams — correct even when an
+          // earlier event in the fold amended this path's definition after
+          // the recipe was originally recorded. Gestures with no recipe
+          // (points/join/weld/trim/text) and events saved before recipes
+          // existed fall back to the stored absolute d/shapeParams, same as
+          // before.
+          // Corner treatment always clears shapeParams (a treated path is no
+          // longer the plain parametric shape it started as), matching what
+          // NodeEditForm.tsx bakes at record time.
+          const recomposed = upd.transforms?.length ? applyTransformSteps(p, upd.transforms)
+            : upd.corner?.length ? { d: applyCornerTreatments(p.d, new Map(upd.corner.map((t) => [t.idx, t]))), shapeParams: null }
+            : null
+          // Boolean's own updates just hide each source — upd.d is a snapshot
+          // of the source's d at record time (PathUpdate requires `d`, but
+          // nothing here actually wants to CHANGE it), not a value replay
+          // should stamp back. Doing so would silently discard any upstream
+          // edit to that source made after this boolean was recorded — the
+          // recompute below reads THIS path's current d, so it must survive
+          // this step, not get overwritten by the stale one.
+          const isBooleanSourceUpdate = ev.boolOp !== undefined
+          const np = { ...p, d: recomposed ? recomposed.d : isBooleanSourceUpdate ? p.d : upd.d }
+          if (recomposed) {
+            np.shapeParams = recomposed.shapeParams ?? undefined
+            if ('name' in recomposed && recomposed.name !== undefined) np.name = recomposed.name
+          } else {
+            if (upd.shapeParams !== undefined) np.shapeParams = upd.shapeParams ?? undefined
+            if (upd.name !== undefined) np.name = upd.name
+          }
           if (upd.hidden !== undefined) np.hidden = upd.hidden
           return np
         })
-      if (ev.add && ev.add.length > 0) paths = [...paths, ...ev.add]
+      // Boolean results recompute from the sources' CURRENT (just-updated
+      // above, e.g. hidden-but-possibly-edited) d rather than trusting the
+      // baked ev.add[0].d — otherwise editing a source path upstream of a
+      // boolean op and scrubbing forward past it would silently ignore the
+      // edit. Falls back to the stored result if the op fails (degenerate
+      // geometry) or a source can't be found (legacy save, deleted source).
+      let add = ev.add
+      if (ev.boolOp && add && add.length > 0) {
+        const ds = ev.updates.flatMap((u) => {
+          const src = paths.find((p) => p.id === u.id)
+          return src ? [src.d] : []
+        })
+        if (ds.length >= 2) {
+          const result = applyBooleanOp(ev.boolOp, ds)
+          if ('resultD' in result) {
+            add = [{ ...add[0], d: result.resultD }, ...add.slice(1)]
+          }
+        }
+      }
+      if (add && add.length > 0) paths = [...paths, ...add]
       let operations = state.operations
       let tabs = state.tabs
       if (deleteIds.length > 0) {

@@ -6,7 +6,7 @@ import {
   SquareSquare, LayoutGrid, Scissors, Pencil, Trash2, Eye, EyeOff,
   RectangleEllipsis, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   ArrowUpDown, Move, RotateCw, Scaling, Spline, Combine, FlipHorizontal2,
-  VectorSquare, X, FoldHorizontal,
+  VectorSquare, X, FoldHorizontal, Wand2,
 } from 'lucide-react'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -43,10 +43,13 @@ const OP_ICONS: Record<string, ChipIcon> = {
   surface: Layers, vcarve: Star, inlay: InlayIcon, profile3d: Box, gcode: FileCode,
 }
 
-// paths.edit gesture icons — Corner matches the "Corners" path-tool icon
+// paths.edit gesture icons — Corner matches the "Corners" path-tool icon.
+// 'transform' is the synthetic chip produced when timelineStore merges a
+// chain of different pure-geometry gestures (e.g. Move then Rotate) on the
+// same path into one entry.
 const GESTURE_ICONS: Record<string, ChipIcon> = {
   move: Move, scale: Scaling, rotate: RotateCw, skew: Scaling,
-  mirror: FlipHorizontal2, corner: VectorSquare, points: Spline,
+  mirror: FlipHorizontal2, transform: Wand2, corner: VectorSquare, points: Spline,
   join: Combine, weld: Combine, trim: Scissors, text: Type,
 }
 
@@ -289,6 +292,13 @@ export default function TimelinePanel() {
       // The properties editor (bottom of sidebar) IS where this chip's shape/
       // text parameters are amended — flash it so it's easy to find.
       ui.flashProperties()
+      // Transform-gesture chips (move/scale/rotate/skew/mirror, and merged
+      // 'transform' chips) show their recorded TransformStep recipe there
+      // instead of the selection's plain shape/position fields.
+      // PropertiesPanel clears this itself once the cursor or selection no
+      // longer matches, so no other branch here needs to reset it.
+      const isTransformChip = ev.kind === 'paths.edit' && ev.updates.length > 0 && ev.updates.every((u) => u.transforms?.length)
+      ui.setTransformEditEventId(isTransformChip ? ev.id : null)
     } else if (ev.kind === 'workpiece.set') {
       ui.setSetupPanelOpen(true)
     }

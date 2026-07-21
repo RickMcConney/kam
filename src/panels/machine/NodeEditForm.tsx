@@ -130,7 +130,13 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
     const newD = applyCornerTreatments(baseD, treatmentsRef.current)
     if (newD !== activePath.d) {
       lastWrittenDRef.current = newD
-      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null }], 'corner')
+      // `corner` records the full current per-corner recipe (not a delta —
+      // treatmentsRef is already cumulative) so timeline replay can
+      // recompute against whatever this path's geometry becomes upstream,
+      // instead of replaying a stale baked d if the shape is edited later
+      // at an earlier point in the timeline.
+      const corner = [...treatmentsRef.current].map(([idx, p]) => ({ idx, ...p }))
+      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null, corner }], 'corner')
       regenerateAffected(activePath.id)
     }
     sessionCache.set(activePath.id, { baseD, treatments: [...treatmentsRef.current] })
