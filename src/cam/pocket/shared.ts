@@ -445,6 +445,16 @@ export function rotateRingAt(pts: Pt2[], index: number): Pt2[] {
 }
 
 
+/** Index of the ring vertex nearest `p`. */
+export function nearestVertexIndex(ring: Pt2[], p: Pt2): number {
+  let bi = 0, bd = Infinity
+  for (let i = 0; i < ring.length; i++) {
+    const d = (ring[i][0] - p[0]) ** 2 + (ring[i][1] - p[1]) ** 2
+    if (d < bd) { bd = d; bi = i }
+  }
+  return bi
+}
+
 export function chooseNextContourRing(
   rings: Pt2[][],
   lastPos: Pt2 | null,
@@ -503,6 +513,13 @@ export function emitLinkedContourRings(
   safeZ = 5,
   toolDiameterMM = 0,
   incomingPos: Pt2 | null = null,
+  // Force the FIRST ring emitted to be rings[0] rather than whichever ring happens to lie
+  // nearest. Callers that pass a multi-level set ordered innermost-first (contour's roughing
+  // rings) need this: otherwise a startNear hint — or simply lastPos carried over from the
+  // previous depth level — makes the cut open on an outer ring, which starts the pocket with
+  // a full-width slot instead of working outward from the middle. The start VERTEX is still
+  // chosen for shortest travel; only the ring is pinned.
+  startInnermost = false,
 ): Pt2 | null {
   if (rings.length === 0) return incomingPos
   let lastPos: Pt2 | null = incomingPos
@@ -510,7 +527,13 @@ export function emitLinkedContourRings(
   let emittedCount = 0
 
   while (pending.length > 0) {
-    const next = chooseNextContourRing(pending, lastPos, startNear, travelObstacles)
+    const target: Pt2 | null = lastPos ?? (startNear ? [startNear.x, startNear.y] : null)
+    const next = startInnermost && emittedCount === 0
+      ? {
+          index: 0,
+          ring: target === null ? pending[0] : rotateRingAt(pending[0], nearestVertexIndex(pending[0], target)),
+        }
+      : chooseNextContourRing(pending, lastPos, startNear, travelObstacles)
     pending.splice(next.index, 1)
     const ring = next.ring
     const [sx, sy]: Pt2 = ring[0]

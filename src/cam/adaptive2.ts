@@ -206,9 +206,13 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   const dWall = edtSq(w, h, i => mach[i] === 0)
 
   const s = clamp(prm.stepoverMM, cell, 1.9 * rb)
-  // Target fraction of the tool circumference in stock: for a straight pass at radial
-  // stepover s the engaged arc is acos(1 − s/rb).
-  const ft = Math.acos(clamp(1 - s / rb, -1, 1)) / (2 * Math.PI)
+  // Target fraction of the tool circumference in stock. For a straight pass at radial
+  // stepover s the engaged ARC is 2·acos(1 − s/rb) — engagement is symmetric about the cut
+  // direction, so it spans acos(1 − s/rb) either side. `engagement()` below measures the
+  // full circumference, so the target is that arc over 2π, i.e. acos(1 − s/rb)/π.
+  // (Dividing by 2π halves the arc, which made the marcher aim at half the requested
+  // engagement — at 40% stepover it steered to ~0.7 mm of cut on a 6 mm tool.)
+  const ft = Math.acos(clamp(1 - s / rb, -1, 1)) / Math.PI
 
   // band[i] = 1 ⇒ wall sliver the finishing pass takes: stock at most ONE STEPOVER deep
   // along the walls/islands, so the finishing bite never exceeds the target engagement.

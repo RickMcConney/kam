@@ -33,7 +33,10 @@ export function contourPocket(
   const obstacles = [...finishingLevel, ...islandObstacles]
 
   const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
-  const roughEnd = emitLinkedContourRings(innerRings, zDepth, travelObstacles, segs, params.startNear, rampDist, prevZ, safeZ, tool.diameterMM, incomingPos)
+  // startInnermost: innerRings is ordered innermost-first, and the cut must OPEN there.
+  // Left to proximity, a startNear hint or the carried-over position from the previous depth
+  // level can pick an outer ring first, which slots.
+  const roughEnd = emitLinkedContourRings(innerRings, zDepth, travelObstacles, segs, params.startNear, rampDist, prevZ, safeZ, tool.diameterMM, incomingPos, true)
   const finishPrevZ = innerRings.length > 0 ? zDepth : prevZ
   return emitLinkedContourRings(finishingLevel, zDepth, travelObstacles, segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, roughEnd)
 }
