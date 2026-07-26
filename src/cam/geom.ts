@@ -9,12 +9,19 @@ import type { Pt2 } from './pathFlattener'
 // Step is clamped to the UI's 0.01 mm minimum so a zero/negative/NaN value
 // (hand-edited or corrupted .fkam project) can't loop forever or allocate
 // unboundedly (tofix.md B7).
+//
+// The loop bound carries an epsilon because repeated `z -= step` accumulates
+// float error: for e.g. depth 0.8 / step 0.1 the last iteration lands on
+// -0.7999999999999999, which is > -0.8, so the loop pushed it AND the final
+// push added -0.8 — two full cutting passes at the same depth (rubbing at
+// zero chip load). 1e-9 mm is far below any machine's resolution, so it can
+// only ever collapse a duplicate, never drop a real pass.
 export function zPasses(depthMM: number, stepDownMM: number): number[] {
   const step = Math.max(0.01, Number.isFinite(stepDownMM) ? Math.abs(stepDownMM) : 0)
   const depth = Number.isFinite(depthMM) ? Math.abs(depthMM) : 0
   const passes: number[] = []
   let z = -step
-  while (z > -depth) { passes.push(z); z -= step }
+  while (z > -depth + 1e-9) { passes.push(z); z -= step }
   passes.push(-depth)
   return passes
 }

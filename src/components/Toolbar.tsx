@@ -8,12 +8,10 @@ import { useProjectStore } from '../store/projectStore'
 import { useUIStore } from '../store/uiStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { useToolpathStore } from '../store/toolpathStore'
-import { useToolStore } from '../store/toolStore'
-import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useSimStore } from '../store/simStore'
 import { generateGcode } from '../cam/gcode'
-import { optimizeStartPoints } from '../cam/startOptimizer'
+import { buildGcodeInputs } from '../io/gcodeExport'
 import { triggerProjectSave, triggerGcodeExport, triggerGcodeExportSplit } from '../io/fileSystem'
 import { buildExportPreflight, type ExportPreflight } from '../cam/exportPreflight'
 import ExportPreflightDialog from './ExportPreflightDialog'
@@ -145,17 +143,12 @@ export default function Toolbar() {
   const undoDisabled = useLocalUndo ? false : !canUndo()
   const redoDisabled = useLocalRedo ? false : !canRedo()
   const { operations } = useToolpathStore()
-  const { tools } = useToolStore()
   const { name } = useProjectStore()
-  const getActiveProfile = usePostProcessorStore((s) => s.getActiveProfile)
   const importRef = useRef<HTMLInputElement>(null)
   const [preflight, setPreflight] = useState<ExportPreflight | null>(null)
 
   async function handleSimulate() {
-    await optimizeStartPoints()
-    const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
-    const profile = getActiveProfile()
-    const { operations: ops } = useToolpathStore.getState()
+    const { operations: ops, toolsById, profile } = await buildGcodeInputs()
     const gcode = generateGcode(ops, toolsById, name, profile)
     useSimStore.getState().loadGcode(gcode)
     useSimStore.getState().play()

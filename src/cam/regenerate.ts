@@ -1,7 +1,6 @@
 import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { perfLog } from '../debug'
-import { generateSurface } from './surfacing'
-import { runInWorker } from '../workers/workerClient'
+import { runInWorkerFor } from '../workers/workerClient'
 import { useToolpathStore, refsPathId } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore, type Tool } from '../store/toolStore'
@@ -31,7 +30,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
       const pathTabs = useTabStore.getState().getPathTabs(op.pathId)
-      setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
         side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), direction: op.direction,
         startNear: op.entryHint, rampIn: op.rampIn, safeHeightMM,
       }, pathTabs.length > 0 ? pathTabs : undefined))
@@ -43,7 +42,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         const p = paths.find((x) => x.id === id)
         return p ? [p.d] : []
       })
-      setSegments(opId, await runInWorker('generatePocket', boundary.d, tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
         strategy: op.strategy ?? 'raster',
         depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, direction: op.direction,
@@ -84,7 +83,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
 
     } else if (op.type === 'surface') {
       const { widthMM, heightMM } = useWorkpieceStore.getState()
-      setSegments(opId, generateSurface(tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generateSurface', tool, {
         widthMM, heightMM,
         depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, passAngleDeg: op.passAngleDeg,
@@ -98,7 +97,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         const p = paths.find((x) => x.id === id)
         return p ? [p.d] : []
       })
-      setSegments(opId, await runInWorker('generateVCarve', path.d, tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', path.d, tool, {
         angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
         startNear: op.entryHint, safeHeightMM,
       }))
@@ -115,7 +114,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const cncBbox = getBBox(stlPath.d)
       if (!cncBbox) throw new Error('Could not compute STL bounding box')
       const roughingTool = op.roughingToolId ? tools.find((t) => t.id === op.roughingToolId) : undefined
-      setSegments(opId, await runInWorker('generateProfile3d', positions, indices, stlPath.stlModelBounds, cncBbox, tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generateProfile3d', positions, indices, stlPath.stlModelBounds, cncBbox, tool, {
         stepoverPercent: op.stepoverPercent,
         rasterAngleDeg: op.rasterAngleDeg,
         maxDepthMM: op.maxDepthMM,
@@ -135,7 +134,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const path = paths.find((p) => p.id === op.pathId)
       if (!path) throw new Error('Source path not found')
       const trochTabs = useTabStore.getState().getPathTabs(op.pathId)
-      setSegments(opId, await runInWorker('generateTrochoidal', path.d, tool, {
+      setSegments(opId, await runInWorkerFor(opId, 'generateTrochoidal', path.d, tool, {
         side: op.side, depthMM: op.depthMM,
         stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM, trochoidalEngagementFraction(tool, op.trochStepMM)),
         direction: op.direction, trochStepMM: op.trochStepMM, trochRadiusMM: op.trochRadiusMM,
@@ -162,8 +161,8 @@ export async function regenerateOperation(opId: string): Promise<void> {
         rampIn: op.rampIn, mirrorX: op.mirrorX, islandDs, safeHeightMM,
       }
       const result = op.role === 'female'
-        ? await runInWorker('generateInlayFemale', path.d, pocketTool, vbitTool, inlayParams)
-        : await runInWorker('generateInlayMale', path.d, pocketTool, vbitTool, inlayParams)
+        ? await runInWorkerFor(opId, 'generateInlayFemale', path.d, pocketTool, vbitTool, inlayParams)
+        : await runInWorkerFor(opId, 'generateInlayMale', path.d, pocketTool, vbitTool, inlayParams)
       setSegments(opId, op.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
       if (op.linkedOpId) {
         const linkedOp = useToolpathStore.getState().operations.find((o) => o.id === op.linkedOpId)

@@ -9,7 +9,7 @@ import { useToolpathStore, type AnyOperation, type Profile3dOperation } from '..
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorker } from '../../workers/workerClient'
+import { runInWorkerFor } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../../importers/stlImporter'
 import { getBBox } from '../../canvas/selectionUtils'
@@ -119,7 +119,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
           finishingToolId: form.toolId,
           safeHeightMM,
         }
-        const segments = await runInWorker('generateProfile3d', positions, indices, selectedPath.stlModelBounds!, cncBbox, selectedTool, params)
+        const segments = await runInWorkerFor(editOp?.id ?? existingId, 'generateProfile3d', positions, indices, selectedPath.stlModelBounds!, cncBbox, selectedTool, params)
 
         const opName = hasRoughing
           ? `3D Profile: ${selectedPath.name} (rough: ${roughingTool?.name ?? ''} / finish: ${selectedTool.name})`

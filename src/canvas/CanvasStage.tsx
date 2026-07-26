@@ -1,6 +1,7 @@
 import { ptSegDistSq } from '../cam/geom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRefState } from './useRefState'
+import { pushLocalHistory } from './localHistory'
 import { useNodeEditSession, collectCrossPathEntries } from './useNodeEditSession'
 import { usePenTool } from './usePenTool'
 import { ICON } from '../theme'
@@ -9,7 +10,7 @@ import type Konva from 'konva'
 import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
-import { usePathsStore } from '../store/pathsStore'
+import { usePathsStore, useSelectedPaths } from '../store/pathsStore'
 import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
@@ -325,10 +326,7 @@ export default function CanvasStage() {
     for (const id of [...cache.keys()]) if (!live.has(id)) cache.delete(id)
   }, [paths])
 
-  const selectedPaths = useMemo(
-    () => paths.filter((p) => selectedIds.includes(p.id)),
-    [paths, selectedIds],
-  )
+  const selectedPaths = useSelectedPaths()
   // Selection bbox, computed once per store change instead of per mousemove —
   // SelectionLayer + SelectionHandleLayer used to each re-flatten every selected
   // path on every liveTransform frame to derive this themselves (tofix.md H1).
@@ -925,6 +923,276 @@ export default function CanvasStage() {
     }
   }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit, getFlat])
 
+
+  // ─── per-mode mousemove handlers ──────────────────────────────────────────
+  // handleMouseMove was a ~275-line chain of `if (m.type === …)` guards. Each
+  // one is its own callback now; the dispatcher below keeps the ORIGINAL control
+  // flow, which is not a plain switch: pan/move/resize/rotate consume the event,
+  // but dragbox and drawshape deliberately fall through to the pen close-hover
+  // check, and idle runs both that and the connect preview. Collapsing those
+  // into returning switch cases would silently kill the pen hover indicator.
+  // All handlers close over the same refs/setters and share one dependency list
+  // of stable references, so this is a pure restructuring.
+
+  const onMovePan = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Pan uses clientX/Y deltas — both are in screen pixels so delta is correct
+    const { mouseX, mouseY, vpX, vpY } = panStartRef.current
+    setViewport((v) => ({ ...v, x: vpX + (e.evt.clientX - mouseX), y: vpY + (e.evt.clientY - mouseY) }))
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveTranslate = useCallback((m: Extract<CanvasMode, { type: 'move' }>, cncMouse: { x: number; y: number }, pointer: { x: number; y: number }, vp: Viewport) => {
+    const dx = cncMouse.x - m.startCNC.x
+    const dy = cncMouse.y - m.startCNC.y
+    // Threshold check in stage pixels
+    const startScreenX = vp.x + m.startCNC.x * vp.scale
+    const startScreenY = vp.y - m.startCNC.y * vp.scale
+    if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
+      didDragRef.current = true
+    }
+    if (didDragRef.current) {
+      let finalDx = dx, finalDy = dy
+      if (shiftHeldRef.current) {
+        if (Math.abs(dx) > Math.abs(dy)) finalDy = 0
+        else finalDx = 0
+      }
+      // Object snap first (bbox edges/centers to other shapes' edges/centers),
+      // then grid snap only on the axes that didn't object-snap.
+      const ib = m.initBbox
+      const snapOn = useUIStore.getState().snapEnabled
+      const tolMM = OBJECT_SNAP_PX / vp.scale
+      const ox = snapOn ? snapAxisDelta([ib.minX + finalDx, ib.maxX + finalDx, ib.cx + finalDx], m.snapTargets.xs, tolMM) : null
+      const oy = snapOn ? snapAxisDelta([ib.minY + finalDy, ib.maxY + finalDy, ib.cy + finalDy], m.snapTargets.ys, tolMM) : null
+      if (ox) finalDx += ox.correction
+      if (oy) finalDy += oy.correction
+      const gridSnapped = snapCNC({ x: ib.minX + finalDx, y: ib.minY + finalDy })
+      if (!ox) finalDx = gridSnapped.x - ib.minX
+      if (!oy) finalDy = gridSnapped.y - ib.minY
+      setSnapGuides(ox || oy ? { x: ox?.guide, y: oy?.guide } : null)
+      setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
+      setLiveBBox({ minX: ib.minX + finalDx, minY: ib.minY + finalDy, width: ib.width, height: ib.height })
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveResize = useCallback((m: Extract<CanvasMode, { type: 'resize' }>, cncMouse: { x: number; y: number }, e: Konva.KonvaEventObject<MouseEvent>) => {
+    didDragRef.current = true
+    const { anchor, initHandle, pathIds, handle, shiftHeld } = m
+    const snappedMouse = snapCNC(cncMouse)
+    const dhx = initHandle.x - anchor.x
+    const dhy = initHandle.y - anchor.y
+    const newHx = snappedMouse.x - anchor.x
+    const newHy = snappedMouse.y - anchor.y
+
+    // Alt + corner handle = skew (shear) instead of scale
+    const isCorner = handle === 'tl' || handle === 'tr' || handle === 'bl' || handle === 'br'
+    if ((altDownRef.current || e.evt.altKey) && isCorner) {
+      const dx = newHx - dhx
+      const dy = newHy - dhy
+      const kx = Math.abs(dx) >= Math.abs(dy) && dhy !== 0 ? dx / dhy : 0
+      const ky = Math.abs(dy) >  Math.abs(dx) && dhx !== 0 ? dy / dhx : 0
+      setLiveTransform({ kind: 'skew', pathIds: new Set(pathIds), kx, ky, ax: anchor.x, ay: anchor.y })
+      return
+    }
+
+    let sx = dhx !== 0 ? newHx / dhx : 1
+    let sy = dhy !== 0 ? newHy / dhy : 1
+
+    // Edge handles constrain one axis
+    if (handle === 't' || handle === 'b') sx = 1
+    if (handle === 'l' || handle === 'r') sy = 1
+
+    // Uniform scale for corners with Shift
+    if (shiftHeld && !['t','b','l','r'].includes(handle)) {
+      const s = Math.sign(sx) * Math.hypot(newHx, newHy) / Math.hypot(dhx, dhy)
+      sx = s; sy = Math.sign(sy) * Math.abs(s)
+    }
+
+    // Prevent degenerate scales
+    if (Math.abs(sx) < 0.001) sx = Math.sign(sx) * 0.001
+    if (Math.abs(sy) < 0.001) sy = Math.sign(sy) * 0.001
+
+    setLiveTransform({ kind: 'scale', pathIds: new Set(pathIds), sx, sy, ax: anchor.x, ay: anchor.y })
+    const ib = m.initBbox
+    const x1 = anchor.x + (ib.minX - anchor.x) * sx, x2 = anchor.x + (ib.maxX - anchor.x) * sx
+    const y1 = anchor.y + (ib.minY - anchor.y) * sy, y2 = anchor.y + (ib.maxY - anchor.y) * sy
+    setLiveBBox({ minX: Math.min(x1, x2), minY: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) })
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveRotate = useCallback((m: Extract<CanvasMode, { type: 'rotate' }>, cncMouse: { x: number; y: number }) => {
+    didDragRef.current = true
+    const currentAngle = Math.atan2(cncMouse.y - m.center.y, cncMouse.x - m.center.x) * 180 / Math.PI
+    let delta = currentAngle - m.initAngle
+    if (useUIStore.getState().snapEnabled) delta = Math.round(delta / 5) * 5
+    setLiveTransform({ kind: 'rotate', pathIds: new Set(m.pathIds), angle: delta, cx: m.center.x, cy: m.center.y })
+    setLiveRotationAngle(delta)
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveDragbox = useCallback((pointer: { x: number; y: number }) => {
+    setDragBox((db) => db ? { ...db, ex: pointer.x, ey: pointer.y } : null)
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveDrawShape = useCallback((m: Extract<CanvasMode, { type: 'drawshape' }>, cncMouse: { x: number; y: number }, pointer: { x: number; y: number }, vp: Viewport) => {
+    const startScreenX = vp.x + m.startCNC.x * vp.scale
+    const startScreenY = vp.y - m.startCNC.y * vp.scale
+    if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
+      didDragRef.current = true
+    }
+    const snappedCNC = snapCNC(cncMouse)
+    // Update currentCNC in the mode ref (no state re-render needed — liveShapeD handles rendering)
+    modeRef.current = { ...m, currentCNC: snappedCNC }
+
+    if (didDragRef.current) {
+      const { activeTool, shapeToolConfig } = useUIStore.getState()
+      if (activeTool !== 'select') {
+        const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, snappedCNC, shapeToolConfig)
+        setLiveShapeD(generateShapeD(params))
+      }
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  // Runs for every mode EXCEPT pendraw — highlights the pen's first node when
+  // the cursor is near enough to close the path, and tracks the snapped cursor.
+  const onMovePenHover = useCallback((cncMouse: { x: number; y: number }, pointer: { x: number; y: number }, vp: Viewport) => {
+    const { activeTool: at, penNodes: nodes } = useUIStore.getState()
+    if (at === 'pen') {
+      const snap = snapPenPoint(cncMouse)
+      setPenSnapCursor(snap.point)
+      setSnapGuides(snap.guides)
+    }
+    if (at === 'pen' && nodes.length >= 2) {
+      const first = nodes[0]
+      const fsx = vp.x + first.x * vp.scale
+      const fsy = vp.y - first.y * vp.scale
+      const close = Math.hypot(pointer.x - fsx, pointer.y - fsy) < 10
+      if (close !== penClosingRef.current) {
+        setPenClosing(close)
+      }
+    } else if (penClosingRef.current) {
+      setPenClosing(false)
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveConnectPreview = useCallback((cncMouse: { x: number; y: number }, vp: Viewport) => {
+    // Caller already checks this, but the narrowing doesn't cross the call.
+    const srcIdx = connectSourceRef.current
+    if (srcIdx === null) return
+    const nodes = editNodesRef.current
+    if (nodes[srcIdx]) {
+      const snapMM = 16 / vp.scale
+      let bestDist = snapMM
+      let snapSameIdx: number | null = null
+      let snapCrossEntry: CrossPathEntry | null = null
+      let snapPos = cncMouse
+
+      for (let j = 0; j < nodes.length; j++) {
+        if (j === srcIdx) continue
+        const dist = Math.hypot(cncMouse.x - nodes[j].x, cncMouse.y - nodes[j].y)
+        if (dist < bestDist) {
+          bestDist = dist
+          snapSameIdx = j
+          snapPos = { x: nodes[j].x, y: nodes[j].y }
+        }
+      }
+
+      for (const entry of crossPathEntriesRef.current) {
+        const dist = Math.hypot(cncMouse.x - entry.x, cncMouse.y - entry.y)
+        if (dist < bestDist) {
+          bestDist = dist
+          snapCrossEntry = entry
+          snapSameIdx = null
+          snapPos = { x: entry.x, y: entry.y }
+        }
+      }
+
+      setConnectPreviewTo(snapPos)
+      setConnectSnapTargetIdx(snapSameIdx)
+      setCrossPathWeldTarget(snapCrossEntry)
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMovePenDraw = useCallback((m: Extract<CanvasMode, { type: 'pendraw' }>, cncMouse: { x: number; y: number }, pointer: { x: number; y: number }, vp: Viewport) => {
+    const asx = vp.x + m.anchorCNC.x * vp.scale
+    const asy = vp.y - m.anchorCNC.y * vp.scale
+    if (Math.hypot(pointer.x - asx, pointer.y - asy) > MOVE_THRESHOLD_PX) {
+      didDragRef.current = true
+    }
+    if (didDragRef.current && !m.closing) {
+      // Only track drag handles in bezier mode; other modes auto-compute curves
+      if (useUIStore.getState().penCurveType === 'bezier') {
+        setLivePen({ anchor: m.anchorCNC, handle: cncMouse })
+      }
+    }
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
+  const onMoveNodeEditDrag = useCallback((m: Extract<CanvasMode, { type: 'nodedit-drag' }>, cncMouse: { x: number; y: number }, e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Caller already checks init, but the narrowing doesn't cross the call.
+    const init = editDragInitRef.current
+    if (!init) return
+    didDragRef.current = true
+    const dx = cncMouse.x - init.startCNC.x
+    const dy = cncMouse.y - init.startCNC.y
+    const WELD_THRESHOLD_MM = 16 / viewportRef.current.scale
+    let newWeldTarget: number | null = null
+    let newCrossTarget: CrossPathEntry | null = null
+    const updatedNodes = init.initialNodes.map((n, i) => {
+      if (i !== m.nodeIdx) return n
+      if (m.kind === 'anchor') {
+        const snapped = snapCNC({ x: n.x + dx, y: n.y + dy })
+        const sdx = snapped.x - n.x
+        const sdy = snapped.y - n.y
+        // Check for same-path weld snap first
+        for (let j = 0; j < init.initialNodes.length; j++) {
+          if (j === m.nodeIdx) continue
+          const other = init.initialNodes[j]
+          const distSq = (snapped.x - other.x) ** 2 + (snapped.y - other.y) ** 2
+          if (distSq < WELD_THRESHOLD_MM ** 2) {
+            newWeldTarget = j
+            const wdx = other.x - n.x
+            const wdy = other.y - n.y
+            return { ...n, x: other.x, y: other.y,
+              handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
+              handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
+            }
+          }
+        }
+        // Check for cross-path weld snap (only available for endpoints of open paths)
+        for (const entry of crossPathEntriesRef.current) {
+          const distSq = (snapped.x - entry.x) ** 2 + (snapped.y - entry.y) ** 2
+          if (distSq < WELD_THRESHOLD_MM ** 2) {
+            newCrossTarget = entry
+            const wdx = entry.x - n.x
+            const wdy = entry.y - n.y
+            return { ...n, x: entry.x, y: entry.y,
+              handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
+              handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
+            }
+          }
+        }
+        return {
+          ...n,
+          x: snapped.x,
+          y: snapped.y,
+          handleIn: n.handleIn ? { x: n.handleIn.x + sdx, y: n.handleIn.y + sdy } : undefined,
+          handleOut: n.handleOut ? { x: n.handleOut.x + sdx, y: n.handleOut.y + sdy } : undefined,
+        }
+      }
+      if (m.kind === 'handle-in') {
+        const handleIn = { x: (n.handleIn?.x ?? n.x) + dx, y: (n.handleIn?.y ?? n.y) + dy }
+        const handleOut = (altDownRef.current || e.evt.altKey) && n.handleOut
+          ? { x: 2 * n.x - handleIn.x, y: 2 * n.y - handleIn.y }
+          : n.handleOut
+        return { ...n, handleIn, handleOut }
+      }
+      const handleOut = { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy }
+      const handleIn = (altDownRef.current || e.evt.altKey) && n.handleIn
+        ? { x: 2 * n.x - handleOut.x, y: 2 * n.y - handleOut.y }
+        : n.handleIn
+      return { ...n, handleIn, handleOut }
+    })
+    setWeldTargetIdx(newWeldTarget)
+    setCrossPathWeldTarget(newCrossTarget)
+    setEditNodes(updatedNodes)
+  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
+
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current
     const vp = viewportRef.current
@@ -938,268 +1206,30 @@ export default function CanvasStage() {
 
     const m = modeRef.current
 
-    if (m.type === 'pan') {
-      // Pan uses clientX/Y deltas — both are in screen pixels so delta is correct
-      const { mouseX, mouseY, vpX, vpY } = panStartRef.current
-      setViewport((v) => ({ ...v, x: vpX + (e.evt.clientX - mouseX), y: vpY + (e.evt.clientY - mouseY) }))
-      return
-    }
+    // Pan works off screen-pixel deltas, so it runs before the CNC conversion
+    // and without needing a stage pointer.
+    if (m.type === 'pan') return onMovePan(e)
 
     if (!pointer) return
     const cncMouse = screenToCNC(pointer.x, pointer.y, vp)
 
-    if (m.type === 'move') {
-      const dx = cncMouse.x - m.startCNC.x
-      const dy = cncMouse.y - m.startCNC.y
-      // Threshold check in stage pixels
-      const startScreenX = vp.x + m.startCNC.x * vp.scale
-      const startScreenY = vp.y - m.startCNC.y * vp.scale
-      if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
-        didDragRef.current = true
-      }
-      if (didDragRef.current) {
-        let finalDx = dx, finalDy = dy
-        if (shiftHeldRef.current) {
-          if (Math.abs(dx) > Math.abs(dy)) finalDy = 0
-          else finalDx = 0
-        }
-        // Object snap first (bbox edges/centers to other shapes' edges/centers),
-        // then grid snap only on the axes that didn't object-snap.
-        const ib = m.initBbox
-        const snapOn = useUIStore.getState().snapEnabled
-        const tolMM = OBJECT_SNAP_PX / vp.scale
-        const ox = snapOn ? snapAxisDelta([ib.minX + finalDx, ib.maxX + finalDx, ib.cx + finalDx], m.snapTargets.xs, tolMM) : null
-        const oy = snapOn ? snapAxisDelta([ib.minY + finalDy, ib.maxY + finalDy, ib.cy + finalDy], m.snapTargets.ys, tolMM) : null
-        if (ox) finalDx += ox.correction
-        if (oy) finalDy += oy.correction
-        const gridSnapped = snapCNC({ x: ib.minX + finalDx, y: ib.minY + finalDy })
-        if (!ox) finalDx = gridSnapped.x - ib.minX
-        if (!oy) finalDy = gridSnapped.y - ib.minY
-        setSnapGuides(ox || oy ? { x: ox?.guide, y: oy?.guide } : null)
-        setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
-        setLiveBBox({ minX: ib.minX + finalDx, minY: ib.minY + finalDy, width: ib.width, height: ib.height })
-      }
-      return
-    }
+    // Modes that fully consume the move.
+    if (m.type === 'move')   return onMoveTranslate(m, cncMouse, pointer, vp)
+    if (m.type === 'resize') return onMoveResize(m, cncMouse, e)
+    if (m.type === 'rotate') return onMoveRotate(m, cncMouse)
 
-    if (m.type === 'resize') {
-      didDragRef.current = true
-      const { anchor, initHandle, pathIds, handle, shiftHeld } = m
-      const snappedMouse = snapCNC(cncMouse)
-      const dhx = initHandle.x - anchor.x
-      const dhy = initHandle.y - anchor.y
-      const newHx = snappedMouse.x - anchor.x
-      const newHy = snappedMouse.y - anchor.y
+    // Modes that handle the move and then fall through to the shared checks.
+    if (m.type === 'dragbox')   onMoveDragbox(pointer)
+    if (m.type === 'drawshape') onMoveDrawShape(m, cncMouse, pointer, vp)
 
-      // Alt + corner handle = skew (shear) instead of scale
-      const isCorner = handle === 'tl' || handle === 'tr' || handle === 'bl' || handle === 'br'
-      if ((altDownRef.current || e.evt.altKey) && isCorner) {
-        const dx = newHx - dhx
-        const dy = newHy - dhy
-        const kx = Math.abs(dx) >= Math.abs(dy) && dhy !== 0 ? dx / dhy : 0
-        const ky = Math.abs(dy) >  Math.abs(dx) && dhx !== 0 ? dy / dhx : 0
-        setLiveTransform({ kind: 'skew', pathIds: new Set(pathIds), kx, ky, ax: anchor.x, ay: anchor.y })
-        return
-      }
+    if (m.type !== 'pendraw') onMovePenHover(cncMouse, pointer, vp)
 
-      let sx = dhx !== 0 ? newHx / dhx : 1
-      let sy = dhy !== 0 ? newHy / dhy : 1
+    if (m.type === 'idle' && connectSourceRef.current !== null) onMoveConnectPreview(cncMouse, vp)
+    if (m.type === 'pendraw') onMovePenDraw(m, cncMouse, pointer, vp)
+    if (m.type === 'nodedit-drag' && editDragInitRef.current) onMoveNodeEditDrag(m, cncMouse, e)
+  }, [setCursorMM, onMovePan, onMoveTranslate, onMoveResize, onMoveRotate, onMoveDragbox,
+      onMoveDrawShape, onMovePenHover, onMoveConnectPreview, onMovePenDraw, onMoveNodeEditDrag])
 
-      // Edge handles constrain one axis
-      if (handle === 't' || handle === 'b') sx = 1
-      if (handle === 'l' || handle === 'r') sy = 1
-
-      // Uniform scale for corners with Shift
-      if (shiftHeld && !['t','b','l','r'].includes(handle)) {
-        const s = Math.sign(sx) * Math.hypot(newHx, newHy) / Math.hypot(dhx, dhy)
-        sx = s; sy = Math.sign(sy) * Math.abs(s)
-      }
-
-      // Prevent degenerate scales
-      if (Math.abs(sx) < 0.001) sx = Math.sign(sx) * 0.001
-      if (Math.abs(sy) < 0.001) sy = Math.sign(sy) * 0.001
-
-      setLiveTransform({ kind: 'scale', pathIds: new Set(pathIds), sx, sy, ax: anchor.x, ay: anchor.y })
-      const ib = m.initBbox
-      const x1 = anchor.x + (ib.minX - anchor.x) * sx, x2 = anchor.x + (ib.maxX - anchor.x) * sx
-      const y1 = anchor.y + (ib.minY - anchor.y) * sy, y2 = anchor.y + (ib.maxY - anchor.y) * sy
-      setLiveBBox({ minX: Math.min(x1, x2), minY: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) })
-      return
-    }
-
-    if (m.type === 'rotate') {
-      didDragRef.current = true
-      const currentAngle = Math.atan2(cncMouse.y - m.center.y, cncMouse.x - m.center.x) * 180 / Math.PI
-      let delta = currentAngle - m.initAngle
-      if (useUIStore.getState().snapEnabled) delta = Math.round(delta / 5) * 5
-      setLiveTransform({ kind: 'rotate', pathIds: new Set(m.pathIds), angle: delta, cx: m.center.x, cy: m.center.y })
-      setLiveRotationAngle(delta)
-      return
-    }
-
-    if (m.type === 'dragbox') {
-      setDragBox((db) => db ? { ...db, ex: pointer.x, ey: pointer.y } : null)
-    }
-
-    if (m.type === 'drawshape') {
-      const startScreenX = vp.x + m.startCNC.x * vp.scale
-      const startScreenY = vp.y - m.startCNC.y * vp.scale
-      if (Math.hypot(pointer.x - startScreenX, pointer.y - startScreenY) > MOVE_THRESHOLD_PX) {
-        didDragRef.current = true
-      }
-      const snappedCNC = snapCNC(cncMouse)
-      // Update currentCNC in the mode ref (no state re-render needed — liveShapeD handles rendering)
-      modeRef.current = { ...m, currentCNC: snappedCNC }
-
-      if (didDragRef.current) {
-        const { activeTool, shapeToolConfig } = useUIStore.getState()
-        if (activeTool !== 'select') {
-          const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, snappedCNC, shapeToolConfig)
-          setLiveShapeD(generateShapeD(params))
-        }
-      }
-    }
-
-    // Update pen close-hover indicator (highlight first node when hovering near it)
-    if (m.type !== 'pendraw') {
-      const { activeTool: at, penNodes: nodes } = useUIStore.getState()
-      if (at === 'pen') {
-        const snap = snapPenPoint(cncMouse)
-        setPenSnapCursor(snap.point)
-        setSnapGuides(snap.guides)
-      }
-      if (at === 'pen' && nodes.length >= 2) {
-        const first = nodes[0]
-        const fsx = vp.x + first.x * vp.scale
-        const fsy = vp.y - first.y * vp.scale
-        const close = Math.hypot(pointer.x - fsx, pointer.y - fsy) < 10
-        if (close !== penClosingRef.current) {
-          setPenClosing(close)
-        }
-      } else if (penClosingRef.current) {
-        setPenClosing(false)
-      }
-    }
-
-    // Connect mode preview: show dashed line from source to nearest snappable node
-    if (m.type === 'idle' && connectSourceRef.current !== null) {
-      const srcIdx = connectSourceRef.current
-      const nodes = editNodesRef.current
-      if (nodes[srcIdx]) {
-        const snapMM = 16 / vp.scale
-        let bestDist = snapMM
-        let snapSameIdx: number | null = null
-        let snapCrossEntry: CrossPathEntry | null = null
-        let snapPos = cncMouse
-
-        for (let j = 0; j < nodes.length; j++) {
-          if (j === srcIdx) continue
-          const dist = Math.hypot(cncMouse.x - nodes[j].x, cncMouse.y - nodes[j].y)
-          if (dist < bestDist) {
-            bestDist = dist
-            snapSameIdx = j
-            snapPos = { x: nodes[j].x, y: nodes[j].y }
-          }
-        }
-
-        for (const entry of crossPathEntriesRef.current) {
-          const dist = Math.hypot(cncMouse.x - entry.x, cncMouse.y - entry.y)
-          if (dist < bestDist) {
-            bestDist = dist
-            snapCrossEntry = entry
-            snapSameIdx = null
-            snapPos = { x: entry.x, y: entry.y }
-          }
-        }
-
-        setConnectPreviewTo(snapPos)
-        setConnectSnapTargetIdx(snapSameIdx)
-        setCrossPathWeldTarget(snapCrossEntry)
-      }
-    }
-
-    if (m.type === 'pendraw') {
-      const asx = vp.x + m.anchorCNC.x * vp.scale
-      const asy = vp.y - m.anchorCNC.y * vp.scale
-      if (Math.hypot(pointer.x - asx, pointer.y - asy) > MOVE_THRESHOLD_PX) {
-        didDragRef.current = true
-      }
-      if (didDragRef.current && !m.closing) {
-        // Only track drag handles in bezier mode; other modes auto-compute curves
-        if (useUIStore.getState().penCurveType === 'bezier') {
-          setLivePen({ anchor: m.anchorCNC, handle: cncMouse })
-        }
-      }
-    }
-
-    if (m.type === 'nodedit-drag' && editDragInitRef.current) {
-      didDragRef.current = true
-      const init = editDragInitRef.current
-      const dx = cncMouse.x - init.startCNC.x
-      const dy = cncMouse.y - init.startCNC.y
-      const WELD_THRESHOLD_MM = 16 / viewportRef.current.scale
-      let newWeldTarget: number | null = null
-      let newCrossTarget: CrossPathEntry | null = null
-      const updatedNodes = init.initialNodes.map((n, i) => {
-        if (i !== m.nodeIdx) return n
-        if (m.kind === 'anchor') {
-          const snapped = snapCNC({ x: n.x + dx, y: n.y + dy })
-          const sdx = snapped.x - n.x
-          const sdy = snapped.y - n.y
-          // Check for same-path weld snap first
-          for (let j = 0; j < init.initialNodes.length; j++) {
-            if (j === m.nodeIdx) continue
-            const other = init.initialNodes[j]
-            const distSq = (snapped.x - other.x) ** 2 + (snapped.y - other.y) ** 2
-            if (distSq < WELD_THRESHOLD_MM ** 2) {
-              newWeldTarget = j
-              const wdx = other.x - n.x
-              const wdy = other.y - n.y
-              return { ...n, x: other.x, y: other.y,
-                handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
-                handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
-              }
-            }
-          }
-          // Check for cross-path weld snap (only available for endpoints of open paths)
-          for (const entry of crossPathEntriesRef.current) {
-            const distSq = (snapped.x - entry.x) ** 2 + (snapped.y - entry.y) ** 2
-            if (distSq < WELD_THRESHOLD_MM ** 2) {
-              newCrossTarget = entry
-              const wdx = entry.x - n.x
-              const wdy = entry.y - n.y
-              return { ...n, x: entry.x, y: entry.y,
-                handleIn: n.handleIn ? { x: n.handleIn.x + wdx, y: n.handleIn.y + wdy } : undefined,
-                handleOut: n.handleOut ? { x: n.handleOut.x + wdx, y: n.handleOut.y + wdy } : undefined,
-              }
-            }
-          }
-          return {
-            ...n,
-            x: snapped.x,
-            y: snapped.y,
-            handleIn: n.handleIn ? { x: n.handleIn.x + sdx, y: n.handleIn.y + sdy } : undefined,
-            handleOut: n.handleOut ? { x: n.handleOut.x + sdx, y: n.handleOut.y + sdy } : undefined,
-          }
-        }
-        if (m.kind === 'handle-in') {
-          const handleIn = { x: (n.handleIn?.x ?? n.x) + dx, y: (n.handleIn?.y ?? n.y) + dy }
-          const handleOut = (altDownRef.current || e.evt.altKey) && n.handleOut
-            ? { x: 2 * n.x - handleIn.x, y: 2 * n.y - handleIn.y }
-            : n.handleOut
-          return { ...n, handleIn, handleOut }
-        }
-        const handleOut = { x: (n.handleOut?.x ?? n.x) + dx, y: (n.handleOut?.y ?? n.y) + dy }
-        const handleIn = (altDownRef.current || e.evt.altKey) && n.handleIn
-          ? { x: 2 * n.x - handleOut.x, y: 2 * n.y - handleOut.y }
-          : n.handleIn
-        return { ...n, handleIn, handleOut }
-      })
-      setWeldTargetIdx(newWeldTarget)
-      setCrossPathWeldTarget(newCrossTarget)
-      setEditNodes(updatedNodes)
-    }
-  }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
 
   // Shared commit for the move/resize/skew/rotate bakes: batch-update the
   // touched paths and regenerate each affected operation ONCE (bugs.md H1/R4).
@@ -1601,7 +1631,7 @@ export default function CanvasStage() {
         // ending at this node — the outgoing segment uses normal curve logic.
         newNode.corner = true
       }
-      penPast.current = [...penPast.current, [...useUIStore.getState().penNodes]]
+      pushLocalHistory(penPast.current, [...useUIStore.getState().penNodes])
       penFuture.current = []
       addPenNode(newNode)
       useUIStore.getState().setNodeEditHistoryFlags(true, false)

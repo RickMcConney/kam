@@ -39,6 +39,43 @@ export function hydrateOp(sop: SerializedOperation): AnyOperation {
 // replay diff — post-scrub regeneration recomputes them.
 export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint'] as const
 
+// An op reduced to the fields replay can actually reproduce. Live ops carry
+// state that no event ever recorded, so comparing raw ops against replayed
+// ones always reports a difference once the project has been used:
+// - visible: eye-icon toggles are view state (toggleOperationVisible doesn't record)
+// - entryHint: rewritten by optimizeStartPoints on EVERY sim run / G-code export
+// - helicalCenterX/Y/helicalRadius: written back by regenerate with { record: false }
+//
+// Used both by the replay oracle (replayCheck) and by scrubbing's
+// segment-preservation check — the latter has to ignore these or every undo
+// after a single Simulate would discard every generated toolpath and re-run
+// seconds of adaptive/vcarve work.
+export function comparableOp(op: SerializedOperation): Record<string, unknown> {
+  const { visible: _v, entryHint: _eh, ...rest } = op as SerializedOperation & { visible?: boolean }
+  if (rest.type === 'drill') {
+    delete rest.helicalCenterX
+    delete rest.helicalCenterY
+    delete rest.helicalRadius
+  }
+  return rest as Record<string, unknown>
+}
+
+// Do two ops carry the same replayable settings? Key-wise rather than
+// JSON.stringify over the whole object: spread-built ops ({ ...o, ...updates })
+// can legitimately differ in key ORDER, which whole-object stringify would
+// report as a difference.
+export function sameOpSettings(a: SerializedOperation, b: SerializedOperation): boolean {
+  const ca = comparableOp(a)
+  const cb = comparableOp(b)
+  const keys = new Set([...Object.keys(ca), ...Object.keys(cb)])
+  for (const k of keys) {
+    const va = ca[k], vb = cb[k]
+    if (va === vb) continue                                  // fast path: primitives + identity
+    if (JSON.stringify(va) !== JSON.stringify(vb)) return false
+  }
+  return true
+}
+
 export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' | 'boolean' | 'offset' | 'pattern'
 
 // What kind of gesture produced a paths.edit event — names the chip and picks

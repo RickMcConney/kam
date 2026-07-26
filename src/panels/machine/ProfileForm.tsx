@@ -7,8 +7,9 @@ import { useToolStore, type CuttingDirection } from '../../store/toolStore'
 import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorker } from '../../workers/workerClient'
+import { runInWorkerFor } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 
 interface ProfileFormState {
@@ -22,7 +23,8 @@ interface ProfileFormState {
 
 export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?: ProfileOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -47,7 +49,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   const selectedPaths = editOp
     ? paths.filter((p) => p.id === editOp.pathId)
-    : paths.filter((p) => selectedIds.includes(p.id))
+    : selPaths
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
@@ -73,7 +75,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, await runInWorker('generateProfile', selectedPaths[0].d, tool, {
+          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateProfile', selectedPaths[0].d, tool, {
             side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             direction: form.direction, rampIn: form.rampIn, safeHeightMM,
           }))
@@ -104,7 +106,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
-            setSegments(opId, await runInWorker('generateProfile', path.d, tool, {
+            setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, safeHeightMM,
             }))

@@ -32,9 +32,10 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       const offset = ev.offset
       if (offset && offset.pairs.length > 0) {
         const bySource = new Map(state.paths.map((p) => [p.id, p]))
+        const sourceOf = new Map(offset.pairs.map((pr) => [pr.resultId, pr.sourceId]))
         paths = paths.map((rp) => {
-          const pair = offset.pairs.find((pr) => pr.resultId === rp.id)
-          const src = pair && bySource.get(pair.sourceId)
+          const sourceId = sourceOf.get(rp.id)
+          const src = sourceId !== undefined && bySource.get(sourceId)
           if (!src) return rp
           const d = applyOffset(src.d, { distanceMM: offset.distanceMM, cornerStyle: offset.cornerStyle })
           return d ? { ...rp, d } : rp
@@ -60,9 +61,10 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       const duplicate = ev.duplicate
       if (duplicate && duplicate.pairs.length > 0) {
         const bySource = new Map(state.paths.map((p) => [p.id, p]))
+        const sourceOf = new Map(duplicate.pairs.map((pr) => [pr.resultId, pr.sourceId]))
         paths = paths.map((rp) => {
-          const pair = duplicate.pairs.find((pr) => pr.resultId === rp.id)
-          const src = pair && bySource.get(pair.sourceId)
+          const sourceId = sourceOf.get(rp.id)
+          const src = sourceId !== undefined && bySource.get(sourceId)
           if (!src) return rp
           return {
             ...rp,
@@ -75,10 +77,10 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
     }
 
     case 'paths.edit': {
-      const deleteIds = ev.deleteIds ?? []
+      const deleteIds = new Set(ev.deleteIds ?? [])
       const map = new Map(ev.updates.map((u) => [u.id, u]))
       let paths = state.paths
-        .filter((p) => !deleteIds.includes(p.id))
+        .filter((p) => !deleteIds.has(p.id))
         .map((p) => {
           const upd = map.get(p.id)
           if (!upd) return p
@@ -122,8 +124,9 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       // geometry) or a source can't be found (legacy save, deleted source).
       let add = ev.add
       if (ev.boolOp && add && add.length > 0) {
+        const byId = new Map(paths.map((p) => [p.id, p]))
         const ds = ev.updates.flatMap((u) => {
-          const src = paths.find((p) => p.id === u.id)
+          const src = byId.get(u.id)
           return src ? [src.d] : []
         })
         if (ds.length >= 2) {
@@ -136,9 +139,12 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       if (add && add.length > 0) paths = [...paths, ...add]
       let operations = state.operations
       let tabs = state.tabs
-      if (deleteIds.length > 0) {
-        operations = operations.filter((op) => !deleteIds.some((id) => refsPath(op, id)))
-        tabs = tabs.filter((t) => !deleteIds.includes(t.pathId))
+      if (deleteIds.size > 0) {
+        // refsPath takes one id at a time, so this stays a per-op scan of the
+        // deleted ids — materialize them once rather than per operation.
+        const deletedList = [...deleteIds]
+        operations = operations.filter((op) => !deletedList.some((id) => refsPath(op, id)))
+        tabs = tabs.filter((t) => !deleteIds.has(t.pathId))
       }
       return { paths, operations, tabs }
     }
@@ -153,11 +159,13 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       }
     }
 
-    case 'paths.setHidden':
+    case 'paths.setHidden': {
+      const ids = new Set(ev.ids)
       return {
         ...state,
-        paths: state.paths.map((p) => ev.ids.includes(p.id) ? { ...p, hidden: ev.hidden } : p),
+        paths: state.paths.map((p) => ids.has(p.id) ? { ...p, hidden: ev.hidden } : p),
       }
+    }
 
     case 'shape.params':
       return {
@@ -178,8 +186,10 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
         ),
       }
 
-    case 'op.delete':
-      return { ...state, operations: state.operations.filter((o) => !ev.opIds.includes(o.id)) }
+    case 'op.delete': {
+      const opIds = new Set(ev.opIds)
+      return { ...state, operations: state.operations.filter((o) => !opIds.has(o.id)) }
+    }
 
     case 'op.reorder': {
       const byId = new Map(state.operations.map((o) => [o.id, o]))
@@ -196,8 +206,10 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
     case 'tabs.apply':
       return { ...state, tabs: [...state.tabs.filter((t) => t.pathId !== ev.pathId), ...ev.tabs] }
 
-    case 'tabs.delete':
-      return { ...state, tabs: state.tabs.filter((t) => !ev.tabIds.includes(t.id)) }
+    case 'tabs.delete': {
+      const tabIds = new Set(ev.tabIds)
+      return { ...state, tabs: state.tabs.filter((t) => !tabIds.has(t.id)) }
+    }
 
     case 'tabs.moveT':
       return {

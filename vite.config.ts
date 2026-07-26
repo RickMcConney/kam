@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
@@ -33,6 +34,10 @@ const reloadWorkerGraph = {
 export default defineConfig({
   base: '/kam/',
   plugins: [react(), jspolyPlugin, reloadWorkerGraph],
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   worker: {
     plugins: () => [jspolyPlugin],
   },

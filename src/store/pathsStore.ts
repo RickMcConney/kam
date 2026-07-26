@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ImportedPath } from '../importers/svgImporter'
 import { translateD, type TransformStep } from '../canvas/selectionUtils'
@@ -330,3 +331,20 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
 
   replacePaths: (paths) => set({ paths, selectedIds: [] }),
 }))
+
+// The selected paths, in canvas z-order. Every operation form and the
+// properties panel needs this, and each used to spell out
+// `paths.filter((p) => selectedIds.includes(p.id))` — an O(paths × selection)
+// scan re-run on every render.
+//
+// Memoized rather than selected inline: a selector that builds a new array
+// would hand useSyncExternalStore a fresh reference on every store read, so
+// the component would re-render on unrelated store changes.
+export function useSelectedPaths(): ImportedPath[] {
+  const paths = usePathsStore((s) => s.paths)
+  const selectedIds = usePathsStore((s) => s.selectedIds)
+  return useMemo(() => {
+    const sel = new Set(selectedIds)
+    return paths.filter((p) => sel.has(p.id))
+  }, [paths, selectedIds])
+}

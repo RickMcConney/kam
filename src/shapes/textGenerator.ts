@@ -40,15 +40,6 @@ export const DEFAULT_FONT_FAMILY = 'Roboto'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fontCache = new Map<string, any>()
 const fontPromises = new Map<string, Promise<void>>()
-const onLoadCallbacks: Array<() => void> = []
-
-export function onFontLoaded(cb: () => void): () => void {
-  onLoadCallbacks.push(cb)
-  return () => {
-    const idx = onLoadCallbacks.indexOf(cb)
-    if (idx !== -1) onLoadCallbacks.splice(idx, 1)
-  }
-}
 
 export async function loadFont(family: string): Promise<void> {
   if (fontCache.has(family)) return
@@ -65,7 +56,6 @@ export async function loadFont(family: string): Promise<void> {
         const shim = await loadSvgStrokeShim(def.svg)
         if (!shim) throw new Error(`SVG stroke font "${def.svg}" not found`)
         fontCache.set(family, shim)
-        onLoadCallbacks.forEach((cb) => cb())
         return
       }
       const res = await fetch(def.url!)
@@ -73,7 +63,6 @@ export async function loadFont(family: string): Promise<void> {
       const buf = await res.arrayBuffer()
       const font = opentype.parse(buf)
       fontCache.set(family, font)
-      onLoadCallbacks.forEach((cb) => cb())
     } catch (err) {
       console.warn(`[textGenerator] Failed to load font "${family}":`, err)
     }

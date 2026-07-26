@@ -4,6 +4,7 @@ import { generateVCarve } from '../cam/vcarve'
 import { generateProfile3d } from '../cam/profile3d'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { generateTrochoidal } from '../cam/trochoidal'
+import { generateSurface } from '../cam/surfacing'
 
 const handlers = {
   generateProfile,
@@ -13,6 +14,7 @@ const handlers = {
   generateInlayFemale,
   generateInlayMale,
   generateTrochoidal,
+  generateSurface,
 } as const
 
 export type WorkerHandlers = typeof handlers

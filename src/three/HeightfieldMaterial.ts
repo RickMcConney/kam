@@ -4,27 +4,27 @@ import type { ZOrigin } from '../store/workpieceStore'
 import { Z_DATUM_COLOR_THREE } from '../colors'
 import { WOOD_TILE_MM } from './woodTexture'
 
-// ─── Heightfield material-removal simulation (alternate to VoxelMaterial) ──────
+// ─── Heightfield material-removal simulation ──────────────────────────────────
 //
-// Instead of a quadtree of instanced boxes, the stock is a single regular grid of
+// The stock is a single regular grid of
 // height samples (`topZ`, one per vertex). A static displaced plane reads those
 // heights from a float DataTexture in the vertex shader; surface normals are
 // computed per-vertex from neighbouring texels so shading stays smooth at any
 // resolution. Cutting just lowers `topZ` cells under the tool footprint and the
 // dirty texture is re-uploaded — no geometry is ever rebuilt.
 //
-// The per-cell carve math (flat / ball / V-bit) is the same closest-point model
-// VoxelMaterial uses, evaluated over a uniform grid rather than variable leaves.
+// The per-cell carve math (flat / ball / V-bit) is a closest-point model
+// evaluated over the uniform grid.
 // Coordinate convention matches ThreeView: workpiece bottom at three-space Y=0,
 // top at Y=thickness; threeZ = -cncY. `topZ` holds material height above the
-// bottom (0 … thickness), exactly like VoxelMaterial's `leaf.height`.
+// bottom (0 … thickness).
 
 function isCuttingSeg(seg: SimSegment): boolean {
   return !seg.rapid && (seg.prevZ < 0 || seg.z < 0)
 }
 
-// The surface uses a stock MeshLambertMaterial (same as the voxel meshes) so its
-// lighting matches the voxel renderer. onBeforeCompile injects the heightfield
+// The surface uses a stock MeshLambertMaterial so it lights like the rest of the
+// scene. onBeforeCompile injects the heightfield
 // displacement and per-vertex normals, and samples the planar world-mm-mapped
 // wood texture for the diffuse colour — carved surfaces read as wood too,
 // distinguished by depth and lighting rather than a highlight colour.
@@ -396,8 +396,8 @@ export class HeightfieldMaterial {
     this._lastPartialT = 0
   }
 
-  // Mirrors VoxelMaterial.applyUpTo: incrementally carve completed segments plus
-  // the partial current one, resetting if playback scrubbed backwards.
+  // Incrementally carve completed segments plus the partial current one,
+  // resetting if playback scrubbed backwards.
   applyUpTo(segments: SimSegment[], segIdx: number, t: number): boolean {
     if (segments.length === 0) return false
 

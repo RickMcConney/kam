@@ -8,8 +8,9 @@ import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type VCarveOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorker } from '../../workers/workerClient'
+import { runInWorkerFor } from '../../workers/workerClient'
 import { groupPathsByContainment } from './containment'
 
 interface VCarveFormState {
@@ -19,7 +20,8 @@ interface VCarveFormState {
 
 export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: VCarveOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -41,7 +43,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
   const groups = editOp && editBoundary
     ? [{ boundary: editBoundary, islands: editIslands }]
-    : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
+    : groupPathsByContainment(selPaths)
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
   const angleDeg = selectedTool?.vbitAngleDeg ?? 60
@@ -66,7 +68,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, await runInWorker('generateVCarve', editBoundary.d, tool, {
+          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateVCarve', editBoundary.d, tool, {
             angleDeg, maxDepthMM: form.maxDepthMM,
             islandDs: editIslands.map((p) => p.d), safeHeightMM,
           }))
@@ -93,7 +95,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             maxDepthMM: form.maxDepthMM, angleDeg, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
-            setSegments(opId, await runInWorker('generateVCarve', boundary.d, tool, {
+            setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', boundary.d, tool, {
               angleDeg, maxDepthMM: form.maxDepthMM,
               islandDs: islands.map((p) => p.d), safeHeightMM,
             }))

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRefState } from './useRefState'
+import { pushLocalHistory } from './localHistory'
 import { useUIStore, type PenNode } from '../store/uiStore'
 
 // Pen-tool session state: live segment preview, closing-hover flag, and the
@@ -24,7 +25,7 @@ export function usePenTool() {
   const penRedo = useCallback(() => {
     if (penFuture.current.length === 0) return
     const next = penFuture.current[0]
-    penPast.current = [...penPast.current, useUIStore.getState().penNodes]
+    pushLocalHistory(penPast.current, useUIStore.getState().penNodes)
     penFuture.current = penFuture.current.slice(1)
     useUIStore.getState().setPenNodes(next)
     useUIStore.getState().setNodeEditHistoryFlags(true, penFuture.current.length > 0)

@@ -8,8 +8,9 @@ import { useToolStore, type Tool } from '../../store/toolStore'
 import { useToolpathStore, INLAY_NO_FINISH, type AnyOperation, type InlayOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorker } from '../../workers/workerClient'
+import { runInWorkerFor } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
 
@@ -28,7 +29,8 @@ interface InlayFormState {
 
 export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: InlayOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
@@ -67,7 +69,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
   const groups = editOp && editBoundary
     ? [{ boundary: editBoundary, islands: editIslands }]
-    : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
+    : groupPathsByContainment(selPaths)
   const session = useSessionOps()
 
   // Session key includes role and pair/solo structure: a female and male op for the same
@@ -140,8 +142,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       setTimeout(async () => {
         try {
           const result = editOp.role === 'female'
-            ? await runInWorker('generateInlayFemale', editBoundary.d, pocketTool, wallTool, inlayParams)
-            : await runInWorker('generateInlayMale', editBoundary.d, pocketTool, wallTool, inlayParams)
+            ? await runInWorkerFor(editOp.id, 'generateInlayFemale', editBoundary.d, pocketTool, wallTool, inlayParams)
+            : await runInWorkerFor(editOp.id, 'generateInlayMale', editBoundary.d, pocketTool, wallTool, inlayParams)
           setSegments(editOp.id, editOp.phase === 'vbit' ? result.vbitSegs : result.endmillSegs)
           if (linkedOp) {
             setSegments(linkedOp.id, editOp.phase === 'vbit' ? result.endmillSegs : result.vbitSegs)
@@ -186,8 +188,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
           try {
             const result = role === 'female'
-              ? await runInWorker('generateInlayFemale', boundary.d, pocketTool, null, inlayParams)
-              : await runInWorker('generateInlayMale', boundary.d, pocketTool, null, inlayParams)
+              ? await runInWorkerFor(ids[i], 'generateInlayFemale', boundary.d, pocketTool, null, inlayParams)
+              : await runInWorkerFor(ids[i], 'generateInlayMale', boundary.d, pocketTool, null, inlayParams)
             setSegments(ids[i], result.endmillSegs)
           } catch (err) {
             setError(ids[i], err instanceof Error ? err.message : 'Generation failed')
@@ -266,8 +268,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
         try {
           const result = role === 'female'
-            ? await runInWorker('generateInlayFemale', boundary.d, pocketTool, wallTool, inlayParams)
-            : await runInWorker('generateInlayMale', boundary.d, pocketTool, wallTool, inlayParams)
+            ? await runInWorkerFor(firstIds[i], 'generateInlayFemale', boundary.d, pocketTool, wallTool, inlayParams)
+            : await runInWorkerFor(firstIds[i], 'generateInlayMale', boundary.d, pocketTool, wallTool, inlayParams)
           setSegments(firstIds[i],  firstPhase  === 'vbit' ? result.vbitSegs : result.endmillSegs)
           setSegments(secondIds[i], secondPhase === 'vbit' ? result.vbitSegs : result.endmillSegs)
 

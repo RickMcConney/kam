@@ -1,6 +1,6 @@
 import { replay } from './applyEvent'
 import { nearestCheckpoint, useTimelineStore } from './timelineStore'
-import { serializeOp, type SerializedOperation } from './events'
+import { comparableOp, serializeOp } from './events'
 import { usePathsStore, type ImportedPath } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { useTabStore } from '../store/tabStore'
@@ -13,21 +13,11 @@ import { useWorkpieceStore } from '../store/workpieceStore'
 
 // Fields legitimately absent from replayed state:
 // - path.visible: eye-icon toggles are view state, not events
-// - op.visible: same
-// - op.helicalCenterX/Y/helicalRadius: written back by regenerate, not replayed
-// - op.entryHint: rewritten by optimizeStartPoints on every sim run / export
+// - op.visible / entryHint / helicalCenterX,Y / helicalRadius: see comparableOp
+//   in events.ts, which is shared with scrubbing's segment-preservation check
+//   so the two definitions of "same settings" can't drift apart.
 function comparablePath(p: ImportedPath) {
   const { visible: _v, ...rest } = p
-  return rest
-}
-
-function comparableOp(op: SerializedOperation) {
-  const { visible: _v, entryHint: _eh, ...rest } = op as SerializedOperation & { visible?: boolean }
-  if (rest.type === 'drill') {
-    delete rest.helicalCenterX
-    delete rest.helicalCenterY
-    delete rest.helicalRadius
-  }
   return rest
 }
 

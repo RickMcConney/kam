@@ -8,8 +8,9 @@ import { useToolStore, type CuttingDirection } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type PocketOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorker } from '../../workers/workerClient'
+import { runInWorkerFor } from '../../workers/workerClient'
 import type { PocketStrategy } from '../../cam/pocket'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
@@ -28,7 +29,8 @@ interface PocketFormState {
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
   const { tools } = useToolStore()
-  const { paths, selectedIds } = usePathsStore()
+  const { paths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
@@ -59,7 +61,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
   const groups = editOp && editBoundary
     ? [{ boundary: editBoundary, islands: editIslands }]
-    : groupPathsByContainment(paths.filter((p) => selectedIds.includes(p.id)))
+    : groupPathsByContainment(selPaths)
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
 
@@ -99,7 +101,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
-          setSegments(editOp.id, await runInWorker('generatePocket', editBoundary.d, tool, {
+          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generatePocket', editBoundary.d, tool, {
             strategy: form.strategy,
             depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             stepoverPercent: form.stepoverPercent, direction: form.direction,
@@ -140,7 +142,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
-            setSegments(opId, await runInWorker('generatePocket', boundary.d, tool, {
+            setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
               strategy: form.strategy,
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRefState } from './useRefState'
+import { pushLocalHistory } from './localHistory'
 import { usePathsStore } from '../store/pathsStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { useUIStore } from '../store/uiStore'
@@ -77,7 +78,7 @@ export function useNodeEditSession() {
   // Snapshot the PRE-gesture nodes+closed. `globalStep: true` for gestures that
   // also write one atomic global history entry (join/split) — see NodeEditEntry.
   const pushLocalUndo = useCallback((nodes: PathNode[], closed: boolean, globalStep = false) => {
-    localPast.current = [...localPast.current, { nodes, closed, globalStep }]
+    pushLocalHistory(localPast.current, { nodes, closed, globalStep })
     localFuture.current = []
     useUIStore.getState().setNodeEditHistoryFlags(true, false)
   }, [])
@@ -111,10 +112,7 @@ export function useNodeEditSession() {
   const localRedo = useCallback(() => {
     if (localFuture.current.length === 0) return
     const entry = localFuture.current[0]
-    localPast.current = [
-      ...localPast.current,
-      { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep },
-    ]
+    pushLocalHistory(localPast.current, { nodes: editNodesRef.current, closed: editClosedRef.current, globalStep: entry.globalStep })
     localFuture.current = localFuture.current.slice(1)
     if (entry.globalStep) {
       selfWriteRef.current = true

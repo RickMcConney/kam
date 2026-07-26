@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { usePathsStore } from '../store/pathsStore'
+import { usePathsStore, useSelectedPaths } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { useTimelineStore, bboxBeforeEvent } from '../timeline/timelineStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
@@ -305,7 +305,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
 
 
 export default function PropertiesPanel() {
-  const { paths, selectedIds } = usePathsStore()
+  const selectedIds = usePathsStore((s) => s.selectedIds)
   const liveRotationAngle = useCanvasStore((s) => s.liveRotationAngle)
   const liveBBox = useCanvasStore((s) => s.liveBBox)
   // Brief highlight when a timeline path-chip is clicked — this panel is where
@@ -320,7 +320,7 @@ export default function PropertiesPanel() {
   }, [flashSeq])
   const { units, origin, widthMM, heightMM } = useWorkpieceStore()
   const orgWorld = originWorldXY(origin, widthMM, heightMM)
-  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const selectedPaths = useSelectedPaths()
 
   // A move/scale/rotate/skew/mirror (or merged 'transform') timeline chip is
   // selected: show its recorded TransformStep recipe instead of the plain
@@ -342,6 +342,25 @@ export default function PropertiesPanel() {
   useEffect(() => {
     if (transformEditEventId && !activeTransformEvent) setTransformEditEventId(null)
   }, [transformEditEventId, activeTransformEvent, setTransformEditEventId])
+
+  // The stable reference for any step the active chip doesn't have YET — the
+  // selection's bbox as it was just before this chip started, not its current
+  // one (see fieldsFromSteps' doc comment for why that matters).
+  //
+  // Memoized because bboxBeforeEvent replays the timeline from the nearest
+  // checkpoint (up to 25 events, and applyEvent re-runs clipper booleans, path
+  // offsets and pattern instancing as it folds). Editing any field in this
+  // chip calls amendTransformSteps → new events array → re-render, so an
+  // unmemoized call put that replay on the keystroke path. The value is
+  // deliberately independent of this chip's own payload, so amending it must
+  // not recompute; a change to an EARLIER chip requires selecting a different
+  // path first, which nulls activeTransformEvent and re-runs this anyway.
+  const preChipBBoxRaw = useMemo(
+    () => activeTransformEvent
+      ? bboxBeforeEvent(activeTransformEvent.seq, activeTransformEvent.updates.map((u) => u.id))
+      : null,
+    [activeTransformEvent?.id, activeTransformEvent?.seq],
+  )
 
   if (selectedPaths.length === 0) return null
   const bbox = getMultiBBox(selectedPaths.map((p) => p.d))
@@ -417,11 +436,7 @@ export default function PropertiesPanel() {
     const eventId = activeTransformEvent.id
     const rawSteps = activeTransformEvent.updates[0].transforms!
     const mirrorSteps = rawSteps.filter((s) => s.kind === 'mirror')
-    // The stable reference for any step this chip doesn't have YET — the
-    // selection's bbox as it was just before this chip started, not its
-    // current one (see fieldsFromSteps' doc comment for why that matters).
-    const pathIds = activeTransformEvent.updates.map((u) => u.id)
-    const preChipBBox = bboxBeforeEvent(activeTransformEvent.seq, pathIds) ?? bbox
+    const preChipBBox = preChipBBoxRaw ?? bbox
     const fields = fieldsFromSteps(
       rawSteps,
       { x: preChipBBox.cx, y: preChipBBox.cy },

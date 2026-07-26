@@ -5,7 +5,7 @@ import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
-import { usePathsStore } from '../../store/pathsStore'
+import { usePathsStore, useSelectedPaths } from '../../store/pathsStore'
 import { applyCornerTreatments, getTreatableCorners, pathSimilarityTransform, transformPathBySimilarity, type CornerTreatmentType } from '../../tools/cornerTreatment'
 import { regenerateAffected } from '../../cam/regenerate'
 import { useUIStore } from '../../store/uiStore'
@@ -37,7 +37,7 @@ const CORNER_TREATMENTS: { type: TreatmentChoice; label: string; desc: string; p
 ]
 
 export function NodeEditForm({ onClose }: { onClose: () => void }) {
-  const { paths, selectedIds, batchUpdatePaths } = usePathsStore()
+  const { batchUpdatePaths } = usePathsStore()
   const { setNodeEditPathId, setCornerPickSession, setTreatedCorners, selectedCorners, clearSelectedCorners } = useUIStore()
   const { load, save } = useFormDefaultsStore()
 
@@ -59,7 +59,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
   // Clear any active node-edit overlay when this panel closes
   useEffect(() => () => { setNodeEditPathId(null); setCornerPickSession(null, null) }, [])
 
-  const selectedPaths = paths.filter((p) => selectedIds.includes(p.id))
+  const selectedPaths = useSelectedPaths()
   const activePath = selectedPaths.length === 1 ? selectedPaths[0] : null
 
   // Start (or resume) the corner-pick session: snapshot the path as baseD and

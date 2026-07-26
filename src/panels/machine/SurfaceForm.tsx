@@ -5,7 +5,7 @@ import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { generateSurface } from '../../cam/surfacing'
+import { runInWorkerFor } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 
 interface SurfaceFormState {
@@ -48,28 +48,27 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (!selectedTool) return
+    const tool = selectedTool
     setGenerating(true)
     if (editOp) {
       updateOperation(editOp.id, {
         toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
         stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, status: 'generating',
       } as Partial<AnyOperation>)
-      setTimeout(() => {
-        try {
-          setSegments(editOp.id, generateSurface(selectedTool, {
-            widthMM, heightMM,
-            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-            stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
-            safeHeightMM,
-          }))
-        } catch (err) {
-          setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
-        }
-        setGenerating(false)
-        save('surface', form)
-      }, 0)
+      try {
+        setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateSurface', tool, {
+          widthMM, heightMM,
+          depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+          stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
+          safeHeightMM,
+        }))
+      } catch (err) {
+        setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+      }
+      setGenerating(false)
+      save('surface', form)
       return
     }
     // Re-Generate after this form already made a surface op updates it in place.
@@ -89,22 +88,20 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       name, toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
       stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, status: 'generating',
     } as Partial<AnyOperation> : { status: 'generating' })
-    setTimeout(() => {
-      try {
-        setSegments(opId, generateSurface(selectedTool, {
-          widthMM, heightMM,
-          depthMM: form.depthMM,
-          stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-          stepoverPercent: form.stepoverPercent,
-          passAngleDeg: form.passAngleDeg,
-          safeHeightMM,
-        }))
-      } catch (err) {
-        setError(opId, err instanceof Error ? err.message : 'Generation failed')
-      }
-      setGenerating(false)
-      save('surface', form)
-    }, 0)
+    try {
+      setSegments(opId, await runInWorkerFor(opId, 'generateSurface', tool, {
+        widthMM, heightMM,
+        depthMM: form.depthMM,
+        stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+        stepoverPercent: form.stepoverPercent,
+        passAngleDeg: form.passAngleDeg,
+        safeHeightMM,
+      }))
+    } catch (err) {
+      setError(opId, err instanceof Error ? err.message : 'Generation failed')
+    }
+    setGenerating(false)
+    save('surface', form)
   }
 
   return (

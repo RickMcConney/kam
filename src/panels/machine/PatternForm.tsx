@@ -6,6 +6,7 @@ import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
@@ -33,7 +34,8 @@ export interface PatternEditCtx {
 }
 
 export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx?: PatternEditCtx }) {
-  const { paths, selectedIds, addPaths } = usePathsStore()
+  const { paths, addPaths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
 
@@ -57,7 +59,7 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
 
   const selectedPaths = editCtx
     ? editCtx.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
-    : paths.filter((p) => selectedIds.includes(p.id))
+    : selPaths
   const canApply = selectedPaths.length >= 1
 
   function upLin<K extends keyof PatternLinParams>(k: K, v: PatternLinParams[K]) {

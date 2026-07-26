@@ -6,6 +6,7 @@ import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
@@ -29,7 +30,8 @@ export interface OffsetEditCtx {
 }
 
 export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?: OffsetEditCtx }) {
-  const { paths, selectedIds, addPaths } = usePathsStore()
+  const { paths, addPaths } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
 
@@ -49,7 +51,7 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
     : []
   const sourcePaths = editCtx
     ? livePairs.flatMap((pair) => { const p = paths.find((x) => x.id === pair.sourceId); return p ? [p] : [] })
-    : paths.filter((p) => selectedIds.includes(p.id))
+    : selPaths
   const canApply = editCtx ? livePairs.length >= 1 : sourcePaths.length >= 1
 
   function up<K extends keyof OffsetFormState>(k: K, v: OffsetFormState[K]) {

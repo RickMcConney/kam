@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { uid } from '../uid'
-import { hydrateOp, labelFor, serializeOp, KNOWN_EVENT_KINDS, TRANSFORM_GESTURES, type Checkpoint, type SerializedOperation, type TimelineEvent, type TimelineEventPayload } from './events'
+import { hydrateOp, labelFor, sameOpSettings, serializeOp, KNOWN_EVENT_KINDS, TRANSFORM_GESTURES, type Checkpoint, type SerializedOperation, type TimelineEvent, type TimelineEventPayload } from './events'
 import { replay } from './applyEvent'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -35,12 +35,21 @@ checkpoints.set(0, { paths: [], operations: [], tabs: [] })
 // uninitialized bindings. Backfill once the module graph has finished loading
 // (before any user interaction) — otherwise scrubbing back past the first
 // workpiece.set event has no baseline to restore and leaves the new value.
-queueMicrotask(() => {
+const backfillGenesis = () => {
   const g = checkpoints.get(0)
-  if (g && !g.workpiece && useTimelineStore.getState().events.length === 0) {
+  if (!g || g.workpiece) return
+  // Async module loaders (vitest/vite-node) flush microtasks between module
+  // evaluations, so this can fire while the cycle's bindings are still
+  // undefined — retry on the next tick until the stores exist.
+  if (!useWorkpieceStore || !usePathsStore || !useToolpathStore || !useTabStore) {
+    setTimeout(backfillGenesis, 0)
+    return
+  }
+  if (useTimelineStore.getState().events.length === 0) {
     checkpoints.set(0, captureCheckpoint())
   }
-})
+}
+queueMicrotask(backfillGenesis)
 
 function captureWorkpiece(): Required<WorkpieceEventChanges> {
   const { widthMM, heightMM, thicknessMM, units, origin, zOrigin, material } = useWorkpieceStore.getState()
@@ -53,6 +62,20 @@ function captureCheckpoint(): Checkpoint {
     operations: useToolpathStore.getState().operations.map(serializeOp),
     tabs: useTabStore.getState().tabs,
     workpiece: captureWorkpiece(),
+  }
+}
+
+// Drop every checkpoint at or after `seq` — they captured states derived from
+// event content that has just changed. Callers that rewrite an event pass that
+// event's seq (its own snapshot is now stale too); `dropAfter` is for the one
+// caller that only invalidates strictly-later checkpoints (record's
+// insert/truncate, where the cursor's own checkpoint is still valid).
+//
+// Genesis (seq 0) is never dropped by the `>= seq` form since every real event
+// seq is >= 1; the amend-genesis paths clear everything above 0 explicitly.
+function invalidateCheckpointsFrom(seq: number, dropAfter = false): void {
+  for (const k of checkpoints.keys()) {
+    if (dropAfter ? k > seq : k >= seq) checkpoints.delete(k)
   }
 }
 
@@ -268,7 +291,15 @@ function refPathIdsOf(op: SerializedOperation): string[] {
   return ids
 }
 
-const tabsFor = (tabs: Tab[], pathId: string) => tabs.filter((t) => t.pathId === pathId)
+function tabsByPath(tabs: Tab[]): Map<string, Tab[]> {
+  const m = new Map<string, Tab[]>()
+  for (const t of tabs) {
+    const a = m.get(t.pathId)
+    if (a) a.push(t)
+    else m.set(t.pathId, [t])
+  }
+  return m
+}
 
 // Debounced regeneration after scrubbing — rapid scrubs (drag across the
 // timeline) only regenerate once the cursor settles.
@@ -297,18 +328,25 @@ function restoreStateAt(seq: number, events: TimelineEvent[]): void {
   // Preserve generated segments where the op's settings, source paths, and
   // (for profile ops) tabs are unchanged — scrubbing over unrelated events
   // must not throw away seconds-long adaptive/vcarve generations.
+  //
+  // The settings comparison MUST go through sameOpSettings: live ops carry
+  // entryHint/visible/helical* that no event records, so a raw compare against
+  // the replayed op reports "changed" for every op as soon as the project has
+  // been simulated or exported once — defeating this whole block.
   const currentOps = new Map(useToolpathStore.getState().operations.map((o) => [o.id, o]))
   const curPathD = new Map(usePathsStore.getState().paths.map((p) => [p.id, p.d]))
   const newPathD = new Map(state.paths.map((p) => [p.id, p.d]))
-  const curTabs = useTabStore.getState().tabs
+  // Group tabs by path once rather than re-filtering both arrays per operation.
+  const curTabsByPath = tabsByPath(useTabStore.getState().tabs)
+  const newTabsByPath = tabsByPath(state.tabs)
   const hydrated: AnyOperation[] = state.operations.map((sop) => {
     const cur = currentOps.get(sop.id)
     if (cur && cur.status === 'done') {
-      const sameSettings = JSON.stringify(serializeOp(cur)) === JSON.stringify(sop)
+      const sameSettings = sameOpSettings(serializeOp(cur), sop)
       const samePaths = refPathIdsOf(sop).every((id) =>
         newPathD.has(id) && curPathD.get(id) === newPathD.get(id))
       const sameTabs = (sop.type !== 'profile' && sop.type !== 'trochoidal') ||
-        JSON.stringify(tabsFor(curTabs, sop.pathId)) === JSON.stringify(tabsFor(state.tabs, sop.pathId))
+        JSON.stringify(curTabsByPath.get(sop.pathId) ?? []) === JSON.stringify(newTabsByPath.get(sop.pathId) ?? [])
       if (sameSettings && samePaths && sameTabs) return cur
     }
     return hydrateOp(sop)
@@ -352,7 +390,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     // Any change at/before the cursor invalidates checkpoints past it — they
     // captured states derived from the old event content.
     const dropFutureCheckpoints = () => {
-      for (const k of checkpoints.keys()) if (k > s.cursor) checkpoints.delete(k)
+      invalidateCheckpointsFrom(s.cursor, true)
     }
 
     // Coalesce with the event AT the cursor (the one just applied) — covers
@@ -418,8 +456,16 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
 
     dropFutureCheckpoints()
     if (lastScrubIntent === 'undo') {
-      // Classic undo semantics: the discarded branch is gone
-      set({ events: [...s.events.slice(0, s.cursor), event], cursor: event.seq })
+      // Classic undo semantics: the discarded branch is gone. A save that
+      // pointed into that branch no longer describes any state we can reach —
+      // its seq is about to be reused by different events, so leaving savedSeq
+      // alone would let the cursor walk back onto it and report the project as
+      // clean while holding completely different content.
+      set({
+        events: [...s.events.slice(0, s.cursor), event],
+        cursor: event.seq,
+        ...(s.savedSeq > s.cursor ? { savedSeq: -1 } : {}),
+      })
       return
     }
 
@@ -533,7 +579,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       ...s.events.slice(seq).map((ev) => ({ ...ev, seq: ev.seq - 1 })),
     ]
     // Checkpoints at/after the removed event captured states that included it
-    for (const k of checkpoints.keys()) if (k >= seq) checkpoints.delete(k)
+    invalidateCheckpointsFrom(seq)
     const cursor = s.cursor >= seq ? s.cursor - 1 : s.cursor
     set({
       events,
@@ -565,7 +611,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       const events = [...s.events]
       events[idx] = amended
       // Checkpoints at/after the amended event captured the old payload's state
-      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      invalidateCheckpointsFrom(amended.seq)
       set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
     }
 
@@ -597,7 +643,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const g = checkpoints.get(0)
     if (g && g.paths.some((p) => p.id === pathId)) {
       const amended = { ...g, paths: g.paths.map((p) => p.id === pathId ? amendPath(p) : p) }
-      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      invalidateCheckpointsFrom(1)
       checkpoints.set(0, amended)
       set({ savedSeq: -1 }) // genesis is part of the saved file
       return true
@@ -610,7 +656,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const commit = (idx: number, amended: TimelineEvent) => {
       const events = [...s.events]
       events[idx] = amended
-      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      invalidateCheckpointsFrom(amended.seq)
       set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
     }
 
@@ -641,7 +687,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
         ...g,
         operations: g.operations.map((o) => o.id === opId ? { ...o, ...updates } as SerializedOperation : o),
       }
-      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      invalidateCheckpointsFrom(1)
       checkpoints.set(0, amended)
       set({ savedSeq: -1 })
       return true
@@ -662,7 +708,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     }
     const events = [...s.events]
     events[idx] = amended
-    for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+    invalidateCheckpointsFrom(amended.seq)
     set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
     return true
   },
@@ -682,7 +728,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     }
     const events = [...s.events]
     events[idx] = amended
-    for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+    invalidateCheckpointsFrom(amended.seq)
     set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
     return true
   },
@@ -692,7 +738,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const commit = (idx: number, amended: TimelineEvent) => {
       const events = [...s.events]
       events[idx] = amended
-      for (const k of checkpoints.keys()) if (k >= amended.seq) checkpoints.delete(k)
+      invalidateCheckpointsFrom(amended.seq)
       set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
     }
     for (let i = s.cursor - 1; i >= 0; i--) {
@@ -719,7 +765,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const g = checkpoints.get(0)
     if (g && g.tabs.some((t) => t.pathId === pathId)) {
       checkpoints.set(0, { ...g, tabs: [...g.tabs.filter((t) => t.pathId !== pathId), ...tabs] })
-      for (const k of [...checkpoints.keys()]) if (k > 0) checkpoints.delete(k)
+      invalidateCheckpointsFrom(1)
       set({ savedSeq: -1 })
       return true
     }
@@ -754,7 +800,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const amended: TimelineEvent = { ...ev, updates, gesture, label: labelFor({ ...ev, gesture }) }
     const events = [...s.events]
     events[idx] = amended
-    for (const k of checkpoints.keys()) if (k >= ev.seq) checkpoints.delete(k)
+    invalidateCheckpointsFrom(ev.seq)
     set({ events, ...(s.savedSeq >= ev.seq ? { savedSeq: -1 } : {}) })
     // This event is currently applied (its effects are part of live state) —
     // re-derive from here so the canvas reflects the edit immediately.

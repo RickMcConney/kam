@@ -5,6 +5,7 @@ import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
+import { useSelectedPaths } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffected } from '../../cam/regenerate'
@@ -27,7 +28,8 @@ export interface BooleanEditCtx {
 }
 
 export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx?: BooleanEditCtx }) {
-  const { paths, selectedIds, applyPathEdit } = usePathsStore()
+  const { paths, applyPathEdit } = usePathsStore()
+  const selPaths = useSelectedPaths()
   const { load, save } = useFormDefaultsStore()
 
   const [form, setForm] = useState<BooleanFormState>(() => {
@@ -39,7 +41,7 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
 
   const sourcePaths = editCtx
     ? editCtx.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
-    : paths.filter((p) => selectedIds.includes(p.id))
+    : selPaths
   const canApply = sourcePaths.length >= 2
   const resultExists = !editCtx || paths.some((p) => p.id === editCtx.resultId)
 

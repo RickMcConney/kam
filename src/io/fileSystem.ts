@@ -3,11 +3,8 @@ import { useTimelineStore } from '../timeline/timelineStore'
 import { sanitizeFileName } from './filename'
 import { useProjectStore } from '../store/projectStore'
 import { useSaveDialogStore } from '../store/saveDialogStore'
-import { useToolStore } from '../store/toolStore'
-import { useToolpathStore } from '../store/toolpathStore'
-import { usePostProcessorStore } from '../store/postProcessorStore'
 import { generateGcode, generateGcodePerTool, downloadGcode } from '../cam/gcode'
-import { optimizeStartPoints } from '../cam/startOptimizer'
+import { buildGcodeInputs } from './gcodeExport'
 
 // ─── File System Access API (Chromium only) — minimal local typing ──────────
 // We type just what we use so this compiles regardless of the TS DOM lib version.
@@ -98,11 +95,7 @@ async function exportGcodeNative(saveAs: boolean): Promise<boolean> {
         types: [{ description: 'G-code', accept: { 'text/plain': ['.gcode', '.nc', '.ngc', '.tap'] } }],
       })
     }
-    await optimizeStartPoints()
-    const { tools } = useToolStore.getState()
-    const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
-    const profile = usePostProcessorStore.getState().getActiveProfile()
-    const { operations } = useToolpathStore.getState()
+    const { operations, toolsById, profile } = await buildGcodeInputs()
     const gcode = generateGcode(operations, toolsById, stripExt(gcodeHandle.name), profile)
     await writeFile(gcodeHandle, gcode)
     return true
@@ -145,11 +138,7 @@ export async function triggerGcodeExportSplit(prefix?: string): Promise<void> {
     }
   }
 
-  await optimizeStartPoints()
-  const { tools } = useToolStore.getState()
-  const toolsById = Object.fromEntries(tools.map((t) => [t.id, t]))
-  const profile = usePostProcessorStore.getState().getActiveProfile()
-  const { operations } = useToolpathStore.getState()
+  const { operations, toolsById, profile } = await buildGcodeInputs()
   const files = generateGcodePerTool(operations, toolsById, baseName, profile)
   if (files.length === 0) return
 

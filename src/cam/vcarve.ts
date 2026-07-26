@@ -90,15 +90,21 @@ class PriorityQueue {
 
 // ─── Graph utilities (ported from vcarve.js) ──────────────────────────────────
 
-function reconstructPath(predecessors: Map<string, string>, start: string, target: string): string[] {
+// Walk the predecessor chain back from `target` to `start`. Returns null when
+// the chain breaks before reaching `start` — the caller steps along the path
+// from its own current node, so a partial path (one that doesn't begin at
+// `start`) would silently cut a straight line from the tool's real position to
+// somewhere in the middle of the skeleton. Dijkstra only calls this for nodes
+// it actually reached, so this is a guard, not an expected outcome.
+function reconstructPath(predecessors: Map<string, string>, start: string, target: string): string[] | null {
   const path: string[] = []
   let cur: string | undefined = target
   while (cur !== undefined) {
     path.unshift(cur)
-    if (cur === start) break
+    if (cur === start) return path
     cur = predecessors.get(cur)
   }
-  return path
+  return null
 }
 
 function dijkstraToAnyTarget(graph: Graph, startNode: string, targetSet: Set<string>) {
@@ -462,7 +468,7 @@ interface Region { outer: Pt2[]; holes: Pt2[][] }
 function centroidX(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[0], 0) / pts.length }
 function centroidY(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[1], 0) / pts.length }
 
-function classifySubpaths(subpaths: Pt2[][]): Region[] {
+export function classifySubpaths(subpaths: Pt2[][]): Region[] {
   const sorted = [...subpaths].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)))
   const regions: Region[] = []
   const usedAsHole = new Set<number>()
@@ -600,7 +606,7 @@ export async function generateVCarve(
 
 // Find the modal (most-frequent) radius across all MAT skeleton nodes by
 // binning into 20 buckets and returning the centre of the peak bucket.
-function findModalRadius(radii: number[]): number {
+export function findModalRadius(radii: number[]): number {
   if (!radii.length) return 0
   const min = Math.min(...radii)
   const max = Math.max(...radii)
