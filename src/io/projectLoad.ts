@@ -38,7 +38,7 @@ interface SavedWorkpiece {
   spindleType?: SpindleType
 }
 
-interface ProjectData {
+export interface ProjectData {
   version: number
   name: string
   workpiece: SavedWorkpiece
@@ -60,7 +60,12 @@ interface ProjectData {
   }
 }
 
-function loadProject(data: ProjectData) {
+// Exported so the toolpath audit can load a saved .fkam through the real code path.
+//
+// `fileName` (the .fkam's own name, extension included or not) is the authority for the
+// project name — rename the file on disk and the app follows. The `name` stored inside the
+// file is only a fallback for callers that have no file name to offer.
+export function loadProject(data: ProjectData, fileName?: string) {
   const wp = data.workpiece ?? {}
   const wps = useWorkpieceStore.getState()
   wps.setWidth(wp.widthMM ?? 300)
@@ -87,8 +92,16 @@ function loadProject(data: ProjectData) {
     useToolStore.getState().setTools(data.tools)
   }
   usePathsStore.getState().replacePaths(data.paths ?? [])
-  useToolpathStore.getState().replaceOperations(data.operations ?? [])
-  useProjectStore.getState().setName(data.name ?? 'Untitled Project')
+  // The offset-ring spiral pocket strategy was dropped in 2026-07; rewrite the stored id so
+  // the operation form shows a valid selection instead of an empty one.
+  const operations = (data.operations ?? []).map(op => {
+    if (op.type !== 'pocket') return op
+    const legacy = (op.strategy as string) === 'spiral' || (op.strategy as string) === 'spiralOffset'
+    return legacy ? { ...op, strategy: 'morph' as const } : op
+  })
+  useToolpathStore.getState().replaceOperations(operations)
+  const nameFromFile = fileName?.replace(/\.[^.]+$/, '').trim()
+  useProjectStore.getState().setName(nameFromFile || data.name || 'Untitled Project')
 
   if (data.postProcessors?.profiles?.length) {
     usePostProcessorStore.getState().replaceState(
@@ -111,8 +124,8 @@ function loadProject(data: ProjectData) {
     useTimelineStore.getState().resetToCurrentState()
     if (tl) useUIStore.getState().showStatus('Project timeline could not be restored — history starts from the loaded state', 'warn')
   }
-  // Drop any prior file handle so a later Ctrl+S prompts for this project's own
-  // file rather than overwriting whatever was saved before.
+  // Drop the remembered G-code target so a later export doesn't overwrite the previous
+  // project's file. (Project saves always prompt, so they need no such reset.)
   clearFileHandles()
   regenerateAll()
 }
@@ -148,7 +161,7 @@ export function openProjectFile(): Promise<void> {
       try {
         const text = await file.text()
         const data = JSON.parse(text) as ProjectData
-        loadProject(data)
+        loadProject(data, file.name)
         resolve()
       } catch (err) {
         console.error('Project load failed:', err)

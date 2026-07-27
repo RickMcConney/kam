@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { segTool, type SimSegment, type ToolState } from '../sim/gcodeParser'
+import { Heightfield, gridForSegments } from '../sim/heightfield'
 import type { ZOrigin } from '../store/workpieceStore'
 import { Z_DATUM_COLOR_THREE } from '../colors'
 import { WOOD_TILE_MM } from './woodTexture'
@@ -196,63 +197,13 @@ function patchSkirtShader(
   }
 }
 
-const TARGET_CELL_MM = 0.05            // desired sample spacing where cuts happen
-const MAX_SAMPLES = 4_000_000          // cap total grid samples (texture + vertices)
-const MAX_AXIS = 4096                  // hard cap on samples per axis
-
-interface CutBounds { x0: number; y0: number; x1: number; y1: number; empty: boolean }
-
-function segMaxRadius(seg: SimSegment, toolStates: ToolState[]): number {
-  const ts = segTool(seg, toolStates)
-  if (ts.toolVbitHalfAngleTan) return Math.max(Math.abs(seg.prevZ), Math.abs(seg.z)) * ts.toolVbitHalfAngleTan
-  return ts.toolDiameterMM / 2
-}
-
-// Bounding box (workpiece-local mm) of every cutting move's footprint, padded and
-// clamped to the stock. The heightfield only grids this region so resolution can
-// concentrate where material is actually removed instead of being spread evenly
-// over the whole stock. `empty` = no cuts inside the stock (grid the whole block
-// coarsely — it stays flat anyway).
-function computeCutBounds(
-  segments: SimSegment[], toolStates: ToolState[],
-  orgX: number, orgY: number, W: number, H: number,
-): CutBounds {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
-  for (const seg of segments) {
-    if (seg.rapid || (seg.prevZ >= 0 && seg.z >= 0)) continue
-    const ax = seg.prevX + orgX, ay = seg.prevY + orgY
-    const bx = seg.x + orgX, by = seg.y + orgY
-    const r = segMaxRadius(seg, toolStates)
-    const sx0 = Math.min(ax, bx) - r, sx1 = Math.max(ax, bx) + r
-    const sy0 = Math.min(ay, by) - r, sy1 = Math.max(ay, by) + r
-    if (sx1 <= 0 || sx0 >= W || sy1 <= 0 || sy0 >= H) continue  // wholly off the stock
-    x0 = Math.min(x0, sx0); y0 = Math.min(y0, sy0)
-    x1 = Math.max(x1, sx1); y1 = Math.max(y1, sy1)
-  }
-  if (!isFinite(x0)) return { x0: 0, y0: 0, x1: W, y1: H, empty: true }
-  const pad = 1.0  // keep a flat-stock margin around the cuts so edges meet the apron cleanly
-  return {
-    x0: Math.max(0, x0 - pad), y0: Math.max(0, y0 - pad),
-    x1: Math.min(W, x1 + pad), y1: Math.min(H, y1 + pad),
-    empty: false,
-  }
-}
-
 export class HeightfieldMaterial {
   readonly group: THREE.Group
   readonly topZ: Float32Array
   readonly cellMM: number              // effective sample spacing (for logging)
-  anyCarved = false
 
-  private readonly _NX: number
-  private readonly _NY: number
   private readonly _sx: number          // sample spacing X (mm)
   private readonly _sy: number          // sample spacing Y (mm)
-  private readonly _gx0: number         // grid origin X in workpiece-local mm
-  private readonly _gy0: number         // grid origin Y in workpiece-local mm
-  private readonly _T: number
-  private readonly _orgX: number
-  private readonly _orgY: number
   private readonly _toolStates: ToolState[]
   private readonly _texture: THREE.DataTexture
   private readonly _surfaceGeo: THREE.BufferGeometry
@@ -263,7 +214,7 @@ export class HeightfieldMaterial {
   private readonly _skirtGeo: THREE.BufferGeometry | null
   private readonly _skirtMat: THREE.MeshLambertMaterial | null
 
-  private _dirty = false
+  private readonly _hf: Heightfield
   private _lastFullIdx = -1
   private _lastPartialIdx = -1
   private _lastPartialT = 0
@@ -276,35 +227,18 @@ export class HeightfieldMaterial {
     woodTex: THREE.Texture,
     zOrigin: ZOrigin = 'top',
   ) {
-    this._T = T
-    this._orgX = orgX
-    this._orgY = orgY
     this._toolStates = toolStates
 
     // Grid only the region that actually gets cut, so resolution concentrates
-    // there rather than being spread over the whole stock.
-    const bounds = computeCutBounds(segments, toolStates, orgX, orgY, W, H)
-    const gx0 = bounds.x0, gy0 = bounds.y0
-    const regionW = Math.max(bounds.x1 - bounds.x0, 1e-3)
-    const regionH = Math.max(bounds.y1 - bounds.y0, 1e-3)
-    this._gx0 = gx0
-    this._gy0 = gy0
-
-    // Cell size = target resolution, but coarsened if the cut region is large
-    // enough that the target would blow the sample budget. With no cuts, a coarse
-    // whole-stock grid (it only ever shows flat stock).
-    const targetCell = bounds.empty ? Math.max(W, H) / 4 : TARGET_CELL_MM
-    const byBudget = Math.sqrt((regionW * regionH) / MAX_SAMPLES)
-    const cell = Math.max(targetCell, byBudget, 0.01)
-    const NX = Math.max(2, Math.min(MAX_AXIS, Math.round(regionW / cell) + 1))
-    const NY = Math.max(2, Math.min(MAX_AXIS, Math.round(regionH / cell) + 1))
-    this._NX = NX
-    this._NY = NY
-    this._sx = regionW / (NX - 1)
-    this._sy = regionH / (NY - 1)
-    this.cellMM = (this._sx + this._sy) / 2
-
-    this.topZ = new Float32Array(NX * NY).fill(T)
+    // there rather than being spread over the whole stock. The field itself (grid +
+    // carve math) lives in sim/heightfield.ts so tests can drive the same code.
+    const grid = gridForSegments(W, H, T, segments, toolStates, orgX, orgY)
+    this._hf = new Heightfield(grid)
+    const { NX, NY, gx0, gy0, bounds } = grid
+    this._sx = grid.sx
+    this._sy = grid.sy
+    this.cellMM = this._hf.cellMM
+    this.topZ = this._hf.topZ
 
     // Heightfield texture (one float per sample), nearest-sampled and texel-aligned.
     this._texture = new THREE.DataTexture(this.topZ, NX, NY, THREE.RedFormat, THREE.FloatType)
@@ -387,10 +321,10 @@ export class HeightfieldMaterial {
     }
   }
 
+  get anyCarved(): boolean { return this._hf.anyCarved }
+
   reset() {
-    this.topZ.fill(this._T)
-    this._dirty = true
-    this.anyCarved = false
+    this._hf.reset()
     this._lastFullIdx = -1
     this._lastPartialIdx = -1
     this._lastPartialT = 0
@@ -409,7 +343,7 @@ export class HeightfieldMaterial {
       const s = segments[i]
       if (isCuttingSeg(s)) {
         const ts = segTool(s, this._toolStates)
-        this._carve(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
+        this._hf.carve(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
       }
     }
     this._lastFullIdx = segIdx - 1
@@ -425,21 +359,21 @@ export class HeightfieldMaterial {
         const pz0 = seg.prevZ + (seg.z - seg.prevZ) * startT
         const pz1 = seg.prevZ + (seg.z - seg.prevZ) * t
         const ts = segTool(seg, this._toolStates)
-        this._carve(x0, y0, x1, y1, pz0, pz1, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
+        this._hf.carve(x0, y0, x1, y1, pz0, pz1, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
       }
     }
     this._lastPartialIdx = segIdx
     this._lastPartialT = t
 
-    return this._dirty
+    return this._hf.dirty
   }
 
   // Re-upload the heightfield texture if it changed this frame. Returns whether
   // anything was uploaded (so the caller can flag a re-render).
   flushToGPU(): boolean {
-    if (!this._dirty) return false
+    if (!this._hf.dirty) return false
     this._texture.needsUpdate = true
-    this._dirty = false
+    this._hf.dirty = false
     return true
   }
 
@@ -454,105 +388,6 @@ export class HeightfieldMaterial {
     this._texture.dispose()
   }
 
-  private _carve(
-    ax: number, ay: number, bx: number, by: number,
-    prevZ: number, endZ: number,
-    vbitTan?: number,
-    ballNose?: boolean,
-    toolDiameterMM = 0,
-  ) {
-    const dz = endZ - prevZ
-    const r = vbitTan
-      ? Math.max(Math.abs(prevZ), Math.abs(endZ)) * vbitTan
-      : toolDiameterMM / 2
-    if (r <= 0) return
-
-    // Deepest achievable height (tip, deepest Z) — cells already at/below skip.
-    const flatH = Math.max(0, this._T + Math.min(prevZ, endZ))
-
-    ax += this._orgX; ay += this._orgY
-    bx += this._orgX; by += this._orgY
-    const dx = bx - ax, dy = by - ay
-    const lenSq = dx * dx + dy * dy
-
-    // Samples are points on an (sx, sy) grid: a sample within half a cell
-    // diagonal of the swept edge represents material the cut at least partly
-    // removed. Without this coverage margin, two passes whose footprints
-    // exactly touch (inside + outside profile on the same path) leave a chain
-    // of full-height single-cell spikes wherever a sample center lands
-    // epsilon outside both footprints — a ~µm-wide real sliver rendered as a
-    // cell-wide wall. Leftovers wider than a cell still show.
-    const covEps = 0.5 * Math.hypot(this._sx, this._sy)
-    const rPad = r + covEps
-
-    const { _NX: NX, _NY: NY, _sx: sx, _sy: sy, _gx0: gx0, _gy0: gy0, topZ } = this
-    const iMin = Math.max(0, Math.floor((Math.min(ax, bx) - rPad - gx0) / sx))
-    const iMax = Math.min(NX - 1, Math.ceil((Math.max(ax, bx) + rPad - gx0) / sx))
-    const jMin = Math.max(0, Math.floor((Math.min(ay, by) - rPad - gy0) / sy))
-    const jMax = Math.min(NY - 1, Math.ceil((Math.max(ay, by) + rPad - gy0) / sy))
-
-    for (let j = jMin; j <= jMax; j++) {
-      const py = gy0 + j * sy
-      const rowBase = j * NX
-      for (let i = iMin; i <= iMax; i++) {
-        const idx = rowBase + i
-        const cur = topZ[idx]
-        if (cur <= flatH) continue
-        const px = gx0 + i * sx
-
-        const ex = px - ax, ey = py - ay
-        const proj = ex * dx + ey * dy
-        // Vertical segment (peck-drill plunge): no XY travel to parameterize,
-        // so evaluate at the deepest end — the tip reaches min(prevZ, endZ)
-        // over the whole footprint. Falling back to t=0 (start Z) left the
-        // final peck depth uncarved, so drills never punched through.
-        const tc_raw = lenSq < 1e-8 ? (dz < 0 ? 1 : 0) : proj / lenSq
-        const dist0sq = ex * ex + ey * ey
-        const perp_sq = Math.max(0, dist0sq - tc_raw * proj)
-
-        let newH: number
-        if (vbitTan) {
-          const evalF = (tRaw: number): number => {
-            const tt = Math.max(0, Math.min(1, tRaw))
-            const dt = tt - tc_raw
-            return (prevZ + tt * dz) + Math.sqrt(dt * dt * lenSq + perp_sq) / vbitTan
-          }
-          let fMin = Math.min(evalF(0), evalF(1), evalF(Math.max(0, Math.min(1, tc_raw))))
-          const discrim = lenSq * (lenSq - dz * dz * vbitTan * vbitTan)
-          if (discrim > 1e-12 && perp_sq > 1e-12) {
-            const t_opt = tc_raw - dz * vbitTan * Math.sqrt(perp_sq) / Math.sqrt(discrim)
-            fMin = Math.min(fMin, evalF(t_opt))
-          }
-          newH = Math.max(0, this._T + fMin)
-        } else if (ballNose) {
-          const tc = Math.max(0, Math.min(1, tc_raw))
-          const z_tc = prevZ + tc * dz
-          if (z_tc >= 0) continue
-          const br = toolDiameterMM / 2
-          const dt = tc - tc_raw
-          const dist = Math.sqrt(dt * dt * lenSq + perp_sq)
-          // Rim cells inside the coverage margin carve to the sphere equator
-          // (the max(0, …) clamp degrades to exactly that past dist = br).
-          if (dist > br + covEps) continue
-          newH = Math.max(0, this._T + z_tc + br - Math.sqrt(Math.max(0, br * br - dist * dist)))
-        } else {
-          const tc = Math.max(0, Math.min(1, tc_raw))
-          const z_tc = prevZ + tc * dz
-          if (z_tc >= 0) continue
-          const dt = tc - tc_raw
-          const dist = Math.sqrt(dt * dt * lenSq + perp_sq)
-          if (dist > rPad) continue
-          newH = Math.max(0, this._T + z_tc)
-        }
-
-        if (cur > newH) {
-          topZ[idx] = newH
-          this._dirty = true
-          this.anyCarved = true
-        }
-      }
-    }
-  }
 }
 
 // Static stock geometry (everything the heightfield surface does NOT draw):

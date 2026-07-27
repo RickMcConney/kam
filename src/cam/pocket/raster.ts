@@ -2,7 +2,7 @@ import {   type Pt2 } from '../pathFlattener'
 import {   pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
 import type { Tool } from '../../store/toolStore'
-import { type PocketParams, type TravelSafetyObstacles, compoundFinishRings, emitCutTransition, emitLinkedContourRings, emitRampDescent, growIslands, isTravelSafe, rampLeadIn } from './shared'
+import { type PocketParams, type TravelSafetyObstacles, closedPath, compoundFinishRings, cutPathsAtDepth, emitCutTransition, emitLinkedContourRings, emitRampDescent, growIslands, isTravelSafe, rampLeadIn, restCleanupRings } from './shared'
 import { insetRing } from './shared'
 
 // ─── Raster utilities ──────────────────────────────────────────────────────────
@@ -149,6 +149,7 @@ export function rasterPocket(
   const toolRadius = tool.diameterMM / 2
   const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
+  const segStart = segs.length
 
   // Island obstacles: offset ALL island rings together so that sub-rings from a
   // split self-intersecting path are treated as one compound shape — avoids miter
@@ -200,11 +201,22 @@ export function rasterPocket(
     ...(finishRing.length >= 3 ? [finishRing] : []),
     ...islandExclusions,
   ]
-  const finishPrevZ = clippedScanlines.length > 0 ? zDepth : prevZ
+  const finishTravel = { edgeObstacles: finishObstacles, solidObstacles: islandFinish }
+
+  // Stock the scanlines couldn't reach (only possible above 50% stepover), cut after the
+  // raster and before the wall pass so each patch is skimmed with its surroundings already
+  // clear. See restCleanupRings.
+  const restRings = restCleanupRings(boundary, islands, toolRadius,
+    [...cutPathsAtDepth(segs, segStart, zDepth), ...finishingRings.map(closedPath)], wantCCW)
+  const restEnd = restRings.length > 0
+    ? emitLinkedContourRings(restRings, zDepth, finishTravel, segs, params.startNear, rampDist,
+        clippedScanlines.length > 0 ? zDepth : prevZ, safeZ, tool.diameterMM, rasterEnd)
+    : rasterEnd
+
+  const finishPrevZ = clippedScanlines.length > 0 || restRings.length > 0 ? zDepth : prevZ
   return emitLinkedContourRings(
-    finishingRings, zDepth,
-    { edgeObstacles: finishObstacles, solidObstacles: islandFinish },
-    segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, rasterEnd,
+    finishingRings, zDepth, finishTravel,
+    segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, restEnd,
   )
 }
 

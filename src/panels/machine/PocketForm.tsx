@@ -183,7 +183,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
       {/* 'adaptive' (the old Adaptive2d port) stays hidden — too slow; 'adaptive2' is the fast
           raster-marching engine and is what the UI shows as "adaptive". */}
-      <ToggleRow label="Strategy" options={['raster', 'contour', 'spiral', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ adaptive2: 'adaptive' }} />
+      <ToggleRow label="Strategy" options={['raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ adaptive2: 'adaptive' }} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
           {form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>

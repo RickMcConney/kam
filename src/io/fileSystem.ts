@@ -32,14 +32,15 @@ function supportsFsAccess(): boolean {
   return getPicker() !== null
 }
 
-// In-memory file handles so a re-save overwrites the same file silently (real
-// "Save" semantics). Handles aren't serializable, so they're never persisted;
-// New/Open project clears them via clearFileHandles() to force a fresh prompt.
-let projectHandle: FsFileHandle | null = null
+// In-memory file handle so a re-export overwrites the same G-code file silently. Handles
+// aren't serializable, so it's never persisted; New/Open project clears it via
+// clearFileHandles() to force a fresh prompt.
+//
+// There is deliberately no equivalent for the project file: saving a project always opens the
+// picker, so the name can be changed on any save (see saveProjectNative).
 let gcodeHandle: FsFileHandle | null = null
 
 export function clearFileHandles() {
-  projectHandle = null
   gcodeHandle = null
 }
 
@@ -56,17 +57,19 @@ const isAbort = (e: unknown): boolean => (e as DOMException)?.name === 'AbortErr
 
 // Returns true when the save was handled natively; false means the caller should
 // fall back to the in-app filename modal.
-async function saveProjectNative(saveAs: boolean): Promise<boolean> {
+// Every project save opens the picker, pre-filled with the current name: reusing a remembered
+// handle meant the name was fixed at the first save with no way to change it from inside the
+// app. The OS dialog is also where "overwrite?" belongs, so plain re-saves still take two
+// keystrokes (Ctrl+S, Enter).
+async function saveProjectNative(): Promise<boolean> {
   const picker = getPicker()
   if (!picker) return false
   try {
-    if (!projectHandle || saveAs) {
-      const suggested = sanitizeFileName(useProjectStore.getState().name || 'project')
-      projectHandle = await picker({
-        suggestedName: `${suggested}.fkam`,
-        types: [{ description: 'FreazyKam project', accept: { 'application/json': ['.fkam'] } }],
-      })
-    }
+    const suggested = sanitizeFileName(useProjectStore.getState().name || 'project')
+    const projectHandle = await picker({
+      suggestedName: `${suggested}.fkam`,
+      types: [{ description: 'FreazyKam project', accept: { 'application/json': ['.fkam'] } }],
+    })
     // Name the project from the chosen file so the toolbar header matches.
     useProjectStore.getState().setName(stripExt(projectHandle.name))
     const json = JSON.stringify(buildProjectData(), null, 2)
@@ -108,11 +111,11 @@ async function exportGcodeNative(saveAs: boolean): Promise<boolean> {
 
 // ─── Public entry points ────────────────────────────────────────────────────
 // Use the native OS save dialog where available (Chromium), otherwise fall back
-// to the in-app filename modal (Firefox/Safari). `saveAs` forces a fresh picker
-// even when a handle already exists.
+// to the in-app filename modal (Firefox/Safari). A project save always prompts for the
+// filename; for G-code export `saveAs` forces a fresh picker even when a handle exists.
 
-export async function triggerProjectSave(saveAs = false): Promise<void> {
-  if (supportsFsAccess() && await saveProjectNative(saveAs)) return
+export async function triggerProjectSave(): Promise<void> {
+  if (supportsFsAccess() && await saveProjectNative()) return
   useSaveDialogStore.getState().openSaveDialog('project')
 }
 

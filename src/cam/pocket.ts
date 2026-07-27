@@ -4,7 +4,7 @@
 // (geometry/travel-safety helpers, ramp + helix entry, offset-ring building,
 // contour-ring linking, the sub-stage profiler) is in ./pocket/shared.ts.
 // fieldSpiral additionally builds on spiral.ts, which owns the loop-forest and
-// spiral-clamping code both use.
+// spiral-clamping geometry.
 //
 // This file stays the module everything imports — several scripts/ harnesses
 // import '../src/cam/pocket.ts' by explicit path — so the split is invisible to
@@ -17,7 +17,6 @@ import type { Tool } from '../store/toolStore'
 import { _perfReset, _perfLog, _timed, offsetRing, centroidOfRing, type PocketParams } from './pocket/shared'
 import { rasterPocket } from './pocket/raster'
 import { contourPocket } from './pocket/contour'
-import { spiralPocket } from './pocket/spiral'
 import { fieldSpiralPocket } from './pocket/fieldSpiral'
 import { adaptivePocket } from './pocket/adaptive'
 import { adaptive2Pocket } from './pocket/adaptive2'
@@ -54,9 +53,11 @@ export function generatePocket(
     if (boundaries.length === 0) throw new Error('Pocket allowance collapsed the boundary')
   }
 
-  // Legacy id from older saved projects/forms: 'spiralOffset' is today's 'spiral'.
+  // Legacy ids from older saved projects/forms. The offset-ring spiral ('spiral', once
+  // 'spiralOffset') was dropped in 2026-07 — it left stock even at 50% stepover — so those
+  // operations regenerate as 'morph', the curvilinear spiral that replaced it.
   const rawStrategy = (params.strategy ?? 'raster') as string
-  const strategy = rawStrategy === 'spiralOffset' ? 'spiral' : rawStrategy
+  const strategy = rawStrategy === 'spiralOffset' || rawStrategy === 'spiral' ? 'morph' : rawStrategy
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
 
@@ -68,9 +69,7 @@ export function generatePocket(
         ? adaptive2Pocket
         : strategy === 'morph'
           ? fieldSpiralPocket
-          : strategy === 'spiral'
-            ? spiralPocket
-            : rasterPocket
+          : rasterPocket
 
   _perfReset()
   let lastPos: Pt2 | null = null
@@ -120,12 +119,19 @@ function simplifyMotion(segs: MotionSegment[], tolMM: number): MotionSegment[] {
     !!a.rapid === !!b.rapid && !!a.travel === !!b.travel &&
     a.feedScale === b.feedScale && a.z === b.z
 
+  // A pure-Z move (plunge/lift) shares XY with the point before it, so Douglas–Peucker —
+  // which measures XY deviation only — reads it as zero-deviation and deletes it, turning a
+  // rapid-to-position + plunge into one diagonal dive from safe Z into the cut. Pinning it as
+  // a run boundary keeps the descent intact (reconstructArcs guards the same case downstream).
+  const verticalMove = (i: number) =>
+    Math.abs(segs[i].x - segs[i - 1].x) < 1e-6 && Math.abs(segs[i].y - segs[i - 1].y) < 1e-6
+
   const keep = new Uint8Array(n)
   keep[0] = keep[n - 1] = 1
   // Run boundaries: a point whose incoming and outgoing moves differ in type.
   const bounds: number[] = [0]
   for (let i = 1; i < n - 1; i++) {
-    if (!sameRun(segs[i], segs[i + 1])) { keep[i] = 1; bounds.push(i) }
+    if (verticalMove(i) || !sameRun(segs[i], segs[i + 1])) { keep[i] = 1; bounds.push(i) }
   }
   bounds.push(n - 1)
 

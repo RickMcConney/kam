@@ -233,6 +233,21 @@ function arcHugsPolyline(
     if (dmin > maxDev) return false
     v0 = vClosest  // arc & polyline both advance lo→hi, so never look back
   }
+
+  // Reverse check: every source vertex must also lie ON the emitted arc. The forward scan
+  // alone passes trivially whenever the sweep is too SHORT — a 2° arc sits right on top of
+  // the path next to its start while the other 358° of the loop go uncut.
+  const aLo = Math.min(a0, a1), aHi = Math.max(a0, a1)
+  const TWO_PI = 2 * Math.PI
+  for (let v = lo; v <= hi; v++) {
+    let a = Math.atan2(pts[v][1] - cy, pts[v][0] - cx)
+    a = aLo + (((a - aLo) % TWO_PI) + TWO_PI) % TWO_PI
+    const d = a <= aHi
+      ? Math.abs(Math.hypot(pts[v][0] - cx, pts[v][1] - cy) - r)   // within the sweep
+      : Math.min(Math.hypot(pts[v][0] - s[0], pts[v][1] - s[1]),   // past an end
+                 Math.hypot(pts[v][0] - e[0], pts[v][1] - e[1]))
+    if (d > maxDev) return false
+  }
   return true
 }
 
@@ -293,9 +308,22 @@ export function arcFitPolyline(pts: Pt2[], tol: number, maxSpan = Infinity): Arc
         if (la < 1e-10 || lb < 1e-10) continue
         if ((ax * bx + ay * by) / (la * lb) < 0.707) { hasSharpCorner = true; break } // > 45°
       }
-      // Signed area of triangle (s,m,e): positive = CCW in CNC Y-up
-      const triArea = (m[0] - s[0]) * (e[1] - s[1]) - (m[1] - s[1]) * (e[0] - s[0])
-      const cw = triArea < 0
+      // Sweep direction from the polyline's OWN travel around the fitted centre,
+      // accumulated vertex by vertex. The signed area of triangle (s,m,e) only settles the
+      // winding for spans under a half turn: on a near-closed ring s and e nearly coincide,
+      // the triangle collapses, and a wrong flag makes the emitted arc take the 2° short way
+      // round instead of the 358° path — silently dropping the whole loop.
+      let sweep = 0
+      let aPrev = Math.atan2(s[1] - bestCircle.cy, s[0] - bestCircle.cx)
+      for (let k = i + 1; k <= bestJ; k++) {
+        const a = Math.atan2(pts[k][1] - bestCircle.cy, pts[k][0] - bestCircle.cx)
+        let d = a - aPrev
+        if (d > Math.PI) d -= 2 * Math.PI
+        else if (d < -Math.PI) d += 2 * Math.PI
+        sweep += d
+        aPrev = a
+      }
+      const cw = sweep < 0
       // Final guard: the *emitted* G2/G3 arc (start→end in the cw direction) must
       // actually hug the source polyline. The checks above only prove the vertices
       // sit on the fitted circle — they don't catch a wrong sweep direction, which

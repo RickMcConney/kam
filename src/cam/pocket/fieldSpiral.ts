@@ -6,7 +6,7 @@ import {  JoinType } from 'clipper2-ts'
 import {   stripClosingDuplicate, pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
 import type { Tool } from '../../store/toolStore'
-import { type PocketParams, _timed, centroidOfRing, compoundFinishRings, emitLinkedContourRings, emitRampDescent, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn } from './shared'
+import { type PocketParams, _timed, centroidOfRing, compoundFinishRings, closedPath, cutPathsAtDepth, emitLinkedContourRings, emitRampDescent, restCleanupRings, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn } from './shared'
 import { setGap } from './shared'
 import { type LoopNode, type SpiralChain, clampSpiralToRegion, decimateChain, dedupeForestBranches, forestToChains, maxClearHelixRadius, splitClampedSpiral } from './spiral'
 
@@ -252,6 +252,7 @@ export function fieldSpiralPocket(
   const plan = _timed('computeFieldSpiralPlan', () => computeFieldSpiralPlan(boundary, islands, tool, params))
   if (!plan) return incomingPos
   const { chains, finishRings } = plan
+  const segStart = segs.length
 
   const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
   const obstacles = [...finishRings, ...islandObstacles]
@@ -300,6 +301,15 @@ export function fieldSpiralPocket(
     cutAnything = true
   }
   if (!cutAnything) return incomingPos
+
+  // Stock the isotherm spiral couldn't reach (only possible above 50% stepover), cut after the
+  // spiral and before the wall pass so each patch is skimmed with its surroundings already
+  // clear. See restCleanupRings.
+  const restRings = restCleanupRings(boundary, islands, toolRadius,
+    [...cutPathsAtDepth(segs, segStart, zDepth), ...finishRings.map(closedPath)], wantCCW)
+  if (restRings.length > 0) {
+    lastPos = emitLinkedContourRings(restRings, zDepth, travelObstacles, segs, params.startNear, rampDist, zDepth, safeZ, tool.diameterMM, lastPos)
+  }
 
   // Finish the wall with a contour pass on the inset boundary.
   return emitLinkedContourRings(finishRings, zDepth, travelObstacles, segs, params.startNear, rampDist, zDepth, safeZ, tool.diameterMM, lastPos)

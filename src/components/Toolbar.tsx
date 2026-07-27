@@ -183,7 +183,7 @@ export default function Toolbar() {
         />
         <ToolbarButton
           icon={<Save size={ICON.md} />}
-          label="Save Project (Ctrl+S)"
+          label="Save Project As… (Ctrl+S)"
           onClick={() => void triggerProjectSave()}
         />
         

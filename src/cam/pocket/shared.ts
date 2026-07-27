@@ -2,22 +2,21 @@
 // polygon offset helpers, travel-safety tests, ramp/helix entry emission,
 // offset-level building and contour-ring linking. Imported by every strategy
 // module under this directory; the public entry point is ../pocket.ts.
-import {  signedArea, ensureWinding, type Pt2 } from '../pathFlattener'
+import {  signedArea, ensureWinding, douglasPeucker, type Pt2 } from '../pathFlattener'
 import { perfLog } from '../../debug'
-import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
+import { inflatePathsD, differenceD, intersectD, JoinType, EndType, FillRule } from 'clipper2-ts'
 import {  arcLengths, interpPt, stripClosingDuplicate, pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
 import type {  CuttingDirection } from '../../store/toolStore'
 
 // 'morph' is the field-based curvilinear spiral (Poisson isotherms, helix entry — cf.
-// Fusion's "Morphed Spiral") — best for chunky pockets and islands. 'spiral' is the
-// offset-ring spiral — contour-parallel, so it stays clean on thin/diagonal strokes
-// (letters) where the field spiral's ridge fragments. Renamed 2026-06: 'spiral' was
-// 'spiralOffset' (UI "offset"); 'morph' was 'spiral' — generatePocket maps the legacy
-// ids so older saved projects keep working.
+// Fusion's "Morphed Spiral") — best for chunky pockets and islands.
 // 'adaptive' is the FreeCAD Adaptive2d port (slow on large pockets, kept intact);
 // 'adaptive2' is the fast raster-marching constant-engagement engine (./adaptive2).
-export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'spiral' | 'adaptive2'
+// Dropped 2026-07: the offset-ring spiral ('spiral', earlier 'spiralOffset'), which left
+// stock even at 50% stepover. generatePocket regenerates those operations as 'morph', and
+// project load rewrites the stored id — see loadProject.
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -445,14 +444,139 @@ export function rotateRingAt(pts: Pt2[], index: number): Pt2[] {
 }
 
 
-/** Index of the ring vertex nearest `p`. */
-export function nearestVertexIndex(ring: Pt2[], p: Pt2): number {
-  let bi = 0, bd = Infinity
-  for (let i = 0; i < ring.length; i++) {
-    const d = (ring[i][0] - p[0]) ** 2 + (ring[i][1] - p[1]) ** 2
-    if (d < bd) { bd = d; bi = i }
+
+export type RingContainment = {
+  /** parent[i] = index of the smallest ring that strictly contains ring i, or -1. */
+  parent: number[]
+  /** pendingInside[i] = number of not-yet-emitted rings lying inside ring i. */
+  pendingInside: number[]
+}
+
+/** True when every sampled vertex of `inner` lies inside `outer`. Rings from a nested
+ *  offset family never cross, so a few samples settle containment. */
+function ringInsideRing(inner: Pt2[], outer: Pt2[]): boolean {
+  let hits = 0
+  const samples = Math.min(3, inner.length)
+  for (let s = 0; s < samples; s++) {
+    const v = inner[Math.floor((s * inner.length) / samples)]
+    if (pointInPolygon(v[0], v[1], outer)) hits++
   }
-  return bi
+  return hits * 2 > samples
+}
+
+// Nesting forest of a set of non-intersecting rings, so a caller can cut them
+// innermost-first PER REGION: a ring is only safe to cut once every ring inside it is
+// already cut. Without that gate a proximity walk can open an outer ring of a region
+// whose middle is still solid — a full-width slot instead of a stepover-wide pass.
+export function buildRingContainment(rings: Pt2[][]): RingContainment {
+  const n = rings.length
+  const areas = rings.map(r => Math.abs(signedArea(r)))
+  const boxes = rings.map(r => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const [x, y] of r) {
+      if (x < x0) x0 = x
+      if (y < y0) y0 = y
+      if (x > x1) x1 = x
+      if (y > y1) y1 = y
+    }
+    return [x0, y0, x1, y1] as const
+  })
+  // Smallest ring first: the first larger ring that contains it is its immediate parent,
+  // and a parent always has a strictly later position here, so the forest is acyclic.
+  const order = rings.map((_, i) => i).sort((a, b) => areas[a] - areas[b])
+  const parent = new Array<number>(n).fill(-1)
+  const EPS = 1e-6
+
+  for (let oi = 0; oi < n; oi++) {
+    const i = order[oi]
+    for (let oj = oi + 1; oj < n; oj++) {
+      const j = order[oj]
+      const a = boxes[i], b = boxes[j]
+      if (a[0] < b[0] - EPS || a[1] < b[1] - EPS || a[2] > b[2] + EPS || a[3] > b[3] + EPS) continue
+      if (ringInsideRing(rings[i], rings[j])) { parent[i] = j; break }
+    }
+  }
+
+  const pendingInside = new Array<number>(n).fill(0)
+  for (let i = 0; i < n; i++) {
+    for (let p = parent[i]; p !== -1; p = parent[p]) pendingInside[p]++
+  }
+  return { parent, pendingInside }
+}
+
+// Post-order walk of the containment forest. Keep cutting OUTWARD from the ring just
+// finished — its parent — as long as that parent's interior is fully cleared. The moment it
+// isn't (the parent also encloses an uncut branch, i.e. the current region is exhausted at a
+// medial-axis merge), drop back to the innermost ring still pending: `pendingIdx` is ordered
+// innermost-offset-level first, so the first entry with a cleared interior IS that ring — the
+// next medial-axis junction. An outer ring is never cut while it contains an uncut ring.
+// `jumped` marks the drop-back: the tool leaves the cleared chain it was walking and lands on
+// a ring whose surroundings are still solid, so the link has to go over the top — only the
+// outward step into a parent is safe to travel at depth.
+function nextContainmentRing(
+  c: RingContainment,
+  pendingIdx: number[],
+  lastRingIdx: number,
+): { index: number; jumped: boolean } {
+  if (lastRingIdx >= 0) {
+    const parent = c.parent[lastRingIdx]
+    if (parent !== -1 && c.pendingInside[parent] === 0 && pendingIdx.includes(parent)) {
+      return { index: parent, jumped: false }
+    }
+  }
+  for (const i of pendingIdx) if (c.pendingInside[i] === 0) return { index: i, jumped: true }
+  // No leaf left only if the forest is malformed; keeps the loop finite.
+  return { index: pendingIdx[0], jumped: true }
+}
+
+/** Rotate `ring` to start at the vertex with the shortest travel from `from`, preferring one
+ *  reachable without a lift when obstacles are supplied. */
+function pickRingStart(
+  ring: Pt2[], from: Pt2 | null, travelObstacles: TravelSafetyObstacles | null,
+  leadDiameterMM = 0, fromDir: Pt2 | null = null,
+): Pt2[] {
+  if (from === null) return ring
+  const distSq = (i: number) => (ring[i][0] - from[0]) ** 2 + (ring[i][1] - from[1]) ** 2
+  const order = ring.map((_, i) => i).sort((a, b) => distSq(a) - distSq(b))
+  let idx = order[0]
+  if (travelObstacles) {
+    idx = order.find(i => isTravelSafe(from, ring[i], travelObstacles)) ?? order[0]
+  }
+  return rotateRingAt(ring, advanceRingStart(ring, idx, from, fromDir, leadDiameterMM))
+}
+
+// Move the entry point DOWNSTREAM along the ring, so the link becomes a shallow diagonal in the
+// direction of travel rather than a square step across the stepover (see LINK_LEAD_DIAMETERS).
+//
+// Of the candidates within the lead distance, take the one the tool can drive into most
+// straight-on. Blindly walking the full lead is right on a long ring but wrong on a tight one,
+// where the ring curves away and the "downstream" point ends up behind the tool — turning a 90°
+// step into a 137° one. `fromDir` is the direction the tool is travelling as it leaves the ring
+// it just finished; without it there's nothing to optimise and the full lead is used.
+function advanceRingStart(
+  ring: Pt2[], startIdx: number, from: Pt2, fromDir: Pt2 | null, leadDiameterMM: number,
+): number {
+  if (leadDiameterMM <= 0 || ring.length < 3) return startIdx
+  const lead = leadLength(ring, leadDiameterMM)
+  if (lead <= 1e-6) return startIdx
+
+  let best = startIdx
+  let bestCos = fromDir ? -Infinity : 0
+  let walked = 0
+  let i = startIdx
+  for (let n = 0; n < ring.length && walked < lead; n++) {
+    const j = (i + 1) % ring.length
+    walked += Math.hypot(ring[j][0] - ring[i][0], ring[j][1] - ring[i][1])
+    i = j
+    if (!fromDir) { best = i; continue }
+    const dx = ring[i][0] - from[0], dy = ring[i][1] - from[1]
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-9) continue
+    // cos of the turn the tool makes onto the link — bigger is straighter.
+    const cos = (fromDir[0] * dx + fromDir[1] * dy) / len
+    if (cos > bestCos) { bestCos = cos; best = i }
+  }
+  return best
 }
 
 export function chooseNextContourRing(
@@ -460,6 +584,10 @@ export function chooseNextContourRing(
   lastPos: Pt2 | null,
   startNear: { x: number; y: number } | undefined,
   travelObstacles: TravelSafetyObstacles,
+  // Non-zero shifts the entry point downstream so the link runs with the direction of travel
+  // instead of square across the gap (see advanceRingStart). `lastDir` is that direction.
+  leadDiameterMM = 0,
+  lastDir: Pt2 | null = null,
 ): { index: number; ring: Pt2[] } {
   if (lastPos === null && startNear === undefined) return { index: 0, ring: rings[0] }
 
@@ -481,20 +609,77 @@ export function chooseNextContourRing(
 
   const fallback = candidates[0]
 
+  const rotated = (c: Candidate) => ({
+    index: c.ri,
+    ring: rotateRingAt(rings[c.ri], advanceRingStart(rings[c.ri], c.vi, target, lastDir, leadDiameterMM)),
+  })
+
   if (lastPos === null) {
     // No travel safety to check — nearest vertex wins.
-    return { index: fallback.ri, ring: rotateRingAt(rings[fallback.ri], fallback.vi) }
+    return rotated(fallback)
   }
 
   // First candidate reachable without a lift is the best choice.
   for (const c of candidates) {
-    if (isTravelSafe(lastPos, rings[c.ri][c.vi], travelObstacles)) {
-      return { index: c.ri, ring: rotateRingAt(rings[c.ri], c.vi) }
-    }
+    if (isTravelSafe(lastPos, rings[c.ri][c.vi], travelObstacles)) return rotated(c)
   }
 
   // Every entry requires a lift — return the nearest vertex overall.
   return { index: fallback.ri, ring: rotateRingAt(rings[fallback.ri], fallback.vi) }
+}
+
+// ─── Ring-to-ring linking ──────────────────────────────────────────────────────
+
+// How far downstream on the next ring a link aims, in tool diameters.
+//
+// Entering at the NEAREST point makes the link run straight out across the stepover: the tool
+// meets the uncut band square on, takes its full width at once, then turns hard onto the new
+// ring. Aiming at a point this far along the ring instead turns the same move into a shallow
+// diagonal — with a 6 mm tool at 70% stepover, roughly 20° off the direction of travel instead
+// of 90° — so the cut widens gradually and the direction change at each end is small. The
+// whole ring is still cut; only where the lap begins moves.
+const LINK_LEAD_DIAMETERS = 2
+
+// A link may not eat more than this fraction of the ring it enters — on a small ring a
+// several-diameter lead would swallow most of the lap.
+const LINK_MAX_RING_FRACTION = 0.35
+
+const unitVec = (from: Pt2, to: Pt2): Pt2 | null => {
+  const dx = to[0] - from[0], dy = to[1] - from[1]
+  const len = Math.hypot(dx, dy)
+  return len < 1e-9 ? null : [dx / len, dy / len]
+}
+
+export function ringPerimeter(ring: Pt2[]): number {
+  let p = 0
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    p += Math.hypot(ring[i][0] - ring[j][0], ring[i][1] - ring[j][1])
+  }
+  return p
+}
+
+/** Lead distance for a link into `ring`, bounded so it can't swallow a small ring. */
+function leadLength(ring: Pt2[], toolDiameterMM: number): number {
+  return Math.min(LINK_LEAD_DIAMETERS * toolDiameterMM, LINK_MAX_RING_FRACTION * ringPerimeter(ring))
+}
+
+/**
+ * The move that takes the tool from one ring to the next at depth, or null if it has to lift.
+ *
+ * A link aimed downstream is longer than a radial one but no more exposed: it runs inside the
+ * corridor between two adjacent rings rather than cutting across open pocket, so it gets a
+ * ceiling of its own lead plus a couple of diameters, where an unaimed straight move stays
+ * capped at two (past that, a move at depth risks crossing stock nothing has cleared yet).
+ * `isTravelSafe` still has the final say.
+ */
+function planRingLink(
+  from: Pt2, to: Pt2,
+  toolDiameterMM: number, leadMM: number,
+  travelObstacles: TravelSafetyObstacles,
+): Pt2[] | null {
+  const span = Math.hypot(to[0] - from[0], to[1] - from[1])
+  const ceiling = Math.max(leadMM + 2 * toolDiameterMM, 2 * toolDiameterMM)
+  return span <= ceiling && isTravelSafe(from, to, travelObstacles) ? [to] : null
 }
 
 // Emit a sequence of closed contour rings at depth `z`, linking consecutive rings
@@ -513,30 +698,61 @@ export function emitLinkedContourRings(
   safeZ = 5,
   toolDiameterMM = 0,
   incomingPos: Pt2 | null = null,
-  // Force the FIRST ring emitted to be rings[0] rather than whichever ring happens to lie
-  // nearest. Callers that pass a multi-level set ordered innermost-first (contour's roughing
-  // rings) need this: otherwise a startNear hint — or simply lastPos carried over from the
-  // previous depth level — makes the cut open on an outer ring, which starts the pocket with
-  // a full-width slot instead of working outward from the middle. The start VERTEX is still
-  // chosen for shortest travel; only the ring is pinned.
+  // Mark `rings` as a multi-level roughing set ordered innermost-offset-level first (contour's
+  // roughing rings). Ring ORDER is then driven by nesting instead of proximity: the cut opens
+  // at the innermost ring and walks outward, and a ring is never cut while it still contains an
+  // uncut ring. When the current region runs into a medial-axis merge, the cut drops back to
+  // the innermost ring still pending — the next medial-axis junction — and works outward from
+  // there, so every pass has cleared material on one side instead of slotting full width.
+  // The start VERTEX is still chosen for shortest travel; only the ring order is constrained.
   startInnermost = false,
 ): Pt2 | null {
   if (rings.length === 0) return incomingPos
   let lastPos: Pt2 | null = incomingPos
-  const pending = [...rings]
+  const containment = startInnermost ? buildRingContainment(rings) : null
+  const pendingIdx = rings.map((_, i) => i)   // innermost-level-first when startInnermost
+  let lastRingIdx = -1
   let emittedCount = 0
+  // Direction of travel as the tool completes a ring (its closing move) — what the next link
+  // is aimed to continue.
+  let lastDir: Pt2 | null = null
 
-  while (pending.length > 0) {
-    const target: Pt2 | null = lastPos ?? (startNear ? [startNear.x, startNear.y] : null)
-    const next = startInnermost && emittedCount === 0
-      ? {
-          index: 0,
-          ring: target === null ? pending[0] : rotateRingAt(pending[0], nearestVertexIndex(pending[0], target)),
-        }
-      : chooseNextContourRing(pending, lastPos, startNear, travelObstacles)
-    pending.splice(next.index, 1)
-    const ring = next.ring
+  while (pendingIdx.length > 0) {
+    let ringIdx: number
+    let ring: Pt2[]
+    // Set when the next ring is NOT the outward continuation of the one just cut: the link
+    // crosses material that is still solid, so it must be made above the workpiece.
+    let forceLift = false
+    if (containment) {
+      const pick = nextContainmentRing(containment, pendingIdx, lastRingIdx)
+      ringIdx = pick.index
+      forceLift = pick.jumped && lastPos !== null
+      const target: Pt2 | null = lastPos ?? (startNear ? [startNear.x, startNear.y] : null)
+      const staysDown = lastPos !== null && !forceLift
+      ring = pickRingStart(rings[ringIdx], target, staysDown ? travelObstacles : null,
+        staysDown ? toolDiameterMM : 0, lastDir)
+    } else {
+      const next = chooseNextContourRing(pendingIdx.map(i => rings[i]), lastPos, startNear, travelObstacles,
+        lastPos !== null ? toolDiameterMM : 0, lastDir)
+      ringIdx = pendingIdx[next.index]
+      ring = next.ring
+    }
+    pendingIdx.splice(pendingIdx.indexOf(ringIdx), 1)
+    if (containment) {
+      for (let p = containment.parent[ringIdx]; p !== -1; p = containment.parent[p]) {
+        containment.pendingInside[p]--
+      }
+    }
+    lastRingIdx = ringIdx
     const [sx, sy]: Pt2 = ring[0]
+    // Plan the link before deciding whether to lift: a downstream-aimed link may stay at depth
+    // over a longer span than a radial one.
+    const linkPath = lastPos !== null && !forceLift
+      ? planRingLink(lastPos, [sx, sy], toolDiameterMM, leadLength(ring, toolDiameterMM), travelObstacles)
+      : null
+    const emitLink = () => {
+      for (const p of linkPath ?? []) segs.push({ x: p[0], y: p[1], z, rapid: false })
+    }
 
     if (rampDistMM !== undefined) {
       // Ramp starts rampDist BEFORE the ring's start vertex and cuts toward it,
@@ -545,7 +761,7 @@ export function emitLinkedContourRings(
       const { touchdown, sampleAt } = rampLeadIn(ring, false, rampDistMM)
       const [rampStartX, rampStartY] = touchdown
       const firstRingAtDepth = emittedCount === 0 && Math.abs(z - prevZ) > 1e-6
-      const canTravelAtDepth = lastPos !== null && isTravelSafe(lastPos, [sx, sy], travelObstacles)
+      const canTravelAtDepth = linkPath !== null
       const rampNeeded = firstRingAtDepth || !canTravelAtDepth
 
       if (rampNeeded) {
@@ -562,7 +778,7 @@ export function emitLinkedContourRings(
 
         emitRampDescent(segs, sampleAt, prevZ, z, 12)
       } else {
-        if (lastPos) emitCutTransition(segs, lastPos, [sx, sy], z, toolDiameterMM, safeZ)
+        if (lastPos) emitLink()
         else segs.push({ x: sx, y: sy, z, rapid: false })
       }
       // Tool is now at (sx, sy, z) — cut full perimeter; this also re-cuts the ramp
@@ -572,19 +788,19 @@ export function emitLinkedContourRings(
 
       lastPos = [sx, sy]
     } else {
-      if (lastPos === null || !isTravelSafe(lastPos, [sx, sy], travelObstacles)) {
+      if (linkPath === null) {
         if (lastPos !== null) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         segs.push({ x: sx, y: sy, z, rapid: false })
       } else {
-        if (lastPos) emitCutTransition(segs, lastPos, [sx, sy], z, toolDiameterMM, safeZ)
-        else segs.push({ x: sx, y: sy, z, rapid: false })
+        emitLink()
       }
 
       for (let j = 1; j < ring.length; j++) segs.push({ x: ring[j][0], y: ring[j][1], z, rapid: false })
       segs.push({ x: sx, y: sy, z, rapid: false })
       lastPos = [sx, sy]
     }
+    lastDir = unitVec(ring[ring.length - 1], ring[0])
     emittedCount++
   }
 
@@ -644,6 +860,130 @@ export function buildOffsetLevels(
   }
 
   return levels
+}
+
+
+/**
+ * The polylines the tool actually cut at depth `z`, taken from emitted motion. Rest detection
+ * works from these rather than from a strategy's internal rings so it serves any strategy —
+ * contour rings, spiral runs, raster passes — and measures what was really machined,
+ * including the links between passes.
+ */
+export function cutPathsAtDepth(segs: MotionSegment[], fromIdx: number, z: number): Pt2[][] {
+  const paths: Pt2[][] = []
+  let cur: Pt2[] = []
+  const atDepth = (s: MotionSegment) => Math.abs(s.z - z) < 1e-6
+  for (let i = Math.max(1, fromIdx); i < segs.length; i++) {
+    const s = segs[i], prev = segs[i - 1]
+    // travel moves ride above the floor, and a ramp's ends differ in Z — neither removes
+    // material at full depth, so neither counts as coverage.
+    if (!s.rapid && !s.travel && atDepth(s) && atDepth(prev)) {
+      if (cur.length === 0) cur.push([prev.x, prev.y])
+      cur.push([s.x, s.y])
+    } else if (cur.length > 0) {
+      paths.push(cur)
+      cur = []
+    }
+  }
+  if (cur.length > 0) paths.push(cur)
+  return paths
+}
+
+/** Closed ring → polyline that returns to its start, so its swath includes the closing edge. */
+export const closedPath = (ring: Pt2[]): Pt2[] => (ring.length > 0 ? [...ring, ring[0]] : ring)
+
+/**
+ * Rings that clear the stock a pass cannot reach — the pocket's "rest".
+ *
+ * A pass cuts a swath reaching `toolRadius` either side of its path. For offset rings there is
+ * a neat proof of coverage: any point lies exactly (h - d) from the ring at inset d ≤ h, where
+ * h is its own distance to the nearest wall, so a ring always clears everything with h in
+ * [d, d + toolRadius]. Points SHALLOWER than a ring get no such guarantee — the next ring in
+ * only stays a matching distance away while the level sets run parallel. At a medial-axis
+ * peak, a junction cusp, or a tight corner it curves away or vanishes and a ridge of
+ * full-height stock survives, up to (stepoverMM - toolRadius) wide. Spiral strategies lose
+ * coverage the same way wherever their turn spacing opens up.
+ *
+ * Rather than predict where that happens per strategy, subtract every swath from the region
+ * and cut what is left by tracing its OWN outline. One lap clears a patch up to 2·toolRadius
+ * wide; anything wider gets peeled a radius per round until nothing remains. Two constraints:
+ *   - the traced loop is clipped to the tool-centre zone (a radius inside every wall), or the
+ *     tool eats into a finished edge wherever a patch reaches a corner;
+ *   - the caller must cut these AFTER its ordinary passes. Cut first, a patch is solid stock
+ *     on every side and the entry is a full-width plunge; cut last, its surroundings are
+ *     already clear and the pass is a light skim.
+ *
+ * `cutPaths` must include the finishing rings the caller is about to emit (via `closedPath`),
+ * or the untouched finish allowance reads as leftover stock.
+ *
+ * Runs at every stepover, not just above 50%: the coverage proof above holds for offset RINGS,
+ * and a spiral's turn spacing is only nominally the stepover — measured, `spiral` left 58 mm²
+ * of stock at 50%. Detection costs one clipper difference and finds nothing on the strategies
+ * that are already complete.
+ */
+// Narrowest real leftover worth a pass. Also the guard that makes the swath approximations
+// above safe: they can only invent slivers thinner than their own error (≤0.05 mm), while a
+// genuine leftover is a good fraction of (stepover - toolRadius) wide.
+const MIN_REST_WIDTH_MM = 0.15
+
+// Mean width of a thin patch: for a w × L sliver, 2·area/perimeter = w.
+function patchWidth(pts: Pt2[]): number {
+  const area = Math.abs(signedArea(pts))
+  let perim = 0
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    perim += Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1])
+  }
+  return perim > 0 ? (2 * area) / perim : 0
+}
+
+export function restCleanupRings(
+  boundary: Pt2[],
+  islands: Pt2[][],
+  toolRadius: number,
+  cutPaths: Pt2[][],
+  wantCCW: boolean,
+): Pt2[][] {
+  if (cutPaths.length === 0) return []
+
+  const toCP = (pts: Pt2[]) => pts.map(([x, y]) => ({ x, y }))
+  const fromCP = (r: { x: number; y: number }[]) =>
+    stripClosingDuplicate(r.map(({ x, y }) => [x, y] as Pt2))
+  // µm precision and a 0.05 mm arc tolerance: a spiral pocket's cut path runs to thousands of
+  // points, and offsetting it at nanometre precision with default arc refinement dominated
+  // generation time (≈1 s per depth level). Both approximations shrink the swath slightly, so
+  // the error is on the safe side — it can only report leftover stock that isn't there, never
+  // hide some that is.
+  const swathOf = (paths: Pt2[][]) =>
+    inflatePathsD(paths.map(p => toCP(douglasPeucker(p, 0.05))), toolRadius, JoinType.Round, EndType.Round, 2, 3, 0.05)
+
+  const subject = [
+    toCP(ensureWinding(boundary, true)),
+    ...islands.map(isl => toCP(ensureWinding(isl, false))),
+  ]
+  // Where the tool centre is allowed to be: one radius inside every wall.
+  const toolZone = inflatePathsD(subject, -toolRadius, JoinType.Round, EndType.Polygon, 4, 6)
+  if (toolZone.length === 0) return []
+
+  const rings: Pt2[][] = []
+  // Swaths accumulate by union so each round only inflates the rings it just added — the cut
+  // path of a spiral pocket runs to thousands of points and re-inflating it every round is the
+  // one thing here that would show up in generation time.
+  // The leftover shrinks round by round: subtract each new pass's swath from the PREVIOUS
+  // leftover rather than rebuilding and re-differencing the full swath union, which grows with
+  // every ring added.
+  let rest = differenceD(subject, swathOf(cutPaths), FillRule.NonZero, 3)
+  for (let round = 0; round < 8 && rest.length > 0; round++) {
+    // Stock closer to a wall than the tool radius (a corner the cutter cannot enter) drops out
+    // here rather than being traced into the wall.
+    const reachable = intersectD(rest, toolZone, FillRule.NonZero, 3)
+      .map(r => fromCP(r))
+      .filter(pts => pts.length >= 3 && patchWidth(pts) > MIN_REST_WIDTH_MM)
+      .map(pts => ensureWinding(pts, wantCCW))
+    if (reachable.length === 0) break
+    rings.push(...reachable)
+    rest = differenceD(rest, swathOf(reachable.map(closedPath)), FillRule.NonZero, 3)
+  }
+  return rings
 }
 
 
