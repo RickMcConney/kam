@@ -11,6 +11,7 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor } from '../../workers/workerClient'
+import { entryHintAt } from '../../cam/startOptimizer'
 import { groupPathsByContainment } from './containment'
 
 interface VCarveFormState {
@@ -64,13 +65,16 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     setGenerating(true)
     try {
       if (editOp && editBoundary) {
+        // Chain to where the previous operation finishes, at generation time.
+        const hint = entryHintAt(editOp.id)
         updateOperation(editOp.id, {
+          entryHint: hint,
           toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateVCarve', editBoundary.d, tool, {
             angleDeg, maxDepthMM: form.maxDepthMM,
-            islandDs: editIslands.map((p) => p.d), safeHeightMM,
+            islandDs: editIslands.map((p) => p.d), startNear: hint, safeHeightMM,
           }))
         } catch (err) {
           setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -90,14 +94,16 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             angleDeg,
           })
           if (!existingId) session.remember(boundary.id, opId)
+          const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
+            entryHint: hint,
             name, toolId: form.toolId, islandIds: islands.map((p) => p.id),
             maxDepthMM: form.maxDepthMM, angleDeg, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', boundary.d, tool, {
               angleDeg, maxDepthMM: form.maxDepthMM,
-              islandDs: islands.map((p) => p.d), safeHeightMM,
+              islandDs: islands.map((p) => p.d), startNear: hint, safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')

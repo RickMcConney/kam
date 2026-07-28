@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { ICON } from '../theme'
-import { Play, Pause, Square, FileText, X } from 'lucide-react'
+import { Play, Pause, Rewind, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
@@ -138,13 +138,13 @@ export default function SimulationPlayer() {
 
       {/* Controls */}
       <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-xl px-3 py-1.5 flex items-center gap-2 shadow-xl">
-        {/* Stop */}
+        {/* Reset to the start */}
         <button
-          title="Stop"
+          title="Reset"
           onClick={stop}
           className="text-gray-500 dark:text-neutral-400 hover:text-gray-900 dark:hover:text-neutral-100 transition-colors p-0.5"
         >
-          <Square size={ICON.sm} />
+          <Rewind size={ICON.sm} />
         </button>
 
         {/* Play / Pause */}

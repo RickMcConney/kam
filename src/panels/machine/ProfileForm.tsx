@@ -10,6 +10,7 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor } from '../../workers/workerClient'
+import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM } from '../../cam/feeds'
 
 interface ProfileFormState {
@@ -70,14 +71,17 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     let failed = false
     try {
       if (editOp) {
+        // Chain to where the previous operation finishes, at generation time.
+        const hint = entryHintAt(editOp.id)
         updateOperation(editOp.id, {
+          entryHint: hint,
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
           stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateProfile', selectedPaths[0].d, tool, {
             side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
-            direction: form.direction, rampIn: form.rampIn, safeHeightMM,
+            direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
           }))
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Generation failed'
@@ -101,14 +105,16 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             direction: form.direction,
             rampIn: form.rampIn,
           })
+          const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
+            entryHint: hint,
             name, toolId: form.toolId, side: form.side, depthMM: form.depthMM,
             stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
-              direction: form.direction, rampIn: form.rampIn, safeHeightMM,
+              direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
             }))
             if (!existingId) session.remember(path.id, opId)
           } catch (err) {

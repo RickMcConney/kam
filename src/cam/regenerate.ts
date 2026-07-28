@@ -46,7 +46,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         strategy: op.strategy ?? 'raster',
         depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, direction: op.direction,
-        islandDs, angle: op.passAngleDeg, startNear: op.entryHint, rampIn: op.rampIn,
+        islandDs, angle: op.passAngleDeg, autoAngle: op.autoAngle, startNear: op.entryHint, rampIn: op.rampIn,
         finishAllowanceMM: op.allowanceMM,
         safeHeightMM,
       }))
@@ -171,6 +171,10 @@ export async function regenerateOperation(opId: string): Promise<void> {
         }
       }
     }
+    // setSegments stamps `generatedWith` for the plain "no entry hint" case; this path
+    // passes op.entryHint into every generator, so correct the stamp to match. Without it
+    // the next simulate/export would see a mismatch and regenerate all over again.
+    updateOperation(opId, { generatedWith: { entryHint: op.entryHint, safeHeightMM } }, { record: false })
     const _segs = useToolpathStore.getState().operations.find((o) => o.id === opId)?.segments.length ?? 0
     const _label = op.type === 'pocket' ? `pocket/${(op as { strategy?: string }).strategy ?? 'raster'}` : op.type
     perfLog(`[perf] toolpath-gen ${_label}: ${(performance.now() - _t0).toFixed(0)}ms → ${_segs} segs`)

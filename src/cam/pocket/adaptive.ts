@@ -1,7 +1,6 @@
 import {   type Pt2 } from '../pathFlattener'
 import type { MotionSegment } from '../../store/toolpathStore'
-import type { Tool } from '../../store/toolStore'
-import { type PocketParams, _timed, emitHelicalRamp } from './shared'
+import { type PocketPlan, type PocketPlanner, _timed, emitHelicalRamp } from './shared'
 import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from '../adaptiveClearing'
 
 // ─── Adaptive (constant-engagement) clearing ─────────────────────────────────────
@@ -13,16 +12,9 @@ import { Adaptive2d, OperationType, MotionType, type AdaptiveOutput } from '../a
 // motion-type-tagged output paths into MotionSegments — emitting a helix/plunge entry per
 // region and lifting only on the engine's "link not clear" relinks.
 
-export function adaptivePocket(
-  boundary: Pt2[],
-  islands: Pt2[][],
-  tool: Tool,
-  params: PocketParams,
-  zDepth: number,
-  segs: MotionSegment[],
-  prevZ = 0,
-  incomingPos: Pt2 | null = null,
-): Pt2 | null {
+// This engine emits its own finishing profile and handles its own leftovers, so the plan
+// is marked selfFinishing and generatePocket skips the shared rest/finish tail for it.
+export const planAdaptivePocket: PocketPlanner = (boundary, islands, tool, params): PocketPlan | null => {
   const safeZ = params.safeHeightMM ?? 5
   const dia = tool.diameterMM
   const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
@@ -64,7 +56,7 @@ export function adaptivePocket(
     outputs = _timed('engine.Execute', () => engine.Execute(stock, geomPaths, []))
   } catch (err) {
     console.error('[adaptive] engine failed', err)
-    return incomingPos
+    return null
   }
 
   // Mirror the toolpath back into real coordinates (no-op when not reflecting).
@@ -74,6 +66,25 @@ export function adaptivePocket(
     for (const tp of out.adaptivePaths) for (const p of tp.pts) p[0] = mx * p[0]
   }
 
+  return {
+    finishRings: [],
+    travelObstacles: { edgeObstacles: [] },
+    selfFinishing: true,
+    emitCuts: (zDepth: number, prevZ: number, incomingPos: Pt2 | null, segs: MotionSegment[]) =>
+      emitAdaptive(outputs, zDepth, prevZ, incomingPos, segs, safeZ, rampIn, wantCCW),
+  }
+}
+
+function emitAdaptive(
+  outputs: AdaptiveOutput[],
+  zDepth: number,
+  prevZ: number,
+  incomingPos: Pt2 | null,
+  segs: MotionSegment[],
+  safeZ: number,
+  rampIn: boolean,
+  wantCCW: boolean,
+): Pt2 | null {
   let lastPos: Pt2 | null = incomingPos
 
   for (const out of outputs) {

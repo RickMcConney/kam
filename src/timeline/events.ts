@@ -37,13 +37,14 @@ export function hydrateOp(sop: SerializedOperation): AnyOperation {
 // outside any user action (entryHint is rewritten on EVERY sim run / G-code
 // export). They are stripped from op.update event payloads and ignored by the
 // replay diff — post-scrub regeneration recomputes them.
-export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint'] as const
+export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint', 'generatedWith'] as const
 
 // An op reduced to the fields replay can actually reproduce. Live ops carry
 // state that no event ever recorded, so comparing raw ops against replayed
 // ones always reports a difference once the project has been used:
 // - visible: eye-icon toggles are view state (toggleOperationVisible doesn't record)
-// - entryHint: rewritten by optimizeStartPoints on EVERY sim run / G-code export
+// - entryHint/generatedWith: written by optimizeStartPoints before a sim run or
+//   G-code export
 // - helicalCenterX/Y/helicalRadius: written back by regenerate with { record: false }
 //
 // Used both by the replay oracle (replayCheck) and by scrubbing's
@@ -51,7 +52,7 @@ export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCe
 // after a single Simulate would discard every generated toolpath and re-run
 // seconds of adaptive/vcarve work.
 export function comparableOp(op: SerializedOperation): Record<string, unknown> {
-  const { visible: _v, entryHint: _eh, ...rest } = op as SerializedOperation & { visible?: boolean }
+  const { visible: _v, entryHint: _eh, generatedWith: _gw, ...rest } = op as SerializedOperation & { visible?: boolean }
   if (rest.type === 'drill') {
     delete rest.helicalCenterX
     delete rest.helicalCenterY

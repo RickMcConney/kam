@@ -28,13 +28,18 @@
 
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { signedArea, douglasPeucker, type Pt2 } from './pathFlattener'
-import { distSqPtSeg } from './clearedRaster'
+import { ptSegDistSq } from './geom'
 
 interface Adaptive2Move {
   // 'cut' = engagement-controlled material removal; 'link' = stay-down traverse over
   // already-cleared floor (verified ~zero engagement while walking it).
   kind: 'cut' | 'link'
   pts: Pt2[]
+  // Feed multiplier for a 'cut' move. 1 for ordinary engagement-controlled cutting;
+  // below 1 where the geometry forced a bite wider than the target (a channel narrower
+  // than the tool can trochoid in), scaled so the chip load is the same as an on-target
+  // pass. Undefined ⇒ full feed.
+  feedScale?: number
 }
 
 export interface Adaptive2Region {
@@ -44,6 +49,8 @@ export interface Adaptive2Region {
   moves: Adaptive2Move[]
 }
 
+export type Adaptive2Progress = (frac: number, label?: string) => void
+
 export interface Adaptive2Params {
   toolDiameterMM: number
   /** Target radial engagement (the UI engagement % × tool diameter). */
@@ -52,6 +59,8 @@ export interface Adaptive2Params {
   wantCCW: boolean
   /** Helix-bore entries (the rampIn checkbox); false = straight plunge at each seed. */
   helixEntry: boolean
+  /** Optional 0->1 progress; driven by how much of the owed stock is gone. */
+  onProgress?: Adaptive2Progress
 }
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
@@ -132,6 +141,71 @@ function edtSq(w: number, h: number, isFeature: (i: number) => boolean): Float64
     for (let x = 0; x < w; x++) f[x] = out[row + x]
     dt1d(f, w, d, v, z)
     for (let x = 0; x < w; x++) out[row + x] = d[x]
+  }
+  return out
+}
+
+// ─── Path fairing helpers ────────────────────────────────────────────────────────
+
+/** Resample a polyline at a uniform arc-length interval, endpoints preserved. Fairing
+ *  filters assume even spacing — the umbrella operator on unevenly spaced samples is
+ *  biased toward the longer side, which is exactly the noise it is meant to remove. */
+function resampleUniform(pts: Pt2[], step: number): Pt2[] {
+  if (pts.length < 2 || step <= 0) return pts
+  const out: Pt2[] = [pts[0]]
+  let carry = 0
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1][0], ay = pts[i - 1][1]
+    const dx = pts[i][0] - ax, dy = pts[i][1] - ay
+    const d = Math.hypot(dx, dy)
+    if (d < 1e-12) continue
+    let t = (step - carry) / d
+    while (t <= 1) {
+      out.push([ax + dx * t, ay + dy * t])
+      t += step / d
+    }
+    carry = (carry + d) % step
+  }
+  const last = pts[pts.length - 1]
+  const tail = out[out.length - 1]
+  if (Math.hypot(last[0] - tail[0], last[1] - tail[1]) > step * 0.25) out.push(last)
+  else out[out.length - 1] = last
+  return out
+}
+
+/** Thin a faired polyline, bounding BOTH the chord deviation and the DIRECTION CHANGE at
+ *  each kept vertex. Douglas-Peucker bounds deviation only; on a gently curving path that
+ *  lets it emit very long chords, and the whole accumulated turn of the arc then lands on
+ *  one vertex — the tool decelerates into every one of those. */
+function thinByChordAndTurn(pts: Pt2[], tolMM: number, maxTurnRad: number): Pt2[] {
+  const n = pts.length
+  if (n <= 2) return pts
+  const out: Pt2[] = [pts[0]]
+  let anchor = 0
+  while (anchor < n - 1) {
+    let best = anchor + 1
+    for (let j = anchor + 2; j < n; j++) {
+      const ax = pts[anchor][0], ay = pts[anchor][1]
+      const bx = pts[j][0], by = pts[j][1]
+      let dev = 0
+      for (let k = anchor + 1; k < j; k++) {
+        dev = Math.max(dev, Math.sqrt(ptSegDistSq(pts[k][0], pts[k][1], ax, ay, bx, by)))
+        if (dev > tolMM) break
+      }
+      if (dev > tolMM) break
+      if (out.length >= 2) {
+        const px = out[out.length - 1][0] - out[out.length - 2][0]
+        const py = out[out.length - 1][1] - out[out.length - 2][1]
+        const l1 = Math.hypot(px, py), l2 = Math.hypot(bx - ax, by - ay)
+        if (l1 > 1e-9 && l2 > 1e-9) {
+          const c = clamp((px * (bx - ax) + py * (by - ay)) / (l1 * l2), -1, 1)
+          if (Math.acos(c) > maxTurnRad) break
+        }
+      }
+      best = j
+    }
+    out.push(pts[best])
+    anchor = best
   }
   return out
 }
@@ -233,6 +307,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   let uncut = 0
   for (let i = 0; i < nCells; i++) if (!cleared[i] && !band[i]) uncut++
   if (uncut === 0) return []
+  // Owed stock remaining is the honest progress signal for a march: it falls
+  // monotonically and reaches zero exactly when the work is done.
+  const uncut0 = uncut
+  const tellProgress = () => prm.onProgress?.(1 - uncut / uncut0, 'Clearing')
 
   // Cutting steps prefer to keep the tool edge OUT of the finishing band: without this
   // the final wall lap pins against the machinable limit and swallows leftover strip +
@@ -290,7 +368,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       for (let ix = ix0; ix <= ix1; ix++) {
         if (cleared[row + ix]) continue
         const px = x0 + (ix + 0.5) * cell
-        if (distSqPtSeg(px, py, ax, ay, bx, by) <= r2) {
+        if (ptSegDistSq(px, py, ax, ay, bx, by) <= r2) {
           cleared[row + ix] = 1
           if (!band[row + ix]) { uncut--; owed++ }
           n++
@@ -341,17 +419,37 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
 
   // ── Marching ──────────────────────────────────────────────────────────────────
 
-  const ds = Math.max(2 * cell, R / 5)        // step length
-  const A = ds / (0.45 * R)                   // max turn per step (loop radius ≥ 0.45 R)
-  // Hard chip-load governor: no single step may sweep more new stock than a pass at
-  // 1.3× the target stepover would.
-  const maxStepArea = 1.3 * s * ds
+  // Step length, and the max turn per step that goes with it.
+  //
+  // The step is CONSTANT. It used to grow with distance to the nearest wall, on the theory
+  // that open field is cheap to cross in bigger strides — but that idea failed twice and
+  // the measurement says it never paid. Holding the turn limit fixed while the step grew
+  // tripled the minimum turn radius, so the tool could no longer retreat through cleared
+  // stock when engagement rose and just plowed on (162 mm at 92% of the tool diameter).
+  // Deriving the turn limit from the step instead fixed that but let a long step carry a
+  // 107 deg turn allowance, and the march wandered — the "meandering" on a 660x940 pocket.
+  // And it was not even faster: the wandering path was twice as long, so the big pocket
+  // took 70 s instead of 22 s. A constant-engagement march is always at the stock frontier
+  // while cutting, so it always needs the fine step; the way to save work in open field is
+  // not to steer there at all (see the hybrid note in scratch/pocket.md).
+  const dsBase = Math.max(2 * cell, R / 5)
+  // Turn per step is bounded BOTH ways. Below, by the minimum loop radius the trochoidal
+  // retreat needs (0.45 R). Above, by an absolute angle, so that on a large pocket — where
+  // the cell budget coarsens the grid and with it the step — a single step can still only
+  // change heading by a modest amount. Without the ceiling the candidate turns spread wide
+  // enough that consecutive steps swing about and the path stops reading as a spiral.
+  const MAX_TURN_PER_STEP = 0.45
+  const A = Math.min(dsBase / (0.45 * R), MAX_TURN_PER_STEP)
+  // Target new stock per step: a pass at the requested radial stepover sweeps s·ds.
+  // Hard chip-load governor: no single step may sweep more than 1.3× that.
+  const areaTargetPerLen = s
+  const OVERLOAD = 1.3
   const dirSign = prm.wantCCW ? 1 : -1
   // Candidate turns, as fractions of A. The score prefers engagement closest to target,
   // mildly prefers going straight (smoothness), and nudges toward the requested winding
   // direction so re-engagements settle on the climb/conventional side consistently.
   const CAND = [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1]
-  const idleLimit = Math.ceil((2 * Math.PI * 0.45 * R) / ds) + 4
+  const idleLimit = Math.ceil((2 * Math.PI * 0.45 * R) / dsBase) + 4
 
   let px = 0, py = 0, theta = 0               // march state
 
@@ -380,14 +478,22 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     return n * cell * cell
   }
 
-  const steerStep = (): { e: number; cut: number; owed: number } | null => {
-    // Rank candidates by circumference occupancy (cheap), then govern by ACTUAL swept
-    // area: occupancy misreads pivots around convex corners (the outer flank sweeps a
-    // wide fan at on-target occupancy) and deep wall strips. If the winner's previewed
-    // area overloads, re-rank every candidate by area — biggest bite under the cap,
-    // else retreat through cleared (the trochoidal loop-back), else least overload
-    // (true geometric slots).
-    let bestDelta = NaN, bestScore = Infinity, bestE = 0
+  // How many occupancy-ranked candidates get the (more expensive, exact) area check.
+  const AREA_SHORTLIST = 3
+
+  const steerStep = (): { cut: number; owed: number; feedScale: number } | null => {
+    const ds = dsBase
+    const areaTarget = areaTargetPerLen * ds
+    const maxStepArea = OVERLOAD * areaTarget
+
+    // Two-stage ranking. Circumference occupancy is cheap (96 samples) but it is only a
+    // proxy: it is measured on the bookkeeping circle rb, which is a hair under the real
+    // tool, and it misreads pivots around convex corners, where the outer flank sweeps a
+    // wide fan at on-target occupancy. Steering on it alone ran the MEDIAN radial bite
+    // ~20% over the requested stepover. So occupancy only shortlists; the winner is
+    // picked by the ACTUAL swept area, which is exactly the quantity the stepover asks
+    // for and is curvature-correct by construction.
+    const scored: { c: number; score: number }[] = []
     for (let i = 0; i < CAND.length; i++) {
       const c = CAND[i]
       const th = theta + c * A
@@ -397,42 +503,52 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       const e = engagement(nx, ny)
       const score = Math.abs(e - ft) + 0.02 * Math.abs(c) - 0.012 * c * dirSign
         + (inBandZone(nx, ny) ? 0.6 : 0)
-      if (score < bestScore) { bestScore = score; bestDelta = c * A; bestE = e }
+      scored.push({ c, score })
     }
-    if (Number.isNaN(bestDelta)) return null
-    {
-      const th = theta + bestDelta
+    if (scored.length === 0) return null
+    scored.sort((a, b) => a.score - b.score)
+
+    let bestDelta = NaN
+    let bestArea = 0
+    let bestScore = Infinity
+    const consider = (c: number) => {
+      const th = theta + c * A
       const nx = px + Math.cos(th) * ds
       const ny = py + Math.sin(th) * ds
-      if (previewStepArea(px, py, nx, ny) > maxStepArea) {
-        let areaDelta = NaN
-        let areaScore = Infinity
-        for (let i = 0; i < CAND.length; i++) {
-          const c = CAND[i]
-          const t2 = theta + c * A
-          const mx = px + Math.cos(t2) * ds
-          const my = py + Math.sin(t2) * ds
-          if (!machAt(mx, my)) continue
-          const a2 = previewStepArea(px, py, mx, my)
-          const sc = (a2 > maxStepArea ? 1000 + a2 : maxStepArea - a2) + 0.05 * Math.abs(c)
-          if (sc < areaScore) { areaScore = sc; areaDelta = c * A }
-        }
-        if (!Number.isNaN(areaDelta)) bestDelta = areaDelta
-      }
+      const a = previewStepArea(px, py, nx, ny)
+      // Under the cap: closest to target wins, with the same mild straightness bias.
+      // Over it: strictly worse than any legal candidate, ranked by how far over.
+      const sc = a > maxStepArea ? 1000 + a : Math.abs(a - areaTarget) / areaTarget + 0.05 * Math.abs(c)
+      if (sc < bestScore) { bestScore = sc; bestDelta = c * A; bestArea = a }
     }
+    for (let i = 0; i < Math.min(AREA_SHORTLIST, scored.length); i++) consider(scored[i].c)
+    // Every shortlisted candidate overloads: widen the search to all of them before
+    // accepting an over-target bite — that is the trochoidal retreat through cleared
+    // stock, and it is only unavailable in a true geometric slot.
+    if (bestScore >= 1000) {
+      for (let i = AREA_SHORTLIST; i < scored.length; i++) consider(scored[i].c)
+    }
+    if (Number.isNaN(bestDelta)) return null
+
     theta += bestDelta
     const nx = px + Math.cos(theta) * ds
     const ny = py + Math.sin(theta) * ds
     const st = stampSeg(px, py, nx, ny, rb)
     px = nx
     py = ny
-    return { e: bestE, cut: st.n, owed: st.owed }
+    // A bite the geometry forced over the cap gets a proportional feed cut, so the chip
+    // load matches an on-target pass instead of silently spiking. Quantized so a channel
+    // doesn't fragment into dozens of feed changes.
+    const over = bestArea > maxStepArea ? bestArea / areaTarget : 1
+    const feedScale = over > 1 ? Math.max(0.3, Math.round((1 / over) * 4) / 4) : 1
+    return { cut: st.n, owed: st.owed, feedScale }
   }
 
   // The turn-per-step limit keeps the path smooth, but it can nose the march into a
   // dead-end (every candidate off the machinable mask). A round tool can re-aim in place
   // for free — pick the best heading over the full circle and carry on.
   const reAim = (): boolean => {
+    const ds = dsBase
     let bestT = NaN
     let bestSc = Infinity
     for (let k = 0; k < 24; k++) {
@@ -469,7 +585,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       const row = iy * w
       for (let ix = ix0; ix <= ix1; ix++) {
         const pxc = x0 + (ix + 0.5) * cell
-        if (distSqPtSeg(pxc, pyc, ax, ay, bx, by) > r2) continue
+        if (ptSegDistSq(pxc, pyc, ax, ay, bx, by) > r2) continue
         if (!cleared[row + ix] || !region[row + ix]) return false
       }
     }
@@ -504,24 +620,49 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
   const regions: Adaptive2Region[] = []
   const simplifyTol = cell * 0.4
 
-  // Post-smoothing: the march advances in fixed steps with quantized headings, so raw
-  // cut polylines carry facet noise of a fraction of a cell. Repeated binomial
-  // moving-average passes (endpoints pinned, so entries and link junctions stay exact —
-  // 4 passes ≈ averaging over ±4 neighbours) read as a fair curve. The displacement
-  // clamp is CURVATURE-AWARE: on near-straight runs (where facet noise lives) a point
-  // may move up to a full cell from its original position, but where the path genuinely
-  // turns — wall corners, trochoid apexes — the clamp tightens, so smoothing cannot
-  // shortcut a corner and leave a stock lens for the next lap to swallow (that showed up
-  // as 88% corner bites with a uniform clamp). Points leaving the machinable mask revert,
-  // so walls/islands stay untouchable. A light Douglas-Peucker afterwards drops collinear
-  // leftovers without re-faceting the curve into visible chords.
-  const SMOOTH_PASSES = 4
-  const smoothTol = 1.0 * cell
-  const smoothCut = (pts: Pt2[]): Pt2[] => {
-    if (pts.length < 2 * SMOOTH_PASSES + 1) return douglasPeucker(pts, simplifyTol)
-    // Per-point clamp from the ORIGINAL local turn angle (over ±2 neighbours): full
-    // tolerance when straight, down to 20% at ≥ ~45° of turn.
+  // Post-smoothing: the march advances in fixed steps with quantized headings, so raw cut
+  // polylines carry heading noise — the mean curvature is right but it JITTERS step to
+  // step, which is what reads as wobble and what excites chatter. So the filter targets
+  // curvature continuity, not position error.
+  //
+  // Taubin λ/μ rather than repeated averaging. Plain [1,2,1] smoothing is a low-pass that
+  // also SHRINKS the curve toward its centroid, so every extra pass pulls the path off the
+  // frontier; that is what capped the old filter at 4 passes and left the jitter in. Taubin
+  // alternates a positive (λ) smoothing step with a slightly larger negative (μ) one, whose
+  // net transfer function passes low frequencies at unity gain and kills high ones — so
+  // passes can be stacked until the jitter is gone without the curve creeping inward.
+  //
+  // Two constraints keep it honest. The per-point displacement clamp is CURVATURE-AWARE:
+  // on near-straight runs (where the jitter lives) a point may move a few tenths, but where
+  // the path genuinely turns — wall corners, trochoid apexes — the clamp tightens sharply,
+  // so smoothing cannot shortcut a corner and leave a stock lens for the next lap to
+  // swallow (that showed up as 88% corner bites with a uniform clamp). And points that
+  // leave the machinable mask revert, so walls and islands stay untouchable.
+  //
+  // The budget is set by the lap overlap: consecutive passes overlap by (2R − stepover),
+  // so a lateral shift of a few tenths cannot open a ridge — the binding constraint is
+  // engagement, which is why it is a fraction of the stepover rather than of the overlap.
+  const SMOOTH_PASSES = 24
+  const TAUBIN_LAMBDA = 0.55
+  const TAUBIN_MU = -0.58
+  const smoothTol = Math.min(0.12 * s, 1.5 * cell)
+  // Fair on evenly spaced samples: the march's own step now varies with wall clearance,
+  // and unevenly spaced samples bias the filter.
+  const fairStep = Math.max(cell, dsBase)
+  // Max direction change at an emitted vertex. ~3.5 deg is below what a controller has to
+  // decelerate for at roughing feeds, and it is the cap that keeps the path reading as a
+  // curve rather than a chain of facets.
+  const MAX_VERTEX_TURN = 0.06
+  // Output thinning: below the residual ripple, so collapsing straight runs cannot
+  // reintroduce a kink by cutting across a wave.
+  const thinTol = simplifyTol * 0.15
+  const smoothCut = (raw: Pt2[]): Pt2[] => {
+    if (raw.length < 3) return raw
+    const pts = resampleUniform(raw, fairStep)
     const n = pts.length
+    if (n < 5) return douglasPeucker(pts, simplifyTol)
+    // Per-point clamp from the ORIGINAL local turn angle (over ±2 neighbours): full
+    // tolerance when straight, down to 15% at ≥ ~45° of turn.
     const tol = new Float64Array(n)
     for (let i = 0; i < n; i++) {
       const im = Math.max(0, i - 2)
@@ -537,21 +678,22 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         const c = clamp((v1x * v2x + v1y * v2y) / (l1 * l2), -1, 1)
         turn = Math.acos(c)
       }
-      tol[i] = smoothTol * Math.max(0.2, 1 - turn / 0.8)
+      tol[i] = smoothTol * Math.max(0.15, 1 - turn / 0.8)
       // Wall-adjacent laps feed the finishing contour: rounding them grows the corner
       // lens the (ungoverned) finishing pass swallows in one pivot. Keep them faithful;
       // they ride walls and are nearly straight anyway.
       if (inBandZone(pts[i][0], pts[i][1])) tol[i] *= 0.25
     }
-    let cur2 = pts
-    for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+    // One Laplacian sweep with weight `w`, endpoints pinned, each point clamped to its
+    // budget around its ORIGINAL position and reverted if it would leave the mask.
+    const sweep = (src: Pt2[], w: number): Pt2[] => {
       const out: Pt2[] = new Array(n)
-      out[0] = cur2[0]
-      out[n - 1] = cur2[n - 1]
+      out[0] = src[0]
+      out[n - 1] = src[n - 1]
       for (let i = 1; i < n - 1; i++) {
-        const a = cur2[i - 1], p = cur2[i], b = cur2[i + 1]
-        let sx = (a[0] + 2 * p[0] + b[0]) / 4
-        let sy = (a[1] + 2 * p[1] + b[1]) / 4
+        const a = src[i - 1], p = src[i], b = src[i + 1]
+        let sx = p[0] + w * ((a[0] + b[0]) / 2 - p[0])
+        let sy = p[1] + w * ((a[1] + b[1]) / 2 - p[1])
         const o = pts[i]
         const dx = sx - o[0]
         const dy = sy - o[1]
@@ -564,13 +706,20 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         }
         out[i] = machAt(sx, sy) ? [sx, sy] : o
       }
-      cur2 = out
+      return out
     }
-    return douglasPeucker(cur2, simplifyTol * 0.4)
+    let cur2 = pts
+    for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+      cur2 = sweep(cur2, TAUBIN_LAMBDA)
+      cur2 = sweep(cur2, TAUBIN_MU)
+    }
+    // Thin on BOTH deviation and turn, so long chords cannot swallow the whole turn of an
+    // arc and dump it on one vertex.
+    return thinByChordAndTurn(cur2, thinTol, MAX_VERTEX_TURN)
   }
   // Owed leftovers under ~1 mm² aren't worth another entry move.
   const stopUncut = Math.max(4, Math.round(1 / (cell * cell)))
-  let budget = Math.ceil((uncut * cell * cell) / (ds * s)) * 8 + 20000
+  let budget = Math.ceil((uncut * cell * cell) / (dsBase * s)) * 8 + 20000
 
   while (uncut > stopUncut && regions.length < 200 && budget > 0) {
     // Seed at the deepest remaining OWED stock the tool centre can sit on (depth measured
@@ -612,10 +761,11 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       // Pick the start heading whose first step lands closest to target engagement.
       let bestT = 0
       let bestSc = Infinity
+      const ds0 = dsBase
       for (let k = 0; k < 16; k++) {
         const th = (k / 16) * 2 * Math.PI
-        const nx = px + Math.cos(th) * ds
-        const ny = py + Math.sin(th) * ds
+        const nx = px + Math.cos(th) * ds0
+        const ny = py + Math.sin(th) * ds0
         if (!machAt(nx, ny)) continue
         const sc = Math.abs(engagement(nx, ny) - ft)
         if (sc < bestSc) { bestSc = sc; bestT = th }
@@ -636,6 +786,22 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
     // of steps stay inline in the cut move. Only zero-cut steps may be rerouted — their
     // stamps changed nothing, so the swap is exactly behavior-preserving on the grid.
     const air: Pt2[] = []
+    // Feed multiplier the current cut run is accumulating under. A step the geometry
+    // forced over the chip-load cap returns a reduced scale; the run is flushed and a new
+    // one started whenever it changes, so a slot's slow section is exactly the slot.
+    let curFeed = 1
+    const flushCut = () => {
+      // feedScale is left undefined at full feed: it means "this move needs a protective
+      // feed override", and downstream (motion simplification, arc fitting, the gcode
+      // emitter) treats any tagged segment as ineligible for merging.
+      if (cur.length >= 2) moves.push(curFeed < 1 ? { kind: 'cut', pts: cur, feedScale: curFeed } : { kind: 'cut', pts: cur })
+    }
+    const setFeed = (fs: number) => {
+      if (fs === curFeed) return
+      flushCut()
+      cur = cur.length > 0 ? [cur[cur.length - 1]] : []
+      curFeed = fs
+    }
     const emitAir = () => {
       if (air.length === 0) return
       const from = cur[cur.length - 1]
@@ -644,16 +810,17 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       let len = 0
       let prev = from
       for (const p of pts) { len += Math.hypot(p[0] - prev[0], p[1] - prev[1]); prev = p }
-      if (len <= ds * 2) {
+      if (len <= dsBase * 2) {
         for (const p of pts) cur.push(p)
         return
       }
-      if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
+      flushCut()
       moves.push({ kind: 'link', pts })
       cur = [pts[pts.length - 1]]
     }
 
     while (uncut > stopUncut && budget-- > 0) {
+      tellProgress()
       if (!navMode) {
         // ── cutting mode: hold engagement at target ──
         let r = steerStep()
@@ -663,7 +830,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
           if (r === null) break
         }
         if (r.cut === 0) air.push([px, py])
-        else { emitAir(); cur.push([px, py]) }
+        else { emitAir(); setFeed(r.feedScale); cur.push([px, py]) }
         // Idle = no GOAL progress: steps that cut nothing, or only shave band stock the
         // finishing pass owns, both count — otherwise the march nibbles the band edge
         // forever at low engagement without ever moving on.
@@ -683,6 +850,8 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         }
       } else {
         // ── navigation mode: descend the guide field, engagement still capped ──
+        const ds = dsBase
+        const maxStepArea = OVERLOAD * areaTargetPerLen * ds
         let bestDelta = NaN
         let bestSc = Infinity
         let bestE = 0
@@ -711,7 +880,7 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
         px = nx
         py = ny
         if (st.n === 0) air.push([px, py])
-        else { emitAir(); cur.push([px, py]) }
+        else { emitAir(); setFeed(1); cur.push([px, py]) }
         if (bestE >= ft * 0.5 || guideAt(px, py) === 0) {
           navMode = false
           idle = 0
@@ -721,10 +890,10 @@ export function computeAdaptive2Plan(boundary: Pt2[], islands: Pt2[][], prm: Ada
       }
     }
     emitAir()
-    if (cur.length >= 2) moves.push({ kind: 'cut', pts: cur })
+    flushCut()
 
     moves = moves
-      .map(m => (m.kind === 'cut' ? { kind: m.kind, pts: smoothCut(m.pts) } : m))
+      .map(m => (m.kind === 'cut' ? { ...m, pts: smoothCut(m.pts) } : m))
       .filter(m => m.pts.length >= (m.kind === 'cut' ? 2 : 1))
 
     if (moves.some(m => m.kind === 'cut')) {

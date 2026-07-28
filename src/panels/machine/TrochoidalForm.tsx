@@ -11,6 +11,7 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor } from '../../workers/workerClient'
+import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM, trochoidalEngagementFraction } from '../../cam/feeds'
 
 interface TrochoidalFormState {
@@ -84,7 +85,10 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     let failed = false
     try {
       if (editOp) {
+        // Chain to where the previous operation finishes, at generation time.
+        const hint = entryHintAt(editOp.id)
         updateOperation(editOp.id, {
+          entryHint: hint,
           toolId: form.toolId, side: form.side, depthMM: form.depthMM,
           stepDownMM: form.stepDownMM, direction: form.direction,
           trochStepMM: form.trochStepMM, trochRadiusMM: form.trochRadiusMM,
@@ -96,7 +100,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
             stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
             direction: form.direction, trochStepMM: form.trochStepMM,
             trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
-            rampIn: form.rampIn, safeHeightMM,
+            rampIn: form.rampIn, startNear: hint, safeHeightMM,
           }))
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Generation failed'
@@ -123,7 +127,9 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
             finishingPass: form.finishingPass,
             rampIn: form.rampIn,
           })
+          const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
+            entryHint: hint,
             name, toolId: form.toolId, side: form.side, depthMM: form.depthMM,
             stepDownMM: form.stepDownMM, direction: form.direction,
             trochStepMM: form.trochStepMM, trochRadiusMM: form.trochRadiusMM,
@@ -135,7 +141,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
               stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
               direction: form.direction, trochStepMM: form.trochStepMM,
               trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
-              rampIn: form.rampIn, safeHeightMM,
+              rampIn: form.rampIn, startNear: hint, safeHeightMM,
             }))
             if (!existingId) session.remember(path.id, opId)
           } catch (err) {

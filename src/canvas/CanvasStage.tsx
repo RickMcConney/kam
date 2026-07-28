@@ -95,10 +95,17 @@ function closestVisiblePath(
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Slack the Fit button leaves around the workpiece.
+const FIT_MARGIN = 0.85
+// How far past a full fit the wheel may keep zooming out. Must be BELOW FIT_MARGIN, or
+// the wheel's floor lands above the zoom the Fit button produces and scrolling out stops
+// while still more zoomed in than Fit.
+const ZOOM_OUT_SLACK = 0.4
+
 function fitViewport(sw: number, sh: number, ww: number, wh: number): Viewport {
   const uw = sw - RULER_W
   const uh = sh - RULER_H
-  const scale = Math.min(uw / ww, uh / wh) * 0.85
+  const scale = Math.min(uw / ww, uh / wh) * FIT_MARGIN
   return {
     scale,
     x: RULER_W + (uw - ww * scale) / 2,
@@ -106,15 +113,23 @@ function fitViewport(sw: number, sh: number, ww: number, wh: number): Viewport {
   }
 }
 
-// Smallest zoom (px/mm) allowed: the point where the whole table just fits the
-// canvas. Zooming out further is clamped to this so the table can't shrink to a
-// speck — the user can pan if they need room past the table edge. Falls back to
-// a tiny floor if sizes aren't known yet.
-function minZoomScale(sw: number, sh: number, tableW: number, tableH: number): number {
+// Smallest zoom (px/mm) the wheel may reach, so the view can't shrink to a speck.
+//
+// Sized off whichever is larger, the table or the WORKPIECE: a workpiece can legitimately
+// be set bigger than the configured table limits, and clamping to the table alone made it
+// impossible to zoom out far enough to see all of it. The slack factor then lets the view
+// pull back past a bare fit — without it the floor sat above the zoom the Fit button
+// produces (which carries FIT_MARGIN), so scrolling out stopped while still more zoomed in
+// than Fit. Falls back to a tiny floor if sizes aren't known yet.
+function minZoomScale(
+  sw: number, sh: number, tableW: number, tableH: number, wpW: number, wpH: number,
+): number {
   const uw = sw - RULER_W
   const uh = sh - RULER_H
-  if (uw <= 0 || uh <= 0 || tableW <= 0 || tableH <= 0) return 0.01
-  return Math.max(0.01, Math.min(uw / tableW, uh / tableH))
+  const w = Math.max(tableW, wpW)
+  const h = Math.max(tableH, wpH)
+  if (uw <= 0 || uh <= 0 || w <= 0 || h <= 0) return 0.01
+  return Math.max(0.01, Math.min(uw / w, uh / h) * ZOOM_OUT_SLACK)
 }
 
 function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: number } {
@@ -634,9 +649,10 @@ export default function CanvasStage() {
     const pointer = stageRef.current?.getPointerPosition()
     if (!pointer) return
     const factor = e.evt.deltaY < 0 ? 1.12 : 1 / 1.12
-    // Cap zoom-out at the table size + margin so the user can't lose the table.
-    const { tableLimitWidthMM, tableLimitHeightMM } = useWorkpieceStore.getState()
-    const minScale = minZoomScale(size.width, size.height, tableLimitWidthMM, tableLimitHeightMM)
+    // Cap zoom-out so the table/workpiece can't shrink to a speck; see minZoomScale.
+    const wp = useWorkpieceStore.getState()
+    const minScale = minZoomScale(size.width, size.height,
+      wp.tableLimitWidthMM, wp.tableLimitHeightMM, wp.widthMM, wp.heightMM)
     setViewport((vp) => {
       const newScale = Math.min(Math.max(vp.scale * factor, minScale), 500)
       const ratio = newScale / vp.scale

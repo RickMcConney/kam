@@ -24,49 +24,57 @@ export interface FieldGrid {
   tMax: number
 }
 
-function pointInPolys(px: number, py: number, polys: Pt2[][]): boolean {
-  // Even-odd over all rings: a point inside an odd number of rings is "in".
-  let inside = false
-  for (const poly of polys) {
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1]
-      if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+// Even-odd scanline rasterization of a polygon set onto the grid NODES (points at
+// x0 + ix*cell, y0 + iy*cell). Row-at-a-time: O(rows·vertices + cells), where the
+// obvious point-in-polygon-per-cell version is O(cells·vertices) — on an imported
+// boundary of a few thousand vertices that difference alone was seconds.
+function fillNodes(polys: Pt2[][], gw: number, gh: number, x0: number, y0: number, cell: number): Uint8Array {
+  const out = new Uint8Array(gw * gh)
+  const xs: number[] = []
+  for (let iy = 0; iy < gh; iy++) {
+    const py = y0 + iy * cell
+    xs.length = 0
+    for (const poly of polys) {
+      const n = poly.length
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const yi = poly[i][1], yj = poly[j][1]
+        // Same half-open crossing rule as the point-in-polygon test this replaces,
+        // so a node exactly on a horizontal grid line classifies identically.
+        if ((yi > py) !== (yj > py)) {
+          xs.push(poly[j][0] + ((py - yj) * (poly[i][0] - poly[j][0])) / (yi - yj))
+        }
+      }
     }
+    if (xs.length < 2) continue
+    xs.sort((a, b) => a - b)
+    const row = iy * gw
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      // pointInPolys used a strict `px < crossing` test, so a node exactly on the
+      // left crossing is outside and one on the right crossing is inside.
+      let i0 = Math.floor((xs[k] - x0) / cell) + 1
+      let i1 = Math.floor((xs[k + 1] - x0) / cell)
+      if (i0 < 0) i0 = 0
+      if (i1 > gw - 1) i1 = gw - 1
+      for (let ix = i0; ix <= i1; ix++) out[row + ix] = 1
+    }
+  }
+  return out
+}
+
+function insideMask(outers: Pt2[][], holes: Pt2[][], gw: number, gh: number, x0: number, y0: number, cell: number): Uint8Array {
+  const inside = fillNodes(outers, gw, gh, x0, y0, cell)
+  if (holes.length > 0) {
+    const hole = fillNodes(holes, gw, gh, x0, y0, cell)
+    for (let i = 0; i < inside.length; i++) if (hole[i]) inside[i] = 0
   }
   return inside
 }
 
-// Rasterize the domain and solve the Poisson field.
-//  outers — tool-centre boundary rings (boundary eroded by tool radius)
-//  holes  — island rings grown by tool radius
-export function solveField(outers: Pt2[][], holes: Pt2[][], cell: number): FieldGrid {
-  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity
-  for (const poly of outers) for (const [x, y] of poly) {
-    if (x < minx) minx = x; if (x > maxx) maxx = x
-    if (y < miny) miny = y; if (y > maxy) maxy = y
-  }
-  if (!Number.isFinite(minx)) {
-    return { T: new Float32Array(0), inside: new Uint8Array(0), gw: 0, gh: 0, x0: 0, y0: 0, cell, tMax: 0 }
-  }
-  // One-cell margin so the domain border has an outside (T=0) ring of cells.
-  const x0 = minx - cell, y0 = miny - cell
-  const gw = Math.ceil((maxx - minx) / cell) + 3
-  const gh = Math.ceil((maxy - miny) / cell) + 3
-
-  const inside = new Uint8Array(gw * gh)
-  for (let iy = 0; iy < gh; iy++) {
-    for (let ix = 0; ix < gw; ix++) {
-      const px = x0 + ix * cell, py = y0 + iy * cell
-      if (pointInPolys(px, py, outers) && !pointInPolys(px, py, holes)) inside[iy * gw + ix] = 1
-    }
-  }
-
-  // SOR for −∆T = 1  ⇒  T_P = (T_E + T_W + T_N + T_S + h²) / 4. Cells outside the
-  // domain hold T = 0 (Dirichlet), so they contribute 0 to interior neighbours.
-  const T = new Float32Array(gw * gh)
+// SOR sweeps for −∆T = 1 ⇒ T_P = (T_E + T_W + T_N + T_S + h²) / 4. Cells outside the
+// domain hold T = 0 (Dirichlet), so they contribute 0 to interior neighbours.
+function relax(T: Float32Array, inside: Uint8Array, gw: number, gh: number, cell: number, maxIter: number): void {
   const h2 = cell * cell
   const omega = 1.85
-  const maxIter = Math.min(20000, 30 * Math.max(gw, gh))
   const tol = 1e-4 * h2
   for (let iter = 0; iter < maxIter; iter++) {
     let maxDelta = 0
@@ -75,40 +83,131 @@ export function solveField(outers: Pt2[][], holes: Pt2[][], cell: number): Field
         const idx = iy * gw + ix
         if (!inside[idx]) continue
         const sum = T[idx - 1] + T[idx + 1] + T[idx - gw] + T[idx + gw]
-        const tNew = (sum + h2) / 4
-        const old = T[idx]
-        const next = old + omega * (tNew - old)
+        const next = T[idx] + omega * ((sum + h2) / 4 - T[idx])
+        const d = Math.abs(next - T[idx])
         T[idx] = next
-        const d = Math.abs(next - old)
         if (d > maxDelta) maxDelta = d
       }
     }
     if (maxDelta < tol) break
   }
+}
 
-  // Smooth out grid-scale variation along ridges. The Poisson solution has small
-  // cell-to-cell wobble along a flat medial ridge (especially diagonal ones, which
-  // the axis-aligned grid staircases); each bump would otherwise read as a separate
-  // local maximum and spawn a redundant spiral. A few neighbour-averaging passes
-  // (over interior cells only, so walls stay at 0) merge a ridge into one crest.
-  for (let pass = 0; pass < 3; pass++) {
-    const src = T.slice()
-    for (let iy = 1; iy < gh - 1; iy++) {
-      for (let ix = 1; ix < gw - 1; ix++) {
-        const idx = iy * gw + ix
-        if (!inside[idx]) continue
-        let sum = src[idx], cnt = 1
-        if (inside[idx - 1]) { sum += src[idx - 1]; cnt++ }
-        if (inside[idx + 1]) { sum += src[idx + 1]; cnt++ }
-        if (inside[idx - gw]) { sum += src[idx - gw]; cnt++ }
-        if (inside[idx + gw]) { sum += src[idx + gw]; cnt++ }
-        T[idx] = sum / cnt
-      }
+// Rasterize the domain and solve the Poisson field.
+//  outers — tool-centre boundary rings (boundary eroded by tool radius)
+//  holes  — island rings grown by tool radius
+export function solveField(
+  outers: Pt2[][], holes: Pt2[][], cell: number,
+  onProgress?: (frac: number) => void,
+): FieldGrid {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity
+  for (const poly of outers) for (const [x, y] of poly) {
+    if (x < minx) minx = x; if (x > maxx) maxx = x
+    if (y < miny) miny = y; if (y > maxy) maxy = y
+  }
+  if (!Number.isFinite(minx)) {
+    return { T: new Float32Array(0), inside: new Uint8Array(0), gw: 0, gh: 0, x0: 0, y0: 0, cell, tMax: 0 }
+  }
+
+  // Grid geometry for a given cell size. One-cell margin so the domain border has an
+  // outside (T=0) ring of nodes.
+  const gridAt = (c: number) => ({
+    cell: c,
+    x0: minx - c,
+    y0: miny - c,
+    gw: Math.ceil((maxx - minx) / c) + 3,
+    gh: Math.ceil((maxy - miny) / c) + 3,
+  })
+
+  // Coarse-to-fine (nested iteration). Point SOR needs O(N) sweeps to converge on an
+  // N×N grid and each sweep is O(N²), so solving the fine grid from a cold start is
+  // O(N³) — that was ~19 s on a 300 mm pocket, and worse on small tools, which drive
+  // the cell size down. Solving a 2× coarser grid instead is 8× cheaper; doing that
+  // recursively down to a grid small enough to solve outright, then interpolating each
+  // solution up as the next level's initial guess, leaves only smooth, short-range error
+  // for the fine sweeps to clean up. Same field, ~two orders of magnitude less work.
+  const COARSEST_DIM = 48
+  const scales: number[] = [1]
+  {
+    let c = cell
+    let g = gridAt(c)
+    while (Math.max(g.gw, g.gh) > COARSEST_DIM && scales.length < 8) {
+      c *= 2
+      scales.push(scales[scales.length - 1] * 2)
+      g = gridAt(c)
     }
   }
 
-  let tMax = 0
-  for (let i = 0; i < T.length; i++) if (T[i] > tMax) tMax = T[i]
-  return { T, inside, gw, gh, x0, y0, cell, tMax }
-}
+  let coarse: { T: Float32Array; gw: number; gh: number; x0: number; y0: number; cell: number } | null = null
+  let result!: FieldGrid
 
+  for (let li = scales.length - 1; li >= 0; li--) {
+    // Coarse levels are cheap and fine ones dominate, so weight by cell count rather than
+    // by level index — otherwise the bar races to 80% and then sits there.
+    onProgress?.(1 - 4 ** -(scales.length - 1 - li))
+    const g = gridAt(cell * scales[li])
+    const inside = insideMask(outers, holes, g.gw, g.gh, g.x0, g.y0, g.cell)
+    const T = new Float32Array(g.gw * g.gh)
+
+    if (coarse) {
+      // Bilinear prolongation. The levels are not index-nested (each has its own
+      // one-cell margin), so sample the coarse solution at each fine node's CNC
+      // position rather than by index arithmetic.
+      const { T: cT, gw: cgw, gh: cgh, x0: cx0, y0: cy0, cell: ccell } = coarse
+      for (let iy = 0; iy < g.gh; iy++) {
+        const py = g.y0 + iy * g.cell
+        const fy = (py - cy0) / ccell
+        const j0 = Math.max(0, Math.min(cgh - 1, Math.floor(fy)))
+        const j1 = Math.min(cgh - 1, j0 + 1)
+        const ty = fy - j0
+        for (let ix = 0; ix < g.gw; ix++) {
+          const idx = iy * g.gw + ix
+          if (!inside[idx]) continue
+          const px = g.x0 + ix * g.cell
+          const fx = (px - cx0) / ccell
+          const i0 = Math.max(0, Math.min(cgw - 1, Math.floor(fx)))
+          const i1 = Math.min(cgw - 1, i0 + 1)
+          const tx = fx - i0
+          const v00 = cT[j0 * cgw + i0], v10 = cT[j0 * cgw + i1]
+          const v01 = cT[j1 * cgw + i0], v11 = cT[j1 * cgw + i1]
+          T[idx] = (v00 * (1 - tx) + v10 * tx) * (1 - ty) + (v01 * (1 - tx) + v11 * tx) * ty
+        }
+      }
+    }
+
+    // Coarsest level starts cold and must converge on its own; every finer level
+    // inherits a good guess and only has to smooth the interpolation error.
+    const maxIter = coarse ? Math.max(30, Math.min(400, Math.max(g.gw, g.gh))) : Math.min(20000, 60 * Math.max(g.gw, g.gh))
+    relax(T, inside, g.gw, g.gh, g.cell, maxIter)
+
+    if (li === 0) {
+      // Smooth out grid-scale variation along ridges. The Poisson solution has small
+      // cell-to-cell wobble along a flat medial ridge (especially diagonal ones, which
+      // the axis-aligned grid staircases); each bump would otherwise read as a separate
+      // local maximum and spawn a redundant spiral. A few neighbour-averaging passes
+      // (over interior cells only, so walls stay at 0) merge a ridge into one crest.
+      for (let pass = 0; pass < 3; pass++) {
+        const src = T.slice()
+        for (let iy = 1; iy < g.gh - 1; iy++) {
+          for (let ix = 1; ix < g.gw - 1; ix++) {
+            const idx = iy * g.gw + ix
+            if (!inside[idx]) continue
+            let sum = src[idx], cnt = 1
+            if (inside[idx - 1]) { sum += src[idx - 1]; cnt++ }
+            if (inside[idx + 1]) { sum += src[idx + 1]; cnt++ }
+            if (inside[idx - g.gw]) { sum += src[idx - g.gw]; cnt++ }
+            if (inside[idx + g.gw]) { sum += src[idx + g.gw]; cnt++ }
+            T[idx] = sum / cnt
+          }
+        }
+      }
+      let tMax = 0
+      for (let i = 0; i < T.length; i++) if (T[i] > tMax) tMax = T[i]
+      result = { T, inside, gw: g.gw, gh: g.gh, x0: g.x0, y0: g.y0, cell: g.cell, tMax }
+    } else {
+      coarse = { T, gw: g.gw, gh: g.gh, x0: g.x0, y0: g.y0, cell: g.cell }
+    }
+  }
+
+  return result
+}

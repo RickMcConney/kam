@@ -14,6 +14,7 @@ import { runInWorkerFor } from '../../workers/workerClient'
 import type { PocketStrategy } from '../../cam/pocket'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
+import { entryHintAt } from '../../cam/startOptimizer'
 
 interface PocketFormState {
   toolId: string
@@ -22,6 +23,7 @@ interface PocketFormState {
   stepDownMM: number
   stepoverPercent: number
   passAngleDeg: number
+  autoAngle: boolean
   direction: CuttingDirection
   rampIn: boolean
   allowanceMM: number
@@ -40,16 +42,20 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     toolId: editOp.toolId, strategy: editOp.strategy ?? 'raster',
     depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
     stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
+    autoAngle: editOp.autoAngle ?? true,
     direction: editOp.direction, rampIn: editOp.rampIn ?? false,
     allowanceMM: editOp.allowanceMM ?? 0,
   } : mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
-    strategy: 'raster' as PocketStrategy,
+    // 'hybrid' — shown as "Auto". Note this is only the default for a FIRST pocket: the
+    // form-defaults store replays whatever was last used after that.
+    strategy: 'hybrid' as PocketStrategy,
     // Default to the full stock thickness; the tool's max Z is only a warning.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: defaultTool?.stepDownMM ?? 3,
     stepoverPercent: 40,
     passAngleDeg: 0,
+    autoAngle: true,
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
     rampIn: false,
     allowanceMM: 0,
@@ -64,6 +70,8 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     : groupPathsByContainment(selPaths)
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
+  const adaptiveStrategy = form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid'
+  const autoPassAngle = form.strategy === 'hybrid' && form.autoAngle
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
@@ -71,7 +79,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   function handleStrategyChange(strategy: PocketStrategy) {
-    const adaptive = strategy === 'adaptive' || strategy === 'adaptive2'
+    const adaptive = strategy === 'adaptive' || strategy === 'adaptive2' || strategy === 'hybrid'
     setForm((f) => ({
       ...f,
       strategy,
@@ -94,7 +102,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // lets React paint the 'generating' state, so the old setTimeout(…,0) yield is unnecessary.
     try {
       if (editOp && editBoundary) {
+        // Chain this op to where the previous one finishes, at generation time — so no
+        // regeneration is needed before simulating or exporting.
+        const hint = entryHintAt(editOp.id)
         updateOperation(editOp.id, {
+          entryHint: hint,
           toolId: form.toolId, strategy: form.strategy,
           depthMM: form.depthMM, stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
@@ -105,8 +117,8 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             strategy: form.strategy,
             depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
             stepoverPercent: form.stepoverPercent, direction: form.direction,
-            islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
-            finishAllowanceMM: form.allowanceMM,
+            islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
+            finishAllowanceMM: form.allowanceMM, startNear: hint,
             safeHeightMM,
           }))
         } catch (err) {
@@ -128,26 +140,29 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent,
             passAngleDeg: form.passAngleDeg,
+            autoAngle: form.autoAngle,
             direction: form.direction,
             rampIn: form.rampIn,
             allowanceMM: form.allowanceMM,
           })
           if (!existingId) session.remember(boundary.id, opId)
+          const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
+            entryHint: hint,
             name, toolId: form.toolId, strategy: form.strategy,
             islandIds: islands.map((p) => p.id),
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
-            stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
+            stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, autoAngle: form.autoAngle,
             direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
             status: 'generating',
-          } as Partial<AnyOperation> : { status: 'generating' })
+          } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
             setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
               strategy: form.strategy,
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,
-              islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, rampIn: form.rampIn,
-              finishAllowanceMM: form.allowanceMM,
+              islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
+              finishAllowanceMM: form.allowanceMM, startNear: hint,
               safeHeightMM,
             }))
           } catch (err) {
@@ -181,31 +196,47 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
-      {/* 'adaptive' (the old Adaptive2d port) stays hidden — too slow; 'adaptive2' is the fast
-          raster-marching engine and is what the UI shows as "adaptive". */}
-      <ToggleRow label="Strategy" options={['raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ adaptive2: 'adaptive' }} />
+      {/* 'hybrid' is shown as "Auto" — it picks per area: raster the open ground, contour
+          around islands, adaptive on the junctions between them. Listed first as the one to
+          reach for by default.
+          'adaptive' (the old Adaptive2d port) stays hidden — too slow; 'adaptive2' is the
+          fast raster-marching engine and is what the UI shows as "adaptive".
+          The ids are what saved projects store, so they stay as they are. */}
+      <ToggleRow label="Strategy" options={['hybrid', 'raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ hybrid: 'auto', adaptive2: 'adaptive' }} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          {form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+          {form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
-          type="range" min={form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 5 : 10} max={form.strategy === 'adaptive' || form.strategy === 'adaptive2' ? 60 : 90} step={5}
+          type="range" min={adaptiveStrategy ? 5 : 10} max={adaptiveStrategy ? 60 : 90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
           className="w-full accent-blue-500"
         />
       </div>
-      {/* Pass angle — only relevant for raster strategy */}
-      {form.strategy === 'raster' && (
+      {/* Pass angle — the raster strategy, and Auto where it drives the raster sub-areas.
+          Auto picks the angle per area that makes its passes longest; pin it when the cut
+          direction matters for its own sake (grain, for instance). */}
+      {(form.strategy === 'raster' || form.strategy === 'hybrid') && (
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+            Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{autoPassAngle ? 'auto' : `${form.passAngleDeg}°`}</span>
           </label>
+          {form.strategy === 'hybrid' && (
+            <div className="flex items-center gap-2 mb-1">
+              <input type="checkbox" id="pocket-auto-angle" checked={form.autoAngle}
+                onChange={(e) => up('autoAngle', e.target.checked)} className="accent-blue-500" />
+              <label htmlFor="pocket-auto-angle" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+                Auto <span className="text-gray-500 dark:text-neutral-500">(longest passes per area)</span>
+              </label>
+            </div>
+          )}
           <input
             type="range" min={0} max={180} step={5}
             value={form.passAngleDeg}
+            disabled={autoPassAngle}
             onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
-            className="w-full accent-blue-500"
+            className="w-full accent-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
           />
         </div>
       )}

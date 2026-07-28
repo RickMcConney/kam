@@ -47,6 +47,12 @@ function toOut(mm: number, profile: PostProcessorProfile): number {
 // and polygon corners.
 const ARC_FIT_TOLERANCE_MM = 0.1
 
+// Feed multiplier for `travel` moves — stay-down repositioning over already-cleared
+// floor. Capped rather than uncapped because these run a fraction of a millimetre above
+// the floor: fast enough to stop dominating cycle time on link-heavy adaptive paths,
+// slow enough that a small Z error or a bit of spring in the machine is survivable.
+const TRAVEL_FEED_FACTOR = 2.5
+
 // Simplify the emitted cut moves in two ways so curved and straight passes export
 // compactly. Strategies like profile/trochoidal already arc-fit upstream; this
 // catches the ones (pocket, adaptive, surfacing, …) that only emit flattened
@@ -308,7 +314,14 @@ export function generateGcode(
       } else {
         const xyChanged = seg.x !== prevX || seg.y !== prevY
         const isPlunge = !xyChanged && seg.z < prevZ
-        const feedMm = isPlunge ? currentFeeds.plungeMmMin : currentFeeds.xyFeedMmMin
+        // A `travel` move rides just above a floor the tool has already cleared — it is
+        // repositioning, not cutting, so running it at cutting feed is pure cycle time
+        // (adaptive clearing links between passes constantly). It stays a G1: a G0 is
+        // free to dogleg on many controllers, which at half a millimetre above the floor
+        // could clip a wall. So: a straight line, at a travel feed.
+        const feedMm = isPlunge ? currentFeeds.plungeMmMin
+          : seg.travel ? currentFeeds.xyFeedMmMin * TRAVEL_FEED_FACTOR
+          : currentFeeds.xyFeedMmMin
         const feed = Math.round(toOut(feedMm * (seg.feedScale ?? 1), profile))
         lines.push(sub(profile.cutTemplate, { x, y, z, f: feed }))
       }

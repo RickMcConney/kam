@@ -5,10 +5,223 @@ import { traceIsolines } from '../marchingSquares'
 import {  JoinType } from 'clipper2-ts'
 import {   stripClosingDuplicate, pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
-import type { Tool } from '../../store/toolStore'
-import { type PocketParams, _timed, centroidOfRing, compoundFinishRings, closedPath, cutPathsAtDepth, emitLinkedContourRings, emitRampDescent, restCleanupRings, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn } from './shared'
-import { setGap } from './shared'
-import { type LoopNode, type SpiralChain, clampSpiralToRegion, decimateChain, dedupeForestBranches, forestToChains, maxClearHelixRadius, splitClampedSpiral } from './spiral'
+import { type PocketPlan, type PocketPlanner, _timed, centroidOfRing, compoundFinishRings, emitRampDescent, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn, setGap } from './shared'
+
+// ─── Spiral geometry: loop forest, chains, region clamping ───────────────────────
+//
+// Turning a set of nested loops into continuous outward spirals: the containment forest
+// and its non-branching chains, and the clamping that keeps a morphed spiral off the
+// walls and islands (see spiralMorph.ts for the morph itself). This lived in its own
+// pocket/spiral.ts while the offset-ring 'spiral' strategy existed; that strategy was
+// dropped in 2026-07 and this is now the only consumer, so it lives here.
+
+export interface LoopNode {
+  loop: Pt2[]
+  centroid: Pt2
+  children: LoopNode[]
+}
+
+export interface SpiralChain {
+  loopsOuterToInner: Pt2[][]
+  // True when the chain's innermost loop is a real leaf (a single-lobe center),
+  // so the spiral can seed a circular center fill there. False when the inner
+  // end is a branch node (the lobes that split off it are separate chains that
+  // clear that interior), in which case the spiral must not seed a center.
+  innerIsLeaf: boolean
+}
+
+function subtreeSize(n: LoopNode): number {
+  let s = 1
+  for (const c of n.children) s += subtreeSize(c)
+  return s
+}
+
+// Collapse spurious branches: when a node has several children whose loop centroids
+// nearly coincide, they are the SAME lobe split apart by near-duplicate isotherm loops
+// (marching-squares over-sampling), not genuinely separate lobes — which would have
+// distinct centroids. Keep only the child with the largest subtree per centroid cluster;
+// the dropped near-duplicates are covered by the kept chain + the wall finish. Without
+// this a near-duplicate ring becomes its own pass (an extra contour overlapping the
+// spiral). Recurses so the rule holds at every depth.
+export function dedupeForestBranches(roots: LoopNode[], tol: number): void {
+  const dedupe = (node: LoopNode) => {
+    if (node.children.length > 1) {
+      const kept: LoopNode[] = []
+      for (const child of [...node.children].sort((a, b) => subtreeSize(b) - subtreeSize(a))) {
+        if (kept.some(k => Math.hypot(k.centroid[0] - child.centroid[0], k.centroid[1] - child.centroid[1]) < tol)) continue
+        kept.push(child)
+      }
+      node.children = kept
+    }
+    for (const c of node.children) dedupe(c)
+  }
+  for (const r of roots) dedupe(r)
+}
+
+// `maxGap` bounds how far apart consecutive loops in one chain may be. The morph
+// interpolates between them, so a chain that links two loops further apart than a stepover
+// sweeps straight across the stock in between — on a star-in-star that produced a two-loop
+// chain whose members were 167 mm apart against a 3 mm stepover, and the morph drove across
+// it in one transition. Containment can legitimately produce such a pair: when the loops
+// that should sit between them belong to other branches, a loop's nearest CONTAINING loop
+// can be far outside it. Splitting there gives the far loop its own chain, so the morph
+// only ever interpolates between genuinely adjacent level sets.
+export function forestToChains(roots: LoopNode[], maxGap = Infinity): SpiralChain[] {
+  const chains: SpiralChain[] = []
+  const walk = (start: LoopNode) => {
+    const loopsOuterToInner: Pt2[][] = []
+    let innerIsLeaf = true
+    let node: LoopNode | null = start
+    while (node) {
+      loopsOuterToInner.push(node.loop)
+      if (node.children.length === 1 && setGap([node.children[0].loop], [node.loop]) > maxGap) {
+        // Too far to morph across — the child starts a chain of its own.
+        innerIsLeaf = false
+        walk(node.children[0])
+        node = null
+      } else if (node.children.length === 1) {
+        node = node.children[0]
+      } else {
+        innerIsLeaf = node.children.length === 0
+        for (const c of node.children) walk(c)   // children pushed before parent
+        node = null
+      }
+    }
+    chains.push({ loopsOuterToInner, innerIsLeaf })
+  }
+  for (const r of roots) walk(r)
+  return chains
+}
+
+export function nearestPointOnRing(px: number, py: number, ring: Pt2[]): Pt2 {
+  let best: Pt2 = ring[0]
+  let bestD = Infinity
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length]
+    const dx = b[0] - a[0], dy = b[1] - a[1]
+    const l2 = dx * dx + dy * dy
+    let t = l2 > 1e-12 ? ((px - a[0]) * dx + (py - a[1]) * dy) / l2 : 0
+    t = t < 0 ? 0 : t > 1 ? 1 : t
+    const qx = a[0] + t * dx, qy = a[1] + t * dy
+    const d = (px - qx) ** 2 + (py - qy) ** 2
+    if (d < bestD) { bestD = d; best = [qx, qy] }
+  }
+  return best
+}
+
+// Largest helix radius at `p` that keeps a bored circle clear of every keep-out ring
+// (the tool-centre paths along walls/islands), capped at `maxR`. 0 (or negative) when
+// there's no room. Shared by both spiral strategies' helix entries.
+export function maxClearHelixRadius(p: Pt2, rings: Pt2[][], maxR: number): number {
+  let r = maxR
+  for (const ring of rings) {
+    if (ring.length < 2) continue
+    const np = nearestPointOnRing(p[0], p[1], ring)
+    r = Math.min(r, Math.hypot(p[0] - np[0], p[1] - np[1]) - 0.1)
+  }
+  return r
+}
+
+// Clamp every spiral point into the cuttable region: a tool centre may never sit
+// inside a grown island (would gouge the island) or outside the inset boundary
+// (would over-cut the wall). Out-of-region points are snapped to the nearest
+// boundary point, so the tool edge lands exactly on the real island/wall edge.
+// Long segments are SUBDIVIDED first: clamping only the endpoints lets a chord
+// between two legal points pass straight through an island (the morph emits such
+// chords when consecutive rings differ around islands) — the subdivided samples
+// snap onto the keep-out ring, so the path slides around the island instead.
+export function clampSpiralToRegion(spiral: Pt2[], insetBoundary: Pt2[], grownIslands: Pt2[][]): Pt2[] {
+  const MAX_SEG = 0.75
+  // Where a grown island overlaps the inset boundary (island close to the wall) there is
+  // NO legal tool position: island-snap pushes the point outside the pocket, wall-snap
+  // pulls it back inside the island ring. Such points return null (dropped); the jump
+  // splitter then severs the spiral on each side of the dead zone.
+  const TOL = 0.05
+  const clampPt = (x: number, y: number): Pt2 | null => {
+    let px = x, py = y
+    for (const gi of grownIslands) {
+      if (gi.length >= 3 && pointInPolygon(px, py, gi)) {
+        const n = nearestPointOnRing(px, py, gi)
+        px = n[0]; py = n[1]
+      }
+    }
+    if (insetBoundary.length >= 3 && !pointInPolygon(px, py, insetBoundary)) {
+      const n = nearestPointOnRing(px, py, insetBoundary)
+      px = n[0]; py = n[1]
+      // re-validate: the wall snap may have moved the point back into an island ring
+      for (const gi of grownIslands) {
+        if (gi.length >= 3 && pointInPolygon(px, py, gi)) {
+          const nn = nearestPointOnRing(px, py, gi)
+          if (Math.hypot(px - nn[0], py - nn[1]) > TOL) return null
+        }
+      }
+    }
+    return [px, py]
+  }
+  const out: Pt2[] = []
+  const push = (p: Pt2 | null) => {
+    if (!p) return
+    const last = out[out.length - 1]
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 1e-6) out.push(p)
+  }
+  for (let i = 0; i < spiral.length; i++) {
+    if (i > 0) {
+      const [ax, ay] = spiral[i - 1]
+      const [bx, by] = spiral[i]
+      const n = Math.floor(Math.hypot(bx - ax, by - ay) / MAX_SEG)
+      for (let k = 1; k <= n; k++) {
+        const t = k / (n + 1)
+        push(clampPt(ax + (bx - ax) * t, ay + (by - ay) * t))
+      }
+    }
+    push(clampPt(spiral[i][0], spiral[i][1]))
+  }
+  return out
+}
+
+// Clamping can snap neighbouring (densified) samples to opposite sides of a keep-out,
+// leaving a chord straight through an island. Legitimate steps are sub-millimetre after
+// densification, so any far longer step is such an artifact: split the spiral there and
+// keep each contiguous run; runs too short to cut anything are dropped (their crumb is
+// swept by the finishing contour).
+export function splitClampedSpiral(spiral: Pt2[]): Pt2[][] {
+  // Legitimate densified steps are ≤ 0.75 mm; a chord ≤ JUMP across a convex keep-out
+  // dips at most ~c²/8r ≈ 0.1 mm into it — below the cut tolerance.
+  const JUMP = 1.5
+  const runs: Pt2[][] = []
+  let run: Pt2[] = []
+  for (let i = 0; i < spiral.length; i++) {
+    if (i > 0 && Math.hypot(spiral[i][0] - spiral[i - 1][0], spiral[i][1] - spiral[i - 1][1]) > JUMP) {
+      if (run.length >= 5) runs.push(run)
+      run = []
+    }
+    run.push(spiral[i])
+  }
+  if (run.length >= 5) runs.push(run)
+  return runs
+}
+
+// Keep loops one stepover apart along a chain (ordered outer→inner): from each
+// anchor, take the farthest-in loop still within a stepover, then repeat.
+export function decimateChain(loops: Pt2[][], stepoverMM: number): Pt2[][] {
+  if (loops.length <= 1) return loops
+  const kept: Pt2[][] = [loops[0]]
+  let anchor = 0, i = 1
+  while (i < loops.length) {
+    let lastGood = -1, j = i
+    while (j < loops.length && setGap([loops[j]], [loops[anchor]]) <= stepoverMM) { lastGood = j; j++ }
+    const pick = lastGood === -1 ? i : lastGood
+    kept.push(loops[pick])
+    anchor = pick
+    i = pick + 1
+  }
+  if (kept[kept.length - 1] !== loops[loops.length - 1]) kept.push(loops[loops.length - 1])
+  return kept
+}
+
+// How a chain's spiral is entered: 'helix' bores a hole at a point centre; 'ramp'
+// descends along the path (island chains / first cut into solid); 'travel' drops
+// straight in because the interior is already cleared (branch chains).
 
 // ─── Field-based curvilinear spiral (Bieterman/Leroy) ────────────────────────────
 //
@@ -77,36 +290,109 @@ function loopMostlyInside(inner: Pt2[], outer: Pt2[]): boolean {
   return tested > 0 && inCount * 2 > tested
 }
 
-function buildIsothermChains(g: FieldGrid, insetBoundary: Pt2[], stepoverMM: number, wantCCW: boolean): SpiralChain[] {
+// Extract the structure curves by MARCHING the temperature level so consecutive
+// isotherms land about one stepover apart, instead of tracing a fixed dense ladder and
+// throwing most of it away.
+//
+// The field is flat near a peak and steep near a wall, so a fixed temperature step gives
+// wildly uneven distance spacing — which is why the old code traced 120 levels, culled
+// near-duplicates by comparing every loop against every kept loop, and then decimated
+// what survived. That cull was O(K²) calls to setGap (each ~8k distance evaluations) and
+// measured out as the single hottest thing in morph.
+//
+// Here the step is chosen by feedback instead: trace, measure the gap to the level
+// before it, and scale the next temperature increment by how far off a stepover it came
+// out. Spacing is then correct BY CONSTRUCTION, so the all-pairs cull is gone — only the
+// per-chain decimation stays, to thin lobes that came out over-dense because a different
+// lobe on the same level drove the step down.
+function buildIsothermChains(
+  g: FieldGrid, insetBoundary: Pt2[], holes: Pt2[][], stepoverMM: number, wantCCW: boolean,
+  onProgress?: (frac: number) => void,
+): SpiralChain[] {
   const wall = ensureWinding(stripClosingDuplicate(insetBoundary), wantCCW)
   const loops: Pt2[][] = [wall]
-  const NL = 120
-  for (let i = 1; i <= NL; i++) {
-    for (const lp of isothermLoops(g, (g.tMax * i) / (NL + 1))) loops.push(ensureWinding(lp, wantCCW))
+
+  // A level is accepted when its worst-spaced loop sits within a stepover of the level
+  // outside it — never under-covered — and no closer than 92% of one.
+  //
+  // The window is deliberately tight. Every accepted gap below a stepover is a pass the
+  // operator did not ask for: a window of [0.6, 1.0] averages 0.8, which is 25% more
+  // loops than the requested stepover needs, and that is what made the morph spiral look
+  // visibly denser than the setting. Bisection converges fast enough to hold a narrow
+  // window, and the fallback below still accepts an over-dense level rather than
+  // under-covering if it runs out of tries.
+  const GAP_MAX = stepoverMM
+  const GAP_MIN = stepoverMM * 0.92
+  const MAX_LEVELS = 400
+  const MAX_RETRIES = 8
+
+  // Reference the spacing against everything already covered, which is the previous
+  // level's loops PLUS the domain boundary — the outer wall and every island keep-out.
+  // The field is zero on all of them, so they are the T=0 level set, and the finishing
+  // pass sweeps them. Measuring against the wall alone stalls the march dead on any
+  // pocket with an island: the first isotherm to appear around an island hugs the island
+  // and is legitimately half a pocket away from the outer wall, so its gap never comes
+  // under a stepover no matter how small the temperature step gets.
+  const domain: Pt2[][] = [wall, ...holes.filter(hh => hh.length >= 3)]
+  let prev: Pt2[][] = domain
+  let level = 0
+  let dT = g.tMax / 40          // first guess; carried forward once the march finds its stride
+
+  for (let n = 0; n < MAX_LEVELS && level < g.tMax * 0.999; n++) {
+    // Distance from the previous level grows monotonically with the temperature step, so
+    // BISECT for a step that lands in the window rather than scaling by the error. A
+    // proportional correction overshoots badly here — the field is steep by the wall and
+    // flat by the ridge, so the gap is a strongly nonlinear function of the step — and it
+    // oscillated (7.2 mm, 1.4, 4.0, 1.1, 5.0 …) without ever landing inside.
+    let lo = 0                          // largest step known NOT to under-cover
+    let loCand: Pt2[][] | null = null
+    let loAt = 0
+    let hi = Infinity                   // smallest step known to leave a gap
+    let t = dT
+
+    for (let retry = 0; retry <= MAX_RETRIES; retry++) {
+      const next = Math.min(level + t, g.tMax * 0.999)
+      const cand = isothermLoops(g, next).map(lp => ensureWinding(lp, wantCCW))
+      if (cand.length === 0) {
+        // No contour at this temperature: this step reached past the last peak. A smaller
+        // one may still find one, so treat it exactly like an over-large step.
+        hi = t
+      } else {
+        const gap = setGap(cand, prev)
+        if (gap <= GAP_MAX) {
+          lo = t; loCand = cand; loAt = next
+          // In the window, or as deep as the field goes — take it.
+          if (gap >= GAP_MIN || next >= g.tMax * 0.999) break
+          // Under-dense is safe but wasteful: try to reach further in.
+        } else {
+          hi = t
+        }
+      }
+      t = Number.isFinite(hi) ? (lo + hi) / 2 : t * 2
+      if (t <= 1e-12) break
+    }
+
+    // Out of tries still means progress: an over-dense level costs a little extra path,
+    // and decimateChain thins it. Only a step that cannot avoid under-covering ends the
+    // march — that is the ridge, where there is nothing further in to reach.
+    if (!loCand || lo <= 1e-12) break
+    // The march walks the temperature from the wall to the ridge, so how far `level` has
+    // climbed toward tMax IS the fraction traced.
+    onProgress?.(loAt / g.tMax)
+    for (const lp of loCand) loops.push(lp)
+    prev = [...domain, ...loCand]
+    level = loAt
+    dT = lo
   }
 
-  // Cull near-coincident loops. The dense extraction over-samples — near the wall
-  // consecutive isotherms can sit a small fraction of a stepover apart. Such
-  // near-duplicate loops make the majority-vote containment test below ambiguous
-  // (~half their vertices straddle each other under grid noise), which fragments a
-  // single region into multiple spurious roots/branches — the doubled spiral+contour
-  // bug. Keep a loop only when it clears every already-kept (larger) loop by at least
-  // a fraction of a stepover; properly spaced loops and separate lobes keep a large
-  // gap and survive. Largest-area first so the wall anchors the kept set.
-  const areasAll = loops.map(l => Math.abs(signedArea(l)))
-  const order = loops.map((_, i) => i).sort((a, b) => areasAll[b] - areasAll[a])
-  const minGap = stepoverMM * 0.2
-  const kept: Pt2[][] = []
-  for (const idx of order) {
-    const cand = loops[idx]
-    if (kept.every(k => setGap([cand], [k]) >= minGap)) kept.push(cand)
-  }
+  const kept = loops
 
-  // Nest the survivors by containment: parent = the smallest-area placed (larger) loop
+  // Nest the loops by containment: parent = the smallest-area placed (larger) loop
   // that contains this loop, by MAJORITY VOTE over sampled vertices — robust to both a
   // concave loop's centroid landing in a notch and a near-wall vertex landing just
-  // outside its parent from grid noise. `kept` is largest-area first, so any container
-  // is placed before its children.
+  // outside its parent from grid noise. `kept` is in level order, outer to inner, and a
+  // loop at a deeper level always lies inside one at a shallower level — so every
+  // container is placed before its children.
   const keptAreas = kept.map(l => Math.abs(signedArea(l)))
   const nodes: LoopNode[] = kept.map(l => ({ loop: l, centroid: centroidOfRing(l), children: [] }))
   const roots: LoopNode[] = []
@@ -128,60 +414,41 @@ function buildIsothermChains(g: FieldGrid, insetBoundary: Pt2[], stepoverMM: num
   dedupeForestBranches(roots, stepoverMM)
 
   // Decimate each chain so consecutive kept loops are ≤ one stepover apart.
-  return forestToChains(roots)
+  return forestToChains(roots, stepoverMM)
     .filter(c => c.loopsOuterToInner.length > 0)
     .map(c => ({ loopsOuterToInner: decimateChain(c.loopsOuterToInner, stepoverMM), innerIsLeaf: c.innerIsLeaf }))
 }
 
-// Closest point on a closed ring's edges to (px,py).
 type SpiralEntry = 'helix' | 'ramp' | 'travel'
 
-interface FieldSpiralPlan {
-  chains: { spiral: Pt2[]; entry: SpiralEntry; helixCenter: Pt2 }[]
-  finishRings: Pt2[][]
-}
-
-// One-entry cache so the field is solved once per geometry, not once per Z level
-// (generatePocket calls the strategy fn for every depth pass of a boundary).
-let fieldPlanCache: { key: string; plan: FieldSpiralPlan | null } | null = null
-
-function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, params: PocketParams): FieldSpiralPlan | null {
+export const planFieldSpiralPocket: PocketPlanner = (boundary, islands, tool, params, onProgress): PocketPlan | null => {
+  const safeZ = params.safeHeightMM ?? 5
   const toolRadius = tool.diameterMM / 2
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
+  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
   // Coarser chord on the spiral body keeps gcode size sane; sub-0.4 mm facets are
   // invisible on a roughing pass.
   const chordTol = Math.max(0.3, Math.min(0.6, tool.diameterMM * 0.07))
 
-  // Geometry signature: bounding box + a coordinate checksum, so distinct
-  // boundaries that happen to share a point count / first vertex don't collide.
-  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity, sum = 0
-  for (let i = 0; i < boundary.length; i++) {
-    const [x, y] = boundary[i]
-    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y
-    sum += x * (i + 1) + y * (i + 7)
-  }
-  for (const isl of islands) for (let i = 0; i < isl.length; i++) sum += isl[i][0] * (i + 3) - isl[i][1] * (i + 11)
-  const key = [
-    tool.diameterMM, params.stepoverPercent, params.direction, params.finishAllowanceMM ?? 0,
-    boundary.length, islands.length,
-    bx0.toFixed(3), by0.toFixed(3), bx1.toFixed(3), by1.toFixed(3), sum.toFixed(2),
-  ].join('|')
-  if (fieldPlanCache && fieldPlanCache.key === key) return fieldPlanCache.plan
-
-  const plan = ((): FieldSpiralPlan | null => {
-    const inset = insetRing(boundary, toolRadius)
+  const plan = ((): { chains: { spiral: Pt2[]; entry: SpiralEntry; helixCenter: Pt2 }[]; finishRings: Pt2[][] } | null => {
+    // Round join, matching the island keep-out below: the clamped spiral is snapped
+    // onto this ring, and a miter spike at a reflex corner is a tool-centre position
+    // that gouges the corner (see insetRing).
+    const inset = insetRing(boundary, toolRadius, JoinType.Round)
     if (inset.length < 3) return null
     // Round join: the tool-centre path around a convex island corner is an arc of
     // the tool radius, not a sharp mitre — keeps the keep-out free of corners the
     // clamped spiral could chord across.
     const holes = growIslands(islands, toolRadius, JoinType.Round)
     const cell = Math.max(0.25, toolRadius / 4)
-    const g = _timed('solveField', () => solveField([inset], holes, cell))
+    const g = _timed('solveField', () => solveField([inset], holes, cell,
+      (f) => onProgress?.(0.55 * f, 'Solving field')))
     if (g.tMax <= 0) return null
 
     // Isotherm loops → containment nesting → per-region chains (handles islands).
-    const chains = _timed('buildIsothermChains', () => buildIsothermChains(g, inset, stepoverMM, wantCCW))
+    const chains = _timed('buildIsothermChains', () => buildIsothermChains(g, inset, holes, stepoverMM, wantCCW,
+      (f) => onProgress?.(0.55 + 0.35 * f, 'Tracing curves')))
     if (chains.length === 0) return null
     const islandCentroids = islands.map(centroidOfRing)
 
@@ -205,6 +472,7 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
       // Localized transition (default fraction): stays on-contour most of each turn
       // so coverage holds even where consecutive isotherms differ in extent (arm
       // tips). The entry handles the worst-case entry engagement.
+      onProgress?.(0.9 + 0.1 * (out.length / Math.max(1, chains.length)), 'Building spiral')
       const raw = _timed('morphChainToSpiral', () => morphChainToSpiral(innerToOuter, chordTol, stepoverMM, toolRadius, seedCenter))
       // Never let the tool centre enter an island or leave the inset wall; split out any
       // snap-flip chords the clamp left behind.
@@ -230,88 +498,65 @@ function computeFieldSpiralPlan(boundary: Pt2[], islands: Pt2[][], tool: Tool, p
     return { chains: out, finishRings }
   })()
 
-  fieldPlanCache = { key, plan }
-  return plan
-}
-
-export function fieldSpiralPocket(
-  boundary: Pt2[],
-  islands: Pt2[][],
-  tool: Tool,
-  params: PocketParams,
-  zDepth: number,
-  segs: MotionSegment[],
-  prevZ = 0,
-  incomingPos: Pt2 | null = null,
-): Pt2 | null {
-  const safeZ = params.safeHeightMM ?? 5
-  const toolRadius = tool.diameterMM / 2
-  const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
-  const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
-
-  const plan = _timed('computeFieldSpiralPlan', () => computeFieldSpiralPlan(boundary, islands, tool, params))
-  if (!plan) return incomingPos
+  if (!plan) return null
   const { chains, finishRings } = plan
-  const segStart = segs.length
 
   const islandObstacles = islands.map(isl => growRing(isl, toolRadius)).filter(o => o.length >= 3)
-  const obstacles = [...finishRings, ...islandObstacles]
-  const travelObstacles = { edgeObstacles: obstacles, solidObstacles: islandObstacles }
+  const travelObstacles = {
+    edgeObstacles: [...finishRings, ...islandObstacles],
+    solidObstacles: islandObstacles,
+    containment: finishRings,
+  }
 
   // Largest helix radius at `p` that keeps the bored circle clear of every wall and
   // island (finishRings are the tool-centre paths along them). 0 if there's no room.
   const safeHelixRadius = (p: Pt2) => maxClearHelixRadius(p, finishRings, toolRadius * 0.9)
 
-  const rampIn = (start: Pt2, spiral: Pt2[], passPrevZ: number) => {
-    if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
-      segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
-    }
-    const { touchdown, sampleAt } = rampLeadIn(spiral, true, rampDist ?? 2 * tool.diameterMM)
-    segs.push({ x: touchdown[0], y: touchdown[1], z: safeZ, rapid: true })
-    segs.push({ x: touchdown[0], y: touchdown[1], z: passPrevZ, rapid: true })
-    emitRampDescent(segs, sampleAt, passPrevZ, zDepth, 12)
-  }
+  return {
+    finishRings,
+    travelObstacles,
+    emitCuts: (zDepth: number, prevZ: number, incomingPos: Pt2 | null, segs: MotionSegment[]) => {
+      let lastPos: Pt2 | null = incomingPos
+      let cutAnything = false
 
-  let lastPos: Pt2 | null = incomingPos
-  let cutAnything = false
-  for (const { spiral, entry, helixCenter } of chains) {
-    const start = spiral[0]
-    const passPrevZ = cutAnything ? zDepth : prevZ
-    // Bore concentric with the innermost loop so the helix meshes with the spiral.
-    const hr = entry === 'helix' ? safeHelixRadius(helixCenter) : 0
-    const helixOk = entry === 'helix' && hr >= 0.6
-    let cutFrom = 1
-    if (helixOk) {
-      // Integrated helix entry: bores the centre and ends at the first uncut point,
-      // already moving along the spiral — no straight connector, no redundant seed loop.
-      if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
-        segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+      const rampIn = (spiral: Pt2[], start: Pt2, passPrevZ: number) => {
+        if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
+          segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+        }
+        const { touchdown, sampleAt } = rampLeadIn(spiral, true, rampDist ?? 2 * tool.diameterMM)
+        segs.push({ x: touchdown[0], y: touchdown[1], z: safeZ, rapid: true })
+        segs.push({ x: touchdown[0], y: touchdown[1], z: passPrevZ, rapid: true })
+        emitRampDescent(segs, sampleAt, passPrevZ, zDepth, 12)
       }
-      cutFrom = emitSpiralHelixEntry(spiral, helixCenter, hr, passPrevZ, zDepth, wantCCW, segs, safeZ)
-    } else {
-      // Ramp down along the spiral start — used for branch/island chains and for any
-      // helix start with no room to bore (near a wall or island). Also ends at the
-      // spiral start, flowing into it.
-      rampIn(start, spiral, passPrevZ)
-    }
-    for (let i = cutFrom; i < spiral.length; i++) {
-      segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
-    }
-    lastPos = spiral[spiral.length - 1]
-    cutAnything = true
-  }
-  if (!cutAnything) return incomingPos
 
-  // Stock the isotherm spiral couldn't reach (only possible above 50% stepover), cut after the
-  // spiral and before the wall pass so each patch is skimmed with its surroundings already
-  // clear. See restCleanupRings.
-  const restRings = restCleanupRings(boundary, islands, toolRadius,
-    [...cutPathsAtDepth(segs, segStart, zDepth), ...finishRings.map(closedPath)], wantCCW)
-  if (restRings.length > 0) {
-    lastPos = emitLinkedContourRings(restRings, zDepth, travelObstacles, segs, params.startNear, rampDist, zDepth, safeZ, tool.diameterMM, lastPos)
+      for (const { spiral, entry, helixCenter } of chains) {
+        const start = spiral[0]
+        const passPrevZ = cutAnything ? zDepth : prevZ
+        // Bore concentric with the innermost loop so the helix meshes with the spiral.
+        const hr = entry === 'helix' ? safeHelixRadius(helixCenter) : 0
+        const helixOk = entry === 'helix' && hr >= 0.6
+        let cutFrom = 1
+        if (helixOk) {
+          // Integrated helix entry: bores the centre and ends at the first uncut point,
+          // already moving along the spiral — no straight connector, no redundant seed loop.
+          if (lastPos !== null && !isTravelSafe(lastPos, start, travelObstacles)) {
+            segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
+          }
+          cutFrom = emitSpiralHelixEntry(spiral, helixCenter, hr, passPrevZ, zDepth, wantCCW, segs, safeZ)
+        } else {
+          // Ramp down along the spiral start — used for branch/island chains and for any
+          // helix start with no room to bore (near a wall or island). Also ends at the
+          // spiral start, flowing into it.
+          rampIn(spiral, start, passPrevZ)
+        }
+        for (let i = cutFrom; i < spiral.length; i++) {
+          segs.push({ x: spiral[i][0], y: spiral[i][1], z: zDepth, rapid: false })
+        }
+        lastPos = spiral[spiral.length - 1]
+        cutAnything = true
+      }
+      return lastPos
+    },
   }
-
-  // Finish the wall with a contour pass on the inset boundary.
-  return emitLinkedContourRings(finishRings, zDepth, travelObstacles, segs, params.startNear, rampDist, zDepth, safeZ, tool.diameterMM, lastPos)
 }
 

@@ -40,6 +40,23 @@ interface Job {
   reject: (e: Error) => void
 }
 
+// Progress fan-out. Generators report through an ambient reporter inside the worker (see
+// cam/progress.ts); the worker posts those as { id, progress } messages, which are matched
+// back to the job's key (the operation id) and handed to whoever is listening. Kept as a
+// listener registry rather than a parameter on runInWorkerFor so the ~20 call sites that
+// only want a result don't have to thread anything through.
+export type WorkerProgress = { opId?: string; fn: string; frac: number; label?: string; done: boolean }
+const progressListeners = new Set<(p: WorkerProgress) => void>()
+
+export function addWorkerProgressListener(fn: (p: WorkerProgress) => void): () => void {
+  progressListeners.add(fn)
+  return () => progressListeners.delete(fn)
+}
+
+function emitProgress(p: WorkerProgress): void {
+  for (const l of progressListeners) l(p)
+}
+
 interface Slot {
   worker: WorkerLike
   job: Job | null
@@ -67,10 +84,15 @@ function spawn(): Slot {
   const worker = workerFactory()
   const slot: Slot = { worker, job: null }
 
-  worker.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string }>) => {
-    const { id, result, error } = e.data
+  worker.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number; label?: string }>) => {
+    const { id, result, error, progress, label } = e.data
     const job = slot.job
     if (!job || job.id !== id) return
+    if (progress !== undefined) {
+      emitProgress({ opId: job.key, fn: job.fn, frac: progress, label, done: false })
+      return   // a progress tick, not a completion — the slot stays busy
+    }
+    emitProgress({ opId: job.key, fn: job.fn, frac: 1, done: true })
     finish(slot)
     if (error !== undefined) job.reject(new Error(error))
     else job.resolve(result)
@@ -79,6 +101,7 @@ function spawn(): Slot {
 
   worker.onerror = (ev) => {
     const job = slot.job
+    if (job) emitProgress({ opId: job.key, fn: job.fn, frac: 1, done: true })
     finish(slot)
     // Replace the slot: a crashed worker still holds its thread and (after a big
     // adaptive/vcarve run) a large heap, and it can't be trusted for more work.

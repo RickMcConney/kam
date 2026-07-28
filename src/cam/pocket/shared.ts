@@ -5,18 +5,20 @@
 import {  signedArea, ensureWinding, douglasPeucker, type Pt2 } from '../pathFlattener'
 import { perfLog } from '../../debug'
 import { inflatePathsD, differenceD, intersectD, JoinType, EndType, FillRule } from 'clipper2-ts'
-import {  arcLengths, interpPt, stripClosingDuplicate, pointInPolygon } from '../geom'
+import {  arcLengths, interpPt, stripClosingDuplicate, pointInPolygon, ptSegDistSq } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
-import type {  CuttingDirection } from '../../store/toolStore'
+import type {  CuttingDirection, Tool } from '../../store/toolStore'
 
 // 'morph' is the field-based curvilinear spiral (Poisson isotherms, helix entry — cf.
 // Fusion's "Morphed Spiral") — best for chunky pockets and islands.
 // 'adaptive' is the FreeCAD Adaptive2d port (slow on large pockets, kept intact);
-// 'adaptive2' is the fast raster-marching constant-engagement engine (./adaptive2).
+// 'adaptive2' is the fast raster-marching constant-engagement engine (./adaptive2);
+// 'hybrid' is that same engine clearing the open core with raster passes first, so the
+// march only pays its steering cost near walls and in tight regions.
 // Dropped 2026-07: the offset-ring spiral ('spiral', earlier 'spiralOffset'), which left
 // stock even at 50% stepover. generatePocket regenerates those operations as 'morph', and
 // project load rewrites the stored id — see loadProject.
-export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2'
+export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2' | 'hybrid'
 
 export interface PocketParams {
   strategy?: PocketStrategy
@@ -26,6 +28,12 @@ export interface PocketParams {
   direction: CuttingDirection
   islandDs: string[]
   angle: number
+  /**
+   * Let the strategy choose the raster pass angle instead of using `angle`. Only 'hybrid'
+   * honours it — it picks, per sub-area, the angle that makes the passes longest. Default
+   * (undefined) is auto; false pins the angle to `angle`.
+   */
+  autoAngle?: boolean
   startNear?: { x: number; y: number }
   rampIn?: boolean
   safeHeightMM?: number
@@ -40,7 +48,49 @@ export interface PocketParams {
 export interface TravelSafetyObstacles {
   edgeObstacles: Pt2[][]
   solidObstacles?: Pt2[][]
+  /** The move must stay INSIDE at least one of these — the tool-centre allowed region.
+   *  Without it a move can start and end exactly ON a boundary and pass outside in
+   *  between: every crossing is then at an endpoint, and the edge test skips those (ring
+   *  entry/exit points legitimately sit on the boundary), so it reports the move safe.
+   *  That is how a link across the inner corner of an L-shaped pocket gouged the corner
+   *  while both of its endpoints were legal ring positions. */
+  containment?: Pt2[][]
 }
+
+// ─── The plan/emit contract ────────────────────────────────────────────────────
+//
+// A pocket's geometry does not change with depth: the same 2D path is cut at every Z
+// level. Strategies therefore split in two — a PLANNER that resolves all the geometry
+// once per boundary, and an emitter that replays it at each depth. Before this split
+// every strategy was called once per level and rebuilt its offsets, finishing rings and
+// rest-detection from scratch each time (~95% of contour's runtime was rest detection,
+// recomputed to produce a bit-identical result), and the two strategies that could not
+// afford that — morph and adaptive2 — worked around it with module-level caches keyed
+// by a hand-rolled geometry hash. Both caches are gone with the split; so is the chance
+// of a hash collision emitting the wrong toolpath.
+//
+// generatePocket owns the common tail: rest cleanup then the wall/island finishing
+// contours, at every level, for every strategy.
+
+export interface PocketPlan {
+  /** Emit this strategy's roughing cuts for one depth level; returns the ending XY. */
+  emitCuts(z: number, prevZ: number, incomingPos: Pt2 | null, segs: MotionSegment[]): Pt2 | null
+  /** Wall + island finishing contours, cut last at each level by generatePocket. */
+  finishRings: Pt2[][]
+  /** Obstacles for the rest/finishing link-safety tests. */
+  travelObstacles: TravelSafetyObstacles
+  /** Set when the strategy emits its own wall pass and needs no shared tail. */
+  selfFinishing?: boolean
+}
+
+export type PocketPlanner = (
+  boundary: Pt2[],
+  islands: Pt2[][],
+  tool: Tool,
+  params: PocketParams,
+  /** Optional 0→1 progress for the planning stage; the slow strategies drive it. */
+  onProgress?: (frac: number, label?: string) => void,
+) => PocketPlan | null
 
 export const MICRO_LIFT_MM = 0.5
 
@@ -166,16 +216,31 @@ export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacle
     if (transitionEntersSolidPolygon(from, to, poly)) return false
   }
 
+  // Sampled containment test — see TravelSafetyObstacles.containment. Sampling (rather
+  // than an exact clip) is enough because it backs up the exact edge-crossing test above:
+  // the only thing it has to catch is an excursion whose crossings all sit at the
+  // endpoints, and such an excursion spans a large fraction of the move.
+  const containment = obstacles.containment
+  if (containment && containment.length > 0) {
+    const N = 8
+    for (let k = 1; k < N; k++) {
+      const t = k / N
+      const x = from[0] + (to[0] - from[0]) * t
+      const y = from[1] + (to[1] - from[1]) * t
+      if (!containment.some(poly => pointInPolygon(x, y, poly))) return false
+    }
+  }
+
   return true
 }
 
-export function offsetRing(pts: Pt2[], delta: number): Pt2[] {
+export function offsetRing(pts: Pt2[], delta: number, joinType: JoinType = JoinType.Miter): Pt2[] {
   const clean = stripClosingDuplicate(pts)
   if (clean.length < 3) return []
   const ccw = signedArea(clean) >= 0 ? clean : [...clean].reverse()
   const result = inflatePathsD(
     [ccw.map(([x, y]) => ({ x, y }))],
-    delta, JoinType.Miter, EndType.Polygon, 4, 6,
+    delta, joinType, EndType.Polygon, 4, 6,
   )
   if (result.length === 0) return []
   const best = result.reduce((a, b) => (b.length > a.length ? b : a))
@@ -183,9 +248,16 @@ export function offsetRing(pts: Pt2[], delta: number): Pt2[] {
 }
 
 // Shrink polygon inward by delta. Returns [] if it collapses or inverts.
-export function insetRing(pts: Pt2[], delta: number): Pt2[] {
+//
+// The join type matters when the result is used as a legal tool-centre region. At a
+// REFLEX vertex of the pocket (an inner corner, e.g. the step of an L) the true limit
+// for the tool centre is an arc of the tool radius around that vertex — the tool rolls
+// around the corner. A MITER join replaces that arc with a sharp spike reaching past it,
+// so a tool centre placed on the spike gouges the corner. Pass JoinType.Round wherever
+// the offset is a keep-out the toolpath is clamped or snapped onto.
+export function insetRing(pts: Pt2[], delta: number, joinType: JoinType = JoinType.Miter): Pt2[] {
   const origArea = Math.abs(signedArea(pts))
-  const result = offsetRing(pts, -delta)
+  const result = offsetRing(pts, -delta, joinType)
   if (result.length < 3) return []
   if (Math.abs(signedArea(result)) >= origArea) return []
   return result
@@ -529,54 +601,145 @@ function nextContainmentRing(
   return { index: pendingIdx[0], jumped: true }
 }
 
-/** Rotate `ring` to start at the vertex with the shortest travel from `from`, preferring one
- *  reachable without a lift when obstacles are supplied. */
+// ─── Ring entry: where a lap starts, in ARC LENGTH along the ring ────────────────
+//
+// Everything here works in arc length rather than in vertex indices. Vertex indices make
+// the entry as coarse as the ring's own geometry, and an offset ring of a rectangular
+// pocket has FOUR vertices: the nearest "vertex" to the tool is a corner up to half a
+// side away — often behind it — and the smallest "downstream" step available was a whole
+// 89 mm side. Both flaws pushed the entry far past what planRingLink will travel at
+// depth, so every ring of a square or rectangular pocket got a lift instead of a link.
+
+/** Cumulative arc length at each vertex (cum[i] = length from ring[0] to ring[i]), + total. */
+function ringArc(ring: Pt2[]): { cum: number[]; total: number } {
+  const cum = new Array<number>(ring.length)
+  let acc = 0
+  for (let i = 0; i < ring.length; i++) {
+    cum[i] = acc
+    const j = (i + 1) % ring.length
+    acc += Math.hypot(ring[j][0] - ring[i][0], ring[j][1] - ring[i][1])
+  }
+  return { cum, total: acc }
+}
+
+/** The edge index and fraction along it at arc length `s` (wrapping). */
+function arcToEdge(ring: Pt2[], cum: number[], total: number, s: number): { idx: number; t: number } {
+  const n = ring.length
+  if (total <= 1e-12) return { idx: 0, t: 0 }
+  let u = s % total
+  if (u < 0) u += total
+  // cum is ascending: find the last vertex at or before u.
+  let lo = 0, hi = n - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (cum[mid] <= u) lo = mid
+    else hi = mid - 1
+  }
+  const j = (lo + 1) % n
+  const len = Math.hypot(ring[j][0] - ring[lo][0], ring[j][1] - ring[lo][1])
+  return { idx: lo, t: len > 1e-12 ? Math.max(0, Math.min(1, (u - cum[lo]) / len)) : 0 }
+}
+
+function ringPointAtArc(ring: Pt2[], cum: number[], total: number, s: number): Pt2 {
+  const { idx, t } = arcToEdge(ring, cum, total, s)
+  const j = (idx + 1) % ring.length
+  return [ring[idx][0] + (ring[j][0] - ring[idx][0]) * t, ring[idx][1] + (ring[j][1] - ring[idx][1]) * t]
+}
+
+/** Arc length of the closest point on the ring to (px,py) — projected onto the EDGES, not
+ *  snapped to a vertex. */
+function nearestArcOnRing(ring: Pt2[], cum: number[], px: number, py: number): number {
+  let bestS = 0
+  let bestD = Infinity
+  for (let i = 0; i < ring.length; i++) {
+    const j = (i + 1) % ring.length
+    const ax = ring[i][0], ay = ring[i][1]
+    const dx = ring[j][0] - ax, dy = ring[j][1] - ay
+    const l2 = dx * dx + dy * dy
+    let t = l2 > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0
+    t = t < 0 ? 0 : t > 1 ? 1 : t
+    const qx = ax + t * dx, qy = ay + t * dy
+    const d = (px - qx) ** 2 + (py - qy) ** 2
+    if (d < bestD) { bestD = d; bestS = cum[i] + t * Math.sqrt(l2) }
+  }
+  return bestS
+}
+
+/** `ring` rotated to begin at arc length `s`, SPLITTING the edge when `s` lands mid-edge.
+ *  Every original vertex is kept, so the lap still traces the same closed path — only
+ *  where it begins moves. */
+function ringStartingAtArc(ring: Pt2[], cum: number[], total: number, s: number): Pt2[] {
+  const n = ring.length
+  const { idx, t } = arcToEdge(ring, cum, total, s)
+  if (t <= 1e-9) return rotateRingAt(ring, idx)
+  const next = (idx + 1) % n
+  const p: Pt2 = [
+    ring[idx][0] + (ring[next][0] - ring[idx][0]) * t,
+    ring[idx][1] + (ring[next][1] - ring[idx][1]) * t,
+  ]
+  if (Math.hypot(ring[next][0] - p[0], ring[next][1] - p[1]) <= 1e-9) return rotateRingAt(ring, next)
+  // Start at the split point, walk the rest of the ring in its own traversal direction, and
+  // end on the vertex just before it — the caller closes the lap back to the start point.
+  const out: Pt2[] = [p]
+  for (let m = 0; m < n; m++) out.push(ring[(next + m) % n])
+  return out
+}
+
+// How far DOWNSTREAM of the closest point to advance the entry, so the link becomes a shallow
+// diagonal in the direction of travel rather than a square step across the stepover (see
+// LINK_LEAD_DIAMETERS). "Downstream" is +s, i.e. the direction the tool will cut this ring, so
+// the link runs with the motion and the tool never has to reverse onto the new lap.
+//
+// Of the offsets within the lead distance, take the one the tool can drive into most
+// straight-on. Blindly walking the full lead is right on a long ring but wrong on a tight one,
+// where the ring curves away and the "downstream" point ends up behind the tool — turning a 90°
+// step into a 137° one. `fromDir` is the direction the tool is travelling as it leaves the ring
+// it just finished; without it there's nothing to optimise and the full lead is used.
+function bestLeadOffset(
+  ring: Pt2[], cum: number[], total: number, s0: number,
+  from: Pt2, fromDir: Pt2 | null, leadDiameterMM: number,
+): number {
+  if (leadDiameterMM <= 0 || ring.length < 3) return 0
+  const lead = leadLength(ring, leadDiameterMM)
+  if (lead <= 1e-6) return 0
+  if (!fromDir) return lead
+
+  const SAMPLES = 12
+  let best = 0
+  let bestCos = -Infinity
+  for (let k = 1; k <= SAMPLES; k++) {
+    const ds = (lead * k) / SAMPLES
+    const p = ringPointAtArc(ring, cum, total, s0 + ds)
+    const dx = p[0] - from[0], dy = p[1] - from[1]
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-9) continue
+    // cos of the turn the tool makes onto the link — bigger is straighter.
+    const cos = (fromDir[0] * dx + fromDir[1] * dy) / len
+    if (cos > bestCos) { bestCos = cos; best = ds }
+  }
+  return best
+}
+
+/** Rotate `ring` to start at the point with the shortest travel from `from`, advanced
+ *  downstream by the link lead, preferring a start reachable without a lift when obstacles
+ *  are supplied. */
 function pickRingStart(
   ring: Pt2[], from: Pt2 | null, travelObstacles: TravelSafetyObstacles | null,
   leadDiameterMM = 0, fromDir: Pt2 | null = null,
 ): Pt2[] {
   if (from === null) return ring
-  const distSq = (i: number) => (ring[i][0] - from[0]) ** 2 + (ring[i][1] - from[1]) ** 2
-  const order = ring.map((_, i) => i).sort((a, b) => distSq(a) - distSq(b))
-  let idx = order[0]
-  if (travelObstacles) {
-    idx = order.find(i => isTravelSafe(from, ring[i], travelObstacles)) ?? order[0]
+  const { cum, total } = ringArc(ring)
+  let s0 = nearestArcOnRing(ring, cum, from[0], from[1])
+  if (travelObstacles && !isTravelSafe(from, ringPointAtArc(ring, cum, total, s0), travelObstacles)) {
+    // The closest point is blocked. Walk the vertices by distance and take the first the
+    // tool can reach at depth; if none can, keep the closest and let the caller lift.
+    const order = ring.map((_, i) => i)
+      .sort((a, b) => ((ring[a][0] - from[0]) ** 2 + (ring[a][1] - from[1]) ** 2)
+                    - ((ring[b][0] - from[0]) ** 2 + (ring[b][1] - from[1]) ** 2))
+    const safe = order.find(i => isTravelSafe(from, ring[i], travelObstacles))
+    if (safe !== undefined) s0 = cum[safe]
   }
-  return rotateRingAt(ring, advanceRingStart(ring, idx, from, fromDir, leadDiameterMM))
-}
-
-// Move the entry point DOWNSTREAM along the ring, so the link becomes a shallow diagonal in the
-// direction of travel rather than a square step across the stepover (see LINK_LEAD_DIAMETERS).
-//
-// Of the candidates within the lead distance, take the one the tool can drive into most
-// straight-on. Blindly walking the full lead is right on a long ring but wrong on a tight one,
-// where the ring curves away and the "downstream" point ends up behind the tool — turning a 90°
-// step into a 137° one. `fromDir` is the direction the tool is travelling as it leaves the ring
-// it just finished; without it there's nothing to optimise and the full lead is used.
-function advanceRingStart(
-  ring: Pt2[], startIdx: number, from: Pt2, fromDir: Pt2 | null, leadDiameterMM: number,
-): number {
-  if (leadDiameterMM <= 0 || ring.length < 3) return startIdx
-  const lead = leadLength(ring, leadDiameterMM)
-  if (lead <= 1e-6) return startIdx
-
-  let best = startIdx
-  let bestCos = fromDir ? -Infinity : 0
-  let walked = 0
-  let i = startIdx
-  for (let n = 0; n < ring.length && walked < lead; n++) {
-    const j = (i + 1) % ring.length
-    walked += Math.hypot(ring[j][0] - ring[i][0], ring[j][1] - ring[i][1])
-    i = j
-    if (!fromDir) { best = i; continue }
-    const dx = ring[i][0] - from[0], dy = ring[i][1] - from[1]
-    const len = Math.hypot(dx, dy)
-    if (len < 1e-9) continue
-    // cos of the turn the tool makes onto the link — bigger is straighter.
-    const cos = (fromDir[0] * dx + fromDir[1] * dy) / len
-    if (cos > bestCos) { bestCos = cos; best = i }
-  }
-  return best
+  return ringStartingAtArc(ring, cum, total, s0 + bestLeadOffset(ring, cum, total, s0, from, fromDir, leadDiameterMM))
 }
 
 export function chooseNextContourRing(
@@ -585,7 +748,7 @@ export function chooseNextContourRing(
   startNear: { x: number; y: number } | undefined,
   travelObstacles: TravelSafetyObstacles,
   // Non-zero shifts the entry point downstream so the link runs with the direction of travel
-  // instead of square across the gap (see advanceRingStart). `lastDir` is that direction.
+  // instead of square across the gap (see bestLeadOffset). `lastDir` is that direction.
   leadDiameterMM = 0,
   lastDir: Pt2 | null = null,
 ): { index: number; ring: Pt2[] } {
@@ -593,39 +756,31 @@ export function chooseNextContourRing(
 
   const target: Pt2 = lastPos ?? [startNear!.x, startNear!.y]
 
-  // Flatten all (ring, vertex) pairs and sort by distance to target.
-  // Walking nearest-first lets us stop at the first safe vertex, reducing
-  // isTravelSafe calls from O(total_vertices) to O(1) in the typical case.
-  type Candidate = { ri: number; vi: number; distSq: number }
-  const candidates: Candidate[] = []
-  for (let ri = 0; ri < rings.length; ri++) {
-    const raw = rings[ri]
-    for (let vi = 0; vi < raw.length; vi++) {
-      const dx = raw[vi][0] - target[0], dy = raw[vi][1] - target[1]
-      candidates.push({ ri, vi, distSq: dx * dx + dy * dy })
-    }
-  }
-  candidates.sort((a, b) => a.distSq - b.distSq)
+  // Rank rings by the distance to their CLOSEST POINT — projected onto the edges, not
+  // snapped to a vertex. On a low-vertex ring (a rectangular pocket's offsets have four)
+  // the nearest vertex is a corner most of a side away, which both picks the wrong ring
+  // and lands the entry behind the tool.
+  const ranked = rings.map((ring, index) => {
+    const arc = ringArc(ring)
+    const p = ringPointAtArc(ring, arc.cum, arc.total, nearestArcOnRing(ring, arc.cum, target[0], target[1]))
+    return { index, ring, p, distSq: (p[0] - target[0]) ** 2 + (p[1] - target[1]) ** 2 }
+  }).sort((a, b) => a.distSq - b.distSq)
 
-  const fallback = candidates[0]
-
-  const rotated = (c: Candidate) => ({
-    index: c.ri,
-    ring: rotateRingAt(rings[c.ri], advanceRingStart(rings[c.ri], c.vi, target, lastDir, leadDiameterMM)),
+  const entry = (c: typeof ranked[number], lead: number) => ({
+    index: c.index,
+    ring: pickRingStart(c.ring, target, lastPos !== null ? travelObstacles : null, lead, lastDir),
   })
 
-  if (lastPos === null) {
-    // No travel safety to check — nearest vertex wins.
-    return rotated(fallback)
+  // No travel safety to check — the nearest ring wins.
+  if (lastPos === null) return entry(ranked[0], leadDiameterMM)
+
+  // First ring reachable without a lift is the best choice.
+  for (const c of ranked) {
+    if (isTravelSafe(lastPos, c.p, travelObstacles)) return entry(c, leadDiameterMM)
   }
 
-  // First candidate reachable without a lift is the best choice.
-  for (const c of candidates) {
-    if (isTravelSafe(lastPos, rings[c.ri][c.vi], travelObstacles)) return rotated(c)
-  }
-
-  // Every entry requires a lift — return the nearest vertex overall.
-  return { index: fallback.ri, ring: rotateRingAt(rings[fallback.ri], fallback.vi) }
+  // Every entry requires a lift, so there is no link to aim: land on the nearest point.
+  return entry(ranked[0], 0)
 }
 
 // ─── Ring-to-ring linking ──────────────────────────────────────────────────────
@@ -698,6 +853,11 @@ export function emitLinkedContourRings(
   safeZ = 5,
   toolDiameterMM = 0,
   incomingPos: Pt2 | null = null,
+  // Cut `rings` strictly in the order given, instead of walking them by proximity. For a
+  // set whose order already encodes the cutting sequence — an offset family that must be
+  // taken from the outside in, because only its outer side is cleared — proximity is free
+  // to start anywhere, which is exactly the ring whose both sides are still solid.
+  sequential = false,
   // Mark `rings` as a multi-level roughing set ordered innermost-offset-level first (contour's
   // roughing rings). Ring ORDER is then driven by nesting instead of proximity: the cut opens
   // at the innermost ring and walks outward, and a ring is never cut while it still contains an
@@ -731,6 +891,11 @@ export function emitLinkedContourRings(
       const staysDown = lastPos !== null && !forceLift
       ring = pickRingStart(rings[ringIdx], target, staysDown ? travelObstacles : null,
         staysDown ? toolDiameterMM : 0, lastDir)
+    } else if (sequential) {
+      ringIdx = pendingIdx[0]
+      const target: Pt2 | null = lastPos ?? (startNear ? [startNear.x, startNear.y] : null)
+      ring = pickRingStart(rings[ringIdx], target, lastPos !== null ? travelObstacles : null,
+        lastPos !== null ? toolDiameterMM : 0, lastDir)
     } else {
       const next = chooseNextContourRing(pendingIdx.map(i => rings[i]), lastPos, startNear, travelObstacles,
         lastPos !== null ? toolDiameterMM : 0, lastDir)
@@ -987,12 +1152,12 @@ export function restCleanupRings(
 }
 
 
-export // Largest distance from a set of inner loops out to the nearest edge of a set of
+// Largest distance from a set of inner loops out to the nearest edge of a set of
 // outer loops (the paper's D_isoHQ, eq. 10, generalized to multiple components).
 // Distance is to the nearest EDGE, not vertex — a low-vertex outer loop (e.g. an
 // inset square's 4 corners) would otherwise read points mid-edge as far away and
 // break the stepover spacing. Inner points subsampled; outer kept as edges.
-function setGap(inners: Pt2[][], outers: Pt2[][]): number {
+export function setGap(inners: Pt2[][], outers: Pt2[][]): number {
   const subVerts = (loop: Pt2[], target: number) => {
     const step = Math.max(1, Math.floor(loop.length / target))
     const out: Pt2[] = []
@@ -1010,21 +1175,11 @@ function setGap(inners: Pt2[][], outers: Pt2[][]): number {
     for (const p of subVerts(inner, 40)) {
       let mn = Infinity
       for (const [a, b] of outerSegs) {
-        const d = distSqPointSeg(p[0], p[1], a[0], a[1], b[0], b[1])
+        const d = ptSegDistSq(p[0], p[1], a[0], a[1], b[0], b[1])
         if (d < mn) mn = d
       }
       if (mn > maxMin) maxMin = mn
     }
   }
   return Math.sqrt(maxMin)
-}
-
-// Squared distance from a point to a segment.
-export function distSqPointSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax, dy = by - ay
-  const l2 = dx * dx + dy * dy
-  let t = l2 > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0
-  t = t < 0 ? 0 : t > 1 ? 1 : t
-  const ex = px - (ax + t * dx), ey = py - (ay + t * dy)
-  return ex * ex + ey * ey
 }

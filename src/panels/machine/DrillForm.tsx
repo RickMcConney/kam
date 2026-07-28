@@ -8,6 +8,7 @@ import { useToolpathStore, type AnyOperation, type DrillOperation } from '../../
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
+import { entryHintAt } from '../../cam/startOptimizer'
 import { useUIStore } from '../../store/uiStore'
 import { generatePeckDrill, generateHelicalDrill } from '../../cam/drill'
 import { effectiveStepDownMM } from '../../cam/feeds'
@@ -96,7 +97,12 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     setGenerating(true)
 
     if (editOp) {
+      // Chain to where the previous operation finishes, at generation time. Peck ordering
+      // uses it; the helical mode ignores it, but recording it still keeps the operation
+      // from being regenerated for a hint before the next simulate.
+      const hint = entryHintAt(editOp.id)
       updateOperation(editOp.id, {
+        entryHint: hint,
         toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
       } as Partial<AnyOperation>)
       setTimeout(() => {
@@ -108,7 +114,8 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             })
           } else {
             segs = generatePeckDrill(editOp.points, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+              startNear: hint, safeHeightMM,
             })
           }
           setSegments(editOp.id, segs)
@@ -145,11 +152,13 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             stepDownMM: form.stepDownMM,
           })
           if (!existingId) session.remember(path.id, opId)
+          const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
+            entryHint: hint,
             name, toolId: form.toolId,
             helicalCenterX: circle.cx, helicalCenterY: circle.cy, helicalRadius: r,
             depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
-          } as Partial<AnyOperation> : { status: 'generating' })
+          } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
             setSegments(opId, generateHelicalDrill(circle.cx, circle.cy, r, selectedTool, {
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
@@ -159,13 +168,16 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           }
         }
       } else if (sessionPeckOp) {
+        const hint = entryHintAt(sessionPeckOp.id)
         updateOperation(sessionPeckOp.id, {
+          entryHint: hint,
           name: `Peck Drill (${selectedTool.name}) ×${sessionPeckOp.points.length}`,
           toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(sessionPeckOp.id, generatePeckDrill(sessionPeckOp.points, selectedTool, {
-            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+            startNear: hint, safeHeightMM,
           }))
         } catch (err) {
           setError(sessionPeckOp.id, err instanceof Error ? err.message : 'Generation failed')
@@ -181,10 +193,12 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           stepDownMM: form.stepDownMM,
         })
         session.remember('peck', opId)
-        updateOperation(opId, { status: 'generating' })
+        const hint = entryHintAt(opId)
+        updateOperation(opId, { entryHint: hint, status: 'generating' })
         try {
           setSegments(opId, generatePeckDrill(pendingDrillPoints, selectedTool, {
-            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+            startNear: hint, safeHeightMM,
           }))
         } catch (err) {
           setError(opId, err instanceof Error ? err.message : 'Generation failed')

@@ -3,6 +3,7 @@ import { OP_TYPE_COLORS } from '../colors'
 import { uid } from '../uid'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { serializeOp, DERIVED_OP_KEYS, type SerializedOperation } from '../timeline/events'
+import { useWorkpieceStore } from './workpieceStore'
 import type { CuttingDirection } from './toolStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
 type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
@@ -33,6 +34,16 @@ interface BaseOperation {
   visible: boolean
   errorMessage?: string
   entryHint?: { x: number; y: number }
+  // The generation inputs the CURRENT segments were actually built from, stamped by
+  // optimizeStartPoints after it regenerates. It exists so a simulate or export can tell
+  // whether regenerating would change anything at all.
+  //
+  // `entryHint` alone can't answer that: generating from a form ignores the hint, so the
+  // stored hint outlives the segments it produced. `safeHeightMM` is here because it is
+  // the one setting outside the operation that changes what generation emits, and nothing
+  // marks operations stale for it. Cleared by setSegments, so every other generation path
+  // invalidates it.
+  generatedWith?: { entryHint?: { x: number; y: number }; safeHeightMM: number }
 }
 
 export interface ProfileOperation extends BaseOperation {
@@ -54,7 +65,9 @@ export interface PocketOperation extends BaseOperation {
   stepoverPercent: number
   passAngleDeg: number
   direction: CuttingDirection
-  strategy: 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2'
+  strategy: 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2' | 'hybrid'
+  /** Auto pass angle (hybrid only); false pins it to passAngleDeg. */
+  autoAngle?: boolean
   rampIn: boolean
   allowanceMM?: number   // finish allowance: stock left on all walls (negative grows the pocket)
 }
@@ -236,12 +249,22 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     useTimelineStore.getState().record({ kind: 'op.delete', opIds: ids })
   },
 
-  setSegments: (id, segments) =>
+  // Stamps `generatedWith` with the inputs these segments were built from: the operation's
+  // entry hint, which the caller sets BEFORE generating (see entryHintAt), and the current
+  // safe height. Getting this stamp right is what lets a simulate or export skip work —
+  // without it a freshly generated operation looks "unknown" and is regenerated once for
+  // nothing. A caller that generates without applying op.entryHint must clear it first.
+  setSegments: (id, segments) => {
+    const cur = get().operations.find((o) => o.id === id)
+    const generatedWith = { entryHint: cur?.entryHint, safeHeightMM: useWorkpieceStore.getState().safeHeightMM }
     set((s) => ({
       operations: s.operations.map((o) =>
-        o.id === id ? { ...o, segments, status: 'done', errorMessage: undefined } as AnyOperation : o
+        o.id === id
+          ? { ...o, segments, status: 'done', errorMessage: undefined, generatedWith } as AnyOperation
+          : o
       ),
-    })),
+    }))
+  },
 
   setError: (id, error) =>
     set((s) => ({

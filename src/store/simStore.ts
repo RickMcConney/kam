@@ -65,7 +65,13 @@ export const useSimStore = create<SimState>()((set, get) => ({
     })
   },
 
-  play: () => set({ playing: true }),
+  // Play from the start again when the run has already finished, so replaying doesn't
+  // need a reset first — pressing play on a finished run is only ever a request to
+  // watch it again. A paused run mid-way still resumes where it was.
+  play: () =>
+    set((s) => (s.totalTimeS > 0 && s.elapsedTimeS >= s.totalTimeS
+      ? { playing: true, elapsedTimeS: 0 }
+      : { playing: true })),
   pause: () => set({ playing: false }),
   stop: () => set({ playing: false, elapsedTimeS: 0 }),
 

@@ -1,17 +1,17 @@
 import {   type Pt2 } from '../pathFlattener'
 import {   pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
-import type { Tool } from '../../store/toolStore'
-import { type PocketParams, type TravelSafetyObstacles, closedPath, compoundFinishRings, cutPathsAtDepth, emitCutTransition, emitLinkedContourRings, emitRampDescent, growIslands, isTravelSafe, rampLeadIn, restCleanupRings } from './shared'
-import { insetRing } from './shared'
+import { type PocketPlan, type PocketPlanner, type TravelSafetyObstacles, compoundFinishRings, emitCutTransition, emitRampDescent, growIslands, insetRing, isTravelSafe, rampLeadIn } from './shared'
 
 // ─── Raster utilities ──────────────────────────────────────────────────────────
+
+interface Scanline { p1: Pt2; p2: Pt2; row: number }
 
 function generateScanlines(
   boundary: Pt2[],
   spacingMM: number,
   angleDeg: number,
-): { p1: Pt2; p2: Pt2 }[] {
+): Scanline[] {
   if (boundary.length < 3) return []
   const angleRad = (angleDeg * Math.PI) / 180
   const cosA = Math.cos(-angleRad), sinA = Math.sin(-angleRad)
@@ -20,8 +20,9 @@ function generateScanlines(
   const ys = rotated.map(p => p.y)
   const minY = Math.min(...ys), maxY = Math.max(...ys)
   const n = rotated.length
-  const segments: { p1: Pt2; p2: Pt2 }[] = []
-  for (let y = minY + spacingMM / 2; y <= maxY; y += spacingMM) {
+  const segments: Scanline[] = []
+  let row = 0
+  for (let y = minY + spacingMM / 2; y <= maxY; y += spacingMM, row++) {
     const hits: number[] = []
     for (let i = 0; i < n; i++) {
       const a = rotated[i], b = rotated[(i + 1) % n]
@@ -34,6 +35,7 @@ function generateScanlines(
       segments.push({
         p1: [hits[i] * cosR - y * sinR, hits[i] * sinR + y * cosR],
         p2: [hits[i + 1] * cosR - y * sinR, hits[i + 1] * sinR + y * cosR],
+        row,
       })
     }
   }
@@ -57,6 +59,11 @@ function clipScanlineAgainstIslands(
       }
     }
     hits.sort((a, b) => a - b)
+    // An odd hit count means the scanline grazed a vertex and one crossing was
+    // double-counted or missed. Pairing the list as-is would leave the island's
+    // last span unblocked and cut straight through it, so treat the whole island
+    // as blocking the scanline's span instead.
+    if (hits.length % 2 === 1) { blocked.push([hits[0], hits[hits.length - 1]]); continue }
     for (let k = 0; k + 1 < hits.length; k += 2) blocked.push([hits[k], hits[k + 1]])
     if (hits.length === 0 && pointInPolygon((xL + xR) / 2, y, poly)) return []
   }
@@ -76,7 +83,7 @@ function clipScanlineAgainstIslands(
 
 
 function buildRasterPath(
-  scanlines: { p1: Pt2; p2: Pt2 }[],
+  scanlines: Scanline[],
   travelObstacles: TravelSafetyObstacles,
   zDepth: number,
   segs: MotionSegment[],
@@ -85,20 +92,40 @@ function buildRasterPath(
   prevZ = 0,
   safeZ = 5,
   toolDiameterMM = 0,
+  // Where the previous operation left the tool. Used ONLY to choose which scanline to open
+  // on — the entry is still a lift and a plunge, because the tool is not actually there and
+  // cannot travel at depth from it.
+  startNear?: { x: number; y: number },
 ): Pt2 | null {
   if (scanlines.length === 0) return incomingPos
   const used = new Array(scanlines.length).fill(false)
   let current: Pt2 | null = incomingPos
+
+  // A raster is a linear stack of rows, so it has to be entered at one END of that stack.
+  // The hint chooses WHICH end (and which end of that row) — nothing more. Letting it pick
+  // the globally nearest row instead opens somewhere in the middle, and everything on the
+  // far side is then stranded until a long retrace at the end.
+  let minRow = Infinity, maxRow = -Infinity
+  for (const sl of scanlines) {
+    if (sl.row < minRow) minRow = sl.row
+    if (sl.row > maxRow) maxRow = sl.row
+  }
 
   for (let remaining = scanlines.length; remaining > 0; remaining--) {
     let bestIdx = -1, bestScore = Infinity, bestDist = Infinity, bestReversed = false, bestNeedsLift = true
     for (let i = 0; i < scanlines.length; i++) {
       if (used[i]) continue
       const seg = scanlines[i]
+      // First pass only: restrict the choice to the two ends of the stack.
+      if (current === null && startNear && seg.row !== minRow && seg.row !== maxRow) continue
       for (let r = 0; r < 2; r++) {
         const start: Pt2 = r === 0 ? seg.p1 : seg.p2
         const needsLift = current === null || !isTravelSafe(current, start, travelObstacles)
-        const dist = current ? Math.hypot(start[0] - current[0], start[1] - current[1]) : 0
+        // Measure from where the tool is, or — before the first pass — from the incoming
+        // hint, so the raster opens on the scanline nearest where the last operation
+        // finished instead of always at scanlines[0].
+        const ref: Pt2 | null = current ?? (startNear ? [startNear.x, startNear.y] : null)
+        const dist = ref ? Math.hypot(start[0] - ref[0], start[1] - ref[1]) : 0
         const score = needsLift ? dist * 1.25 : dist
         if (bestIdx === -1 || score < bestScore || (Math.abs(score - bestScore) < 1e-6 && dist < bestDist)) {
           bestIdx = i; bestScore = score; bestDist = dist; bestReversed = r === 1; bestNeedsLift = needsLift
@@ -134,22 +161,12 @@ function buildRasterPath(
   return current
 }
 
-export function rasterPocket(
-  boundary: Pt2[],
-  islands: Pt2[][],
-  tool: Tool,
-  params: PocketParams,
-  zDepth: number,
-  segs: MotionSegment[],
-  prevZ = 0,
-  incomingPos: Pt2 | null = null,
-): Pt2 | null {
+export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params): PocketPlan | null => {
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   const toolRadius = tool.diameterMM / 2
   const wantCCW = params.direction === 'climb' // inside cut: climb (M3) = CCW travel
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
-  const segStart = segs.length
 
   // Island obstacles: offset ALL island rings together so that sub-rings from a
   // split self-intersecting path are treated as one compound shape — avoids miter
@@ -178,6 +195,7 @@ export function rasterPocket(
     return clipScanlineAgainstIslands(p1r, p2r, islandExclusionsRot).map(seg => ({
       p1: rotPt(seg.p1, cosB, sinB),
       p2: rotPt(seg.p2, cosB, sinB),
+      row: s.row,
     }))
   })
 
@@ -188,41 +206,25 @@ export function rasterPocket(
   // edges, correctly blocking transitions that would cut through uncleared wall material.
   const finishRing = insetRing(boundary, toolRadius)
   const rasterTravelEdge = finishRing.length >= 3 ? finishRing : boundary
-  const rasterEnd = buildRasterPath(
-    clippedScanlines,
-    { edgeObstacles: [rasterTravelEdge, ...islandFinish], solidObstacles: islandFinish },
-    zDepth, segs, incomingPos, rampDist, prevZ, safeZ, tool.diameterMM,
-  )
+  const rasterTravel: TravelSafetyObstacles = {
+    edgeObstacles: [rasterTravelEdge, ...islandFinish], solidObstacles: islandFinish,
+    containment: [rasterTravelEdge],
+  }
 
   // Finishing contours: linked without lifts when safe. Compound inset so a near-wall
   // island pinches instead of swinging the tool through the outer wall.
-  const finishingRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW)
-  const finishObstacles = [
-    ...(finishRing.length >= 3 ? [finishRing] : []),
-    ...islandExclusions,
-  ]
-  const finishTravel = { edgeObstacles: finishObstacles, solidObstacles: islandFinish }
+  const finishRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW)
+  const travelObstacles: TravelSafetyObstacles = {
+    edgeObstacles: [...(finishRing.length >= 3 ? [finishRing] : []), ...islandExclusions],
+    solidObstacles: islandFinish,
+    containment: finishRings,
+  }
 
-  // Stock the scanlines couldn't reach (only possible above 50% stepover), cut after the
-  // raster and before the wall pass so each patch is skimmed with its surroundings already
-  // clear. See restCleanupRings.
-  const restRings = restCleanupRings(boundary, islands, toolRadius,
-    [...cutPathsAtDepth(segs, segStart, zDepth), ...finishingRings.map(closedPath)], wantCCW)
-  const restEnd = restRings.length > 0
-    ? emitLinkedContourRings(restRings, zDepth, finishTravel, segs, params.startNear, rampDist,
-        clippedScanlines.length > 0 ? zDepth : prevZ, safeZ, tool.diameterMM, rasterEnd)
-    : rasterEnd
-
-  const finishPrevZ = clippedScanlines.length > 0 || restRings.length > 0 ? zDepth : prevZ
-  return emitLinkedContourRings(
-    finishingRings, zDepth, finishTravel,
-    segs, params.startNear, rampDist, finishPrevZ, safeZ, tool.diameterMM, restEnd,
-  )
+  return {
+    finishRings,
+    travelObstacles,
+    emitCuts: (z: number, prevZ: number, incomingPos: Pt2 | null, segs: MotionSegment[]) =>
+      buildRasterPath(clippedScanlines, rasterTravel, z, segs, incomingPos, rampDist,
+        prevZ, safeZ, tool.diameterMM, params.startNear),
+  }
 }
-
-// Build the nested concentric offset levels that both the contour and spiral
-// strategies are made of. levels[0] is the outermost (finishing) ring set —
-// the boundary inset by one tool radius; each subsequent level is offset inward
-// by one stepover. Every level is an array of component loops (Clipper splits a
-// ring that pinches apart into separate polygons automatically), already wound
-// to `wantCCW`. Islands are fed as CW holes so the offset grows around them.
