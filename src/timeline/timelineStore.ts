@@ -5,7 +5,7 @@ import { replay } from './applyEvent'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { usePathsStore } from '../store/pathsStore'
 import type { ShapeParams } from '../shapes/shapeGenerators'
-import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
+import { useToolpathStore, pathIdsOf, type AnyOperation } from '../store/toolpathStore'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
@@ -245,6 +245,24 @@ function coalesce(last: TimelineEvent, payload: TimelineEventPayload): TimelineE
       if (last.kind !== 'shape.params' || last.pathId !== payload.pathId) return null
       return { ...last, params: payload.params }
     }
+    case 'op.setVisible': {
+      if (last.kind !== 'op.setVisible') return null
+      const sameIds = last.opIds.length === payload.opIds.length &&
+        [...last.opIds].sort().join() === [...payload.opIds].sort().join()
+      // Toggling the same operations again just overwrites the earlier answer; toggling
+      // MORE operations the same way extends the set. Anything else (different ops, other
+      // direction) is a separate decision and gets its own entry.
+      if (!sameIds && last.visible !== payload.visible) return null
+      const opIds = sameIds ? payload.opIds : [...new Set([...last.opIds, ...payload.opIds])]
+      const merged = { ...last, opIds, visible: payload.visible }
+      return { ...merged, label: labelFor(merged) }
+    }
+    case 'op.reorder': {
+      if (last.kind !== 'op.reorder') return null
+      // The payload is the COMPLETE order, so the newer one wins outright and every
+      // intermediate arrangement is dead weight — the same reason workpiece.set merges.
+      return { ...last, order: payload.order }
+    }
     case 'workpiece.set': {
       if (last.kind !== 'workpiece.set') return null
       const changes = { ...last.changes, ...payload.changes }
@@ -284,13 +302,6 @@ function coalesce(last: TimelineEvent, payload: TimelineEventPayload): TimelineE
 
 // Paths an op's toolpath depends on — used to decide whether generated
 // segments survive a scrub.
-function refPathIdsOf(op: SerializedOperation): string[] {
-  const ids: string[] = []
-  if ('pathId' in op && op.pathId) ids.push(op.pathId)
-  if ('islandIds' in op && op.islandIds) ids.push(...op.islandIds)
-  return ids
-}
-
 function tabsByPath(tabs: Tab[]): Map<string, Tab[]> {
   const m = new Map<string, Tab[]>()
   for (const t of tabs) {
@@ -343,11 +354,18 @@ function restoreStateAt(seq: number, events: TimelineEvent[]): void {
     const cur = currentOps.get(sop.id)
     if (cur && cur.status === 'done') {
       const sameSettings = sameOpSettings(serializeOp(cur), sop)
-      const samePaths = refPathIdsOf(sop).every((id) =>
+      const samePaths = pathIdsOf(sop).every((id) =>
         newPathD.has(id) && curPathD.get(id) === newPathD.get(id))
       const sameTabs = (sop.type !== 'profile' && sop.type !== 'trochoidal') ||
         JSON.stringify(curTabsByPath.get(sop.pathId) ?? []) === JSON.stringify(newTabsByPath.get(sop.pathId) ?? [])
-      if (sameSettings && samePaths && sameTabs) return cur
+      // Visibility is deliberately outside sameOpSettings (a toggle must not read as a
+      // settings change and discard segments), so the replayed value is applied here by
+      // hand — otherwise scrubbing across an op.setVisible would keep the live one and
+      // the operation would stay hidden, or reappear, against its own history.
+      if (sameSettings && samePaths && sameTabs) {
+        const wantVisible = (sop as { visible?: boolean }).visible ?? true
+        return cur.visible === wantVisible ? cur : { ...cur, visible: wantVisible }
+      }
     }
     return hydrateOp(sop)
   })
@@ -418,9 +436,19 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       prev.gesture !== undefined && payload.gesture !== undefined &&
       TRANSFORM_GESTURES.has(prev.gesture) && TRANSFORM_GESTURES.has(payload.gesture)
     const isWorkpieceChain = prev?.kind === 'workpiece.set' && payload.kind === 'workpiece.set'
+    // Exception: consecutive reorders merge regardless of elapsed time, for the same
+    // reason as workpiece.set — each event holds the whole order, so a program dragged
+    // into shape over several separate drags is one "Reorder ops" chip rather than one
+    // per drag. Anything else happening in between breaks the chain, which is right:
+    // that reorder then has work depending on it and deserves its own entry.
+    const isReorderChain = prev?.kind === 'op.reorder' && payload.kind === 'op.reorder'
+    // Visibility merges on the same terms and for the same reason: each event states the
+    // final answer for its operations, so a session of hiding and showing while judging a
+    // program is one decision, not one entry per click.
+    const isVisibleChain = prev?.kind === 'op.setVisible' && payload.kind === 'op.setVisible'
     if (
       prev &&
-      (isTransformChain || isWorkpieceChain || now - prev.t < COALESCE_MS) &&
+      (isTransformChain || isWorkpieceChain || isReorderChain || isVisibleChain || now - prev.t < COALESCE_MS) &&
       prev.seq !== s.savedSeq &&
       !checkpoints.has(prev.seq)
     ) {

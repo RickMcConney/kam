@@ -1,12 +1,12 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
-import { useToolpathStore, type AnyOperation, type PocketOperation } from '../../store/toolpathStore'
+import { useToolpathStore, batchOf, type AnyOperation, type PocketOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
@@ -35,7 +35,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -72,11 +72,19 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
-  const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
-  const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
-  const groups = editOp && editBoundary
-    ? [{ boundary: editBoundary, islands: editIslands }]
-    : groupPathsByContainment(selPaths)
+  // Editing covers every operation created by the same Generate click, not just the one
+  // that was clicked: applying one pocket to five selected paths is one decision, so
+  // changing its depth afterwards should be one edit rather than five identical ones.
+  const editBatch = editOp ? (batchOf(editOp, operations) as PocketOperation[]) : []
+  const editGroups = editBatch.flatMap((op) => {
+    const boundary = paths.find((p) => p.id === op.pathId)
+    return boundary
+      ? [{ op, boundary, islands: paths.filter((p) => op.islandIds.includes(p.id)) }]
+      : []
+  })
+  const groups = editOp
+    ? editGroups
+    : groupPathsByContainment(selPaths).map((g) => ({ ...g, op: undefined }))
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // One resolve per form render, shared by the Start row and every group generated below.
   // Multi-group selections all share the first group's footprint here; each group re-resolves
@@ -123,38 +131,44 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // browser stays responsive — same worker pattern as regenerate.ts. Awaiting the worker also
     // lets React paint the 'generating' state, so the old setTimeout(…,0) yield is unnecessary.
     try {
-      if (editOp && editBoundary) {
-        // Chain this op to where the previous one finishes, at generation time — so no
-        // regeneration is needed before simulating or exporting.
-        const hint = entryHintAt(editOp.id)
-        updateOperation(editOp.id, {
-          entryHint: hint,
-          toolId: form.toolId, strategy: form.strategy,
-          depthMM: form.depthMM, stepDownMM: form.stepDownMM,
-          stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
-          direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
-          startFrom: form.startFrom, status: 'generating',
-        } as Partial<AnyOperation>)
-        try {
-          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generatePocket', editBoundary.d, tool, {
-            strategy: form.strategy,
-            depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
-            stepoverPercent: form.stepoverPercent, direction: form.direction,
-            islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
-            finishAllowanceMM: form.allowanceMM, startNear: hint,
-            startZMM: startZFor(editBoundary.d, editOp.id),
-            safeHeightMM,
-          }))
-        } catch (err) {
-          setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+      if (editOp) {
+        for (const { op, boundary, islands } of editGroups) {
+          // Chain each op to where the previous one finishes, at generation time — so no
+          // regeneration is needed before simulating or exporting.
+          const hint = entryHintAt(op.id)
+          updateOperation(op.id, {
+            entryHint: hint,
+            toolId: form.toolId, strategy: form.strategy,
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
+            direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
+            startFrom: form.startFrom, status: 'generating',
+          } as Partial<AnyOperation>)
+          try {
+            setSegments(op.id, await runInWorkerFor(op.id, 'generatePocket', boundary.d, tool, {
+              strategy: form.strategy,
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+              stepoverPercent: form.stepoverPercent, direction: form.direction,
+              islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
+              finishAllowanceMM: form.allowanceMM, startNear: hint,
+              startZMM: startZFor(boundary.d, op.id),
+              safeHeightMM,
+            }))
+          } catch (err) {
+            setError(op.id, err instanceof Error ? err.message : 'Generation failed')
+          }
         }
       } else {
-        for (const { boundary, islands } of groups) {
-          // Re-Generate on a boundary this form already generated for updates that op in place.
+        // Every new op goes in ONE addOperations call: a Generate over several selected
+        // paths is a single decision, so it is a single timeline chip carrying a shared
+        // batchId — which is what lets the edit above cover all of them at once.
+        const newPayloads: Parameters<typeof addOperations>[0] = []
+        const slots = groups.map(({ boundary, islands }) => {
+          // Re-Generate on a boundary this form already generated updates that op in place.
           const existingId = session.liveOpId(boundary.id)
-          const name = `Pocket: ${boundary.name} (${tool.name})`
-          const opId = existingId ?? addOperation({
-            name,
+          if (existingId) return existingId
+          return newPayloads.push({
+            name: `Pocket: ${boundary.name} (${tool.name})`,
             type: 'pocket',
             toolId: form.toolId,
             strategy: form.strategy,
@@ -169,7 +183,15 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             rampIn: form.rampIn,
             allowanceMM: form.allowanceMM,
             startFrom: form.startFrom,
-          })
+          }) - 1
+        })
+        const newIds = addOperations(newPayloads)
+        for (let gi = 0; gi < groups.length; gi++) {
+          const { boundary, islands } = groups[gi]
+          const slot = slots[gi]
+          const existingId = typeof slot === 'string' ? slot : undefined
+          const opId = existingId ?? newIds[slot as number]
+          const name = `Pocket: ${boundary.name} (${tool.name})`
           if (!existingId) session.remember(boundary.id, opId)
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
@@ -203,23 +225,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   return (
-    <FormShell title={editOp ? 'Edit Pocket' : 'New Pocket Operation'} onClose={onClose}>
-      {groups.length === 0 ? (
+    <FormShell title={editOp ? `Edit Pocket${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New Pocket Operation'} onClose={onClose}>
+      {groups.length === 0 && (
         <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
-      ) : (
-        <div className="space-y-1">
-          {groups.map(({ boundary, islands }, i) => (
-            <div key={boundary.id}>
-              {groups.length > 1 && (
-                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Pocket {i + 1}</label>
-              )}
-              <div className="space-y-0.5">
-                <PathChip path={boundary} label="boundary" />
-                {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
-              </div>
-            </div>
-          ))}
-        </div>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
       {/* 'hybrid' is shown as "Auto" — it picks per area: raster the open ground, contour
@@ -295,6 +303,16 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
+      {/* Below the button — see PathListSection. Islands keep their label because that
+          is a real distinction; nothing else needs one. */}
+      <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
+        {groups.map(({ boundary, islands }) => (
+          <div key={boundary.id} className="space-y-0.5">
+            <PathChip path={boundary} />
+            {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+          </div>
+        ))}
+      </PathListSection>
     </FormShell>
   )
 }

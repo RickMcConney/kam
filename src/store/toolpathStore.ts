@@ -37,6 +37,10 @@ interface BaseOperation {
   color: string
   visible: boolean
   errorMessage?: string
+  // Operations created by ONE Generate click over several selected paths share a batchId.
+  // They are one decision, so they are one timeline chip and one thing to edit: opening
+  // any member in its form edits every operation in the batch. Absent = created alone.
+  batchId?: string
   // Which surface the cut starts from. A REFERENCE, not a number: it re-resolves against
   // the preceding operations every time this one generates, so engraving in a pocket
   // follows that pocket when its depth changes. Absent = auto. See cam/startHeight.ts.
@@ -196,7 +200,11 @@ interface ToolpathState {
   deleteOperations: (ids: string[]) => void
   setSegments: (id: string, segments: MotionSegment[]) => void
   setError: (id: string, error: string) => void
+  // Recorded: an invisible op is skipped by generateGcode, so hiding one edits the
+  // exported program. It undoes, and replay restores it.
   toggleVisibility: (id: string) => void
+  // Same, for a whole tool run in one event.
+  setOperationsVisible: (ids: string[], visible: boolean) => void
   moveOperation: (id: string, dir: 'up' | 'down') => void
   replaceOperations: (operations: AnyOperation[]) => void
   markNeedsUpdate: (pathId: string) => void
@@ -217,6 +225,24 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   return false
 }
 
+// Every operation created by the same Generate click as `op` — itself included, in
+// program order. Unbatched ops (created alone) are just themselves. The type check keeps
+// a batch to one operation kind, so a form only ever edits ops it knows how to edit.
+export function batchOf(op: AnyOperation, ops: AnyOperation[]): AnyOperation[] {
+  if (!op.batchId) return ops.filter((o) => o.id === op.id)
+  return ops.filter((o) => o.batchId === op.batchId && o.type === op.type)
+}
+
+// Every path an operation is built from — its boundary plus any islands. Accepts both
+// live ops and the serialized ones in timeline events; op types with no source paths,
+// like surfacing, return nothing.
+export function pathIdsOf(op: AnyOperation | SerializedOperation): string[] {
+  const ids: string[] = []
+  if ('pathId' in op && op.pathId) ids.push(op.pathId)
+  if ('islandIds' in op && op.islandIds) ids.push(...op.islandIds)
+  return ids
+}
+
 // Resolved start Z for an op against a given ops list, using the live paths/tools/stock.
 // Returns 0 for op types with no start-height support, so their stamp never drifts.
 function startZOf(op: AnyOperation, ops: AnyOperation[], cache?: ReturnType<typeof makeStartZCache>): number {
@@ -234,9 +260,13 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
 
   addOperations: (ops, opts) => {
     if (ops.length === 0) return []
+    // One call = one user action, so anything created together is a batch. Single-op
+    // calls stay unbatched — a lone operation has nothing to be edited alongside.
+    const batchId = ops.length > 1 ? uid('batch') : undefined
     const created = ops.map((op) => ({
       ...op, id: uid('op'), status: 'pending', segments: [],
       color: OP_TYPE_COLORS[op.type] ?? '#94a3b8', visible: true,
+      ...(batchId ? { batchId } : {}),
     } as AnyOperation))
     set((s) => ({ operations: [...s.operations, ...created] }))
     if (opts?.record !== false) {
@@ -322,8 +352,21 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
       ),
     })),
 
-  toggleVisibility: (id) =>
-    set((s) => ({ operations: s.operations.map((o) => o.id === id ? { ...o, visible: !o.visible } as AnyOperation : o) })),
+  toggleVisibility: (id) => {
+    const op = get().operations.find((o) => o.id === id)
+    if (!op) return
+    get().setOperationsVisible([id], !op.visible)
+  },
+
+  setOperationsVisible: (ids, visible) => {
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    const opType = get().operations.find((o) => idSet.has(o.id))?.type
+    set((s) => ({
+      operations: s.operations.map((o) => idSet.has(o.id) ? { ...o, visible } as AnyOperation : o),
+    }))
+    useTimelineStore.getState().record({ kind: 'op.setVisible', opIds: ids, visible, opType })
+  },
 
   moveOperation: (id, dir) => {
     const s = get()

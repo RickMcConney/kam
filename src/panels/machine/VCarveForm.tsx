@@ -1,12 +1,12 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore } from '../../store/toolStore'
-import { useToolpathStore, type AnyOperation, type VCarveOperation } from '../../store/toolpathStore'
+import { useToolpathStore, batchOf, type AnyOperation, type VCarveOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
@@ -25,7 +25,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -44,11 +44,17 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
-  const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
-  const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
-  const groups = editOp && editBoundary
-    ? [{ boundary: editBoundary, islands: editIslands }]
-    : groupPathsByContainment(selPaths)
+  // Editing covers every operation created by the same Generate click — see PocketForm.
+  const editBatch = editOp ? (batchOf(editOp, operations) as VCarveOperation[]) : []
+  const editGroups = editBatch.flatMap((op) => {
+    const boundary = paths.find((p) => p.id === op.pathId)
+    return boundary
+      ? [{ op, boundary, islands: paths.filter((p) => op.islandIds.includes(p.id)) }]
+      : []
+  })
+  const groups = editOp
+    ? editGroups
+    : groupPathsByContainment(selPaths).map((g) => ({ ...g, op: undefined }))
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
   const angleDeg = selectedTool?.vbitAngleDeg ?? 60
@@ -79,30 +85,33 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       { widthMM, heightMM },
     ).zMM
     try {
-      if (editOp && editBoundary) {
-        // Chain to where the previous operation finishes, at generation time.
-        const hint = entryHintAt(editOp.id)
-        updateOperation(editOp.id, {
-          entryHint: hint,
-          toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM,
-          startFrom: form.startFrom, status: 'generating',
-        } as Partial<AnyOperation>)
-        try {
-          const zStartMM = startZFor(editBoundary.d, editOp.id)
-          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateVCarve', editBoundary.d, tool, {
-            angleDeg, maxDepthMM: form.maxDepthMM + zStartMM, zStartMM,
-            islandDs: editIslands.map((p) => p.d), startNear: hint, safeHeightMM,
-          }))
-        } catch (err) {
-          setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+      if (editOp) {
+        for (const { op, boundary, islands } of editGroups) {
+          // Chain to where the previous operation finishes, at generation time.
+          const hint = entryHintAt(op.id)
+          updateOperation(op.id, {
+            entryHint: hint,
+            toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM,
+            startFrom: form.startFrom, status: 'generating',
+          } as Partial<AnyOperation>)
+          try {
+            const zStartMM = startZFor(boundary.d, op.id)
+            setSegments(op.id, await runInWorkerFor(op.id, 'generateVCarve', boundary.d, tool, {
+              angleDeg, maxDepthMM: form.maxDepthMM + zStartMM, zStartMM,
+              islandDs: islands.map((p) => p.d), startNear: hint, safeHeightMM,
+            }))
+          } catch (err) {
+            setError(op.id, err instanceof Error ? err.message : 'Generation failed')
+          }
         }
       } else {
-        for (const { boundary, islands } of groups) {
-          // Re-Generate on a boundary this form already generated for updates that op in place.
+        // One addOperations call for the whole selection — see PocketForm.
+        const newPayloads: Parameters<typeof addOperations>[0] = []
+        const slots = groups.map(({ boundary, islands }) => {
           const existingId = session.liveOpId(boundary.id)
-          const name = `V-Carve: ${boundary.name} (${tool.name})`
-          const opId = existingId ?? addOperation({
-            name,
+          if (existingId) return existingId
+          return newPayloads.push({
+            name: `V-Carve: ${boundary.name} (${tool.name})`,
             type: 'vcarve',
             toolId: form.toolId,
             pathId: boundary.id,
@@ -110,7 +119,15 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             maxDepthMM: form.maxDepthMM,
             angleDeg,
             startFrom: form.startFrom,
-          })
+          }) - 1
+        })
+        const newIds = addOperations(newPayloads)
+        for (let gi = 0; gi < groups.length; gi++) {
+          const { boundary, islands } = groups[gi]
+          const slot = slots[gi]
+          const existingId = typeof slot === 'string' ? slot : undefined
+          const opId = existingId ?? newIds[slot as number]
+          const name = `V-Carve: ${boundary.name} (${tool.name})`
           if (!existingId) session.remember(boundary.id, opId)
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
@@ -137,23 +154,9 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   return (
-    <FormShell title={editOp ? 'Edit V-Carve' : 'New V-Carve Operation'} onClose={onClose}>
-      {groups.length === 0 ? (
+    <FormShell title={editOp ? `Edit V-Carve${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New V-Carve Operation'} onClose={onClose}>
+      {groups.length === 0 && (
         <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
-      ) : (
-        <div className="space-y-1">
-          {groups.map(({ boundary, islands }, i) => (
-            <div key={boundary.id}>
-              {groups.length > 1 && (
-                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Shape {i + 1}</label>
-              )}
-              <div className="space-y-0.5">
-                <PathChip path={boundary} label="boundary" />
-                {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
-              </div>
-            </div>
-          ))}
-        </div>
       )}
       <ToolSelector tools={vbits.length > 0 ? vbits : tools} value={form.toolId} onChange={handleToolChange} />
       {selectedTool?.type !== 'vbit' && (
@@ -193,6 +196,16 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
+      {/* Below the button — see PathListSection. Islands keep their label because that
+          is a real distinction; nothing else needs one. */}
+      <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
+        {groups.map(({ boundary, islands }) => (
+          <div key={boundary.id} className="space-y-0.5">
+            <PathChip path={boundary} />
+            {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+          </div>
+        ))}
+      </PathListSection>
     </FormShell>
   )
 }

@@ -1,11 +1,11 @@
 // ─── Trochoidal form ──────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
-import { useToolpathStore, type CutSide, type AnyOperation, type TrochoidalOperation } from '../../store/toolpathStore'
+import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type TrochoidalOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
@@ -30,7 +30,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, deleteOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM } = useWorkpieceStore()
 
@@ -56,9 +56,13 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
 
-  const selectedPaths = editOp
-    ? paths.filter((p) => p.id === editOp.pathId)
-    : selPaths
+  // Editing covers every operation created by the same Generate click — see PocketForm.
+  const editBatch = editOp ? (batchOf(editOp, operations) as TrochoidalOperation[]) : []
+  const editPairs = editBatch.flatMap((op) => {
+    const path = paths.find((p) => p.id === op.pathId)
+    return path ? [{ op, path }] : []
+  })
+  const selectedPaths = editOp ? editPairs.map((e) => e.path) : selPaths
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
@@ -85,36 +89,39 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     let failed = false
     try {
       if (editOp) {
-        // Chain to where the previous operation finishes, at generation time.
-        const hint = entryHintAt(editOp.id)
-        updateOperation(editOp.id, {
-          entryHint: hint,
-          toolId: form.toolId, side: form.side, depthMM: form.depthMM,
-          stepDownMM: form.stepDownMM, direction: form.direction,
-          trochStepMM: form.trochStepMM, trochRadiusMM: form.trochRadiusMM,
-          finishingPass: form.finishingPass, rampIn: form.rampIn, status: 'generating',
-        } as Partial<AnyOperation>)
-        try {
-          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateTrochoidal', selectedPaths[0].d, tool, {
-            side: form.side, depthMM: form.depthMM,
-            stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
-            direction: form.direction, trochStepMM: form.trochStepMM,
-            trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
-            rampIn: form.rampIn, startNear: hint, safeHeightMM,
-          }))
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setError(editOp.id, msg)
-          setErrorMsg(msg)
-          failed = true
+        for (const { op, path } of editPairs) {
+          // Chain to where the previous operation finishes, at generation time.
+          const hint = entryHintAt(op.id)
+          updateOperation(op.id, {
+            entryHint: hint,
+            toolId: form.toolId, side: form.side, depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM, direction: form.direction,
+            trochStepMM: form.trochStepMM, trochRadiusMM: form.trochRadiusMM,
+            finishingPass: form.finishingPass, rampIn: form.rampIn, status: 'generating',
+          } as Partial<AnyOperation>)
+          try {
+            setSegments(op.id, await runInWorkerFor(op.id, 'generateTrochoidal', path.d, tool, {
+              side: form.side, depthMM: form.depthMM,
+              stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM, trochoidalEngagementFraction(tool, form.trochStepMM)),
+              direction: form.direction, trochStepMM: form.trochStepMM,
+              trochRadiusMM: form.trochRadiusMM, finishingPass: form.finishingPass,
+              rampIn: form.rampIn, startNear: hint, safeHeightMM,
+            }))
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Generation failed'
+            setError(op.id, msg)
+            setErrorMsg(msg)
+            failed = true
+          }
         }
       } else {
-        for (const path of selectedPaths) {
-          // Re-Generate on a path this form already generated for updates that op in place.
+        // One addOperations call for the whole selection — see PocketForm.
+        const newPayloads: Parameters<typeof addOperations>[0] = []
+        const slots = selectedPaths.map((path) => {
           const existingId = session.liveOpId(path.id)
-          const name = `Trochoidal: ${path.name} (${tool.name})`
-          const opId = existingId ?? addOperation({
-            name,
+          if (existingId) return existingId
+          return newPayloads.push({
+            name: `Trochoidal: ${path.name} (${tool.name})`,
             type: 'trochoidal',
             toolId: form.toolId,
             pathId: path.id,
@@ -126,7 +133,15 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
             trochRadiusMM: form.trochRadiusMM,
             finishingPass: form.finishingPass,
             rampIn: form.rampIn,
-          })
+          }) - 1
+        })
+        const newIds = addOperations(newPayloads)
+        for (let pi = 0; pi < selectedPaths.length; pi++) {
+          const path = selectedPaths[pi]
+          const slot = slots[pi]
+          const existingId = typeof slot === 'string' ? slot : undefined
+          const opId = existingId ?? newIds[slot as number]
+          const name = `Trochoidal: ${path.name} (${tool.name})`
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
@@ -160,19 +175,10 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   }
 
   return (
-    <FormShell title={editOp ? 'Edit Trochoidal' : 'New Trochoidal Operation'} onClose={onClose}>
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Paths {!editOp && selectedPaths.length > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedPaths.length} selected — one operation each)</span>}
-        </label>
-        {selectedPaths.length > 0 ? (
-          <div className="space-y-0.5">
-            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
-          </div>
-        ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
-        )}
-      </div>
+    <FormShell title={editOp ? `Edit Trochoidal${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Trochoidal Operation'} onClose={onClose}>
+      {selectedPaths.length === 0 && (
+        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
+      )}
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
@@ -230,6 +236,10 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
+      {/* Below the button — see PathListSection. */}
+      <PathListSection count={selectedPaths.length}>
+        {selectedPaths.map((p) => <PathChip key={p.id} path={p} />)}
+      </PathListSection>
     </FormShell>
   )
 }

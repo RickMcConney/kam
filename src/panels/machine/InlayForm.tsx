@@ -1,5 +1,5 @@
 // ─── Inlay form ───────────────────────────────────────────────────────────────
-import { FormShell, PathChip, AutoStepField, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, PathListSection, AutoStepField, GenerateBtn, useSessionOps } from './shared'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -290,27 +290,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
   return (
     <FormShell title={editOp ? `Edit Inlay (${editOp.role})` : 'New Inlay Operation'} onClose={onClose}>
-      <div>
-        {groups.length === 0 ? (
-          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
-        ) : (
-          <div className="space-y-1">
-            {groups.map(({ boundary, islands }, i) => (
-              <div key={boundary.id}>
-                {groups.length > 1 && (
-                  <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-                    Shape {i + 1}
-                  </label>
-                )}
-                <div className="space-y-0.5">
-                  <PathChip path={boundary} label="boundary" />
-                  {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {groups.length === 0 && (
+        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+      )}
       {/* Roughing tool */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">End Mill (Roughing / Profile)</label>
@@ -463,6 +445,16 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         label={editOp
           ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}`
           : `${updating ? 'Update' : 'Generate'} ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
+      {/* Below the button — see PathListSection. Islands keep their label because that
+          is a real distinction; nothing else needs one. */}
+      <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
+        {groups.map(({ boundary, islands }) => (
+          <div key={boundary.id} className="space-y-0.5">
+            <PathChip path={boundary} />
+            {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+          </div>
+        ))}
+      </PathListSection>
     </FormShell>
   )
 }

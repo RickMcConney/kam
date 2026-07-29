@@ -40,12 +40,30 @@ export function FormShell({ title, onClose, children }: { title: string; onClose
   )
 }
 
-export function PathChip({ path, label }: { path: ImportedPath; label: string }) {
+// `label` is only for a distinction the list can't otherwise show — "island" against a
+// boundary. Plain membership needs no label: everything in the list is selected, so
+// saying so on every row is noise.
+export function PathChip({ path, label }: { path: ImportedPath; label?: string }) {
   return (
     <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
-      {path.name}
-      <span className="text-gray-400 dark:text-neutral-500">({label})</span>
+      <span className="truncate">{path.name}</span>
+      {label && <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">({label})</span>}
+    </div>
+  )
+}
+
+// The path list every operation form ends with: same header, same divider, same placement
+// under the Generate button, whatever the form. Forms differ only in the chips they put
+// inside — a pocket labels its islands, a profile has nothing to add.
+export function PathListSection({ count, children }: { count: number; children: React.ReactNode }) {
+  if (count === 0) return null
+  return (
+    <div className="pt-1 border-t border-gray-200 dark:border-neutral-700">
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        Paths{count > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400"> ({count})</span>}
+      </label>
+      <div className="space-y-0.5">{children}</div>
     </div>
   )
 }

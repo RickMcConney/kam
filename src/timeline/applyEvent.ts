@@ -191,6 +191,16 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       return { ...state, operations: state.operations.filter((o) => !opIds.has(o.id)) }
     }
 
+    case 'op.setVisible': {
+      const ids = new Set(ev.opIds)
+      return {
+        ...state,
+        operations: state.operations.map((o) =>
+          ids.has(o.id) ? { ...o, visible: ev.visible } as SerializedOperation : o
+        ),
+      }
+    }
+
     case 'op.reorder': {
       const byId = new Map(state.operations.map((o) => [o.id, o]))
       const ordered = ev.order.flatMap((id) => {

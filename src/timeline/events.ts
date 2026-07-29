@@ -42,7 +42,10 @@ export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCe
 // An op reduced to the fields replay can actually reproduce. Live ops carry
 // state that no event ever recorded, so comparing raw ops against replayed
 // ones always reports a difference once the project has been used:
-// - visible: eye-icon toggles are view state (toggleOperationVisible doesn't record)
+// - visible: IS recorded now (op.setVisible), but stays out of the comparison — a
+//   visibility toggle must not read as a settings change, or scrubbing across one would
+//   throw away the operation's segments. restoreStateAt applies the replayed value
+//   explicitly instead.
 // - entryHint/generatedWith: written by optimizeStartPoints before a sim run or
 //   G-code export
 // - helicalCenterX/Y/helicalRadius: written back by regenerate with { record: false }
@@ -180,6 +183,10 @@ export type TimelineEventPayload =
   | { kind: 'op.update'; opId: string; opType?: string; updates: Partial<SerializedOperation> }
   | { kind: 'op.delete'; opIds: string[]; opType?: string }
   | { kind: 'op.reorder'; order: string[] }
+  // Hiding an operation is not a view toggle: generateGcode skips invisible ops, so it
+  // decides what lands in the exported program. Recorded for that reason — it undoes, and
+  // replay restores it instead of quietly showing everything again.
+  | { kind: 'op.setVisible'; opIds: string[]; visible: boolean; opType?: string }
   // ---- tabs ----
   | { kind: 'tabs.apply'; pathId: string; tabs: Tab[] }  // replaces all tabs of pathId
   | { kind: 'tabs.delete'; tabIds: string[] }
@@ -195,7 +202,7 @@ export type TimelineEvent = TimelineEventBase & TimelineEventPayload
 // rather than replaying it incorrectly.
 export const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set([
   'paths.add', 'paths.edit', 'paths.split', 'paths.setHidden', 'shape.params',
-  'op.add', 'op.update', 'op.delete', 'op.reorder',
+  'op.add', 'op.update', 'op.delete', 'op.reorder', 'op.setVisible',
   'tabs.apply', 'tabs.delete', 'tabs.moveT',
   'workpiece.set', 'snapshot',
 ])
@@ -252,6 +259,10 @@ export function labelFor(ev: TimelineEventPayload): string {
     case 'op.update': return opDisplayName(ev.opType)
     case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} ops`
     case 'op.reorder': return 'Reorder ops'
+    case 'op.setVisible': {
+      const what = ev.opIds.length === 1 ? opDisplayName(ev.opType) : `${ev.opIds.length} ops`
+      return ev.visible ? `Show ${what}` : `Hide ${what}`
+    }
     case 'tabs.apply': return `Tabs ×${ev.tabs.length}`
     case 'tabs.delete': return ev.tabIds.length === 1 ? 'Delete tab' : `Delete ${ev.tabIds.length} tabs`
     case 'tabs.moveT': return 'Move tab'

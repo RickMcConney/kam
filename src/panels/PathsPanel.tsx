@@ -1,63 +1,12 @@
-import { useState } from 'react'
+// The DOCUMENT list: paths, their visibility and their SVG import groups.
+//
+// Toolpaths used to live in the bottom half of this panel. They moved to the Operations
+// strip under the canvas (panels/OperationsPanel.tsx), which shows them in true program
+// order — this panel grouped them by tool id regardless of their actual order, so a list
+// running A, B, A drew two tidy groups while the machine performed three tool changes.
 import { ICON } from '../theme'
-import { Eye, EyeOff, Trash2, Layers, CheckCircle2, AlertCircle, Loader2, ChevronRight, ChevronDown, FolderOpen, Folder, ArrowUp, ArrowDown, Image, Box } from 'lucide-react'
+import { Eye, EyeOff, Trash2, Layers, ChevronRight, ChevronDown, FolderOpen, Folder, Image, Box } from 'lucide-react'
 import { usePathsStore } from '../store/pathsStore'
-import { useToolpathStore, GCODE_IMPORT_TOOL_ID } from '../store/toolpathStore'
-import type { AnyOperation, GcodeOperation, Profile3dOperation, TrochoidalOperation } from '../store/toolpathStore'
-import { useToolStore } from '../store/toolStore'
-import { OP_TYPE_COLORS } from '../colors'
-import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, SurfaceForm, VCarveForm, InlayForm, Profile3dForm } from './machine'
-
-const STATUS_ICON = {
-  pending: <span className="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-neutral-600 flex-shrink-0" />,
-  generating: <Loader2 size={ICON.xs} className="animate-spin text-blue-400 flex-shrink-0" />,
-  done: <CheckCircle2 size={ICON.xs} className="text-green-400 flex-shrink-0" />,
-  'needs-update': <AlertCircle size={ICON.xs} className="text-amber-400 flex-shrink-0" />,
-  error: <AlertCircle size={ICON.xs} className="text-red-400 flex-shrink-0" />,
-}
-
-const OP_TYPE_LABELS: Record<string, string> = {
-  profile:    'Profile',
-  trochoidal: 'Trochoidal',
-  pocket:     'Pocket',
-  drill:      'Drill',
-  surface:    'Surface',
-  vcarve:     'V-Carve',
-  inlay:      'Inlay',
-  profile3d:  '3D Profile',
-  gcode:      'G-code',
-}
-
-function GcodeInfo({ op, onClose }: { op: GcodeOperation; onClose: () => void }) {
-  const cutSegs = op.segments.filter((s) => !s.rapid).length
-  const rapidSegs = op.segments.filter((s) => s.rapid).length
-  return (
-    <div className="border-b border-gray-300 dark:border-neutral-700 px-3 py-3 space-y-2 bg-gray-50 dark:bg-neutral-900">
-      <div className="flex items-center justify-between">
-        <span className="text-label font-semibold text-gray-500 dark:text-neutral-400 uppercase tracking-wider">Imported G-code</span>
-        <button onClick={onClose} className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-xs">✕</button>
-      </div>
-      <div className="text-body text-gray-700 dark:text-neutral-300 space-y-1">
-        <div className="truncate" title={op.filename}><span className="text-gray-400 dark:text-neutral-500">File: </span>{op.filename}</div>
-        <div><span className="text-gray-400 dark:text-neutral-500">Moves: </span>{cutSegs.toLocaleString()} cut, {rapidSegs.toLocaleString()} rapid</div>
-      </div>
-      <p className="text-xs text-gray-400 dark:text-neutral-500">Read-only — re-import the file to update.</p>
-    </div>
-  )
-}
-
-function OperationEditForm({ op, onClose }: { op: AnyOperation; onClose: () => void }) {
-  if (op.type === 'profile') return <ProfileForm onClose={onClose} editOp={op} />
-  if (op.type === 'trochoidal') return <TrochoidalForm onClose={onClose} editOp={op as TrochoidalOperation} />
-  if (op.type === 'pocket') return <PocketForm onClose={onClose} editOp={op} />
-  if (op.type === 'drill') return <DrillForm onClose={onClose} editOp={op} />
-  if (op.type === 'surface') return <SurfaceForm onClose={onClose} editOp={op} />
-  if (op.type === 'vcarve') return <VCarveForm onClose={onClose} editOp={op} />
-  if (op.type === 'inlay') return <InlayForm onClose={onClose} editOp={op} />
-  if (op.type === 'profile3d') return <Profile3dForm onClose={onClose} editOp={op as Profile3dOperation} />
-  if (op.type === 'gcode') return <GcodeInfo op={op} onClose={onClose} />
-  return null
-}
 
 export default function PathsPanel() {
   const {
@@ -66,65 +15,6 @@ export default function PathsPanel() {
     toggleGroupVisibility, toggleGroupCollapsed, deleteGroup,
     showPath,
   } = usePathsStore()
-  const { operations, toggleVisibility: toggleOpVisibility, deleteOperation, replaceOperations, reorderOperations, deleteOperations } = useToolpathStore()
-  const toolsById = useToolStore((s) => Object.fromEntries(s.tools.map((t) => [t.id, t])))
-  const [editingOpId, setEditingOpId] = useState<string | null>(null)
-  const [collapsedOpGroups, setCollapsedOpGroups] = useState<Set<string>>(new Set())
-  const [confirmDeleteGroupId, setConfirmDeleteGroupId] = useState<string | null>(null)
-
-  const editingOp = operations.find((o) => o.id === editingOpId) ?? null
-
-  function toggleOpGroup(toolId: string) {
-    setCollapsedOpGroups((prev) => {
-      const next = new Set(prev)
-      if (next.has(toolId)) next.delete(toolId)
-      else next.add(toolId)
-      return next
-    })
-  }
-
-  // Group operations by toolId, preserving first-occurrence order for G-code grouping
-  const opGroupOrder: string[] = []
-  const opGroupMap = new Map<string, AnyOperation[]>()
-  for (const op of operations) {
-    if (!opGroupMap.has(op.toolId)) {
-      opGroupMap.set(op.toolId, [])
-      opGroupOrder.push(op.toolId)
-    }
-    opGroupMap.get(op.toolId)!.push(op)
-  }
-
-  function moveGroup(toolId: string, dir: 'up' | 'down') {
-    const idx = opGroupOrder.indexOf(toolId)
-    const newIdx = dir === 'up' ? idx - 1 : idx + 1
-    if (newIdx < 0 || newIdx >= opGroupOrder.length) return
-    const newOrder = [...opGroupOrder]
-    ;[newOrder[idx], newOrder[newIdx]] = [newOrder[newIdx], newOrder[idx]]
-    reorderOperations(newOrder.flatMap((tid) => opGroupMap.get(tid)!))
-  }
-
-  function moveWithinGroup(opId: string, toolId: string, dir: 'up' | 'down') {
-    const groupOps = [...(opGroupMap.get(toolId) ?? [])]
-    const idx = groupOps.findIndex((o) => o.id === opId)
-    const newIdx = dir === 'up' ? idx - 1 : idx + 1
-    if (newIdx < 0 || newIdx >= groupOps.length) return
-    ;[groupOps[idx], groupOps[newIdx]] = [groupOps[newIdx], groupOps[idx]]
-    reorderOperations(opGroupOrder.flatMap((tid) => tid === toolId ? groupOps : opGroupMap.get(tid)!))
-  }
-
-  function toggleGroupVisible(toolId: string, groupOps: AnyOperation[]) {
-    const allVisible = groupOps.every((o) => o.visible)
-    replaceOperations(operations.map((o) =>
-      o.toolId === toolId ? { ...o, visible: !allVisible } as AnyOperation : o
-    ))
-  }
-
-  function confirmDeleteGroup(groupOps: AnyOperation[]) {
-    deleteOperations(groupOps.map((o) => o.id))
-    if (groupOps.some((o) => o.id === editingOpId)) setEditingOpId(null)
-    setConfirmDeleteGroupId(null)
-  }
-
   // Separate grouped vs ungrouped paths; preserve original order within groups
   const groupOrder: string[] = []
   const groupMap = new Map<string, typeof paths>()
@@ -144,11 +34,6 @@ export default function PathsPanel() {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      {/* Inline operation editor — pinned to top so it's always visible */}
-      {editingOp && (
-        <OperationEditForm key={editingOp.id} op={editingOp} onClose={() => setEditingOpId(null)} />
-      )}
-
       {/* Path list */}
       <p className="px-3 pt-2 pb-1 text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Paths</p>
 
@@ -287,164 +172,6 @@ export default function PathsPanel() {
             </li>
           ))}
         </ul>
-      )}
-
-      {/* Toolpaths section */}
-      {operations.length > 0 && (
-        <div className="border-t border-gray-300 dark:border-neutral-700 mt-1">
-          <div className="flex items-center px-3 py-1.5">
-            <p className="flex-1 text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Toolpaths</p>
-          </div>
-          <ul className="px-2 pb-1 space-y-0.5">
-            {opGroupOrder.map((toolId) => {
-              const groupOps = opGroupMap.get(toolId)!
-              const collapsed = collapsedOpGroups.has(toolId)
-              const tool = toolsById[toolId]
-              const isGcodeGroup = toolId === GCODE_IMPORT_TOOL_ID
-              const toolLabel = isGcodeGroup ? 'Imported G-code' : (tool ? tool.name : 'Unknown Tool')
-              const toolDia = tool ? `Ø${tool.diameterMM}mm` : ''
-              const allVisible = groupOps.every((o) => o.visible)
-              const groupIdx = opGroupOrder.indexOf(toolId)
-
-              const isConfirming = confirmDeleteGroupId === toolId
-
-              return (
-                <li key={toolId}>
-                  {/* Tool group header */}
-                  {isConfirming ? (
-                    <div className="flex items-center gap-2 px-2 py-1 rounded bg-red-950/40 border border-red-800/40 select-none">
-                      <Trash2 size={ICON.sm} className="text-red-400 flex-shrink-0" />
-                      <span className="flex-1 text-body text-red-300 truncate">
-                        Delete {groupOps.length} op{groupOps.length !== 1 ? 's' : ''} from &ldquo;{toolLabel}&rdquo;?
-                      </span>
-                      <button
-                        onClick={() => setConfirmDeleteGroupId(null)}
-                        className="px-1.5 py-0.5 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200 flex-shrink-0"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => confirmDeleteGroup(groupOps)}
-                        className="px-1.5 py-0.5 text-xs rounded bg-red-700 hover:bg-red-600 text-white flex-shrink-0"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ) : (
-                  <div
-                    className="flex items-center gap-1 px-1 py-1 rounded cursor-pointer group select-none hover:bg-gray-200/50 dark:hover:bg-neutral-700/50"
-                    onClick={() => toggleOpGroup(toolId)}
-                  >
-                    <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">
-                      {collapsed ? <ChevronRight size={ICON.sm} /> : <ChevronDown size={ICON.sm} />}
-                    </span>
-                    <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">
-                      {collapsed ? <Folder size={ICON.sm} /> : <FolderOpen size={ICON.sm} />}
-                    </span>
-                    <span className="flex-1 text-body font-medium text-gray-700 dark:text-neutral-300 truncate" title={toolLabel}>{toolLabel}</span>
-                    {toolDia && <span className="text-xs text-gray-400 dark:text-neutral-500 flex-shrink-0">{toolDia}</span>}
-                    <span className="text-xs text-gray-400 dark:text-neutral-500 flex-shrink-0 ml-1">{groupOps.length}</span>
-                    {/* Group action buttons */}
-                    <div className="opacity-0 group-hover:opacity-100 flex transition-opacity flex-shrink-0">
-                      <button
-                        title="Move group up"
-                        disabled={groupIdx === 0}
-                        onClick={(e) => { e.stopPropagation(); moveGroup(toolId, 'up') }}
-                        className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        <ArrowUp size={ICON.sm} />
-                      </button>
-                      <button
-                        title="Move group down"
-                        disabled={groupIdx === opGroupOrder.length - 1}
-                        onClick={(e) => { e.stopPropagation(); moveGroup(toolId, 'down') }}
-                        className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        <ArrowDown size={ICON.sm} />
-                      </button>
-                      <button
-                        title={allVisible ? 'Hide group' : 'Show group'}
-                        onClick={(e) => { e.stopPropagation(); toggleGroupVisible(toolId, groupOps) }}
-                        className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
-                      >
-                        {allVisible ? <Eye size={ICON.sm} /> : <EyeOff size={ICON.sm} />}
-                      </button>
-                      <button
-                        title="Delete group"
-                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteGroupId(toolId) }}
-                        className="p-0.5 rounded hover:bg-red-900/40 text-gray-500 dark:text-neutral-400 hover:text-red-400"
-                      >
-                        <Trash2 size={ICON.sm} />
-                      </button>
-                    </div>
-                  </div>
-                  )}
-
-                  {/* Operations within this tool group */}
-                  {!collapsed && (
-                    <ul className="ml-5 space-y-0.5 mt-0.5">
-                      {groupOps.map((op) => {
-                        const groupIdx = groupOps.indexOf(op)
-                        const typeColor = OP_TYPE_COLORS[op.type] ?? '#94a3b8'
-                        const typeLabel = OP_TYPE_LABELS[op.type] ?? op.type
-                        return (
-                          <li
-                            key={op.id}
-                            className={[
-                              'flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer group',
-                              op.id === editingOpId
-                                ? 'bg-blue-600/20 text-blue-300'
-                                : 'hover:bg-gray-200/50 dark:hover:bg-neutral-700/50',
-                            ].join(' ')}
-                            onClick={() => setEditingOpId(op.id === editingOpId ? null : op.id)}
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: typeColor }} />
-                            {STATUS_ICON[op.status]}
-                            <span className="flex-1 text-body truncate text-gray-700 dark:text-neutral-300" title={op.name}>{op.name}</span>
-                            <span className="text-xs text-gray-400 dark:text-neutral-600 flex-shrink-0">{typeLabel}</span>
-                            {/* Reorder within group */}
-                            <div className="opacity-0 group-hover:opacity-100 flex transition-opacity flex-shrink-0">
-                              <button
-                                title="Move up within group"
-                                disabled={groupIdx === 0}
-                                onClick={(e) => { e.stopPropagation(); moveWithinGroup(op.id, toolId, 'up') }}
-                                className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                              >
-                                <ArrowUp size={ICON.sm} />
-                              </button>
-                              <button
-                                title="Move down within group"
-                                disabled={groupIdx === groupOps.length - 1}
-                                onClick={(e) => { e.stopPropagation(); moveWithinGroup(op.id, toolId, 'down') }}
-                                className="p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                              >
-                                <ArrowDown size={ICON.sm} />
-                              </button>
-                            </div>
-                            <button
-                              title={op.visible ? 'Hide' : 'Show'}
-                              onClick={(e) => { e.stopPropagation(); toggleOpVisibility(op.id) }}
-                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 transition-opacity flex-shrink-0"
-                            >
-                              {op.visible ? <Eye size={ICON.sm} /> : <EyeOff size={ICON.sm} />}
-                            </button>
-                            <button
-                              title="Delete"
-                              onClick={(e) => { e.stopPropagation(); deleteOperation(op.id); if (op.id === editingOpId) setEditingOpId(null) }}
-                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-900/40 text-gray-500 dark:text-neutral-400 hover:text-red-400 transition-opacity flex-shrink-0"
-                            >
-                              <Trash2 size={ICON.sm} />
-                            </button>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </div>
       )}
 
     </div>

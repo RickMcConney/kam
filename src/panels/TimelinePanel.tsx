@@ -15,6 +15,7 @@ import { familyOf, type EventFamily, type TimelineEvent } from '../timeline/even
 import { useUIStore } from '../store/uiStore'
 import { OP_TYPE_COLORS } from '../colors'
 import { InlayIcon } from './MachinePanel'
+import { BottomTabs } from './BottomTabs'
 
 // Operation timeline strip docked under the 2D canvas: one chip per recorded
 // event, cursor between chips, click/drag to scrub back to any point in time.
@@ -84,6 +85,7 @@ function chipVisual(ev: TimelineEvent): { Icon: ChipIcon; color?: string } {
     case 'op.update': return { Icon: OP_ICONS[ev.opType ?? ''] ?? Wrench, color: OP_TYPE_COLORS[ev.opType ?? ''] }
     case 'op.delete': return { Icon: Trash2, color: OP_TYPE_COLORS[ev.opType ?? ''] }
     case 'op.reorder': return { Icon: ArrowUpDown }
+    case 'op.setVisible': return { Icon: ev.visible ? Eye : EyeOff, color: OP_TYPE_COLORS[ev.opType ?? ''] }
     case 'tabs.apply':
     case 'tabs.delete':
     case 'tabs.moveT': return { Icon: RectangleEllipsis, color: OP_TYPE_COLORS.tabs }
@@ -131,7 +133,7 @@ function Chip({ ev, past, isCursor, compact }: {
           e.preventDefault()
           useTimelineStore.getState().removeEvent(ev.seq)
         }}
-        className="absolute -top-1.5 -right-1.5 z-10 hidden group-hover:flex items-center justify-center w-4 h-4 rounded-full border border-gray-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-gray-500 dark:text-neutral-400 hover:text-red-500 dark:hover:text-red-400 hover:border-red-400"
+        className="absolute -top-1.5 -right-1.5 z-10 hidden group-hover:flex items-center justify-center w-4 h-4 rounded-full shadow-sm border border-gray-400 dark:border-neutral-400 bg-white dark:bg-neutral-800 text-gray-800 dark:text-neutral-100 hover:text-white hover:bg-red-500 hover:border-red-500"
       >
         <X size={10} />
       </button>}
@@ -337,7 +339,8 @@ export default function TimelinePanel() {
 
   return (
     <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0 select-none">
-      <div className="flex items-center h-11 px-2 gap-1">
+      <div className="flex items-center h-14 px-2 gap-1">
+        <BottomTabs />
         {/* Transport */}
         <button className={btnCls} title="Back to start" disabled={cursor === 0} onClick={() => scrubTo(0)}>
           <SkipBack size={14} />
@@ -370,6 +373,11 @@ export default function TimelinePanel() {
               cursor === 0 ? 'bg-blue-500 ring-2 ring-blue-500/50' : 'bg-gray-300 dark:bg-neutral-600',
             ].join(' ')}
           />
+          {events.length === 0 && (
+            <span className="ml-1.5 text-[13px] text-gray-400 dark:text-neutral-500">
+              No history yet — draw or import a path and every edit lands here.
+            </span>
+          )}
           {events.map((ev) => (
             <Chip key={ev.id} ev={ev} past={ev.seq <= cursor} isCursor={ev.seq === cursor} compact={compact} />
           ))}

@@ -54,6 +54,9 @@ interface UIState {
   setupPanelOpen: boolean
   helpOpen: boolean
   timelineOpen: boolean
+  // Which strip the bottom bar shows: history (timeline) or the ordered program
+  // (operations). They are different orderings of different things — see OperationsPanel.
+  bottomTab: 'timeline' | 'operations'
   // Ask MachinePanel to open an operation's edit form (set by TimelinePanel
   // when an op chip is clicked, consumed + cleared by MachinePanel).
   requestEditOpId: string | null
@@ -92,6 +95,7 @@ interface UIState {
   setSetupPanelOpen: (open: boolean) => void
   setHelpOpen: (open: boolean) => void
   setTimelineOpen: (open: boolean) => void
+  setBottomTab: (tab: 'timeline' | 'operations') => void
   setRequestEditOpId: (id: string | null) => void
   setRequestEditEventId: (id: string | null) => void
   setTransformEditEventId: (id: string | null) => void
@@ -145,6 +149,7 @@ export const useUIStore = create<UIState>()(
   setupPanelOpen: false,
   helpOpen: false,
   timelineOpen: true,
+  bottomTab: 'timeline' as const,
   requestEditOpId: null,
   requestEditEventId: null,
   requestMachineForm: null,
@@ -166,6 +171,7 @@ export const useUIStore = create<UIState>()(
   setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
   setHelpOpen: (open) => set({ helpOpen: open }),
   setTimelineOpen: (open) => set({ timelineOpen: open }),
+  setBottomTab: (tab) => set({ bottomTab: tab }),
   setRequestEditOpId: (id) => set({ requestEditOpId: id }),
   setRequestEditEventId: (id) => set({ requestEditEventId: id }),
   setTransformEditEventId: (id) => set({ transformEditEventId: id }),
@@ -202,7 +208,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'freazykam-ui',
-      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen }),
+      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen, bottomTab: s.bottomTab }),
     }
   )
 )

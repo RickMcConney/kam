@@ -1,11 +1,11 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
-import { useToolpathStore, type CutSide, type AnyOperation, type ProfileOperation } from '../../store/toolpathStore'
+import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type ProfileOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
@@ -28,7 +28,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, setSegments, setError, updateOperation, deleteOperation } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, deleteOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -54,9 +54,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
 
-  const selectedPaths = editOp
-    ? paths.filter((p) => p.id === editOp.pathId)
-    : selPaths
+  // Editing covers every operation created by the same Generate click — profiling five
+  // selected paths at once is one decision, so changing the depth afterwards is one edit.
+  const editBatch = editOp ? (batchOf(editOp, operations) as ProfileOperation[]) : []
+  const editPairs = editBatch.flatMap((op) => {
+    const path = paths.find((p) => p.id === op.pathId)
+    return path ? [{ op, path }] : []
+  })
+  const selectedPaths = editOp ? editPairs.map((e) => e.path) : selPaths
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Outside cuts reach a full diameter past the path (radius of offset + radius of tool),
   // centerline half that, inside not at all.
@@ -88,33 +93,38 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     let failed = false
     try {
       if (editOp) {
-        // Chain to where the previous operation finishes, at generation time.
-        const hint = entryHintAt(editOp.id)
-        updateOperation(editOp.id, {
-          entryHint: hint,
-          toolId: form.toolId, side: form.side, depthMM: form.depthMM,
-          stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn,
-          startFrom: form.startFrom, status: 'generating',
-        } as Partial<AnyOperation>)
-        try {
-          setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateProfile', selectedPaths[0].d, tool, {
-            side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
-            direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
-            startZMM: startZFor(selectedPaths[0].d, editOp.id),
-          }))
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setError(editOp.id, msg)
-          setErrorMsg(msg)
-          failed = true
+        for (const { op, path } of editPairs) {
+          // Chain to where the previous operation finishes, at generation time.
+          const hint = entryHintAt(op.id)
+          updateOperation(op.id, {
+            entryHint: hint,
+            toolId: form.toolId, side: form.side, depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn,
+            startFrom: form.startFrom, status: 'generating',
+          } as Partial<AnyOperation>)
+          try {
+            setSegments(op.id, await runInWorkerFor(op.id, 'generateProfile', path.d, tool, {
+              side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
+              direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
+              startZMM: startZFor(path.d, op.id),
+            }))
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Generation failed'
+            setError(op.id, msg)
+            setErrorMsg(msg)
+            failed = true
+          }
         }
       } else {
-        for (const path of selectedPaths) {
-          // Re-Generate on a path this form already generated for updates that op in place.
+        // One addOperations call for the whole selection: one timeline chip, one shared
+        // batchId, and therefore one thing to edit later.
+        const newPayloads: Parameters<typeof addOperations>[0] = []
+        const slots = selectedPaths.map((path) => {
+          // Re-Generate on a path this form already generated updates that op in place.
           const existingId = session.liveOpId(path.id)
-          const name = `Profile: ${path.name} (${tool.name})`
-          const opId = existingId ?? addOperation({
-            name,
+          if (existingId) return existingId
+          return newPayloads.push({
+            name: `Profile: ${path.name} (${tool.name})`,
             type: 'profile',
             toolId: form.toolId,
             pathId: path.id,
@@ -124,7 +134,15 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             direction: form.direction,
             rampIn: form.rampIn,
             startFrom: form.startFrom,
-          })
+          }) - 1
+        })
+        const newIds = addOperations(newPayloads)
+        for (let pi = 0; pi < selectedPaths.length; pi++) {
+          const path = selectedPaths[pi]
+          const slot = slots[pi]
+          const existingId = typeof slot === 'string' ? slot : undefined
+          const opId = existingId ?? newIds[slot as number]
+          const name = `Profile: ${path.name} (${tool.name})`
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
@@ -155,19 +173,10 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   }
 
   return (
-    <FormShell title={editOp ? 'Edit Profile' : 'New Profile Operation'} onClose={onClose}>
-      <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Paths {!editOp && selectedPaths.length > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedPaths.length} selected — one operation each)</span>}
-        </label>
-        {selectedPaths.length > 0 ? (
-          <div className="space-y-0.5">
-            {selectedPaths.map((p) => <PathChip key={p.id} path={p} label="selected" />)}
-          </div>
-        ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
-        )}
-      </div>
+    <FormShell title={editOp ? `Edit Profile${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Profile Operation'} onClose={onClose}>
+      {selectedPaths.length === 0 && (
+        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
+      )}
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
@@ -193,6 +202,10 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
+      {/* Below the button — see PathListSection. */}
+      <PathListSection count={selectedPaths.length}>
+        {selectedPaths.map((p) => <PathChip key={p.id} path={p} />)}
+      </PathListSection>
     </FormShell>
   )
 }
