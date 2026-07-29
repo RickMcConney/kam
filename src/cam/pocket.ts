@@ -12,7 +12,7 @@
 // This file stays the module everything imports — several scripts/ harnesses
 // import '../src/cam/pocket.ts' by explicit path.
 import { flattenPath, splitSelfIntersecting, douglasPeucker, type Pt2 } from './pathFlattener'
-import { zPasses, pointInPolygon } from './geom'
+import { zPasses, pointInPolygon, classifySubpaths } from './geom'
 import { reportProgress, subProgress } from './progress'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -45,11 +45,20 @@ export function generatePocket(
   tool: Tool,
   params: PocketParams,
 ): MotionSegment[] {
-  let boundaries = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
-  if (boundaries.length === 0) throw new Error('No geometry found in boundary path')
+  const rings = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
+  if (rings.length === 0) throw new Error('No geometry found in boundary path')
 
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
   if (stepoverMM < 0.01) throw new Error('Stepover too small')
+
+  // One path can carry several subpaths, and a subpath nested inside another is a HOLE,
+  // not a pocket of its own — the counters of R/B/O in a text object are the everyday
+  // case. Without this every counter was pocketed as a separate boundary and its parent
+  // glyph was pocketed as if solid, so the counters got machined away. (Splitting the
+  // text into separate paths worked because then the form's containment grouping saw
+  // them and passed them as islandDs.) Cut order stays subpath order, so glyph-to-glyph
+  // travel is unchanged.
+  let regions = classifySubpaths(rings, { preserveOrder: true })
 
   let islands: Pt2[][] = []
   for (const islandD of params.islandDs) {
@@ -60,12 +69,18 @@ export function generatePocket(
 
   // Finish allowance applied per resolved ring (positive insets the boundary + grows
   // islands; negative grows the pocket). Per-ring keeps self-intersecting regions
-  // separate, unlike offsetting the raw path as one unit.
+  // separate, unlike offsetting the raw path as one unit. Holes derived from the
+  // boundary's own subpaths are walls of the pocket too, so they grow like islands.
   const allowance = params.finishAllowanceMM ?? 0
   if (allowance !== 0) {
-    boundaries = boundaries.flatMap(b => { const r = offsetRing(b, -allowance); return r.length >= 3 ? [r] : [] })
+    regions = regions.flatMap(r => {
+      const outer = offsetRing(r.outer, -allowance)
+      if (outer.length < 3) return []
+      const holes = r.holes.flatMap(h => { const o = offsetRing(h, allowance); return o.length >= 3 ? [o] : [] })
+      return [{ outer, holes }]
+    })
     islands = islands.flatMap(isl => { const r = offsetRing(isl, allowance); return r.length >= 3 ? [r] : [] })
-    if (boundaries.length === 0) throw new Error('Pocket allowance collapsed the boundary')
+    if (regions.length === 0) throw new Error('Pocket allowance collapsed the boundary')
   }
 
   // Legacy ids from older saved projects/forms. The offset-ring spiral ('spiral', once
@@ -74,7 +89,8 @@ export function generatePocket(
   const rawStrategy = (params.strategy ?? 'raster') as string
   const remapped = rawStrategy === 'spiralOffset' || rawStrategy === 'spiral' ? 'morph' : rawStrategy
   const strategy: PocketStrategy = remapped in PLANNERS ? (remapped as PocketStrategy) : 'raster'
-  const zLevels = zPasses(params.depthMM, params.stepDownMM)
+  const startZ = Math.min(0, params.startZMM ?? 0)
+  const zLevels = zPasses(params.depthMM, params.stepDownMM, startZ)
   const segs: MotionSegment[] = []
 
   const safeZ = params.safeHeightMM ?? 5
@@ -89,10 +105,10 @@ export function generatePocket(
   reportProgress(0, 'Planning')
   const PLAN_SHARE = 0.8
   let lastPos: Pt2 | null = null
-  for (let bi = 0; bi < boundaries.length; bi++) {
-    const boundary = boundaries[bi]
-    const bLo = bi / boundaries.length
-    const bHi = (bi + 1) / boundaries.length
+  for (let bi = 0; bi < regions.length; bi++) {
+    const boundary = regions[bi].outer
+    const bLo = bi / regions.length
+    const bHi = (bi + 1) / regions.length
     const bSpan = bHi - bLo
     // Only pass islands that lie inside this boundary sub-ring. When both the boundary
     // and island paths are self-intersecting they each split into multiple sub-rings;
@@ -103,7 +119,13 @@ export function generatePocket(
     // Tested per VERTEX, not by centroid: a C-shaped island's centroid lies outside the
     // island itself and can fall outside the boundary too, which dropped the island from
     // the pocket entirely and machined straight through it.
-    const localIslands = islands.filter(isl => isl.some(([x, y]) => pointInPolygon(x, y, boundary)))
+    //
+    // The region's own nested subpaths are holes by construction, so they join the
+    // explicitly-selected islands that fall inside this boundary.
+    const localIslands = [
+      ...regions[bi].holes,
+      ...islands.filter(isl => isl.some(([x, y]) => pointInPolygon(x, y, boundary))),
+    ]
 
     const plan = _timed('plan', () => PLANNERS[strategy](boundary, localIslands, tool, params,
       subProgress(bLo, bLo + bSpan * PLAN_SHARE, 'Planning')))
@@ -125,7 +147,9 @@ export function generatePocket(
       reportProgress(bLo + bSpan * (PLAN_SHARE + (1 - PLAN_SHARE) * (zi / zLevels.length)),
         zLevels.length > 1 ? `Depth ${zi + 1}/${zLevels.length}` : 'Cutting')
       const z = zLevels[zi]
-      const prevZ = zi === 0 ? 0 : zLevels[zi - 1]
+      // The surface the level descends from: the previous level, or the operation's own
+      // start surface for the first one (stock top unless it begins in an existing pocket).
+      const prevZ = zi === 0 ? startZ : zLevels[zi - 1]
       // Clear of the work before repositioning to this level's fixed start point.
       if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
       const segStart = segs.length

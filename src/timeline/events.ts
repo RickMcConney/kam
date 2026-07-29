@@ -173,7 +173,10 @@ export type TimelineEventPayload =
   // ---- CAM operations ----
   // opType on update/delete is display metadata (chip icon/label survives the
   // op being gone) — replay ignores it.
-  | { kind: 'op.add'; op: SerializedOperation }
+  // `linked` carries the sibling ops created by the SAME Generate click — an inlay's
+  // roughing + finishing phases are two operations but one user action, and the
+  // timeline records actions. `op` is the one a chip click opens for editing.
+  | { kind: 'op.add'; op: SerializedOperation; linked?: SerializedOperation[] }
   | { kind: 'op.update'; opId: string; opType?: string; updates: Partial<SerializedOperation> }
   | { kind: 'op.delete'; opIds: string[]; opType?: string }
   | { kind: 'op.reorder'; order: string[] }

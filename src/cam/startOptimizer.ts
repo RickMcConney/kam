@@ -2,6 +2,9 @@ import { regenerateOperation } from './regenerate'
 import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
+import { usePathsStore } from '../store/pathsStore'
+import { useToolStore } from '../store/toolStore'
+import { resolveStartZForOp } from './startHeight'
 
 // Chain the operations so each one starts near where the previous finished, cutting the
 // rapid between them. The entry point is an input to generation, not something that can be
@@ -96,7 +99,17 @@ export async function optimizeStartPoints(): Promise<void> {
     // snapshot above was taken.
     const live = useToolpathStore.getState().operations.find((o) => o.id === op.id)
     const cur = live?.generatedWith
-    if (!cur || Math.abs(cur.safeHeightMM - safeHeightMM) > 1e-9 || !sameHint(cur.entryHint, want.entryHint)) {
+    // Start height belongs in this comparison for the same reason safe height does: it is
+    // decided OUTSIDE the operation, so an op can go stale without anything about it
+    // changing. This is the backstop that makes a wrong Z impossible to export — the
+    // store's marking is what makes it VISIBLE, but reaching here regenerates regardless.
+    const liveOps = useToolpathStore.getState().operations
+    const wantStartZ = live
+      ? resolveStartZForOp(live, liveOps, usePathsStore.getState().paths,
+          { widthMM, heightMM }, useToolStore.getState().tools).zMM
+      : 0
+    const startZDrifted = !!cur && Math.abs((cur.startZMM ?? 0) - wantStartZ) > 1e-9
+    if (!cur || startZDrifted || Math.abs(cur.safeHeightMM - safeHeightMM) > 1e-9 || !sameHint(cur.entryHint, want.entryHint)) {
       useToolpathStore.getState().updateOperation(op.id, { entryHint: want.entryHint })
       await regenerateOperation(op.id)   // stamps generatedWith with what it actually used
     }

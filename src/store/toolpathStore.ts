@@ -5,6 +5,10 @@ import { useTimelineStore } from '../timeline/timelineStore'
 import { serializeOp, DERIVED_OP_KEYS, type SerializedOperation } from '../timeline/events'
 import { useWorkpieceStore } from './workpieceStore'
 import type { CuttingDirection } from './toolStore'
+import type { StartFrom } from '../cam/startHeight'
+import { resolveStartZForOp, makeStartZCache } from '../cam/startHeight'
+import { usePathsStore } from './pathsStore'
+import { useToolStore } from './toolStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
 type OperationStatus = 'pending' | 'generating' | 'done' | 'needs-update' | 'error'
 
@@ -33,6 +37,10 @@ interface BaseOperation {
   color: string
   visible: boolean
   errorMessage?: string
+  // Which surface the cut starts from. A REFERENCE, not a number: it re-resolves against
+  // the preceding operations every time this one generates, so engraving in a pocket
+  // follows that pocket when its depth changes. Absent = auto. See cam/startHeight.ts.
+  startFrom?: StartFrom
   entryHint?: { x: number; y: number }
   // The generation inputs the CURRENT segments were actually built from, stamped by
   // optimizeStartPoints after it regenerates. It exists so a simulate or export can tell
@@ -43,7 +51,7 @@ interface BaseOperation {
   // the one setting outside the operation that changes what generation emits, and nothing
   // marks operations stale for it. Cleared by setSegments, so every other generation path
   // invalidates it.
-  generatedWith?: { entryHint?: { x: number; y: number }; safeHeightMM: number }
+  generatedWith?: { entryHint?: { x: number; y: number }; safeHeightMM: number; startZMM?: number }
 }
 
 export interface ProfileOperation extends BaseOperation {
@@ -175,6 +183,10 @@ interface ToolpathState {
   // (regenerate's helical-center write-back, G-code import which records its
   // own event after segments are attached).
   addOperation: (op: AddPayload, opts?: { record?: boolean }) => string
+  // Several ops from ONE user action (inlay's roughing + finishing phases): added
+  // together and recorded as a SINGLE timeline chip. Returns the new ids in the
+  // order given; ops[0] is the one a chip click opens for editing.
+  addOperations: (ops: AddPayload[], opts?: { record?: boolean }) => string[]
   updateOperation: (id: string, updates: Partial<AnyOperation>, opts?: { record?: boolean }) => void
   deleteOperation: (id: string) => void
   // Recorded variants of replaceOperations for user-facing reorder /
@@ -188,6 +200,10 @@ interface ToolpathState {
   moveOperation: (id: string, dir: 'up' | 'down') => void
   replaceOperations: (operations: AnyOperation[]) => void
   markNeedsUpdate: (pathId: string) => void
+  // Flags operations whose start height no longer matches what their segments were cut
+  // from — a reorder, a deleted op or an edited depth all move the floor another op
+  // sits on, and nothing about THAT op changed. Not recorded: it's derived state.
+  revalidateStartHeights: () => void
 }
 
 export function refsPathId(op: AnyOperation, pathId: string): boolean {
@@ -201,18 +217,37 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   return false
 }
 
+// Resolved start Z for an op against a given ops list, using the live paths/tools/stock.
+// Returns 0 for op types with no start-height support, so their stamp never drifts.
+function startZOf(op: AnyOperation, ops: AnyOperation[], cache?: ReturnType<typeof makeStartZCache>): number {
+  const { widthMM, heightMM } = useWorkpieceStore.getState()
+  return resolveStartZForOp(
+    op, ops, usePathsStore.getState().paths, { widthMM, heightMM },
+    useToolStore.getState().tools, cache,
+  ).zMM
+}
+
 export const useToolpathStore = create<ToolpathState>()((set, get) => ({
   operations: [],
 
-  addOperation: (op, opts) => {
-    const id = uid('op')
-    const color = OP_TYPE_COLORS[op.type] ?? '#94a3b8'
-    const newOp = { ...op, id, status: 'pending', segments: [], color, visible: true } as AnyOperation
-    set((s) => ({ operations: [...s.operations, newOp] }))
+  addOperation: (op, opts) => get().addOperations([op], opts)[0],
+
+  addOperations: (ops, opts) => {
+    if (ops.length === 0) return []
+    const created = ops.map((op) => ({
+      ...op, id: uid('op'), status: 'pending', segments: [],
+      color: OP_TYPE_COLORS[op.type] ?? '#94a3b8', visible: true,
+    } as AnyOperation))
+    set((s) => ({ operations: [...s.operations, ...created] }))
     if (opts?.record !== false) {
-      useTimelineStore.getState().record({ kind: 'op.add', op: serializeOp(newOp) })
+      const [first, ...rest] = created
+      useTimelineStore.getState().record({
+        kind: 'op.add',
+        op: serializeOp(first),
+        ...(rest.length > 0 ? { linked: rest.map(serializeOp) } : {}),
+      })
     }
-    return id
+    return created.map((o) => o.id)
   },
 
   updateOperation: (id, updates, opts) => {
@@ -229,6 +264,10 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
       if (!tl.amendOpSettings(id, recordable as Partial<SerializedOperation>)) {
         tl.record({ kind: 'op.update', opId: id, opType, updates: recordable as Partial<SerializedOperation> })
       }
+      // A settings edit here can move this op's floor (depth, boundary, islands, its own
+      // start reference), which is a change to everything sitting ON that floor. Derived
+      // writes returned above, so this only runs for real edits.
+      get().revalidateStartHeights()
     }
   },
 
@@ -236,17 +275,20 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     const opType = get().operations.find((o) => o.id === id)?.type
     set((s) => ({ operations: s.operations.filter((o) => o.id !== id) }))
     useTimelineStore.getState().record({ kind: 'op.delete', opIds: [id], opType })
+    get().revalidateStartHeights()
   },
 
   reorderOperations: (operations) => {
     set({ operations })
     useTimelineStore.getState().record({ kind: 'op.reorder', order: operations.map((o) => o.id) })
+    get().revalidateStartHeights()
   },
 
   deleteOperations: (ids) => {
     if (ids.length === 0) return
     set((s) => ({ operations: s.operations.filter((o) => !ids.includes(o.id)) }))
     useTimelineStore.getState().record({ kind: 'op.delete', opIds: ids })
+    get().revalidateStartHeights()
   },
 
   // Stamps `generatedWith` with the inputs these segments were built from: the operation's
@@ -256,7 +298,14 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
   // nothing. A caller that generates without applying op.entryHint must clear it first.
   setSegments: (id, segments) => {
     const cur = get().operations.find((o) => o.id === id)
-    const generatedWith = { entryHint: cur?.entryHint, safeHeightMM: useWorkpieceStore.getState().safeHeightMM }
+    const generatedWith = {
+      entryHint: cur?.entryHint,
+      safeHeightMM: useWorkpieceStore.getState().safeHeightMM,
+      // The surface these segments were cut from. Recorded because it is derived from the
+      // OTHER operations: reorder them, or change the depth of one, and this op's start
+      // height silently becomes something else. Comparing the two is the only way to know.
+      startZMM: cur ? startZOf(cur, get().operations) : 0,
+    }
     set((s) => ({
       operations: s.operations.map((o) =>
         o.id === id
@@ -290,12 +339,34 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
 
   replaceOperations: (operations) => set({ operations }),
 
-  markNeedsUpdate: (pathId) =>
+  markNeedsUpdate: (pathId) => {
     set((s) => ({
       operations: s.operations.map((o) =>
         o.status === 'done' && refsPathId(o, pathId) ? { ...o, status: 'needs-update' } as AnyOperation : o
       ),
-    })),
+    }))
+    // Moving the path that defines a pocket moves the floor of everything sitting in it,
+    // and those ops don't reference the path themselves.
+    get().revalidateStartHeights()
+  },
+
+  revalidateStartHeights: () => {
+    const ops = get().operations
+    // One cache for the whole pass — floors are shared between ops and resolving them
+    // recurses, so without it a long chain re-walks the list per operation.
+    const cache = makeStartZCache()
+    let changed = false
+    const next = ops.map((o) => {
+      // Only ops that finished generating can go stale, and only if we know what they
+      // used. An un-stamped op (older session, mid-generation) is left alone rather than
+      // flagged on a guess.
+      if (o.status !== 'done' || o.generatedWith?.startZMM === undefined) return o
+      if (Math.abs(startZOf(o, ops, cache) - o.generatedWith.startZMM) < 1e-9) return o
+      changed = true
+      return { ...o, status: 'needs-update' } as AnyOperation
+    })
+    if (changed) set({ operations: next })
+  },
 }))
 
 // Re-export OriginPosition so callers can get it from one place

@@ -1,6 +1,6 @@
 // Shared widgets used by the operation forms (extracted from MachinePanel — tofix.md R1).
 // ─── Shared sub-components ───────────────────────────────────────────────────
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle, Loader2 } from 'lucide-react'
@@ -9,7 +9,8 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { useGenProgressStore } from '../../store/genProgressStore'
 import { useToolpathStore } from '../../store/toolpathStore'
 import { effectiveStepDownMM } from '../../cam/feeds'
-import type { ImportedPath } from '../../store/pathsStore'
+import { resolveStartZ, listFlatFloorOps, type StartFrom, type StartZ } from '../../cam/startHeight'
+import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 
 // Tracks operations created by this form instance, keyed by target (path/group id), so a
 // repeat Generate on the same target updates the existing operation instead of adding a
@@ -117,7 +118,97 @@ export function AutoStepField({ label, valueMM }: { label: string; valueMM: numb
   )
 }
 
-export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool, engagementFraction }: {
+// Resolves the surface an operation starts from, live, as the form is edited. Cheap —
+// preceding flat-floor ops only, bbox-rejected before any polygon work (see startHeight.ts).
+export function useStartZ(
+  startFrom: StartFrom | undefined,
+  footprintD: string,
+  cutMarginMM: number,
+  opId?: string,
+): StartZ {
+  const operations = useToolpathStore((s) => s.operations)
+  const paths = usePathsStore((s) => s.paths)
+  const widthMM = useWorkpieceStore((s) => s.widthMM)
+  const heightMM = useWorkpieceStore((s) => s.heightMM)
+  return useMemo(
+    () => resolveStartZ({ startFrom, footprintD, cutMarginMM, opId }, operations, paths, { widthMM, heightMM }),
+    [startFrom, footprintD, cutMarginMM, opId, operations, paths, widthMM, heightMM],
+  )
+}
+
+// "Start" picker: a reference, not a raw number. Auto is the default and needs no input;
+// the resolved height is always shown next to it so the value is visible and explained.
+export function StartRow({ value, onChange, resolved, opId }: {
+  value?: StartFrom
+  onChange: (v: StartFrom) => void
+  resolved: StartZ
+  opId?: string
+}) {
+  const operations = useToolpathStore((s) => s.operations)
+  const paths = usePathsStore((s) => s.paths)
+  const widthMM = useWorkpieceStore((s) => s.widthMM)
+  const heightMM = useWorkpieceStore((s) => s.heightMM)
+  const candidates = useMemo(
+    () => listFlatFloorOps(operations, paths, { widthMM, heightMM }, opId),
+    [operations, paths, widthMM, heightMM, opId],
+  )
+
+  const mode = value ?? { mode: 'auto' as const }
+  const selected = mode.mode === 'op' ? `op:${mode.opId}` : mode.mode
+
+  return (
+    <div>
+      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        Start <span className={`normal-case ${resolved.zMM < 0 ? 'text-blue-500 dark:text-blue-400' : 'text-gray-500 dark:text-neutral-400'}`}>
+          Z {resolved.zMM.toFixed(2)} mm
+        </span>
+      </label>
+      <div className="flex items-center gap-1">
+        <select
+          value={selected}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v.startsWith('op:')) onChange({ mode: 'op', opId: v.slice(3) })
+            else if (v === 'manual') onChange({ mode: 'manual', zMM: resolved.zMM })
+            else onChange({ mode: v as 'auto' | 'stock' })
+          }}
+          className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+        >
+          <option value="auto">Auto (from earlier cuts)</option>
+          <option value="stock">Stock top</option>
+          {candidates.map((c) => (
+            <option key={c.opId} value={`op:${c.opId}`}>Floor of {c.name} ({c.zMM.toFixed(2)})</option>
+          ))}
+          <option value="manual">Custom…</option>
+        </select>
+        {mode.mode === 'manual' && (
+          <>
+            <NumericInput value={mode.zMM} max={0} step={0.5}
+              onChange={(v) => onChange({ mode: 'manual', zMM: Math.min(0, v) })}
+              className="w-20 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            />
+            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          </>
+        )}
+      </div>
+      {/* Where the number came from. On auto this is the debugging line: it says which
+          operation's floor was picked, or why none was — "nothing cut here yet" (no
+          overlapping earlier cut) vs "reaches uncut stock" (overlapping, but this cut
+          extends past its edge). */}
+      {mode.mode === 'auto' && (
+        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">{resolved.label}</p>
+      )}
+      {mode.mode === 'manual' && mode.zMM < 0 && (
+        <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+          <AlertCircle size={10} className="shrink-0" />
+          Nothing checks this — over uncut stock the first pass cuts full depth.
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, tool, engagementFraction, startZMM = 0 }: {
   depthMM: number; stepDownMM: number
   onDepth: (v: number) => void; onStep: (v: number) => void
   maxDepthMM?: number
@@ -125,6 +216,9 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   // Radial engagement (WOC / D); low values (trochoidal) let the auto step-down go deeper.
   // Omit for full-slot ops so the displayed value matches the generated one.
   engagementFraction?: number
+  // Surface the cut starts from. Depth is measured from there, so both warnings below
+  // have to test the TOTAL reach from stock top, not the depth field alone.
+  startZMM?: number
 }) {
   // When auto feed is on the step-down is computed and shown read-only. The parent
   // form subscribes to the whole workpiece store, so this recomputes live as the
@@ -132,9 +226,12 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   const autoFeedEnabled = useWorkpieceStore((s) => s.autoFeedEnabled)
   const thicknessMM = useWorkpieceStore((s) => s.thicknessMM)
   const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM, engagementFraction) : null
-  const depthExceeds = maxDepthMM != null && depthMM > maxDepthMM
+  // Reach from the stock top: an op starting 2 mm down needs 2 mm more tool than its
+  // depth field says, and gets 2 mm closer to the spoilboard.
+  const totalDepthMM = Math.abs(Math.min(0, startZMM)) + depthMM
+  const depthExceeds = maxDepthMM != null && totalDepthMM > maxDepthMM
   // Guard against plunging past the bottom of the stock into the spoilboard.
-  const pastStockMM = thicknessMM > 0 ? depthMM - thicknessMM : 0
+  const pastStockMM = thicknessMM > 0 ? totalDepthMM - thicknessMM : 0
   const cutsPastStock = pastStockMM > 0.001
   return (
     <div className="grid grid-cols-2 gap-2">

@@ -670,6 +670,15 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
         commit(i, { ...ev, op: { ...ev.op, ...updates } as SerializedOperation })
         return true
       }
+      // A sibling op created by the same action (inlay's second phase) is defined
+      // by this chip too — amend it in place rather than recording a new chip.
+      if (ev.kind === 'op.add' && ev.linked?.some((o) => o.id === opId)) {
+        commit(i, {
+          ...ev,
+          linked: ev.linked.map((o) => o.id === opId ? { ...o, ...updates } as SerializedOperation : o),
+        })
+        return true
+      }
       if (ev.kind === 'snapshot' && ev.state.operations.some((o) => o.id === opId)) {
         commit(i, {
           ...ev,

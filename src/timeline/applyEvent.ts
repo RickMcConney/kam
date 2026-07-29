@@ -176,7 +176,7 @@ export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
       }
 
     case 'op.add':
-      return { ...state, operations: [...state.operations, ev.op] }
+      return { ...state, operations: [...state.operations, ev.op, ...(ev.linked ?? [])] }
 
     case 'op.update':
       return {

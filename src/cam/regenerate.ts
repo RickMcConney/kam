@@ -10,17 +10,27 @@ import { useSimStore } from '../store/simStore'
 import { getBBox, extractCircle } from '../canvas/selectionUtils'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { effectiveStepDownMM, trochoidalEngagementFraction } from './feeds'
+import { resolveStartZForOp } from './startHeight'
 
 export async function regenerateOperation(opId: string): Promise<void> {
   const { operations, updateOperation, setSegments, setError } = useToolpathStore.getState()
   const { paths } = usePathsStore.getState()
   const { tools } = useToolStore.getState()
-  const { safeHeightMM } = useWorkpieceStore.getState()
+  const { safeHeightMM, widthMM: stockW, heightMM: stockH } = useWorkpieceStore.getState()
 
   const op = operations.find((o) => o.id === opId)
   if (!op) return
   const tool = tools.find((t) => t.id === op.toolId)
   if (!tool) return
+
+  // Re-resolved rather than stored: the whole point of holding a reference is that a
+  // regenerate picks up a changed pocket depth (or a reorder) instead of replaying a
+  // stale number. startInputForOp derives the footprint and cut margin from the op, so
+  // this is the same value setSegments stamps and revalidateStartHeights compares against
+  // — those three cannot disagree about what an op starts from.
+  const startZMM = resolveStartZForOp(
+    op, operations, paths, { widthMM: stockW, heightMM: stockH }, tools,
+  ).zMM
 
   updateOperation(opId, { status: 'generating' })
 
@@ -33,6 +43,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
         side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), direction: op.direction,
         startNear: op.entryHint, rampIn: op.rampIn, safeHeightMM,
+        startZMM,
       }, pathTabs.length > 0 ? pathTabs : undefined))
 
     } else if (op.type === 'pocket') {
@@ -48,6 +59,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         stepoverPercent: op.stepoverPercent, direction: op.direction,
         islandDs, angle: op.passAngleDeg, autoAngle: op.autoAngle, startNear: op.entryHint, rampIn: op.rampIn,
         finishAllowanceMM: op.allowanceMM,
+        startZMM,
         safeHeightMM,
       }))
 
@@ -97,8 +109,11 @@ export async function regenerateOperation(opId: string): Promise<void> {
         const p = paths.find((x) => x.id === id)
         return p ? [p.d] : []
       })
+      // maxDepthMM caps the TOTAL depth from stock top in generateVCarve, so the start
+      // offset is added back onto it — same conversion as VCarveForm.
+      const zStartMM = -startZMM
       setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', path.d, tool, {
-        angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM, islandDs,
+        angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM + zStartMM, zStartMM, islandDs,
         startNear: op.entryHint, safeHeightMM,
       }))
 
@@ -196,6 +211,11 @@ export function regenerateAffectedMany(pathIds: string[]): void {
     if (useSimStore.getState().gcode) useSimStore.getState().clearSim()
     for (const op of affected) regenerateOperation(op.id)
   }
+  // Moving or reshaping a path moves the FLOOR of any pocket built on it, and the ops
+  // sitting in that pocket don't reference the path at all — they'd never appear in
+  // `affected`. Ops already regenerating above are skipped (only 'done' ops can go stale)
+  // and re-stamp themselves when they finish.
+  useToolpathStore.getState().revalidateStartHeights()
 }
 
 export function regenerateAffected(pathId: string): void {

@@ -37,6 +37,9 @@ export interface PocketParams {
   startNear?: { x: number; y: number }
   rampIn?: boolean
   safeHeightMM?: number
+  // Surface the cut starts from (0 = stock top, negative = the floor an earlier op left).
+  // depthMM is measured from here, and the first pass ramps/plunges from here.
+  startZMM?: number
   // Finish allowance: stock left on every wall. Positive insets the boundary and grows
   // islands (leaves stock for a finish pass); negative does the reverse and grows the
   // pocket. Applied per resolved sub-ring, so self-intersecting boundaries keep all

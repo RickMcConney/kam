@@ -1,5 +1,6 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -17,6 +18,7 @@ import { groupPathsByContainment } from './containment'
 interface VCarveFormState {
   toolId: string
   maxDepthMM: number
+  startFrom: StartFrom
 }
 
 export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: VCarveOperation }) {
@@ -25,17 +27,19 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
   const [form, setForm] = useState<VCarveFormState>(() => editOp
-    ? { toolId: editOp.toolId, maxDepthMM: editOp.maxDepthMM }
-    : mergeWithDefaults(load('vcarve'), {
+    ? { toolId: editOp.toolId, maxDepthMM: editOp.maxDepthMM, startFrom: editOp.startFrom ?? { mode: 'stock' } }
+    : { ...mergeWithDefaults(load('vcarve'), {
         toolId: defaultTool?.id ?? '',
         // Default to the full stock thickness; the tool's max Z is only a warning.
         maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-      }, tools)
+        // Deliberately not carried over from the saved defaults — see PocketForm.
+        startFrom: { mode: 'auto' } as StartFrom,
+      }, tools), startFrom: { mode: 'auto' as const } }
   )
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
@@ -48,6 +52,9 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
   const angleDeg = selectedTool?.vbitAngleDeg ?? 60
+  // Margin 0: a v-carve is bounded by the outline it carves — the widest part of the cone
+  // lands ON the outline, never outside it.
+  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, editOp?.id)
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
 
   function handleToolChange(toolId: string) {
@@ -63,17 +70,27 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
+    // generateVCarve measures depth from stock top (`zStartMM` shifts the datum down and
+    // `maxDepthMM` caps the TOTAL) — that convention is load-bearing for the male-inlay
+    // path, so the conversion from "depth below the start surface" happens here.
+    const startZFor = (d: string, opId?: string) => -resolveStartZ(
+      { startFrom: form.startFrom, footprintD: d, cutMarginMM: 0, opId },
+      useToolpathStore.getState().operations, usePathsStore.getState().paths,
+      { widthMM, heightMM },
+    ).zMM
     try {
       if (editOp && editBoundary) {
         // Chain to where the previous operation finishes, at generation time.
         const hint = entryHintAt(editOp.id)
         updateOperation(editOp.id, {
           entryHint: hint,
-          toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM, status: 'generating',
+          toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM,
+          startFrom: form.startFrom, status: 'generating',
         } as Partial<AnyOperation>)
         try {
+          const zStartMM = startZFor(editBoundary.d, editOp.id)
           setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generateVCarve', editBoundary.d, tool, {
-            angleDeg, maxDepthMM: form.maxDepthMM,
+            angleDeg, maxDepthMM: form.maxDepthMM + zStartMM, zStartMM,
             islandDs: editIslands.map((p) => p.d), startNear: hint, safeHeightMM,
           }))
         } catch (err) {
@@ -92,17 +109,20 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             islandIds: islands.map((p) => p.id),
             maxDepthMM: form.maxDepthMM,
             angleDeg,
+            startFrom: form.startFrom,
           })
           if (!existingId) session.remember(boundary.id, opId)
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
             name, toolId: form.toolId, islandIds: islands.map((p) => p.id),
-            maxDepthMM: form.maxDepthMM, angleDeg, status: 'generating',
+            maxDepthMM: form.maxDepthMM, angleDeg,
+            startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
+            const zStartMM = startZFor(boundary.d, opId)
             setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', boundary.d, tool, {
-              angleDeg, maxDepthMM: form.maxDepthMM,
+              angleDeg, maxDepthMM: form.maxDepthMM + zStartMM, zStartMM,
               islandDs: islands.map((p) => p.d), startNear: hint, safeHeightMM,
             }))
           } catch (err) {
@@ -146,6 +166,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           V-bit angle: {angleDeg}° (set on tool)
         </p>
       )}
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
         <div className="flex items-center gap-1">
@@ -155,7 +176,8 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
         </div>
-        {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
+        {/* Reach from stock top: starting on a pocket floor adds that much to the total. */}
+        {selectedTool && form.maxDepthMM - startZ.zMM > selectedTool.maxDepthMM && (
           <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
             Exceeds tool max ({selectedTool.maxDepthMM} mm)

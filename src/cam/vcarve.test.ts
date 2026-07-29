@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   generateVCarve,
   generateMaleTextBoundaryVCarve,
-  classifySubpaths,
   findModalRadius,
 } from './vcarve'
+import { classifySubpaths } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Pt2 } from './pathFlattener'
 import type { Tool } from '../store/toolStore'

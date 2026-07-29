@@ -1,5 +1,6 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -27,6 +28,7 @@ interface PocketFormState {
   direction: CuttingDirection
   rampIn: boolean
   allowanceMM: number
+  startFrom: StartFrom
 }
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
@@ -35,7 +37,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const selPaths = useSelectedPaths()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<PocketFormState>(() => editOp ? {
@@ -45,7 +47,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     autoAngle: editOp.autoAngle ?? true,
     direction: editOp.direction, rampIn: editOp.rampIn ?? false,
     allowanceMM: editOp.allowanceMM ?? 0,
-  } : mergeWithDefaults(load('pocket'), {
+    // Legacy ops (saved before start heights existed) stay on stock top rather than
+    // silently deepening when re-generated; new ops default to auto.
+    startFrom: editOp.startFrom ?? { mode: 'stock' },
+  } : { ...mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     // 'hybrid' — shown as "Auto". Note this is only the default for a FIRST pocket: the
     // form-defaults store replays whatever was last used after that.
@@ -59,7 +64,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
     rampIn: false,
     allowanceMM: 0,
-  }, tools))
+    // Never restored from the saved form defaults: a start reference belongs to the
+    // operation it was chosen for, and replaying an old one onto a new pocket is exactly
+    // the "silently starts 2 mm down over solid stock" case this design exists to avoid.
+    startFrom: { mode: 'auto' } as StartFrom,
+  }, tools), startFrom: { mode: 'auto' } })
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
@@ -69,6 +78,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     ? [{ boundary: editBoundary, islands: editIslands }]
     : groupPathsByContainment(selPaths)
   const selectedTool = tools.find((t) => t.id === form.toolId)
+  // One resolve per form render, shared by the Start row and every group generated below.
+  // Multi-group selections all share the first group's footprint here; each group re-resolves
+  // for real at generation time.
+  // Margin 0: a pocket's cutter stays a full radius INSIDE its boundary, so the cleared
+  // area never reaches past the path.
+  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, editOp?.id)
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
   const adaptiveStrategy = form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid'
   const autoPassAngle = form.strategy === 'hybrid' && form.autoAngle
@@ -97,6 +112,13 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
+    // Resolved per group and against live store state, since each group has its own
+    // footprint and the ops added earlier in this loop count as preceding.
+    const startZFor = (boundaryD: string, opId?: string) => resolveStartZ(
+      { startFrom: form.startFrom, footprintD: boundaryD, cutMarginMM: 0, opId },
+      useToolpathStore.getState().operations, usePathsStore.getState().paths,
+      { widthMM, heightMM },
+    ).zMM
     // Run the (potentially slow, e.g. adaptive) pocket generation off the main thread so the
     // browser stays responsive — same worker pattern as regenerate.ts. Awaiting the worker also
     // lets React paint the 'generating' state, so the old setTimeout(…,0) yield is unnecessary.
@@ -110,7 +132,8 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           toolId: form.toolId, strategy: form.strategy,
           depthMM: form.depthMM, stepDownMM: form.stepDownMM,
           stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
-          direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM, status: 'generating',
+          direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
+          startFrom: form.startFrom, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(editOp.id, await runInWorkerFor(editOp.id, 'generatePocket', editBoundary.d, tool, {
@@ -119,6 +142,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             stepoverPercent: form.stepoverPercent, direction: form.direction,
             islandDs: editIslands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
             finishAllowanceMM: form.allowanceMM, startNear: hint,
+            startZMM: startZFor(editBoundary.d, editOp.id),
             safeHeightMM,
           }))
         } catch (err) {
@@ -144,6 +168,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             direction: form.direction,
             rampIn: form.rampIn,
             allowanceMM: form.allowanceMM,
+            startFrom: form.startFrom,
           })
           if (!existingId) session.remember(boundary.id, opId)
           const hint = entryHintAt(opId)
@@ -154,7 +179,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, autoAngle: form.autoAngle,
             direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
-            status: 'generating',
+            startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
             setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
@@ -163,6 +188,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
               finishAllowanceMM: form.allowanceMM, startNear: hint,
+              startZMM: startZFor(boundary.d, opId),
               safeHeightMM,
             }))
           } catch (err) {
@@ -240,9 +266,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           />
         </div>
       )}
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Allowance</label>

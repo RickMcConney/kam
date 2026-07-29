@@ -15,6 +15,7 @@ import { generateProfile } from '../cam/profile'
 import { generatePocket } from '../cam/pocket'
 import { generateVCarve } from '../cam/vcarve'
 import { generateProfile3d } from '../cam/profile3d'
+import { resolveStartZ } from '../cam/startHeight'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { generateTrochoidal } from '../cam/trochoidal'
 import { generateSurface } from '../cam/surfacing'
@@ -71,7 +72,18 @@ function intentFor(op: AnyOperation): OpIntent | null {
     })
     const raw = regionFromPaths(boundary.d, islandDs)
     const allowance = op.allowanceMM ?? 0
-    return { ...base, region: allowance !== 0 ? offsetRegion(raw, -allowance) : raw, depthMM: op.depthMM }
+    // depthMM here is total reach from stock top, so an op that starts on an earlier
+    // floor is expected to leave its own floor that much deeper.
+    const { widthMM, heightMM } = useWorkpieceStore.getState()
+    const startZ = resolveStartZ(
+      { startFrom: op.startFrom, footprintD: boundary.d, cutMarginMM: 0, opId: op.id },
+      useToolpathStore.getState().operations, paths, { widthMM, heightMM },
+    ).zMM
+    return {
+      ...base,
+      region: allowance !== 0 ? offsetRegion(raw, -allowance) : raw,
+      depthMM: op.depthMM - startZ,
+    }
   }
 
   // Profile/drill/vcarve/inlay/surfacing: cut shape isn't a flat-bottomed region (tabs,

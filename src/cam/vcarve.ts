@@ -10,12 +10,12 @@
 //  6. Convert each skeleton point: r (scaled radius) → Z depth via
 //     Z = -(r/SCALE / tan(halfAngle)), capped at maxDepth.
 
-import { pointInPolygon } from './geom'
+import { classifySubpaths, centroidX } from './geom'
 import { jspoly as JSPOLY } from './lib/jspoly.js'
 // jspoly.js's internal methods reference `JSPoly` as a bare global (written for <script> context).
 // In ES module scope it's never defined, so we pin it on globalThis once at import time.
 ;(globalThis as any).JSPoly = JSPOLY
-import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
+import { flattenPath, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -459,39 +459,6 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
   }
 
   return segs.filter((_, i) => !removeSet.has(i))
-}
-
-// ─── Containment classifier ───────────────────────────────────────────────────
-
-interface Region { outer: Pt2[]; holes: Pt2[][] }
-
-function centroidX(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[0], 0) / pts.length }
-function centroidY(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[1], 0) / pts.length }
-
-export function classifySubpaths(subpaths: Pt2[][]): Region[] {
-  const sorted = [...subpaths].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)))
-  const regions: Region[] = []
-  const usedAsHole = new Set<number>()
-
-  for (let i = 0; i < sorted.length; i++) {
-    if (usedAsHole.has(i)) continue
-    const outer = sorted[i]
-    const holes: Pt2[][] = []
-
-    for (let j = i + 1; j < sorted.length; j++) {
-      if (usedAsHole.has(j)) continue
-      const candidate = sorted[j]
-      // Loops touching at a vertex are siblings (e.g. letter K arms), not holes.
-      if (!sharesVertex(candidate, outer) && pointInPolygon(centroidX(candidate), centroidY(candidate), outer)) {
-        holes.push(candidate)
-        usedAsHole.add(j)
-      }
-    }
-
-    regions.push({ outer, holes })
-  }
-
-  return regions
 }
 
 // ─── Public entry point ───────────────────────────────────────────────────────

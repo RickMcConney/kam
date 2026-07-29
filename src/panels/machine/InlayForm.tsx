@@ -31,7 +31,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
+  const { addOperation, addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
 
@@ -227,34 +227,34 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       return first && second ? { firstId: first.id, secondId: second.id } : null
     })
 
-    // Create all first-phase ops, then all second-phase ops.
-    const firstIds = groups.map(({ boundary, islands }, i) => {
-      const name = `Inlay ${roleLabel} (${phaseLabel(firstPhase)}): ${boundary.name}`
-      const pair = existingPairs[i]
-      if (pair) {
-        updateOperation(pair.firstId, { ...sharedOpFields, phase: firstPhase, toolId: firstToolId,
-          islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
-        return pair.firstId
-      }
-      const id = addOperation({ ...opBase, phase: firstPhase, toolId: firstToolId,
-        pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
-      updateOperation(id, { status: 'generating' })
-      session.remember(groupKey(boundary.id), id)
-      return id
+    // Create all first-phase ops, then all second-phase ops — so the operations list
+    // orders roughing before finishing rather than alternating tools per group.
+    // The new ops go in ONE addOperations call: an inlay's two phases are two
+    // operations but a single user action, so they belong on a single timeline chip
+    // (they used to record one chip each). A slot is either an existing op's id or
+    // an index into `newOps`, resolved once the ids come back.
+    const newOps: Parameters<typeof addOperations>[0] = []
+    const phaseSlots = ([firstPhase, secondPhase] as const).map((phase) => {
+      const toolId = phase === firstPhase ? firstToolId : secondToolId
+      return groups.map(({ boundary, islands }, i) => {
+        const name = `Inlay ${roleLabel} (${phaseLabel(phase)}): ${boundary.name}`
+        const pair = existingPairs[i]
+        if (pair) {
+          const id = phase === firstPhase ? pair.firstId : pair.secondId
+          updateOperation(id, { ...sharedOpFields, phase, toolId,
+            islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+          return id
+        }
+        return newOps.push({ ...opBase, phase, toolId,
+          pathId: boundary.id, islandIds: islands.map((p) => p.id), name }) - 1
+      })
     })
-    const secondIds = groups.map(({ boundary, islands }, i) => {
-      const name = `Inlay ${roleLabel} (${phaseLabel(secondPhase)}): ${boundary.name}`
-      const pair = existingPairs[i]
-      if (pair) {
-        updateOperation(pair.secondId, { ...sharedOpFields, phase: secondPhase, toolId: secondToolId,
-          islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
-        return pair.secondId
-      }
-      const id = addOperation({ ...opBase, phase: secondPhase, toolId: secondToolId,
-        pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
-      updateOperation(id, { status: 'generating' })
-      return id
-    })
+    const newIds = addOperations(newOps)
+    const resolve = (slot: string | number) => typeof slot === 'number' ? newIds[slot] : slot
+    const firstIds = phaseSlots[0].map(resolve)
+    const secondIds = phaseSlots[1].map(resolve)
+    for (const id of newIds) updateOperation(id, { status: 'generating' })
+    groups.forEach(({ boundary }, i) => session.remember(groupKey(boundary.id), firstIds[i]))
 
     // Link paired ops so edit/regenerate can update both together.
     for (let i = 0; i < groups.length; i++) {

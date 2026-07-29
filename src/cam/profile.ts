@@ -14,6 +14,9 @@ export interface ProfileParams {
   startNear?: { x: number; y: number }
   rampIn?: boolean
   safeHeightMM?: number
+  // Surface the cut starts from (0 = stock top, negative = the floor an earlier op left).
+  // depthMM and tab heights are both measured from here.
+  startZMM?: number
 }
 
 function fitCircle(pts: Pt2[]): { cx: number; cy: number; r: number } | null {
@@ -172,7 +175,8 @@ export function generateProfile(
     params.side === 'outside' ? tool.diameterMM / 2 :
     params.side === 'inside' ? -tool.diameterMM / 2 : 0
 
-  const passes = zPasses(params.depthMM, params.stepDownMM)
+  const startZ = Math.min(0, params.startZMM ?? 0)
+  const passes = zPasses(params.depthMM, params.stepDownMM, startZ)
   const segs: MotionSegment[] = []
 
   // Compute offset paths using Clipper2.
@@ -223,7 +227,7 @@ export function generateProfile(
           if (!pos) continue
           const center = nearestArcLen(rawPts, pathLens, pos[0], pos[1])
           const half = tab.lengthMM / 2 + tool.diameterMM / 2
-          tabRanges.push({ start: center - half, end: center + half, tabZ: Math.min(0, -params.depthMM + tab.heightMM) })
+          tabRanges.push({ start: center - half, end: center + half, tabZ: Math.min(startZ, startZ - params.depthMM + tab.heightMM) })
         }
       }
 
@@ -253,11 +257,11 @@ export function generateProfile(
         }
 
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
-        segs.push({ x: sx, y: sy, z: 0, rapid: true })
+        segs.push({ x: sx, y: sy, z: startZ, rapid: true })
 
         for (let pi = 0; pi < passes.length; pi++) {
           const zDepth = passes[pi]
-          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+          const rampStartZ = pi === 0 ? startZ : passes[pi - 1]
           const forward = pi % 2 === 0
           const pts = forward ? rawPts : reversedPts
           const lens = forward ? pathLens : reversedLens
@@ -395,7 +399,7 @@ export function generateProfile(
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         for (let pi = 0; pi < passes.length; pi++) {
           const zDepth = passes[pi]
-          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+          const rampStartZ = pi === 0 ? startZ : passes[pi - 1]
           // pi 0: rapid down to the surface; pi>0: already at depth (no lift), the
           // previous pass's circle ended back at sx at this depth.
           segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
@@ -439,7 +443,7 @@ export function generateProfile(
           tabRanges.push({
             start: center - half,
             end: center + half,
-            tabZ: Math.min(0, -params.depthMM + tab.heightMM),
+            tabZ: Math.min(startZ, startZ - params.depthMM + tab.heightMM),
           })
         }
       }
@@ -478,7 +482,7 @@ export function generateProfile(
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })
         for (let pi = 0; pi < passes.length; pi++) {
           const zDepth = passes[pi]
-          const rampStartZ = pi === 0 ? 0 : passes[pi - 1]
+          const rampStartZ = pi === 0 ? startZ : passes[pi - 1]
 
           // pi === 0: lower from safe height to surface; pi > 0: rapid at current depth to ramp start (no lift)
           segs.push({ x: sx, y: sy, z: rampStartZ, rapid: true })
