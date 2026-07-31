@@ -153,7 +153,7 @@ export function generatePocket(
       // Clear of the work before repositioning to this level's fixed start point.
       if (lastPos) segs.push({ x: lastPos[0], y: lastPos[1], z: safeZ, rapid: true })
       const segStart = segs.length
-      lastPos = plan.emitCuts(z, prevZ, null, segs) ?? lastPos
+      lastPos = _timed('emitCuts', () => plan.emitCuts(z, prevZ, null, segs)) ?? lastPos
       if (plan.selfFinishing) continue
 
       const roughed = segs.length > segStart
@@ -167,12 +167,13 @@ export function generatePocket(
       // Stock the strategy's passes couldn't reach, cut AFTER them and before the wall
       // pass: by now everything around each patch is clear, so it's a light skim instead
       // of the full-width plunge it would be going first. See restCleanupRings.
-      if (restRings.length > 0) {
-        lastPos = emitLinkedContourRings(restRings, z, plan.travelObstacles, segs, params.startNear,
-          rampDist, roughed ? z : prevZ, safeZ, tool.diameterMM, lastPos)
+      const rest = restRings
+      if (rest.length > 0) {
+        lastPos = _timed('emitRest', () => emitLinkedContourRings(rest, z, plan.travelObstacles, segs, params.startNear,
+          rampDist, roughed ? z : prevZ, safeZ, tool.diameterMM, lastPos))
       }
-      lastPos = emitLinkedContourRings(plan.finishRings, z, plan.travelObstacles, segs, params.startNear,
-        rampDist, roughed || restRings.length > 0 ? z : prevZ, safeZ, tool.diameterMM, lastPos)
+      lastPos = _timed('emitFinish', () => emitLinkedContourRings(plan.finishRings, z, plan.travelObstacles, segs, params.startNear,
+        rampDist, roughed || rest.length > 0 ? z : prevZ, safeZ, tool.diameterMM, lastPos))
     }
   }
 

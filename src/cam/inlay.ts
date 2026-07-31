@@ -1,4 +1,4 @@
-import { pointInPolygon } from './geom'
+import { pointInPolygon, interiorPoint } from './geom'
 import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
 import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
@@ -107,10 +107,12 @@ function ptsToD(pts: Pt2[]): string {
 }
 
 // Split a multi-subpath d string into per-letter regions.
-// Each outer subpath is returned as { outerD, islandDs[] } where islandDs
-// are subpaths whose centroid falls inside that outer ring (intrinsic holes
-// like the counter of 'o' or 'a'). Single-subpath paths return [].
-function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
+// Each outer subpath is returned as { outerD, islandDs[] } where islandDs are subpaths
+// lying inside that outer ring (intrinsic holes like the counter of 'o' or 'a').
+// Single-subpath paths return [].
+// Exported for tests: a non-empty result switches generateInlayMale onto the raised-prism
+// text algorithm entirely, so getting the grouping wrong changes far more than one counter.
+export function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
   // A self-intersecting single path has exactly one M command. splitSelfIntersecting
   // will split it into multiple loops, but those are sub-rings of one shape — not
   // separate letters. Only treat as multi-region when the path has multiple explicit
@@ -120,15 +122,21 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
   if (subs.length <= 1) return []
 
   const sorted = [...subs].sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)))
+  // One stand-in point per ring, computed once. NOT the centroid — a vertex mean only
+  // lands inside a convex ring, and letterforms are the opposite of convex: a 'V', 'W',
+  // 'Y' or 'X' has its mean out in the open air between the arms, so the ring read as
+  // outside everything and a counter could be missed or a letter claimed by a neighbour.
+  // See interiorPoint in cam/geom.ts. Vertex mean only for degenerate rings with no
+  // interior for a scan line to find.
+  const reps: Pt2[] = sorted.map(sp => interiorPoint([sp]) ??
+    [sp.reduce((s, p) => s + p[0], 0) / sp.length, sp.reduce((s, p) => s + p[1], 0) / sp.length])
   const usedAsHole = new Set<number>()
   const regions: { outerD: string; outerPts: Pt2[]; islandDs: string[] }[] = []
 
   for (let i = 0; i < sorted.length; i++) {
     if (usedAsHole.has(i)) continue
     const outer = sorted[i]
-    const cx = outer.reduce((s, p) => s + p[0], 0) / outer.length
-    const cy = outer.reduce((s, p) => s + p[1], 0) / outer.length
-    if (regions.some(r => pointInPolygon(cx, cy, r.outerPts))) {
+    if (regions.some(r => pointInPolygon(reps[i][0], reps[i][1], r.outerPts))) {
       usedAsHole.add(i); continue
     }
 
@@ -136,10 +144,8 @@ function splitRegions(d: string): { outerD: string; islandDs: string[] }[] {
     for (let j = i + 1; j < sorted.length; j++) {
       if (usedAsHole.has(j)) continue
       const cand = sorted[j]
-      const hcx = cand.reduce((s, p) => s + p[0], 0) / cand.length
-      const hcy = cand.reduce((s, p) => s + p[1], 0) / cand.length
       // Touching loops (shared vertex) are siblings, not holes.
-      if (!sharesVertex(cand, outer) && pointInPolygon(hcx, hcy, outer)) {
+      if (!sharesVertex(cand, outer) && pointInPolygon(reps[j][0], reps[j][1], outer)) {
         holes.push(ptsToD(cand))
         usedAsHole.add(j)
       }
@@ -284,7 +290,7 @@ function computeInlayFemaleOffsets(
 //
 // Every V-bit inlay reduces to two dual operations:
 //
-//   insideClear(boundary, protrusions) — a SOCKET. Raster-pockets the interior and
+//   insideClear(boundary, protrusions) — a SOCKET. Pockets the interior (auto strategy) and
 //     V-carves the walls sloping inward, leaving any protrusions standing proud.
 //     Clearance lives here (see computeInlayFemaleOffsets): the socket grows outward
 //     by clearanceMM so the mating plug fits.
@@ -306,8 +312,19 @@ async function insideClear(
 ): Promise<InlaySplitResult> {
   const totalDepthMM = params.pocketDepthMM + params.glueLineMM
 
-  // ── No finish tool: raster-pocket only (roughing socket, no wall-finish pass). ──
-  // The raster pocket already emits a finishing contour ring at each Z (see pocket.ts),
+  // Every socket pocket below runs the 'hybrid' strategy — the one the Pocket form calls
+  // "auto". A socket is exactly the shape it is built for: an outline of arbitrary
+  // orientation with protrusions standing in it. Hybrid rasters the open ground at the
+  // angle that makes the passes longest (per sub-area, so a socket with two differently
+  // aligned lobes gets both), contours the ring or two around each protrusion instead of
+  // wrapping scanlines round it at uncontrolled engagement, and marches whatever is left.
+  // `angle: 0` is only the pinned fallback — with autoAngle left at its default the
+  // strategy chooses. (Rest cleanup and the wall/island finishing contours are the shared
+  // tail in pocket.ts, so those applied under 'raster' too and are unchanged here.)
+  const strategy = 'hybrid' as const
+
+  // ── No finish tool: pocket only (roughing socket, no wall-finish pass). ──
+  // The pocket already emits a finishing contour ring at each Z (see pocket.ts),
   // so for a plain flat-walled socket the rough bit alone produces the final socket.
   // Corners are rounded to the ROUGHING tool (there's no finish tool to do it), matching
   // outerCut's no-finish male plug so the socket corners and plug corners agree.
@@ -323,7 +340,7 @@ async function insideClear(
     const endmillSegs: MotionSegment[] = []
     try {
       endmillSegs.push(...generatePocket(roundedD, roughTool, {
-        strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
+        strategy, depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
         stepoverPercent: params.stepoverPercent, direction: 'climb',
         islandDs: pocketIslandDs, angle: 0, safeHeightMM: params.safeHeightMM,
         finishAllowanceMM: -c, rampIn: params.rampIn,
@@ -363,7 +380,7 @@ async function insideClear(
       .filter((s): s is string => s !== null)
     try {
       pocketSegs.push(...generatePocket(pocketBoundaryD, roughTool, {
-        strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
+        strategy, depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
         stepoverPercent: params.stepoverPercent, direction: 'climb',
         islandDs: islandPocketDs, angle: 0, safeHeightMM: params.safeHeightMM,
         rampIn: params.rampIn,
@@ -427,7 +444,7 @@ async function insideClear(
   const endmillSegs: MotionSegment[] = []
   try {
     endmillSegs.push(...generatePocket(roundedD, roughTool, {
-      strategy: 'raster', depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
+      strategy, depthMM: totalDepthMM, stepDownMM: params.stepDownMM,
       stepoverPercent: params.stepoverPercent, direction: 'climb',
       islandDs: pocketIslandDs, angle: 0, safeHeightMM: params.safeHeightMM,
       finishAllowanceMM: -c, rampIn: params.rampIn,
@@ -614,9 +631,14 @@ async function generateInlayMaleText(
   // ── End mill background pocket ──────────────────────────────────────────────
   // Clear the background (inside bboxD, outside letter outer rings) to inlay depth.
   // generatePocket automatically respects the tool radius when approaching islands.
+  // 'hybrid' (the Pocket form's "auto") for the same reasons as the socket in
+  // insideClear, and this is the case it was built for: a large open rectangle with a
+  // row of letters standing in it. Each letter gets contour rings rather than scanlines
+  // wrapping round its serifs, and the open background between and around the word
+  // still rasters. `angle: 0` is only the pinned fallback — the strategy chooses.
   try {
     endmillSegs.push(...generatePocket(bboxD, profileTool, {
-      strategy:       'raster',
+      strategy:       'hybrid',
       depthMM:        params.pocketDepthMM,
       stepDownMM:     params.stepDownMM,
       stepoverPercent: params.stepoverPercent,
@@ -630,11 +652,13 @@ async function generateInlayMaleText(
 
   // ── End mill counter pockets ────────────────────────────────────────────────
   // Letter counters (e.g. the void inside 'O') must be recessed to inlay depth
-  // so they match the female socket's protruding counter islands.
+  // so they match the female socket's protruding counter islands. Island-free and small,
+  // so hybrid will usually decline to split and fall through to marching the whole
+  // counter — which is the right answer for a shape that size.
   for (const counterD of letterCounterDs) {
     try {
       endmillSegs.push(...generatePocket(counterD, profileTool, {
-        strategy:       'raster',
+        strategy:       'hybrid',
         depthMM:        params.pocketDepthMM,
         stepDownMM:     params.stepDownMM,
         stepoverPercent: params.stepoverPercent,

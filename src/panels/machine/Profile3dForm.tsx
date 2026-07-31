@@ -9,7 +9,7 @@ import { useToolpathStore, type AnyOperation, type Profile3dOperation } from '..
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../../importers/stlImporter'
 import { getBBox } from '../../canvas/selectionUtils'
@@ -161,10 +161,12 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         }
         save('profile3d', form)
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Generation failed'
-        setErrorMsg(msg)
-        const failId = editOp?.id ?? existingId
-        if (failId) setError(failId, msg)
+        if (!isWorkCancelled(err)) {
+          const msg = err instanceof Error ? err.message : 'Generation failed'
+          setErrorMsg(msg)
+          const failId = editOp?.id ?? existingId
+          if (failId) setError(failId, msg)
+        }
       } finally {
         setGenerating(false)
       }

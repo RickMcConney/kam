@@ -127,6 +127,64 @@ export interface Floor { z: number; area: MultiPolygon; opId: string; opName: st
 export type StartZCache = Map<string, Floor | null>
 export const makeStartZCache = (): StartZCache => new Map()
 
+// ─── Cross-call floor memo ────────────────────────────────────────────────────
+//
+// Resolving one operation's start height costs a union of every preceding floor plus a
+// difference against the footprint — and each of those floors is itself a full resolve,
+// because depth is measured from wherever THAT op started. Within one call `ctx.cache`
+// keeps that from re-walking the chain. Across calls it used to be thrown away, and the
+// callers are anything but one-shot: the pocket form resolves once per Generate, and
+// useStartZ + listFlatFloorOps re-resolve on every render, which every store write during
+// a generation run triggers. Generating 26 nested pockets ran 3302 of those unions instead
+// of 26 — 34 s of polygon clipping, growing with each op added (scratch/dog.fkam).
+//
+// So the memo lives here instead, and is dropped whole whenever anything a floor could
+// depend on changes. What it depends on is each op's floor-defining SETTINGS and the
+// geometry of the paths they name — not segments, status or entry hints, which is exactly
+// why a run of setSegments calls can share it.
+//
+// Invalidation is deliberately all-or-nothing and errs on the side of dropping too much: a
+// stale floor reads as a surface that isn't there, and reading a surface too LOW is the
+// crash direction (see the safety invariant at the top of this file).
+
+// A path object is replaced, never mutated, when its geometry changes, so object identity
+// stands in for the d string without hashing tens of kB of it per call.
+let pathSerialCounter = 0
+const pathSerials = new WeakMap<ImportedPath, number>()
+function pathSerial(p: ImportedPath | undefined): number {
+  if (!p) return -1
+  let s = pathSerials.get(p)
+  if (s === undefined) { s = ++pathSerialCounter; pathSerials.set(p, s) }
+  return s
+}
+
+const startFromKey = (sf: StartFrom | undefined): string =>
+  sf === undefined ? '-' : sf.mode === 'op' ? `o${sf.opId}` : sf.mode === 'manual' ? `m${sf.zMM}` : sf.mode[0]
+
+/** Everything about one op that its floor — and therefore any later op's — depends on. */
+function floorSig(op: AnyOperation, pathById: Map<string, ImportedPath>): string {
+  if (op.type === 'pocket' || (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')) {
+    const depth = op.type === 'pocket' ? op.depthMM : op.pocketDepthMM
+    const islands = op.islandIds.map((id) => pathSerial(pathById.get(id))).join('.')
+    return `${op.id}p${pathSerial(pathById.get(op.pathId))}/${islands}/${depth}/${startFromKey(op.startFrom)}`
+  }
+  if (op.type === 'surface') return `${op.id}s${op.depthMM}`
+  return `${op.id}-`
+}
+
+let memoKey: string | null = null
+let memoFloors: StartZCache = new Map()
+/** Resolved answers under the same key as the floors they were derived from. */
+let memoAnswers = new Map<string, StartZ>()
+
+// The floor memo for this exact (ops, paths, stock) state, rebuilt when any of it moves.
+function sharedCache(ops: AnyOperation[], pathById: Map<string, ImportedPath>, stock: Stock): StartZCache {
+  let key = `${stock.widthMM}x${stock.heightMM}`
+  for (const op of ops) key += '|' + floorSig(op, pathById)
+  if (key !== memoKey) { memoKey = key; memoFloors = new Map(); memoAnswers = new Map() }
+  return memoFloors
+}
+
 interface Ctx {
   ops: AnyOperation[]
   paths: ImportedPath[]
@@ -155,6 +213,12 @@ function floorOf(op: AnyOperation, ctx: Ctx): Floor | null {
   const floor = computeFloor(op, ctx)
   ctx.cache.set(op.id, floor)
   return floor
+}
+
+/** Whether an op is the KIND that leaves a flat floor — no geometry, just its type. */
+function leavesFlatFloor(op: AnyOperation): boolean {
+  return op.type === 'pocket' || op.type === 'surface' ||
+    (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')
 }
 
 function computeFloor(op: AnyOperation, ctx: Ctx): Floor | null {
@@ -210,7 +274,11 @@ export function listFlatFloorOps(
 }
 
 function makeCtx(ops: AnyOperation[], paths: ImportedPath[], stock: Stock, cache?: Map<string, Floor | null>): Ctx {
-  return { ops, paths, pathById: new Map(paths.map((p) => [p.id, p])), stock, cache: cache ?? new Map() }
+  const pathById = new Map(paths.map((p) => [p.id, p]))
+  // A caller-supplied cache is the recursion threading its own through; anything else
+  // shares the module memo, which survives until the ops' floor settings or their paths
+  // change.
+  return { ops, paths, pathById, stock, cache: cache ?? sharedCache(ops, pathById, stock) }
 }
 
 export interface ResolveInput {
@@ -252,6 +320,35 @@ export function resolveStartZ(
   }
 
   const ctx = makeCtx(ops, paths, stock, cache)
+  // Repeat resolves of the SAME question are the common case, not an edge one: useStartZ
+  // re-runs on every render with the form's own unchanged footprint. The floor memo makes
+  // the chain free but the footprint clip against it is still ~20 ms, so the answer itself
+  // is memoised too — under the same key, so it dies with the floors it was derived from.
+  // Only for top-level calls: a caller-supplied cache means this is the recursion, whose
+  // key is not `memoKey`.
+  const answerKey = cache === undefined
+    ? `${memoKey} ${mode.mode === 'op' ? mode.opId : 'a'} ${input.opId ?? ''} ${input.cutMarginMM} ${input.footprintD}`
+    : null
+  if (answerKey !== null) {
+    const hit = memoAnswers.get(answerKey)
+    if (hit) return hit
+  }
+  const answer = resolveResolved(input, mode, ops, ctx)
+  if (answerKey !== null) {
+    // Bounded: footprints are whole path d strings, and a session of edits would otherwise
+    // accumulate one entry per version of every path.
+    if (memoAnswers.size > 400) memoAnswers.clear()
+    memoAnswers.set(answerKey, answer)
+  }
+  return answer
+}
+
+function resolveResolved(
+  input: ResolveInput,
+  mode: Exclude<StartFrom, { mode: 'stock' } | { mode: 'manual' }>,
+  ops: AnyOperation[],
+  ctx: Ctx,
+): StartZ {
   const endIdx = input.opId ? ops.findIndex((o) => o.id === input.opId) : -1
   const preceding = endIdx >= 0 ? ops.slice(0, endIdx) : ops
 
@@ -263,6 +360,15 @@ export function resolveStartZ(
   }
 
   // ── auto ──
+  // Nothing before this operation is even the KIND of thing that leaves a flat floor, so
+  // the answer is stock top and no geometry has to be touched to know it. This is the
+  // whole answer for the first operation in a project, and it skips flattening the
+  // footprint — which for a traced outline is the most expensive part of a resolve that
+  // was always going to return 0.
+  if (!preceding.some(leavesFlatFloor)) {
+    return { zMM: 0, label: 'Stock top — nothing cut here yet' }
+  }
+
   // Footprint: the path's own filled outline, grown by however far the cut reaches past it.
   // The outline and not its bounding box — a bbox squares off every curve, and the corners
   // it invents stick outside a round pocket even when the real cut is comfortably inside,
@@ -290,7 +396,12 @@ export function resolveStartZ(
 
   // Any part of the footprint over uncut stock and the answer is stock top — the tool
   // would meet full-height material there whatever the rest of it sits over.
-  const covered = safeClip(() => polygonClipping.union(candidates[0].area, ...candidates.slice(1).map((c) => c.area)))
+  // One candidate is the overwhelmingly common case (48 of 51 resolves on the dog file),
+  // and a union of one area is that area — the clipper normalises its inputs anyway, so
+  // the difference below sees the same thing either way.
+  const covered = candidates.length === 1
+    ? candidates[0].area
+    : safeClip(() => polygonClipping.union(candidates[0].area, ...candidates.slice(1).map((c) => c.area)))
   if (!covered) return STOCK_TOP
   const uncovered = safeClip(() => polygonClipping.difference(footprint, covered))
   if (!uncovered) return STOCK_TOP

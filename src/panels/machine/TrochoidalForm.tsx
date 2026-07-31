@@ -10,7 +10,7 @@ import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefault
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM, trochoidalEngagementFraction } from '../../cam/feeds'
 
@@ -108,6 +108,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
               rampIn: form.rampIn, startNear: hint, safeHeightMM,
             }))
           } catch (err) {
+            // A cancel abandons the whole Generate, not just this path.
+            if (isWorkCancelled(err)) break
             const msg = err instanceof Error ? err.message : 'Generation failed'
             setError(op.id, msg)
             setErrorMsg(msg)
@@ -160,6 +162,9 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
             }))
             if (!existingId) session.remember(path.id, opId)
           } catch (err) {
+            // Cancelled ops keep their slot (cancelGenerating marks them needs-update)
+            // rather than being deleted — Generate again picks them straight back up.
+            if (isWorkCancelled(err)) break
             const msg = err instanceof Error ? err.message : 'Generation failed'
             if (existingId) setError(opId, msg)
             else deleteOperation(opId)

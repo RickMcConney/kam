@@ -6,6 +6,7 @@ import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { usePathsStore } from '../store/pathsStore'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, pathIdsOf, type AnyOperation } from '../store/toolpathStore'
+import { abortGeneration } from '../workers/abortGeneration'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
@@ -170,6 +171,13 @@ interface TimelineState {
   // recording a normal event). NOT undoable — the chip IS the record.
   amendPathDefinition: (pathId: string, upd: { d: string; shapeParams?: ShapeParams | null; name?: string }) => boolean
   amendOpSettings: (opId: string, updates: Partial<SerializedOperation>) => boolean
+  // Re-Generate that changes WHICH operations a form produced, not just their settings:
+  // PocketForm's Invert Pocket toggle re-reads the same selection into a different set of
+  // boundaries. Same reasoning as amendOpSettings — it is an argument edit to the call
+  // that created them — but the op set itself changes, so the op.add chip's payload is
+  // rewritten wholesale instead of merged field-by-field. Returns false when no defining
+  // op.add exists (loaded/compacted project), and the caller records delete+add normally.
+  amendOpAddEvent: (anchorOpId: string, patch: { removeIds: string[]; add: SerializedOperation[] }) => boolean
   // BooleanForm edit mode: rewrite a boolean chip's op type + result geometry.
   // Keyed by event id (seqs shift on insert/remove/compact while the form is
   // open). The live result path is rewritten by the caller (rewritePathRaw).
@@ -314,6 +322,54 @@ function tabsByPath(tabs: Tab[]): Map<string, Tab[]> {
 
 // Debounced regeneration after scrubbing — rapid scrubs (drag across the
 // timeline) only regenerate once the cursor settles.
+// ─── Parked segments ──────────────────────────────────────────────────────────
+//
+// restoreStateAt keeps generated segments by reading the LIVE operation, which covers
+// scrubbing over unrelated events but not over the event that ADDED the operation. Scrub
+// back past a pocket's op.add and the op leaves the state entirely; come forward again and
+// there is nothing live to read, so every operation regenerates for a cursor move that
+// changed nothing — 26 pockets on an imported drawing, reappearing smallest-first because
+// the regen fans out across the worker pool.
+//
+// So operations that are about to leave the state are parked here together with the
+// geometry they were generated from, and are looked up again on the way forward. Validity
+// is decided by exactly the same three tests as the live path (same settings, same source
+// path d, same tabs), just measured against the snapshot taken when the entry was parked —
+// so a park can never resurrect segments that no longer describe the operation.
+interface ParkedOp {
+  op: AnyOperation
+  pathD: Map<string, string>
+  tabsByPath: Map<string, Tab[]>
+}
+const parkedOps = new Map<string, ParkedOp>()
+// Segment arrays are the big things in this app (a 600 mm pocket is ~34 k of them), so the
+// park is capped and evicts least-recently-parked first. Overflowing only costs a
+// regeneration — the same thing that happened before the park existed.
+const PARK_LIMIT = 64
+
+function park(op: AnyOperation, curPathD: Map<string, string>, curTabs: Map<string, Tab[]>) {
+  // Snapshot only what this op depends on, not the whole document.
+  const pathD = new Map<string, string>()
+  for (const id of pathIdsOf(serializeOp(op))) {
+    const d = curPathD.get(id)
+    if (d !== undefined) pathD.set(id, d)
+  }
+  const tabsFor = new Map<string, Tab[]>()
+  const pid = (op as { pathId?: string }).pathId
+  if (pid) tabsFor.set(pid, curTabs.get(pid) ?? [])
+
+  parkedOps.delete(op.id)   // re-insert so Map order is least-recent-first
+  parkedOps.set(op.id, { op, pathD, tabsByPath: tabsFor })
+  while (parkedOps.size > PARK_LIMIT) {
+    const oldest = parkedOps.keys().next()
+    if (oldest.done) break
+    parkedOps.delete(oldest.value)
+  }
+}
+
+/** Dropped when the timeline itself is replaced — a different project's ops are not ours. */
+function clearParkedOps() { parkedOps.clear() }
+
 let regenTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleRegen() {
   if (regenTimer) clearTimeout(regenTimer)
@@ -350,25 +406,43 @@ function restoreStateAt(seq: number, events: TimelineEvent[]): void {
   // Group tabs by path once rather than re-filtering both arrays per operation.
   const curTabsByPath = tabsByPath(useTabStore.getState().tabs)
   const newTabsByPath = tabsByPath(state.tabs)
+
+  // Do this operation's existing segments still describe `sop`? `pathD`/`tabs` are the
+  // geometry the candidate was generated against — the live stores for a live op, the
+  // snapshot taken at park time for one coming back out of the park.
+  const stillValid = (
+    cand: AnyOperation, pathD: Map<string, string>, tabs: Map<string, Tab[]>, sop: SerializedOperation,
+  ): boolean =>
+    cand.status === 'done' &&
+    sameOpSettings(serializeOp(cand), sop) &&
+    pathIdsOf(sop).every((id) => newPathD.has(id) && pathD.get(id) === newPathD.get(id)) &&
+    ((sop.type !== 'profile' && sop.type !== 'trochoidal') ||
+      JSON.stringify(tabs.get(sop.pathId) ?? []) === JSON.stringify(newTabsByPath.get(sop.pathId) ?? []))
+
   const hydrated: AnyOperation[] = state.operations.map((sop) => {
     const cur = currentOps.get(sop.id)
-    if (cur && cur.status === 'done') {
-      const sameSettings = sameOpSettings(serializeOp(cur), sop)
-      const samePaths = pathIdsOf(sop).every((id) =>
-        newPathD.has(id) && curPathD.get(id) === newPathD.get(id))
-      const sameTabs = (sop.type !== 'profile' && sop.type !== 'trochoidal') ||
-        JSON.stringify(curTabsByPath.get(sop.pathId) ?? []) === JSON.stringify(newTabsByPath.get(sop.pathId) ?? [])
+    const parked = parkedOps.get(sop.id)
+    const keep =
+      cur && stillValid(cur, curPathD, curTabsByPath, sop) ? cur
+      : parked && stillValid(parked.op, parked.pathD, parked.tabsByPath, sop) ? parked.op
+      : null
+    if (keep) {
       // Visibility is deliberately outside sameOpSettings (a toggle must not read as a
       // settings change and discard segments), so the replayed value is applied here by
       // hand — otherwise scrubbing across an op.setVisible would keep the live one and
       // the operation would stay hidden, or reappear, against its own history.
-      if (sameSettings && samePaths && sameTabs) {
-        const wantVisible = (sop as { visible?: boolean }).visible ?? true
-        return cur.visible === wantVisible ? cur : { ...cur, visible: wantVisible }
-      }
+      const wantVisible = (sop as { visible?: boolean }).visible ?? true
+      return keep.visible === wantVisible ? keep : { ...keep, visible: wantVisible }
     }
     return hydrateOp(sop)
   })
+
+  // Park the finished operations this state DROPS, before they are overwritten.
+  const surviving = new Set(state.operations.map((o) => o.id))
+  for (const op of currentOps.values()) {
+    if (surviving.has(op.id) || op.status !== 'done' || op.segments.length === 0) continue
+    park(op, curPathD, curTabsByPath)
+  }
 
   const pathIds = new Set(state.paths.map((p) => p.id))
   const selection = (seq > 0 ? events[seq - 1].selectionAfter : [])
@@ -514,6 +588,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
 
   resetToCurrentState: () => {
     checkpoints.clear()
+    clearParkedOps()
     checkpoints.set(0, captureCheckpoint())
     lastScrubIntent = 'undo'
     set({ events: [], cursor: 0, savedSeq: 0 })
@@ -528,6 +603,7 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       Number.isInteger(cursor) && cursor >= 0 && cursor <= events.length &&
       events.every((ev, i) => ev && ev.seq === i + 1 && KNOWN_EVENT_KINDS.has(ev.kind))
     if (!valid) return false
+    clearParkedOps()
     checkpoints.clear()
     checkpoints.set(0, genesis)
     lastScrubIntent = 'undo'
@@ -540,6 +616,11 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
     const s = get()
     const target = Math.max(0, Math.min(s.events.length, Math.round(seq)))
     if (target === s.cursor) return
+    // Undo, redo and scrubbing all land here, and all of them replace the geometry any
+    // running generation was started from — its result would be written against state
+    // that no longer exists. Placed after the no-op check so a scrub that goes nowhere
+    // doesn't kill a generation.
+    abortGeneration()
     restoreStateAt(target, s.events)
     set({ cursor: target })
   },
@@ -727,6 +808,32 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       invalidateCheckpointsFrom(1)
       checkpoints.set(0, amended)
       set({ savedSeq: -1 })
+      return true
+    }
+    return false
+  },
+
+  amendOpAddEvent: (anchorOpId, patch) => {
+    const s = get()
+    for (let i = s.cursor - 1; i >= 0; i--) {
+      const ev = s.events[i]
+      if (ev.kind !== 'op.add') continue
+      const members = [ev.op, ...(ev.linked ?? [])]
+      if (!members.some((o) => o.id === anchorOpId)) continue
+      const remove = new Set(patch.removeIds)
+      const next = [...members.filter((o) => !remove.has(o.id)), ...patch.add]
+      // An op.add with nothing in it has no meaning; leave the chip alone and let the
+      // caller record the delete and the add as ordinary events.
+      if (next.length === 0) return false
+      const amended: TimelineEvent = {
+        ...ev,
+        op: next[0],
+        ...(next.length > 1 ? { linked: next.slice(1) } : { linked: undefined }),
+      }
+      const events = [...s.events]
+      events[i] = amended
+      invalidateCheckpointsFrom(amended.seq)
+      set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
       return true
     }
     return false

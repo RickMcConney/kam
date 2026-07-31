@@ -1,4 +1,5 @@
 import { regenerateAll } from '../cam/regenerate'
+import { abortGeneration } from '../workers/abortGeneration'
 import { useProjectStore } from '../store/projectStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useToolStore } from '../store/toolStore'
@@ -66,6 +67,9 @@ export interface ProjectData {
 // project name — rename the file on disk and the app follows. The `name` stored inside the
 // file is only a fallback for callers that have no file name to offer.
 export function loadProject(data: ProjectData, fileName?: string) {
+  // Same reason as newProject: this replaces the paths every in-flight generation was
+  // computed from, and it ends by regenerating everything anyway.
+  abortGeneration()
   const wp = data.workpiece ?? {}
   const wps = useWorkpieceStore.getState()
   wps.setWidth(wp.widthMM ?? 300)
@@ -131,6 +135,9 @@ export function loadProject(data: ProjectData, fileName?: string) {
 }
 
 export function newProject() {
+  // Before anything is cleared: a generation still running would otherwise keep a core
+  // busy for the rest of its solve and then write segments into the fresh project.
+  abortGeneration()
   useSimStore.getState().clearSim()
   useUIStore.getState().setWorkspaceTab('2d')
   useUIStore.getState().setSidebarTab('draw')

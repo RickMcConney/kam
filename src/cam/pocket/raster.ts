@@ -82,6 +82,109 @@ function clipScanlineAgainstIslands(
 }
 
 
+// A safe hop scores `dist`, one that needs a lift scores `dist * LIFT_PENALTY`. Both are
+// bounded below by `dist`, which is what makes the pruning in buildRasterPath exact.
+const LIFT_PENALTY = 1.25
+
+// Uniform-grid index over scanline endpoints, supporting removal.
+//
+// buildRasterPath picks each next scanline by a greedy nearest-neighbour scan over every
+// end of every unused scanline, and travel-safety-tests each candidate. That is O(n²)
+// tests: a 600 mm compound outline clipped by 20 islands is 4093 spans, so 17 M tests
+// against ~8700 obstacle edges — two and a half minutes. Endpoint ids are `scanlineIndex
+// * 2 + end`, so iterating a query result in ascending id order visits candidates in
+// exactly the (i, r) order the old full scan did, and the winner and its tie-breaks are
+// unchanged.
+class EndpointGrid {
+  private readonly cell: number
+  private readonly minX: number
+  private readonly minY: number
+  private readonly cols: number
+  private readonly rows: number
+  private readonly buckets: number[][]
+  private readonly xs: Float64Array
+  private readonly ys: Float64Array
+  private readonly alive: Uint8Array
+
+  constructor(pts: Pt2[]) {
+    const n = pts.length
+    this.xs = new Float64Array(n)
+    this.ys = new Float64Array(n)
+    this.alive = new Uint8Array(n).fill(1)
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (let i = 0; i < n; i++) {
+      const [x, y] = pts[i]
+      this.xs[i] = x; this.ys[i] = y
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+    // Aim for roughly one point per cell; guard the degenerate all-coincident case.
+    const span = Math.max(maxX - minX, maxY - minY)
+    this.cell = span > 0 ? Math.max(span / Math.max(1, Math.ceil(Math.sqrt(n))), 1e-6) : 1
+    this.minX = minX; this.minY = minY
+    this.cols = Math.max(1, Math.floor((maxX - minX) / this.cell) + 1)
+    this.rows = Math.max(1, Math.floor((maxY - minY) / this.cell) + 1)
+    this.buckets = Array.from({ length: this.cols * this.rows }, () => [] as number[])
+    for (let i = 0; i < n; i++) this.buckets[this.cellIndex(this.xs[i], this.ys[i])].push(i)
+  }
+
+  private col(x: number): number {
+    return Math.min(this.cols - 1, Math.max(0, Math.floor((x - this.minX) / this.cell)))
+  }
+  private row(y: number): number {
+    return Math.min(this.rows - 1, Math.max(0, Math.floor((y - this.minY) / this.cell)))
+  }
+  private cellIndex(x: number, y: number): number {
+    return this.row(y) * this.cols + this.col(x)
+  }
+
+  remove(id: number) { this.alive[id] = 0 }
+
+  /** Distance to the closest live point, or Infinity when none are left. */
+  nearestDist(x: number, y: number): number {
+    const cx = this.col(x), cy = this.row(y)
+    let best = Infinity
+    const maxRing = Math.max(this.cols, this.rows)
+    for (let r = 0; r <= maxRing; r++) {
+      // A point in ring r sits at least (r-1) cells away, so once that exceeds the best
+      // distance found no further ring can improve on it.
+      if (best < Infinity && (r - 1) * this.cell > best) break
+      const y0 = Math.max(0, cy - r), y1 = Math.min(this.rows - 1, cy + r)
+      for (let j = y0; j <= y1; j++) {
+        const onYEdge = j === cy - r || j === cy + r
+        const x0 = Math.max(0, cx - r), x1 = Math.min(this.cols - 1, cx + r)
+        for (let i = x0; i <= x1; i++) {
+          if (!onYEdge && i !== cx - r && i !== cx + r) continue
+          for (const id of this.buckets[j * this.cols + i]) {
+            if (!this.alive[id]) continue
+            const d = Math.hypot(this.xs[id] - x, this.ys[id] - y)
+            if (d < best) best = d
+          }
+        }
+      }
+    }
+    return best
+  }
+
+  /** Live point ids within `radius`, ascending — i.e. in (scanline, end) order. */
+  within(x: number, y: number, radius: number): number[] {
+    const out: number[] = []
+    const c0 = this.col(x - radius), c1 = this.col(x + radius)
+    const r0 = this.row(y - radius), r1 = this.row(y + radius)
+    for (let j = r0; j <= r1; j++) {
+      for (let i = c0; i <= c1; i++) {
+        for (const id of this.buckets[j * this.cols + i]) {
+          if (!this.alive[id]) continue
+          if (Math.hypot(this.xs[id] - x, this.ys[id] - y) <= radius) out.push(id)
+        }
+      }
+    }
+    return out.sort((a, b) => a - b)
+  }
+}
+
 function buildRasterPath(
   scanlines: Scanline[],
   travelObstacles: TravelSafetyObstacles,
@@ -111,28 +214,52 @@ function buildRasterPath(
     if (sl.row > maxRow) maxRow = sl.row
   }
 
+  // Endpoint index for the greedy pick below. Ends are interleaved p1, p2 per scanline so
+  // that id order is (scanline, end) order.
+  const ends: Pt2[] = []
+  for (const sl of scanlines) ends.push(sl.p1, sl.p2)
+  const grid = new EndpointGrid(ends)
+
   for (let remaining = scanlines.length; remaining > 0; remaining--) {
     let bestIdx = -1, bestScore = Infinity, bestDist = Infinity, bestReversed = false, bestNeedsLift = true
-    for (let i = 0; i < scanlines.length; i++) {
-      if (used[i]) continue
+
+    // Candidates worth testing. Once the tool is down, every score is at least the
+    // straight-line distance and the nearest end scores at most LIFT_PENALTY × that, so
+    // anything farther is provably beaten and never needs a travel-safety test. The first
+    // pass has no position to measure from (and its row restriction is not a distance), so
+    // it stays a full scan — one pass, and with `current` null it does no safety tests.
+    let candidates: number[]
+    if (current === null) {
+      candidates = []
+      for (let i = 0; i < scanlines.length; i++) {
+        if (used[i]) continue
+        if (startNear && scanlines[i].row !== minRow && scanlines[i].row !== maxRow) continue
+        candidates.push(i * 2, i * 2 + 1)
+      }
+    } else {
+      const near = grid.nearestDist(current[0], current[1])
+      candidates = near === Infinity ? [] : grid.within(current[0], current[1], near * LIFT_PENALTY + 1e-9)
+    }
+
+    for (const id of candidates) {
+      const i = id >> 1, r = id & 1
       const seg = scanlines[i]
-      // First pass only: restrict the choice to the two ends of the stack.
-      if (current === null && startNear && seg.row !== minRow && seg.row !== maxRow) continue
-      for (let r = 0; r < 2; r++) {
-        const start: Pt2 = r === 0 ? seg.p1 : seg.p2
-        const needsLift = current === null || !isTravelSafe(current, start, travelObstacles)
-        // Measure from where the tool is, or — before the first pass — from the incoming
-        // hint, so the raster opens on the scanline nearest where the last operation
-        // finished instead of always at scanlines[0].
-        const ref: Pt2 | null = current ?? (startNear ? [startNear.x, startNear.y] : null)
-        const dist = ref ? Math.hypot(start[0] - ref[0], start[1] - ref[1]) : 0
-        const score = needsLift ? dist * 1.25 : dist
-        if (bestIdx === -1 || score < bestScore || (Math.abs(score - bestScore) < 1e-6 && dist < bestDist)) {
-          bestIdx = i; bestScore = score; bestDist = dist; bestReversed = r === 1; bestNeedsLift = needsLift
-        }
+      const start: Pt2 = r === 0 ? seg.p1 : seg.p2
+      const needsLift = current === null || !isTravelSafe(current, start, travelObstacles)
+      // Measure from where the tool is, or — before the first pass — from the incoming
+      // hint, so the raster opens on the scanline nearest where the last operation
+      // finished instead of always at scanlines[0].
+      const ref: Pt2 | null = current ?? (startNear ? [startNear.x, startNear.y] : null)
+      const dist = ref ? Math.hypot(start[0] - ref[0], start[1] - ref[1]) : 0
+      const score = needsLift ? dist * LIFT_PENALTY : dist
+      if (bestIdx === -1 || score < bestScore || (Math.abs(score - bestScore) < 1e-6 && dist < bestDist)) {
+        bestIdx = i; bestScore = score; bestDist = dist; bestReversed = r === 1; bestNeedsLift = needsLift
       }
     }
+    if (bestIdx === -1) break
     used[bestIdx] = true
+    grid.remove(bestIdx * 2)
+    grid.remove(bestIdx * 2 + 1)
     const seg = scanlines[bestIdx]
     const start: Pt2 = bestReversed ? seg.p2 : seg.p1
     const end: Pt2   = bestReversed ? seg.p1 : seg.p2
@@ -175,9 +302,20 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   const islandExclusions = growIslands(islands, tool.diameterMM)
   const islandFinish = growIslands(islands, toolRadius)
 
-  // Raster fill: tool centre stays one full diameter inside the boundary wall;
-  // the finishing contour covers the remaining tool-radius margin.
-  const rasterBoundary = insetRing(boundary, tool.diameterMM)
+  // Raster fill: the tool centre may go anywhere a radius inside the wall — the geometric
+  // limit, past which it would gouge.
+  //
+  // This was a full DIAMETER, which cost the fill a whole tool-width of reach on every
+  // wall for no reason other than that the finishing contour would cover it. In an open
+  // pocket that is invisible. In a region narrower than two diameters it means no scanline
+  // fits at all, so the strategy produces nothing and the region comes out as bare wall
+  // passes — a raster pocket that looks like a contour one. Nested outlines are made of
+  // exactly such regions, which is why a compound path is where this shows up: even-odd
+  // resolves it into bands, and the narrow ones had nothing left to raster.
+  //
+  // The first scanline still lands half a stepover in from there (generateScanlines starts
+  // at minY + spacing/2), so it does not sit on top of the finishing pass.
+  const rasterBoundary = insetRing(boundary, toolRadius)
   const rawScanlines = rasterBoundary.length >= 3
     ? generateScanlines(rasterBoundary, stepoverMM, params.angle ?? 0)
     : []
@@ -188,7 +326,11 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   const cosF = Math.cos(-angleRad), sinF = Math.sin(-angleRad)
   const cosB = Math.cos(angleRad),  sinB = Math.sin(angleRad)
   const rotPt = ([x, y]: Pt2, c: number, s: number): Pt2 => [x * c - y * s, x * s + y * c]
-  const islandExclusionsRot = islandExclusions.map(e => e.map(p => rotPt(p, cosF, sinF)))
+  // Clipped at the island's own radius offset, matching the boundary inset above: a
+  // scanline may run right up to where the tool would touch the island, and no further.
+  // islandExclusions (a full diameter) stays what TRAVEL is tested against — where the
+  // tool may cross uncleared stock is a separate question from where it may cut.
+  const islandExclusionsRot = islandFinish.map(e => e.map(p => rotPt(p, cosF, sinF)))
   const clippedScanlines = rawScanlines.flatMap(s => {
     const p1r = rotPt(s.p1, cosF, sinF)
     const p2r = rotPt(s.p2, cosF, sinF)

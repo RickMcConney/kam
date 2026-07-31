@@ -5,7 +5,7 @@ import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 
 interface SurfaceFormState {
@@ -65,7 +65,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
           safeHeightMM,
         }))
       } catch (err) {
-        setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+        if (!isWorkCancelled(err)) setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
       }
       setGenerating(false)
       save('surface', form)
@@ -98,7 +98,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         safeHeightMM,
       }))
     } catch (err) {
-      setError(opId, err instanceof Error ? err.message : 'Generation failed')
+      if (!isWorkCancelled(err)) setError(opId, err instanceof Error ? err.message : 'Generation failed')
     }
     setGenerating(false)
     save('surface', form)

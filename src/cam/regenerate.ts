@@ -1,6 +1,6 @@
 import { generatePeckDrill, generateHelicalDrill } from './drill'
 import { perfLog } from '../debug'
-import { runInWorkerFor } from '../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../workers/workerClient'
 import { useToolpathStore, refsPathId } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore, type Tool } from '../store/toolStore'
@@ -194,6 +194,9 @@ export async function regenerateOperation(opId: string): Promise<void> {
     const _label = op.type === 'pocket' ? `pocket/${(op as { strategy?: string }).strategy ?? 'raster'}` : op.type
     perfLog(`[perf] toolpath-gen ${_label}: ${(performance.now() - _t0).toFixed(0)}ms → ${_segs} segs`)
   } catch (err) {
+    // A cancelled regenerate is not a failure: abortGeneration has already settled the
+    // op's status, and the state it was computing against is gone.
+    if (isWorkCancelled(err)) return
     setError(opId, err instanceof Error ? err.message : 'Generation failed')
   }
 }

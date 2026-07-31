@@ -198,8 +198,17 @@ interface ToolpathState {
   // load/undo/import machinery and view-state rewrites.
   reorderOperations: (operations: AnyOperation[]) => void
   deleteOperations: (ids: string[]) => void
+  // Swap one generated set of operations for another in a single timeline entry. A form
+  // re-Generating with a different grouping (PocketForm's Invert Pocket) is revising the
+  // call it already made, not deleting one thing and creating another — so it amends the
+  // op.add chip that defined `anchorId` rather than appending delete + add chips.
+  replaceGeneratedOperations: (args: { anchorId: string; deleteIds: string[]; add: AddPayload[] }) => string[]
   setSegments: (id: string, segments: MotionSegment[]) => void
   setError: (id: string, error: string) => void
+  // Settles operations whose generation was abandoned (see workers/abortGeneration).
+  // 'needs-update' rather than 'error': the user stopped it, nothing went wrong, and the
+  // op does need regenerating. Not recorded — status is derived state.
+  cancelGenerating: () => void
   // Recorded: an invisible op is skipped by generateGcode, so hiding one edits the
   // exported program. It undoes, and replay restores it.
   toggleVisibility: (id: string) => void
@@ -321,6 +330,37 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     get().revalidateStartHeights()
   },
 
+  replaceGeneratedOperations: ({ anchorId, deleteIds, add }) => {
+    // Built exactly as addOperations builds them, so an op is the same whichever door it
+    // came through — including the batchId that lets one later edit reach all of them.
+    const batchId = add.length > 1 ? uid('batch') : undefined
+    const created = add.map((op) => ({
+      ...op, id: uid('op'), status: 'pending', segments: [],
+      color: OP_TYPE_COLORS[op.type] ?? '#94a3b8', visible: true,
+      ...(batchId ? { batchId } : {}),
+    } as AnyOperation))
+    const remove = new Set(deleteIds)
+    set((s) => ({
+      operations: [...s.operations.filter((o) => !remove.has(o.id)), ...created],
+    }))
+    const tl = useTimelineStore.getState()
+    if (!tl.amendOpAddEvent(anchorId, { removeIds: deleteIds, add: created.map(serializeOp) })) {
+      // No defining chip to amend (loaded or compacted project): record it plainly. Two
+      // entries, but correct — better than a chip that replay can't reproduce.
+      if (deleteIds.length > 0) tl.record({ kind: 'op.delete', opIds: deleteIds })
+      if (created.length > 0) {
+        const [first, ...rest] = created
+        tl.record({
+          kind: 'op.add',
+          op: serializeOp(first),
+          ...(rest.length > 0 ? { linked: rest.map(serializeOp) } : {}),
+        })
+      }
+    }
+    get().revalidateStartHeights()
+    return created.map((o) => o.id)
+  },
+
   // Stamps `generatedWith` with the inputs these segments were built from: the operation's
   // entry hint, which the caller sets BEFORE generating (see entryHintAt), and the current
   // safe height. Getting this stamp right is what lets a simulate or export skip work —
@@ -349,6 +389,15 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     set((s) => ({
       operations: s.operations.map((o) =>
         o.id === id ? { ...o, status: 'error', errorMessage: error, segments: [] } as AnyOperation : o
+      ),
+    })),
+
+  cancelGenerating: () =>
+    set((s) => ({
+      operations: s.operations.map((o) =>
+        o.status === 'generating'
+          ? { ...o, status: 'needs-update', errorMessage: undefined } as AnyOperation
+          : o
       ),
     })),
 

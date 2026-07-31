@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { runInWorkerFor, __setWorkerFactoryForTests } from './workerClient'
+import { runInWorkerFor, cancelAllWork, isWorkCancelled, __setWorkerFactoryForTests } from './workerClient'
 
 // The public signature ties `fn` to a real handler and its argument types; these
 // tests only exercise scheduling, so they go through one loosened alias rather
@@ -124,5 +124,50 @@ describe('worker pool scheduling', () => {
     expect(d).toHaveLength(1)
     pool.complete(d[0].p.id, 'ok')
     await expect(p2).resolves.toBe('ok')
+  })
+})
+
+// A generation is one synchronous call inside a worker, so cancelling means terminating
+// the thread. What has to hold afterwards is that nothing is left half-settled: every
+// abandoned promise rejects (so no `await` hangs and no form's Generate button spins
+// forever), and the pool is usable again immediately.
+describe('worker pool cancellation', () => {
+  it('rejects in-flight and queued jobs, and terminates only the busy workers', async () => {
+    const pool = makeFakePool()
+    const busyA = run('opA', 'gen')
+    const busyB = run('opB', 'gen')
+    // Blocked behind opA's key, so it is still sitting in the queue.
+    const queuedA = run('opA', 'gen')
+    expect(pool.workers).toHaveLength(2)
+
+    // Finish opB so its slot is idle — an abort must not throw away a thread that is
+    // doing nothing, only the ones actually burning a core.
+    pool.complete(pool.dispatched().find((d) => d.p.fn === 'gen' && d.w === pool.workers[1])!.p.id, 'B')
+    await expect(busyB).resolves.toBe('B')
+
+    expect(cancelAllWork()).toBe(2)   // the in-flight opA and the queued one
+    await expect(busyA).rejects.toSatisfy(isWorkCancelled)
+    await expect(queuedA).rejects.toSatisfy(isWorkCancelled)
+    expect(pool.workers[0].terminated).toBe(true)
+    expect(pool.workers[1].terminated).toBe(false)
+  })
+
+  it('releases keys so the same operation can be generated again straight away', async () => {
+    const pool = makeFakePool()
+    const first = run('opA', 'gen')
+    cancelAllWork()
+    await expect(first).rejects.toSatisfy(isWorkCancelled)
+
+    // Had the key stayed reserved by the terminated job, this would queue forever.
+    const second = run('opA', 'gen')
+    const live = pool.dispatched().filter((d) => !d.w.terminated)
+    expect(live).toHaveLength(1)
+    pool.complete(live[0].p.id, 'ok')
+    await expect(second).resolves.toBe('ok')
+  })
+
+  it('reports nothing to cancel when the pool is idle', () => {
+    makeFakePool()
+    expect(cancelAllWork()).toBe(0)
   })
 })

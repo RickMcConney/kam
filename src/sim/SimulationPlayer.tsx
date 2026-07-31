@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { ICON } from '../theme'
 import { Play, Pause, Rewind, FileText, X } from 'lucide-react'
 import { useSimStore, type SimSpeed } from '../store/simStore'
@@ -25,6 +25,39 @@ function chipStatus(actual: number | null, target: number): keyof typeof CHIP_ST
   if (r < 0.75) return 'rubbing'
   if (r > 1.4) return 'heavy'
   return 'good'
+}
+
+// Widest value each field ever holds, in monospace characters. The bars are centred
+// overlays, so a field that grows by one character slides the whole row sideways — and a
+// row of numbers that moves while it updates cannot be read at all.
+const W_Z = 8            // -999.999
+const W_FEED = 5         // 'rapid' / 99999
+const W_RPM = 5          // 99999
+const W_DIAL = 11        // ' · dial 5.5' (dial tables top out at 6, rounded to half-detents)
+const W_FZ = 5           // 0.000
+const W_CHIP_LABEL = 17  // 'rubbing · too hot'
+
+/**
+ * A value in a status bar: fixed width, so the label beside it never moves.
+ *
+ * Every field is always rendered — a field that disappears when it has nothing to say
+ * (chip load during a rapid, the status word between cuts) re-flows everything after it,
+ * which is the same unreadable flicker by another route. Nothing-to-say prints as '—'.
+ */
+function Slot({ ch, children, align = 'right', color }: {
+  ch: number
+  children: ReactNode
+  align?: 'left' | 'right'
+  color?: string
+}) {
+  return (
+    <span
+      className="inline-block tabular-nums"
+      style={{ width: `${ch}ch`, textAlign: align, color }}
+    >
+      {children}
+    </span>
+  )
 }
 
 export default function SimulationPlayer() {
@@ -122,18 +155,45 @@ export default function SimulationPlayer() {
     ? `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min, but a Ø${dia.toFixed(2)} mm bit reaches that at ${safeRpm} rpm — below your machine's ${minSpindleRpm} rpm minimum. The spindle can't slow down enough, so lowering RPM won't help: use a bit ≤ ${maxBitMM.toFixed(1)} mm, or fit a spindle that runs slower.`
     : `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min. Lower the spindle to ≤ ${safeRpm} rpm for this Ø${dia.toFixed(2)} mm bit (or turn on auto-feed to set it automatically).`
 
+  // The elapsed clock never runs longer than the total, so the total's width sizes both.
+  const totalTimeStr = formatSimTime(totalTimeS)
+  const lastLineNum = segments.length > 0 ? segments[segments.length - 1].lineIdx + 1 : 0
+  const wLine = Math.max(4, String(lastLineNum).length)
+  const dialLabel = spindleDialLabel(spindleType, spindleRpm)
+
   return (
+    // Bottom-pinned column: the last child holds its place and the stack grows UPWARD, so
+    // the rows that come and go (the two hint banners) live at the TOP. Below the bars they
+    // shunted the whole player up and down every time the chip load crossed a band.
     <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5 select-none">
+      {/* Surface-speed warning — explains the red spindle and how (or whether) to fix it */}
+      {spindleTooFast && spindleHint && (
+        <div className="max-w-md bg-red-50/95 dark:bg-red-950/90 border border-red-300 dark:border-red-800 rounded-md px-3 py-1.5 text-body text-red-700 dark:text-red-300 text-center whitespace-normal pointer-events-none">
+          ⚠ Spindle too fast ({Math.round(surfaceSpeedMMin)} m/min) — {spindleHint}
+        </div>
+      )}
+
+      {/* How to get the chip load back into the sweet spot */}
+      {suggestion && (
+        <div className="max-w-md bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body text-gray-600 dark:text-neutral-400 text-center whitespace-normal pointer-events-none">
+          {suggestion}
+        </div>
+      )}
+
       {/* Stats bar */}
       <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex gap-3 whitespace-nowrap pointer-events-none">
-        <span>Line: {currentLineNum}</span>
-        <span>Z: {pos ? pos.z.toFixed(3) : '—'}</span>
-        {curSeg && (
-          <span className={curSeg.rapid ? 'text-gray-400 dark:text-neutral-500' : ''}>
-            {curSeg.rapid ? 'RAPID' : `F: ${Math.round(curSeg.feedRateMmMin)}`}
-          </span>
-        )}
-        <span className="text-gray-500 dark:text-neutral-400">{formatSimTime(elapsedTimeS)} / {formatSimTime(totalTimeS)}</span>
+        <span>Line: <Slot ch={wLine}>{currentLineNum || '—'}</Slot></span>
+        <span>Z: <Slot ch={W_Z}>{pos ? pos.z.toFixed(3) : '—'}</Slot></span>
+        {/* 'rapid' is the feed's VALUE, not a replacement label — swapping the label out
+            was half the flicker, and it moved the clock beside it. */}
+        <span className={curSeg?.rapid ? 'text-gray-400 dark:text-neutral-500' : ''}>
+          F: <Slot ch={W_FEED}>
+            {!curSeg ? '—' : curSeg.rapid ? 'rapid' : Math.round(curSeg.feedRateMmMin)}
+          </Slot>
+        </span>
+        <span className="text-gray-500 dark:text-neutral-400">
+          <Slot ch={totalTimeStr.length}>{formatSimTime(elapsedTimeS)}</Slot> / {totalTimeStr}
+        </span>
       </div>
 
       {/* Controls */}
@@ -210,37 +270,28 @@ export default function SimulationPlayer() {
         </button>
       </div>
 
-      {/* Spindle + chip-load feedback */}
-      {curSeg && (
-        <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex items-center gap-3 whitespace-nowrap pointer-events-none">
-          <span
-            className={spindleTooFast ? 'text-red-500 font-semibold' : ''}
-            title={spindleHint || undefined}
-          >
-            Spindle: {spindleRpm > 0 ? Math.round(spindleRpm) : '—'}
-            {spindleDialLabel(spindleType, spindleRpm) && ` · ${spindleDialLabel(spindleType, spindleRpm)}`}
-            {spindleTooFast && ` (${Math.round(surfaceSpeedMMin)} m/min)`}
-          </span>
-          <span className="flex items-center gap-1.5">
-            Chip
-            <span style={{ color: chip.color }}>●</span>
-            {actualFz !== null ? actualFz.toFixed(3) : '—'} / {targetFz > 0 ? targetFz.toFixed(3) : '—'} mm
-          </span>
-          {chip.label && (
-            <span className="flex items-center gap-1.5">
-              <span style={{ color: chip.color }}>{chip.label}</span>
-              {suggestion && <span className="text-gray-500 dark:text-neutral-400">· {suggestion}</span>}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Surface-speed warning — explains the red spindle and how (or whether) to fix it */}
-      {spindleTooFast && spindleHint && (
-        <div className="max-w-md bg-red-50/95 dark:bg-red-950/90 border border-red-300 dark:border-red-800 rounded-md px-3 py-1.5 text-body text-red-700 dark:text-red-300 text-center whitespace-normal pointer-events-none">
-          ⚠ Spindle too fast — {spindleHint}
-        </div>
-      )}
+      {/* Spindle + chip-load feedback. Always mounted: it used to unmount between moves,
+          which made the bar blink in and out and shifted the controls above it. */}
+      <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex items-center gap-3 whitespace-nowrap pointer-events-none">
+        <span className={spindleTooFast ? 'text-red-500 font-semibold' : ''}>
+          {/* The surface speed moved to the warning banner rather than being appended
+              here — it only ever appeared when something was wrong, so it dragged the
+              whole row sideways exactly when the numbers mattered most. */}
+          Spindle: <Slot ch={W_RPM}>{spindleRpm > 0 ? Math.round(spindleRpm) : '—'}</Slot>
+          <Slot ch={W_DIAL} align="left">{dialLabel ? ` · ${dialLabel}` : ''}</Slot>
+        </span>
+        <span className="flex items-center gap-1.5">
+          Chip
+          <span style={{ color: chip.color }}>●</span>
+          <Slot ch={W_FZ}>{actualFz !== null ? actualFz.toFixed(3) : '—'}</Slot>
+          /
+          <Slot ch={W_FZ}>{targetFz > 0 ? targetFz.toFixed(3) : '—'}</Slot>
+          mm
+        </span>
+        {/* Holds its width whatever the band, and prints '—' rather than vanishing when
+            the move isn't steady side-cutting and there is nothing to judge. */}
+        <Slot ch={W_CHIP_LABEL} align="left" color={chip.color}>{chip.label || '—'}</Slot>
+      </div>
     </div>
   )
 }

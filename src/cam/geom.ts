@@ -4,6 +4,38 @@
 // a faithful FreeCAD port and must stay byte-for-byte comparable (tofix.md H6).
 
 import { signedArea, sharesVertex, type Pt2 } from './pathFlattener'
+import type { Tool } from '../store/toolStore'
+
+// Cutting radius of a tool at a given height above its tip — the half-width of the
+// material it removes at that height.
+//
+// Only tapered/round tools vary with height:
+//  • endmill / drill — flat bottom, full radius at every height (including 0).
+//  • vbit — a cone of half-angle θ: r = h·tanθ, capped at the shank radius once the
+//    cone runs out (h > R/tanθ).
+//  • ballnose — sphere of radius R tangent to the shank: r = √(h(2R−h)) while
+//    h < R, then the full radius.
+//
+// A profile that must "just touch" the design line at the stock surface offsets by
+// the radius at the surface, i.e. h = depth of cut below that surface — which is why
+// a shallow V-bit pass barely offsets at all and a deep one offsets a full radius.
+export function toolRadiusAtHeight(tool: Tool, heightAboveTipMM: number): number {
+  const R = Math.max(0, tool.diameterMM / 2)
+  const h = Number.isFinite(heightAboveTipMM) ? Math.max(0, heightAboveTipMM) : 0
+  switch (tool.type) {
+    case 'vbit': {
+      // Guard the degenerate angles a hand-edited project can hold: 0° and 180°
+      // both make the cone meaningless, so fall back to a straight-walled tool.
+      const halfDeg = (tool.vbitAngleDeg ?? 60) / 2
+      if (!(halfDeg > 0 && halfDeg < 90)) return R
+      return Math.min(R, h * Math.tan((halfDeg * Math.PI) / 180))
+    }
+    case 'ballnose':
+      return h >= R ? R : Math.sqrt(Math.max(0, h * (2 * R - h)))
+    default:
+      return R
+  }
+}
 
 // Z levels for multi-pass cutting: -step, -2·step, … then exactly -depth.
 // Step is clamped to the UI's 0.01 mm minimum so a zero/negative/NaN value
@@ -83,36 +115,110 @@ export interface Region { outer: Pt2[]; holes: Pt2[][] }
 export function centroidX(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[0], 0) / pts.length }
 export function centroidY(pts: Pt2[]): number { return pts.reduce((s, p) => s + p[1], 0) / pts.length }
 
-// Largest ring first, so a ring is claimed by the biggest thing containing it and
-// each ring is claimed at most once (a hole is never also an outer).
-// `preserveOrder` returns the regions in the order their outers appeared in the
-// input instead of by descending area — pocket wants that so cut order (and the
-// travel between glyphs of a text path) stays the subpath order of the source.
-export function classifySubpaths(subpaths: Pt2[][], opts: { preserveOrder?: boolean } = {}): Region[] {
-  const byArea = subpaths.map((_, i) => i)
-    .sort((a, b) => Math.abs(signedArea(subpaths[b])) - Math.abs(signedArea(subpaths[a])))
-  const usedAsHole = new Set<number>()
-  const found: { idx: number; region: Region }[] = []
-
-  for (let i = 0; i < byArea.length; i++) {
-    const oi = byArea[i]
-    if (usedAsHole.has(oi)) continue
-    const outer = subpaths[oi]
-    const holes: Pt2[][] = []
-
-    for (let j = i + 1; j < byArea.length; j++) {
-      const ci = byArea[j]
-      if (usedAsHole.has(ci)) continue
-      const candidate = subpaths[ci]
-      // Loops touching at a vertex are siblings (e.g. letter K arms), not holes.
-      if (!sharesVertex(candidate, outer) && pointInPolygon(centroidX(candidate), centroidY(candidate), outer)) {
-        holes.push(candidate)
-        usedAsHole.add(ci)
+// A point that genuinely lies in the material enclosed by `rings`, for use as a shape's
+// stand-in in a containment test.
+//
+// NOT the centroid. The average of a ring's vertices only lands inside it when the ring is
+// convex: on a W/M zigzag the mean falls in the notch between the arms, outside the shape
+// entirely. That is not an exotic case — a W nested in a W (any shape and its own inward
+// offset) read as not-contained, so the inner ring was classified as a sibling region
+// instead of a hole, and a V-carve of the pair cut two separate medial axes, one of them
+// straight through the middle of the island.
+//
+// Method: scan horizontal lines across the shape, collect their crossings with every ring,
+// and take the midpoint of the widest even-odd interior span found. Even-odd across all
+// rings at once means the point lands in solid material, never in a hole.
+export function interiorPoint(rings: Pt2[][]): Pt2 | null {
+  const solid = rings.filter((r) => r.length >= 3)
+  if (solid.length === 0) return null
+  let minY = Infinity, maxY = -Infinity
+  for (const r of solid) for (const [, y] of r) { if (y < minY) minY = y; if (y > maxY) maxY = y }
+  if (!(maxY > minY)) return null
+  // Enough lines that a shape with thin arms gets one through an arm, few enough that this
+  // stays a fixed small cost per shape.
+  const LINES = 11
+  let best: { x: number; y: number; w: number } | null = null
+  for (let i = 1; i <= LINES; i++) {
+    const y = minY + ((maxY - minY) * i) / (LINES + 1)
+    const xs: number[] = []
+    for (const ring of solid) {
+      for (let a = 0, b = ring.length - 1; a < ring.length; b = a++) {
+        const [xa, ya] = ring[a]
+        const [xb, yb] = ring[b]
+        // Same half-open edge rule as pointInPolygon, so a vertex exactly on the scan line
+        // is counted once rather than twice.
+        if ((ya > y) !== (yb > y)) xs.push(xa + ((y - ya) / (yb - ya)) * (xb - xa))
       }
     }
-
-    found.push({ idx: oi, region: { outer, holes } })
+    if (xs.length < 2) continue
+    xs.sort((p, q) => p - q)
+    // Crossings pair up into interior spans: [0,1] is inside, [1,2] is outside, …
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const w = xs[k + 1] - xs[k]
+      if (!best || w > best.w) best = { x: (xs[k] + xs[k + 1]) / 2, y, w }
+    }
   }
+  return best ? [best.x, best.y] : null
+}
+
+// Resolves a flat ring list into solid regions by the EVEN-ODD rule — the same rule SVG
+// fills with, and the same one groupPathsByContainment applies across separately selected
+// paths. Nesting alternates: the area inside the outermost ring is solid, inside the next
+// one in is a hole, inside that is solid again. A region's holes are its DIRECT children
+// only.
+//
+// It used to claim every contained ring as a hole of the biggest thing containing it, so
+// four concentric rings read as one region with three holes and the solid ring between the
+// 3rd and 4th was never machined. Compound paths are exactly where that bites: a traced
+// SVG import arrives as one path holding concentric outlines.
+//
+// `preserveOrder` returns the regions in the order their outers appeared in the input
+// instead of by descending area — pocket wants that so cut order (and the travel between
+// glyphs of a text path) stays the subpath order of the source.
+export function classifySubpaths(subpaths: Pt2[][], opts: { preserveOrder?: boolean } = {}): Region[] {
+  const n = subpaths.length
+  // One stand-in point per ring, computed once rather than per candidate/outer pair.
+  // Vertex mean only as a last resort — a degenerate ring has no interior for a scan line
+  // to find, and any point is as good as another there.
+  const reps: Pt2[] = subpaths.map((sp) =>
+    interiorPoint([sp]) ?? [centroidX(sp), centroidY(sp)])
+  const areas = subpaths.map((sp) => Math.abs(signedArea(sp)))
+
+  // Direct parent of each ring: the SMALLEST ring that contains it. Smallest, not largest,
+  // is what makes the depth count below a nesting level rather than "is enclosed at all".
+  const parent = new Int32Array(n).fill(-1)
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      if (i === j || subpaths[i].length < 3) continue
+      // A container is always strictly larger than what it contains. Without this the
+      // point test alone inverts nested rings: the stand-in point for a ring that HAS a
+      // child can legitimately sit inside that child, which then reads as the parent.
+      if (areas[i] <= areas[j]) continue
+      // Loops touching at a vertex are siblings (e.g. letter K arms), not holes.
+      if (sharesVertex(subpaths[j], subpaths[i])) continue
+      if (!pointInPolygon(reps[j][0], reps[j][1], subpaths[i])) continue
+      if (parent[j] === -1 || areas[i] < areas[parent[j]]) parent[j] = i
+    }
+  }
+
+  // Containment by a strictly smaller area is a partial order, so the chain terminates;
+  // the seed guards a cycle from degenerate input (identical rings) hanging the walk.
+  const depths = new Int32Array(n).fill(-1)
+  const depthOf = (i: number): number => {
+    if (depths[i] >= 0) return depths[i]
+    depths[i] = 0
+    return (depths[i] = parent[i] === -1 ? 0 : depthOf(parent[i]) + 1)
+  }
+
+  const found: { idx: number; region: Region }[] = []
+  for (let i = 0; i < n; i++) {
+    if (depthOf(i) % 2 !== 0) continue
+    const holes: Pt2[][] = []
+    for (let j = 0; j < n; j++) if (parent[j] === i) holes.push(subpaths[j])
+    found.push({ idx: i, region: { outer: subpaths[i], holes } })
+  }
+  // Default order stays largest-first, as it was when regions were discovered by area.
+  found.sort((a, b) => areas[b.idx] - areas[a.idx])
 
   if (opts.preserveOrder) found.sort((a, b) => a.idx - b.idx)
   return found.map(f => f.region)

@@ -4,7 +4,7 @@
 // Keyed by path id, invalidated when the path's d changes. (Keying on the full
 // d string never evicted, so the module-level map grew with every transform
 // bake for the app's lifetime — tofix.md H2.) Size cap covers deleted paths.
-import { pointInPolygon } from '../../cam/geom'
+import { pointInPolygon, interiorPoint } from '../../cam/geom'
 import { flattenPath } from '../../cam/pathFlattener'
 import type { ImportedPath } from '../../store/pathsStore'
 
@@ -35,14 +35,25 @@ function insideCompound(x: number, y: number, subs: [number, number][][]): boole
 
 // ─── Containment grouping ─────────────────────────────────────────────────────
 
-// Groups selected paths into {boundary, islands} pairs.
-// A path is an island if its first point lies inside another selected path.
-// Paths not contained in any other become independent boundaries.
+// Groups selected paths into {boundary, islands} pairs by the EVEN-ODD rule, the same rule
+// SVG and every CAM package use for nested outlines: the region inside the outermost path
+// is solid, the region inside the next one in is a hole, the one inside that is solid
+// again. So each nesting level alternates, and a boundary's islands are its DIRECT
+// children only.
+//
+// This matters because nesting is what SVG imports look like — a traced drawing arrives as
+// concentric outlines, and the user should be able to select the lot and get one sensible
+// set of operations rather than picking out every ring by hand.
+//
+// `invert` machines the other half: the levels that would have been holes become the
+// boundaries. Nothing else changes — same tree, same direct-children islands, just started
+// one level in.
 export function groupPathsByContainment(
-  selectedPaths: ImportedPath[]
+  selectedPaths: ImportedPath[],
+  opts: { invert?: boolean } = {},
 ): { boundary: ImportedPath; islands: ImportedPath[] }[] {
   if (selectedPaths.length === 0) return []
-  if (selectedPaths.length === 1) return [{ boundary: selectedPaths[0], islands: [] }]
+  if (selectedPaths.length === 1) return opts.invert ? [] : [{ boundary: selectedPaths[0], islands: [] }]
 
   // One pre-pass computes polygon, centroid, and bbox per path from the cached
   // flatten — the nested loops below used to call getBBox (a full re-flatten)
@@ -50,7 +61,8 @@ export function groupPathsByContainment(
   // (bugs.md H2). The machine-panel forms call this during render.
   type PathMeta = {
     subs: [number, number][][]
-    cx: number; cy: number
+    // The path's stand-in for containment tests — a point inside its material.
+    px: number; py: number
     minX: number; minY: number; maxX: number; maxY: number
     bboxArea: number
   }
@@ -67,9 +79,14 @@ export function groupPathsByContainment(
       }
     }
     if (n < 1) continue
+    // One point per path, not per pair: this runs during render over every PAIR of
+    // selected paths, so the stand-in has to be computed once per path. Vertex mean only
+    // as a last resort — an open stroke or a degenerate ring has no interior for a scan
+    // line to find, and any point is as good as another there.
+    const [px, py] = interiorPoint(subs) ?? [sx / n, sy / n]
     metaById.set(p.id, {
       subs,
-      cx: sx / n, cy: sy / n,
+      px, py,
       minX, minY, maxX, maxY,
       bboxArea: (maxX - minX) * (maxY - minY),
     })
@@ -84,7 +101,7 @@ export function groupPathsByContainment(
       if (outer.id === inner.id) continue
       const om = metaById.get(outer.id)
       if (!om || !om.subs.some(s => s.length >= 3)) continue
-      if (!insideCompound(im.cx, im.cy, om.subs)) continue
+      if (!insideCompound(im.px, im.py, om.subs)) continue
       // Require inner's bbox to fit entirely within outer's bbox.
       // Overlapping (non-nested) shapes each extend beyond the other's bbox, so
       // neither qualifies as a child and no cycle is created.
@@ -99,9 +116,30 @@ export function groupPathsByContainment(
     }
   }
 
-  const boundaries = selectedPaths.filter(p => !parentId.has(p.id))
-  return boundaries.map(b => ({
-    boundary: b,
-    islands: selectedPaths.filter(p => parentId.get(p.id) === b.id),
-  }))
+  // Nesting depth = how many selected paths enclose this one. The parent map above is
+  // already the whole tree; reading only the roots (depth 0) — which is what this did —
+  // machined the outermost region, used its direct children as islands, and silently
+  // DROPPED everything deeper. Four nested rectangles produced one pocket and two ignored
+  // paths (scratch/pocketerror.fkam).
+  const depthOf = new Map<string, number>()
+  const depth = (id: string): number => {
+    const cached = depthOf.get(id)
+    if (cached !== undefined) return cached
+    const parent = parentId.get(id)
+    // Seed before recursing: the parent chain is acyclic by construction (a child's bbox
+    // is strictly inside its parent's), but a 0 here bounds any surprise to a wrong answer
+    // rather than a hung render.
+    depthOf.set(id, 0)
+    const d = parent === undefined ? 0 : depth(parent) + 1
+    depthOf.set(id, d)
+    return d
+  }
+
+  const wantParity = opts.invert ? 1 : 0
+  return selectedPaths
+    .filter(p => depth(p.id) % 2 === wantParity)
+    .map(b => ({
+      boundary: b,
+      islands: selectedPaths.filter(p => parentId.get(p.id) === b.id),
+    }))
 }

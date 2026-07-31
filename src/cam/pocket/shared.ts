@@ -208,14 +208,49 @@ export function transitionEntersSolidPolygon(from: Pt2, to: Pt2, poly: Pt2[]): b
   return false
 }
 
+// Whole-ring bounding box, memoised on the ring array itself. The obstacle sets handed to
+// isTravelSafe are rebuilt once per plan and then queried tens of thousands of times, so
+// the box is computed once per ring and reused for every query against it.
+const ringBBoxCache = new WeakMap<Pt2[], [number, number, number, number]>()
+function ringBBox(poly: Pt2[]): [number, number, number, number] {
+  const hit = ringBBoxCache.get(poly)
+  if (hit) return hit
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (let i = 0; i < poly.length; i++) {
+    const [x, y] = poly[i]
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  const box: [number, number, number, number] = [minX, minY, maxX, maxY]
+  ringBBoxCache.set(poly, box)
+  return box
+}
+
 export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacles): boolean {
   if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 1e-6) return true
 
+  // Most travel moves are one stepover long and most obstacles are islands metres away
+  // from them. Rejecting such a ring by its own box costs four comparisons instead of a
+  // walk over every one of its edges; the per-edge box test inside the two predicates
+  // below only ever saw the ring after that walk had already started.
+  const mnX = Math.min(from[0], to[0]), mxX = Math.max(from[0], to[0])
+  const mnY = Math.min(from[1], to[1]), mxY = Math.max(from[1], to[1])
+  const misses = (poly: Pt2[]): boolean => {
+    const [bx0, by0, bx1, by1] = ringBBox(poly)
+    return bx1 < mnX || bx0 > mxX || by1 < mnY || by0 > mxY
+  }
+
   for (const poly of obstacles.edgeObstacles) {
+    if (misses(poly)) continue
     if (transitionCrossesPolygonEdge(from, to, poly)) return false
   }
 
   for (const poly of obstacles.solidObstacles ?? []) {
+    // A segment lying wholly inside a ring still has its box inside the ring's box, so
+    // this rejects only rings the segment cannot touch at all.
+    if (misses(poly)) continue
     if (transitionEntersSolidPolygon(from, to, poly)) return false
   }
 
@@ -225,12 +260,16 @@ export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacle
   // endpoints, and such an excursion spans a large fraction of the move.
   const containment = obstacles.containment
   if (containment && containment.length > 0) {
+    // Only rings whose box overlaps the move can contain any of its sample points, so the
+    // per-sample `some` runs over those instead of over every finishing ring in the pocket.
+    const live = containment.filter(poly => !misses(poly))
+    if (live.length === 0) return false
     const N = 8
     for (let k = 1; k < N; k++) {
       const t = k / N
       const x = from[0] + (to[0] - from[0]) * t
       const y = from[1] + (to[1] - from[1]) * t
-      if (!containment.some(poly => pointInPolygon(x, y, poly))) return false
+      if (!live.some(poly => pointInPolygon(x, y, poly))) return false
     }
   }
 

@@ -11,7 +11,7 @@ import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefault
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { groupPathsByContainment } from './containment'
 
@@ -101,6 +101,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               islandDs: islands.map((p) => p.d), startNear: hint, safeHeightMM,
             }))
           } catch (err) {
+            if (isWorkCancelled(err)) break
             setError(op.id, err instanceof Error ? err.message : 'Generation failed')
           }
         }
@@ -143,6 +144,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               islandDs: islands.map((p) => p.d), startNear: hint, safeHeightMM,
             }))
           } catch (err) {
+            if (isWorkCancelled(err)) break
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
           }
         }

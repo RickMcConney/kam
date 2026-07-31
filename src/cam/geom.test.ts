@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { zPasses, pointInPolygon, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq } from './geom'
+import { zPasses, pointInPolygon, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq, toolRadiusAtHeight } from './geom'
 import type { Pt2 } from './pathFlattener'
+import type { Tool } from '../store/toolStore'
+
+const mkTool = (over: Partial<Tool>): Tool => ({
+  id: 't', name: 't', type: 'endmill', diameterMM: 6.35, fluteCount: 2, rpm: 18000,
+  xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2, maxDepthMM: 20, direction: 'climb',
+  ...over,
+})
 
 describe('zPasses', () => {
   it('steps down by stepDown then finishes exactly at -depth', () => {
@@ -137,5 +144,39 @@ describe('ptSegDistSq', () => {
 
   it('handles a degenerate zero-length segment', () => {
     expect(ptSegDistSq(3, 4, 1, 1, 1, 1)).toBeCloseTo(13)
+  })
+})
+
+describe('toolRadiusAtHeight', () => {
+  it('is constant for flat-bottomed tools', () => {
+    const em = mkTool({ type: 'endmill', diameterMM: 6 })
+    expect(toolRadiusAtHeight(em, 0)).toBe(3)
+    expect(toolRadiusAtHeight(em, 0.5)).toBe(3)
+    expect(toolRadiusAtHeight(em, 100)).toBe(3)
+  })
+
+  it('follows the cone of a V-bit, then the shank', () => {
+    // 90° included → 45° half-angle → radius equals depth until the shank.
+    const v90 = mkTool({ type: 'vbit', diameterMM: 6, vbitAngleDeg: 90 })
+    expect(toolRadiusAtHeight(v90, 1)).toBeCloseTo(1)
+    expect(toolRadiusAtHeight(v90, 2.5)).toBeCloseTo(2.5)
+    expect(toolRadiusAtHeight(v90, 10)).toBeCloseTo(3)   // capped at the full radius
+    // 60° included → 30° half-angle.
+    const v60 = mkTool({ type: 'vbit', diameterMM: 6.35, vbitAngleDeg: 60 })
+    expect(toolRadiusAtHeight(v60, 2)).toBeCloseTo(2 * Math.tan(Math.PI / 6))
+  })
+
+  it('follows the ball of a ball nose, then the shank', () => {
+    const ball = mkTool({ type: 'ballnose', diameterMM: 6 })
+    expect(toolRadiusAtHeight(ball, 0)).toBeCloseTo(0)
+    expect(toolRadiusAtHeight(ball, 3)).toBeCloseTo(3)   // equator
+    expect(toolRadiusAtHeight(ball, 1)).toBeCloseTo(Math.sqrt(5))
+    expect(toolRadiusAtHeight(ball, 20)).toBeCloseTo(3)
+  })
+
+  it('clamps a negative height and survives a degenerate V angle', () => {
+    expect(toolRadiusAtHeight(mkTool({ type: 'ballnose', diameterMM: 6 }), -1)).toBe(0)
+    expect(toolRadiusAtHeight(mkTool({ type: 'vbit', diameterMM: 6, vbitAngleDeg: 0 }), 5)).toBe(3)
+    expect(toolRadiusAtHeight(mkTool({ type: 'vbit', diameterMM: 6, vbitAngleDeg: 180 }), 5)).toBe(3)
   })
 })

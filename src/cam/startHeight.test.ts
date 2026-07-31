@@ -296,3 +296,69 @@ describe('resolveStartZForOp', () => {
     expect(resolveStartZForOp(drill, [op1, drill], paths, STOCK, tools).zMM).toBe(0)
   })
 })
+
+// ─── Cross-call floor memo ────────────────────────────────────────────────────
+//
+// Floors are memoised at module scope across calls (a generation run resolves the same
+// chain dozens of times). The memo is keyed on every setting a floor depends on, so what
+// these pin is the INVALIDATION: an edit that moves a floor must be seen, and a write that
+// cannot move one — segments, status — must not throw the memo away. Each case resolves
+// once to warm the memo before the edit, so a stale hit would show up as the old answer.
+describe('resolveStartZ — floor memo invalidation', () => {
+  const paths = [path('outer', rect(0, 0, 50, 50)), path('inner', rect(10, 10, 20, 20))]
+
+  it('sees a changed depth on the operation underneath', () => {
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      [pocket('op1', 'outer', 2)], paths, STOCK).zMM).toBe(-2)
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      [pocket('op1', 'outer', 5)], paths, STOCK).zMM).toBe(-5)
+  })
+
+  it('sees a changed path under an unchanged operation', () => {
+    const ops = [pocket('op1', 'outer', 2)]
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      ops, paths, STOCK).zMM).toBe(-2)
+    // Same op, same depth — but its boundary no longer reaches the footprint, so the
+    // footprint is back over uncut stock.
+    const moved = [paths[0] && path('outer', rect(100, 100, 20, 20)), paths[1]] as ImportedPath[]
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      ops, moved, STOCK).zMM).toBe(0)
+  })
+
+  it('sees a changed island list', () => {
+    const withIsland = [path('outer', rect(0, 0, 50, 50)), path('inner', rect(10, 10, 20, 20)),
+      path('isl', rect(5, 5, 40, 40))]
+    const ops = [pocket('op1', 'outer', 2)]
+    expect(resolveStartZ({ startFrom: auto, footprintD: withIsland[1].d, cutMarginMM: 0 },
+      ops, withIsland, STOCK).zMM).toBe(-2)
+    // The island swallows the ground the footprint sits on, so nothing is cut there.
+    const ops2 = [pocket('op1', 'outer', 2, { islandIds: ['isl'] })]
+    expect(resolveStartZ({ startFrom: auto, footprintD: withIsland[1].d, cutMarginMM: 0 },
+      ops2, withIsland, STOCK).zMM).toBe(0)
+  })
+
+  it('sees a changed stock size (surfacing covers the whole blank)', () => {
+    const surface = {
+      id: 's', name: 'Surface', type: 'surface', toolId: 't', status: 'done', segments: [],
+      color: '#0f0', visible: true, depthMM: 1, stepDownMM: 1, stepoverPercent: 40, passAngleDeg: 0,
+    } as AnyOperation
+    const foot = rect(100, 100, 20, 20)
+    expect(resolveStartZ({ startFrom: auto, footprintD: foot, cutMarginMM: 0 },
+      [surface], paths, { widthMM: 200, heightMM: 200 }).zMM).toBe(-1)
+    // A blank too small to reach the footprint leaves it over uncut stock.
+    expect(resolveStartZ({ startFrom: auto, footprintD: foot, cutMarginMM: 0 },
+      [surface], paths, { widthMM: 60, heightMM: 60 }).zMM).toBe(0)
+  })
+
+  it('keeps the memo across segment and status writes', () => {
+    const before = pocket('op1', 'outer', 2)
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      [before], paths, STOCK).zMM).toBe(-2)
+    // Same floor-defining settings, different segments/status — the answer must not move.
+    const after = pocket('op1', 'outer', 2, {
+      status: 'needs-update', segments: [{ x: 1, y: 2, z: -2, rapid: false }],
+    })
+    expect(resolveStartZ({ startFrom: auto, footprintD: paths[1].d, cutMarginMM: 0 },
+      [after], paths, STOCK).zMM).toBe(-2)
+  })
+})

@@ -11,7 +11,7 @@ import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefault
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import type { PocketStrategy } from '../../cam/pocket'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
@@ -29,13 +29,18 @@ interface PocketFormState {
   rampIn: boolean
   allowanceMM: number
   startFrom: StartFrom
+  // Which half of a nested selection to clear. Grouping only — it decides how many
+  // operations Generate creates, and is not carried on the operations themselves.
+  // Unchecked (the default) clears from the outermost outline inward; checked starts one
+  // level in and clears what the other reading calls holes.
+  invert: boolean
 }
 
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -50,6 +55,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // Legacy ops (saved before start heights existed) stay on stock top rather than
     // silently deepening when re-generated; new ops default to auto.
     startFrom: editOp.startFrom ?? { mode: 'stock' },
+    invert: false,
   } : { ...mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     // 'hybrid' — shown as "Auto". Note this is only the default for a FIRST pocket: the
@@ -68,7 +74,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // operation it was chosen for, and replaying an old one onto a new pocket is exactly
     // the "silently starts 2 mm down over solid stock" case this design exists to avoid.
     startFrom: { mode: 'auto' } as StartFrom,
-  }, tools), startFrom: { mode: 'auto' } })
+    // Not restored from the saved defaults either, and for the same reason: it belongs to
+    // the selection it was chosen for. Replaying an inverted pocket onto an un-nested
+    // selection would silently produce no operations at all.
+    invert: false,
+  }, tools), startFrom: { mode: 'auto' }, invert: false })
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
@@ -84,7 +94,13 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   })
   const groups = editOp
     ? editGroups
-    : groupPathsByContainment(selPaths).map((g) => ({ ...g, op: undefined }))
+    : groupPathsByContainment(selPaths, { invert: form.invert })
+        .map((g) => ({ ...g, op: undefined }))
+  // Only worth asking about when the selection actually nests. Once inverted the checkbox
+  // has to stay up regardless — that grouping can legitimately have no islands at all
+  // (four nested rectangles give a bare middle one), and hiding the row would strand the
+  // user with no way to uncheck it.
+  const nested = form.invert || groups.some((g) => g.islands.length > 0)
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // One resolve per form render, shared by the Start row and every group generated below.
   // Multi-group selections all share the first group's footprint here; each group re-resolves
@@ -92,7 +108,19 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   // Margin 0: a pocket's cutter stays a full radius INSIDE its boundary, so the cleared
   // area never reaches past the path.
   const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, editOp?.id)
-  const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
+  // Ops this session made from paths that are STILL selected. Scoped to the selection on
+  // purpose: re-reading the same paths a different way (Invert Pocket) should replace what
+  // it made, but selecting different paths and generating again is a new operation, not a
+  // revision of the last one, so ops for deselected paths are left alone.
+  const selectedIds = new Set(selPaths.map((p) => p.id))
+  const sessionOps = editOp ? [] : session.liveEntries().filter((e) => selectedIds.has(e.key))
+  // Boundaries this session already covers but that the current grouping no longer has —
+  // inverting turns every boundary into an island and vice versa. Replaced on
+  // the next Generate rather than left behind as a second set of pockets.
+  const staleOps = sessionOps.filter((e) => !groups.some((g) => g.boundary.id === e.key))
+  // "Update" as soon as this session owns anything in the selection, not only when every
+  // current boundary has an op: after a toggle, none of them do yet.
+  const updating = !editOp && groups.length > 0 && sessionOps.length > 0
   const adaptiveStrategy = form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid'
   const autoPassAngle = form.strategy === 'hybrid' && form.autoAngle
 
@@ -155,6 +183,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               safeHeightMM,
             }))
           } catch (err) {
+            // A cancel abandons the whole Generate, not just this group — carrying on
+            // would immediately queue the next one against the state the user just left.
+            if (isWorkCancelled(err)) break
             setError(op.id, err instanceof Error ? err.message : 'Generation failed')
           }
         }
@@ -185,7 +216,19 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             startFrom: form.startFrom,
           }) - 1
         })
-        const newIds = addOperations(newPayloads)
+        // Boundaries this session made that the current grouping no longer has — switching
+        // Invert Pocket turns every boundary into an island and vice versa, so the whole
+        // set is replaced. That is a revision of the Generate that made them, not a
+        // deletion and a fresh call, so it amends that one chip instead of adding two more
+        // (which is what changing a depth or a strategy already does).
+        const newIds = staleOps.length > 0
+          ? replaceGeneratedOperations({
+              anchorId: staleOps[0].opId,
+              deleteIds: staleOps.map((e) => e.opId),
+              add: newPayloads,
+            })
+          : addOperations(newPayloads)
+        if (staleOps.length > 0) session.forget(staleOps.map((e) => e.key))
         for (let gi = 0; gi < groups.length; gi++) {
           const { boundary, islands } = groups[gi]
           const slot = slots[gi]
@@ -214,6 +257,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               safeHeightMM,
             }))
           } catch (err) {
+            if (isWorkCancelled(err)) break
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
           }
         }
@@ -230,6 +274,17 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
       )}
       <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
+      {/* Nested outlines alternate solid/hole, so there are two valid readings of the same
+          selection and only the user knows which one is the part. */}
+      {!editOp && nested && (
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="pocket-invert" checked={form.invert}
+            onChange={(e) => up('invert', e.target.checked)} className="accent-blue-500" />
+          <label htmlFor="pocket-invert" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+            Invert Pocket
+          </label>
+        </div>
+      )}
       {/* 'hybrid' is shown as "Auto" — it picks per area: raster the open ground, contour
           around islands, adaptive on the junctions between them. Listed first as the one to
           reach for by default.

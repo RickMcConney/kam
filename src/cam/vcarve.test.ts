@@ -4,7 +4,8 @@ import {
   generateMaleTextBoundaryVCarve,
   findModalRadius,
 } from './vcarve'
-import { classifySubpaths } from './geom'
+import { classifySubpaths, pointInPolygon, ptSegDistSq } from './geom'
+import { flattenPath } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Pt2 } from './pathFlattener'
 import type { Tool } from '../store/toolStore'
@@ -220,6 +221,47 @@ describe('generateVCarve — medial axis geometry', () => {
     expect(minZ(segs)).toBeCloseTo(-0.2, 6)
   })
 
+  // Two traced leaf shapes from scratch/verror.fkam, a 17-path project where pruning was
+  // eating the toolpath. Both are small closed Bézier outlines with narrow rounded tips —
+  // the tips read as discretization noise, so the prune walk started there and ran the
+  // whole spine. LEAF_OVERPRUNED forks near one end, so the walk found a junction to stop
+  // at only after taking 56 of 60 segments; LEAF_SPUR is one of the shapes pruning is
+  // genuinely for.
+  const LEAF_OVERPRUNED =
+    'M178.3181,134.2837 C173.1675,130.1562,168.9342,124.8999,169.287,123.0301 ' +
+    'C169.4986,121.9718,172.0739,122.0071,174.2964,123.1007 C177.7184,124.7587,182.622,129.8387,183.6098,132.7315 ' +
+    'C183.892,133.5429,183.892,134.1779,183.645,134.8482 C182.8336,136.9649,181.5284,136.8237,178.3181,134.2837 Z'
+  const LEAF_SPUR =
+    'M327.4725,177.6401 C326.4848,176.5465,326.3789,174.6415,327.1903,173.301 ' +
+    'C328.0017,172.031,328.5309,171.6429,331.5295,170.1612 C334.1753,168.8207,336.1156,168.5385,336.7859,169.3146 ' +
+    'C337.2092,169.8437,337.1739,170.126,336.4331,171.5371 C335.9392,172.419,334.4223,174.324,333.0464,175.7351 ' +
+    'C330.8945,177.9576,330.3653,178.3104,329.307,178.3104 C328.5661,178.3104,327.8606,178.0635,327.4725,177.6401 Z'
+
+  // Regression: this carved a 1.7 mm stub 1.4 mm deep — a 14 mm shape with a 3 mm inscribed
+  // radius, so it should run nearly its own length and bottom out on the depth clamp.
+  it('does not prune the spine off a small closed curve', async () => {
+    const segs = await generateVCarve(LEAF_OVERPRUNED, vbit(60), {
+      angleDeg: 60, maxDepthMM: 3, islandDs: [],
+    })
+    expect(minZ(segs)).toBeCloseTo(-3, 6)
+    const cut = cuts(segs)
+    let len = 0
+    for (let i = 1; i < cut.length; i++) len += Math.hypot(cut[i].x - cut[i - 1].x, cut[i].y - cut[i - 1].y)
+    expect(len).toBeGreaterThan(15)
+  })
+
+  // The other half of the same change: capping how much a prune may remove must not stop
+  // it removing what it is for. Unpruned, this shape's axis carries a spur out to r≈0 at
+  // (337.1, 170.1), lifting the tip back to the surface in the middle of the cut.
+  it('still prunes a discretization spur off the spine', async () => {
+    const segs = await generateVCarve(LEAF_SPUR, vbit(60), {
+      angleDeg: 60, maxDepthMM: 3, islandDs: [],
+    })
+    expect(cutAt(segs, 337.1, 170.1, 0.1)).toEqual([])
+    // …and the rest of the cut is unaffected: it still reaches the clamp.
+    expect(minZ(segs)).toBeCloseTo(-3, 6)
+  })
+
   it('treats islandDs identically to a hole subpath in the same path', async () => {
     const opts = { angleDeg: 90, maxDepthMM: 10 }
     const fromSubpath = await generateVCarve(ANNULUS, vbit(), { ...opts, islandDs: [] })
@@ -227,6 +269,33 @@ describe('generateVCarve — medial axis geometry', () => {
       ...opts, islandDs: [HOLE_20x20],
     })
     expect(fromIsland).toEqual(fromSubpath)
+  })
+
+  // End-to-end form of the classifySubpaths regression below: a W and its own 3 mm inward
+  // offset, selected together (scratch/vcarveerror.fkam). The offset must bound the carve,
+  // not become a second shape to carve — the toolpath belongs in the 3 mm band between the
+  // two outlines and must never enter the island.
+  it('keeps the carve out of a concave island instead of carving through it', async () => {
+    const outer = 'M 110 220 L 135 150 L 165 150 L 175 210 L 200 210 L 210 150 L 240 150 L 250 235 Z'
+    const island = 'M 162.4586 153 L 172.4586 213 L 202.5414 213 L 212.5414 153 L 237.3323 153 ' +
+                   'L 246.5813 231.6165 L 114.1060 217.4228 L 137.1142 153 Z'
+    const segs = await generateVCarve(outer, vbit(30), {
+      angleDeg: 30, maxDepthMM: 3, islandDs: [island],
+    })
+    // Measured as penetration DEPTH, not point-in-polygon: the axis legitimately runs out
+    // to the island's own corners, and a point sitting exactly on a vertex classifies
+    // either way. Carving through the island showed up as centimetres, not microns.
+    const ring = flattenPath(island, 0.05)[0] as Pt2[]
+    let worst = 0
+    for (const s of segs) {
+      if (s.rapid || !pointInPolygon(s.x, s.y, ring)) continue
+      let d2 = Infinity
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        d2 = Math.min(d2, ptSegDistSq(s.x, s.y, ring[j][0], ring[j][1], ring[i][0], ring[i][1]))
+      }
+      worst = Math.max(worst, Math.sqrt(d2))
+    }
+    expect(worst).toBeLessThan(0.05)
   })
 })
 
@@ -405,10 +474,71 @@ describe('classifySubpaths', () => {
     expect(regions[0].holes.length).toBe(0)
   })
 
+  // Regression: containment used the ring's vertex mean, which only lands inside a convex
+  // ring. This W's mean is at (185.6, 185.9) — in the notch under the middle peak, outside
+  // the shape — so its own 3 mm inward offset read as a sibling region rather than a hole,
+  // and generateVCarve carved a second medial axis straight through the middle of it
+  // (scratch/vcarveerror.fkam).
+  it('nests a loop inside a concave (W-shaped) parent', () => {
+    const wOuter: Pt2[] = [[110, 220], [135, 150], [165, 150], [175, 210], [200, 210],
+                           [210, 150], [240, 150], [250, 235]]
+    const wInner: Pt2[] = [[162.4586, 153], [172.4586, 213], [202.5414, 213], [212.5414, 153],
+                           [237.3323, 153], [246.5813, 231.6165], [114.106, 217.4228], [137.1142, 153]]
+    const regions = classifySubpaths([wOuter, wInner])
+    expect(regions.length).toBe(1)
+    expect(regions[0].outer).toEqual(wOuter)
+    expect(regions[0].holes).toEqual([wInner])
+  })
+
+  // Even-odd, as the name always said: a ring inside a hole is solid again and starts its
+  // own region. This previously read as one region with two holes, so the solid band
+  // between the 2nd and 3rd ring went unmachined — the compound-path form of the nested
+  // selection bug (scratch/pocketerror.fkam).
   it('handles a hole inside a hole by starting a new region', () => {
     const regions = classifySubpaths([square(0, 0, 60), square(10, 10, 40), square(20, 20, 20)])
-    // Both inner loops are contained by the outermost, so they both read as its holes.
-    expect(regions.length).toBe(1)
-    expect(regions[0].holes.length).toBe(2)
+    expect(regions.length).toBe(2)
+    expect(regions[0].outer).toEqual(square(0, 0, 60))
+    expect(regions[0].holes).toEqual([square(10, 10, 40)])
+    expect(regions[1].outer).toEqual(square(20, 20, 20))
+    expect(regions[1].holes).toEqual([])
+  })
+
+  it('keeps alternating down a deeper nest', () => {
+    const regions = classifySubpaths([
+      square(0, 0, 80), square(10, 10, 60), square(20, 20, 40), square(30, 30, 20),
+    ])
+    expect(regions.map((r) => [r.outer, r.holes]))
+      .toEqual([
+        [square(0, 0, 80), [square(10, 10, 60)]],
+        [square(20, 20, 40), [square(30, 30, 20)]],
+      ])
+  })
+
+  // Regression, with the coordinates that produced it (scratch/pocketerror.fkam): these
+  // rectangles are nested but NOT concentric, so the stand-in point for an outer ring —
+  // taken low in its own bbox — falls inside the ring nested within it. Containment by
+  // point test alone then reads the child as the parent, and the pocket came out inside
+  // out. A container is always strictly larger, which is what settles it.
+  it('does not invert nesting when a ring\'s interior point lands inside its child', () => {
+    const rect = (x0: number, y0: number, x1: number, y1: number): Pt2[] =>
+      [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    const a = rect(25, 130, 175, 275)
+    const b = rect(40, 160, 140, 265)
+    const c = rect(50, 165, 100, 255)
+    const d = rect(65, 215, 90, 240)
+    const regions = classifySubpaths([a, b, c, d])
+    expect(regions.map((r) => [r.outer, r.holes])).toEqual([[a, [b]], [c, [d]]])
+  })
+
+  it('alternates per branch, not by global depth', () => {
+    // One outer with two children; only one of them nests further. The lone child stays a
+    // hole while its sibling's child comes back as a region.
+    const regions = classifySubpaths([
+      square(0, 0, 100), square(5, 5, 40), square(10, 10, 20), square(60, 60, 30),
+    ])
+    expect(regions.length).toBe(2)
+    expect(regions[0].outer).toEqual(square(0, 0, 100))
+    expect(regions[0].holes).toEqual([square(5, 5, 40), square(60, 60, 30)])
+    expect(regions[1].outer).toEqual(square(10, 10, 20))
   })
 })

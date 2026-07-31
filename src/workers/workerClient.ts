@@ -144,6 +144,45 @@ function pump(): void {
   }
 }
 
+// ─── Cancellation ──────────────────────────────────────────────────────────────
+//
+// A generation runs as one synchronous call inside a worker — an adaptive march or a
+// V-carve solve never yields — so there is no checkpoint for a cancel flag to be polled
+// at. terminate() is the only thing that actually stops one, and a terminated worker
+// takes its thread and its (post-solve, often large) heap with it. Cancelled slots are
+// therefore dropped rather than reused; pump() spawns replacements on the next job.
+// Idle workers are left alone so an abort doesn't cost a module-graph reload.
+
+export const WORK_CANCELLED = 'Generation cancelled'
+
+/** True for the rejection cancelAllWork hands to in-flight jobs. */
+export function isWorkCancelled(e: unknown): boolean {
+  return e instanceof Error && e.message === WORK_CANCELLED
+}
+
+/**
+ * Abandon every queued and in-flight generation. Each affected job's promise rejects
+ * with WORK_CANCELLED — synchronously from here, so a caller can reconcile store state
+ * immediately after and win the race against the awaiting `catch` blocks, which run a
+ * microtask later. Returns how many jobs were stopped.
+ */
+export function cancelAllWork(): number {
+  const cancelled: Job[] = queue.splice(0)
+  for (let i = slots.length - 1; i >= 0; i--) {
+    const slot = slots[i]
+    if (!slot.job) continue
+    cancelled.push(slot.job)
+    slot.worker.terminate()
+    slots.splice(i, 1)
+  }
+  activeKeys.clear()
+  for (const job of cancelled) {
+    emitProgress({ opId: job.key, fn: job.fn, frac: 1, done: true })
+    job.reject(new Error(WORK_CANCELLED))
+  }
+  return cancelled.length
+}
+
 function submit(key: string | undefined, fn: string, args: unknown[]): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const t0 = performance.now()

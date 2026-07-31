@@ -19,6 +19,15 @@ import { uid } from '../uid'
 
 const fmt = (n: number) => +n.toFixed(4)
 
+// Leave a vector import selected, so a pocket/profile can be generated straight away
+// instead of making the user re-select what they just brought in. Replaces the selection
+// rather than extending it — importing a second file is a new subject, not an addition to
+// whatever was highlighted before. This also matches what scrubbing the timeline to the
+// import event already does (paths.add records selectionAfter with the same ids).
+function selectImported(paths: { id: string }[]) {
+  if (paths.length > 0) usePathsStore.getState().setSelectedIds(paths.map((p) => p.id))
+}
+
 // Finish a DXF import once units are known — either straight from the file's
 // $INSUNITS or from the units-prompt dialog (DxfUnitsDialog) after the user
 // picks. Exported for that dialog.
@@ -30,6 +39,7 @@ export function completeDxfImport(text: string, fileName: string, units?: DxfUni
     const store = usePathsStore.getState()
     store.addPaths(result.paths, { source: 'import', label: `Import DXF (${fileName})` })
     store.toggleGroupCollapsed(result.groupId)
+    selectImported(result.paths)
     useUIStore.getState().setSidebarTab('draw')
   } else if (result.error) {
     useUIStore.getState().showStatus(`DXF import failed: ${result.error}`, 'error')
@@ -125,6 +135,7 @@ export function importFile(file: File): void {
           const store = usePathsStore.getState()
           store.addPaths(result.paths, { source: 'import', label: `Import SVG (${file.name})` })
           store.toggleGroupCollapsed(result.groupId)
+          selectImported(result.paths)
           useUIStore.getState().setSidebarTab('draw')
         } else {
           useUIStore.getState().showStatus('SVG import: no usable paths found in file', 'warn')

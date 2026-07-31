@@ -10,9 +10,10 @@ import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefault
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM } from '../../cam/feeds'
+import { toolRadiusAtHeight } from '../../cam/geom'
 
 interface ProfileFormState {
   toolId: string
@@ -68,6 +69,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const cutMarginMM = form.side === 'outside' ? (selectedTool?.diameterMM ?? 0)
     : form.side === 'centerline' ? (selectedTool?.diameterMM ?? 0) / 2 : 0
   const startZ = useStartZ(form.startFrom, selectedPaths[0]?.d ?? '', cutMarginMM, editOp?.id)
+  // A tapered/round tool that never reaches full diameter at this depth offsets by less
+  // than its radius, so the wall it leaves is a taper that meets the path at the surface.
+  // Say so — otherwise the toolpath just looks like it's in the wrong place.
+  const cutRadiusMM = selectedTool ? toolRadiusAtHeight(selectedTool, form.depthMM) : 0
+  const taperHint = selectedTool && form.side !== 'centerline'
+    && cutRadiusMM < selectedTool.diameterMM / 2 - 1e-6
+    ? `Offset ${cutRadiusMM.toFixed(2)} mm — the ${selectedTool.type === 'vbit' ? 'V' : 'ball'} profile at ${form.depthMM} mm deep, so the cut meets the path at the start surface and the wall below is tapered.`
+    : null
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
   function handleToolChange(toolId: string) {
@@ -109,6 +118,8 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
               startZMM: startZFor(path.d, op.id),
             }))
           } catch (err) {
+            // A cancel abandons the whole Generate, not just this path.
+            if (isWorkCancelled(err)) break
             const msg = err instanceof Error ? err.message : 'Generation failed'
             setError(op.id, msg)
             setErrorMsg(msg)
@@ -158,6 +169,9 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             }))
             if (!existingId) session.remember(path.id, opId)
           } catch (err) {
+            // Cancelled ops keep their slot (cancelGenerating marks them needs-update)
+            // rather than being deleted — Generate again picks them straight back up.
+            if (isWorkCancelled(err)) break
             const msg = err instanceof Error ? err.message : 'Generation failed'
             if (existingId) setError(opId, msg)
             else deleteOperation(opId)
@@ -183,6 +197,9 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />
+      {taperHint && (
+        <p className="text-label text-gray-500 dark:text-neutral-400 normal-case">{taperHint}</p>
+      )}
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="flex items-center gap-2">
         <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}

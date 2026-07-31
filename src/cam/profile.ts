@@ -1,6 +1,6 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, ARC_FIT_MAX_SPAN, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { zPasses, arcLengths, interpPt, stripClosingDuplicate } from './geom'
+import { zPasses, arcLengths, interpPt, stripClosingDuplicate, toolRadiusAtHeight } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -171,11 +171,28 @@ export function generateProfile(
 
   const safeZ = params.safeHeightMM ?? 5
 
-  const delta =
-    params.side === 'outside' ? tool.diameterMM / 2 :
-    params.side === 'inside' ? -tool.diameterMM / 2 : 0
-
   const startZ = Math.min(0, params.startZMM ?? 0)
+
+  // Offset by the tool's radius AT THE CUT SURFACE, not its nominal radius. With the
+  // tip at full depth the wall a V-bit or ball nose leaves is a cone/ball surface, and
+  // the widest point of that cut sits at startZ — so offsetting by the radius at height
+  // `depthMM` above the tip is what makes the finished cut just touch the design line at
+  // the surface. An end mill is unaffected (radius is constant with height), and a V-bit
+  // or ball nose cutting past its full-diameter height falls back to the same value, so
+  // ordinary through-profiles emit exactly the G-code they always did.
+  //
+  // Every pass shares this one offset: the cone/ball surface is fixed in XY, so shallower
+  // passes simply leave a step outside it and the final pass sweeps the finished wall. The
+  // radial bite the last pass takes is ~stepDown·tanθ, not the whole taper.
+  const cutRadius = toolRadiusAtHeight(tool, params.depthMM)
+  const rawDelta =
+    params.side === 'outside' ? cutRadius :
+    params.side === 'inside' ? -cutRadius : 0
+  // A near-zero offset (a V-bit barely scratching the surface) is a centerline cut —
+  // Clipper would otherwise be handed a degenerate inflate.
+  const delta = Math.abs(rawDelta) < 1e-6 ? 0 : rawDelta
+
+
   const passes = zPasses(params.depthMM, params.stepDownMM, startZ)
   const segs: MotionSegment[] = []
 

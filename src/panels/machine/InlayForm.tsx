@@ -10,7 +10,7 @@ import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefault
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import { runInWorkerFor } from '../../workers/workerClient'
+import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
 
@@ -150,9 +150,11 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           }
 
         } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setError(editOp.id, msg)
-          if (linkedOp) setError(linkedOp.id, msg)
+          if (!isWorkCancelled(err)) {
+            const msg = err instanceof Error ? err.message : 'Generation failed'
+            setError(editOp.id, msg)
+            if (linkedOp) setError(linkedOp.id, msg)
+          }
         }
         setGenerating(false)
         save('inlay', form)
@@ -192,6 +194,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
               : await runInWorkerFor(ids[i], 'generateInlayMale', boundary.d, pocketTool, null, inlayParams)
             setSegments(ids[i], result.endmillSegs)
           } catch (err) {
+            // A cancel abandons the whole Generate, not just this group.
+            if (isWorkCancelled(err)) break
             setError(ids[i], err instanceof Error ? err.message : 'Generation failed')
           }
         }
@@ -274,6 +278,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           setSegments(secondIds[i], secondPhase === 'vbit' ? result.vbitSegs : result.endmillSegs)
 
         } catch (err) {
+          if (isWorkCancelled(err)) break
           const msg = err instanceof Error ? err.message : 'Generation failed'
           setError(firstIds[i], msg)
           setError(secondIds[i], msg)

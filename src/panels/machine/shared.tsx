@@ -19,12 +19,25 @@ import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 export function useSessionOps() {
   const operations = useToolpathStore((s) => s.operations)
   const [byKey, setByKey] = useState<Record<string, string>>({})
+  const isLive = (id: string | undefined): id is string =>
+    !!id && operations.some((o) => o.id === id)
   return {
     liveOpId: (key: string): string | undefined => {
       const id = byKey[key]
-      return id && operations.some((o) => o.id === id) ? id : undefined
+      return isLive(id) ? id : undefined
     },
     remember: (key: string, opId: string) => setByKey((m) => ({ ...m, [key]: opId })),
+    // Everything this form session created that still exists. A form needs the whole set,
+    // not just the entry for one key, when the keys themselves can change under it — see
+    // the Invert Pocket toggle in PocketForm, which re-reads the SAME selection into a
+    // different set of boundaries.
+    liveEntries: (): { key: string; opId: string }[] =>
+      Object.entries(byKey).flatMap(([key, id]) => (isLive(id) ? [{ key, opId: id }] : [])),
+    forget: (keys: string[]) => setByKey((m) => {
+      const next = { ...m }
+      for (const k of keys) delete next[k]
+      return next
+    }),
   }
 }
 

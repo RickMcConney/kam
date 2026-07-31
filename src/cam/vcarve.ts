@@ -434,17 +434,46 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
     ;(segByNode[k1] ??= []).push(i)
   }
 
+  // Walk inward from each noise leaf and cut the chain back to the nearest JUNCTION.
+  //
+  // The walk is staged, not applied as it goes, because a chain is only a *branch* when
+  // something else carries on past its far end. Reaching another leaf instead means the
+  // walk has traversed the whole connected component: on a simple shape — a leaf, a petal,
+  // an oval — the medial axis is one unbranched chain from tip to tip with no junction
+  // anywhere, so applying the removal deletes the entire toolpath for that shape. That is
+  // what "pruneNoisyBranches removed all segments" was, and where a shape survived it did
+  // so with a stub of spine and a fraction of its depth (scratch/verror.fkam: 4 of 17
+  // traced leaf shapes, three carving 1.4–1.8 mm deep instead of the full 3 mm).
+  //
+  // Genuine discretization noise is unaffected: a noise spur hangs OFF the spine, so its
+  // walk ends at the junction where it meets it and still prunes.
+  //
+  // Bounded by length as well, because "ends at a junction" is not enough on its own. A
+  // shape whose axis forks near one tip gives the walk a junction to stop at only after it
+  // has run the entire spine, so a misjudged tip took 56 of 60 segments with it and left
+  // the fork — a 2 mm stub carving 1.6 mm deep on a 10 mm shape. Noise is by definition a
+  // small part of what it is noise on: a flattening spur is a fraction of a percent of the
+  // axis, so a quarter is an order of magnitude of headroom and still far below anything
+  // load-bearing.
+  const MAX_PRUNE_FRACTION = 0.25
+  const segLen = (s: Seg) => Math.hypot(s.point1.x - s.point0.x, s.point1.y - s.point0.y)
+  const totalLen = segs.reduce((a, s) => a + segLen(s), 0)
+
   const removeSet = new Set<number>()
   for (const startKey of pruneKeys) {
+    const chain: number[] = []
+    const staged = new Set<number>()
     let current = startKey
     let currentNode = nodeMap.get(current)
+    let reachedJunction = false
     while (currentNode && currentNode.connections.size <= 2) {
       const segIndices = segByNode[current]
       if (!segIndices) break
       let nextKey: string | null = null
       for (const si of segIndices) {
-        if (!removeSet.has(si)) {
-          removeSet.add(si)
+        if (!removeSet.has(si) && !staged.has(si)) {
+          staged.add(si)
+          chain.push(si)
           const seg = segs[si]
           const k0 = nodeKey(seg.point0.x, seg.point0.y)
           const k1 = nodeKey(seg.point1.x, seg.point1.y)
@@ -454,7 +483,11 @@ function pruneNoisyBranches(segs: Seg[], path: XY[], holes: XY[][], maxRadius: n
       if (!nextKey) break
       current = nextKey
       currentNode = nodeMap.get(current)
-      if (currentNode && currentNode.connections.size > 2) break
+      if (currentNode && currentNode.connections.size > 2) { reachedJunction = true; break }
+    }
+    const chainLen = chain.reduce((a, si) => a + segLen(segs[si]), 0)
+    if (reachedJunction && chainLen <= totalLen * MAX_PRUNE_FRACTION) {
+      for (const si of chain) removeSet.add(si)
     }
   }
 
