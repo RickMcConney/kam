@@ -1,6 +1,6 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, ARC_FIT_MAX_SPAN, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { zPasses, arcLengths, interpPt, stripClosingDuplicate, toolRadiusAtHeight } from './geom'
+import { zPasses, arcLengths, interpPt, stripClosingDuplicate, toolRadiusAtHeight, pushAll } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool, CuttingDirection } from '../store/toolStore'
 import type { CutSide } from '../store/toolpathStore'
@@ -540,7 +540,7 @@ export function generateProfile(
             }
           } else {
             const passSegs = polylinePassWithTabs(closed, zDepth, activeRanges, lens)
-            segs.push(...passSegs)
+            pushAll(segs, passSegs)
           }
           segs.push({ x: sx, y: sy, z: zDepth, rapid: false })
         }

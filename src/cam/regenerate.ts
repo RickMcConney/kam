@@ -165,15 +165,24 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const pocketTool = tools.find((t) => t.id === op.pocketToolId)
       if (!noFinish && !vbitTool) throw new Error('V-bit tool not found')  // male/finish always needs it
       if (!pocketTool) throw new Error('Pocket/profile tool not found')
-      const islandDs = op.islandIds.flatMap((id) => {
+      // islandDs and islandPlugDs are indexed in parallel, so a deleted island drops both.
+      const islandEntries = op.islandIds.flatMap((id, i) => {
         const p = paths.find((x) => x.id === id)
-        return p ? [p.d] : []
+        if (!p) return []
+        const plugs = (op.islandPlugIds?.[i] ?? []).flatMap((pid) => {
+          const q = paths.find((x) => x.id === pid)
+          return q ? [q.d] : []
+        })
+        return [{ d: p.d, plugs }]
       })
       const inlayParams = {
         angleDeg: op.angleDeg, pocketDepthMM: op.pocketDepthMM,
         stepDownMM: effectiveStepDownMM(pocketTool, op.stepDownMM, op.pocketDepthMM), stepoverPercent: op.stepoverPercent,
         glueLineMM: op.glueLineMM, clearanceMM: op.clearanceMM,
-        rampIn: op.rampIn, mirrorX: op.mirrorX, islandDs, safeHeightMM,
+        rampIn: op.rampIn, mirrorX: op.mirrorX, mirrorAxisX: op.mirrorAxisX,
+        islandDs: islandEntries.map((e) => e.d),
+        islandPlugDs: islandEntries.map((e) => e.plugs),
+        safeHeightMM,
       }
       const result = op.role === 'female'
         ? await runInWorkerFor(opId, 'generateInlayFemale', path.d, pocketTool, vbitTool, inlayParams)

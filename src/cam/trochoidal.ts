@@ -1,6 +1,6 @@
 import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { zPasses, arcLengths, interpPt, stripClosingDuplicate } from './geom'
+import { zPasses, arcLengths, interpPt, stripClosingDuplicate, pushAll } from './geom'
 import { designPathAtT, nearestArcLen, polylinePassWithTabs } from './profile'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -311,7 +311,7 @@ export function generateTrochoidal(
       if (params.finishingPass) {
         const activeExact = tabRangesExact.filter((tr) => zDepth < tr.tabZ)
         if (activeExact.length > 0) {
-          segs.push(...polylinePassWithTabs(closedExact, zDepth, activeExact, exactLens.lens))
+          pushAll(segs, polylinePassWithTabs(closedExact, zDepth, activeExact, exactLens.lens))
         } else {
           const arcSegs = arcFitPolyline(closedExact, 0.1)
           for (const s of arcSegs) {

@@ -1,4 +1,5 @@
 import type { MotionSegment } from '../store/toolpathStore'
+import { pushAll } from './geom'
 import { perfLog } from '../debug'
 import type { Tool } from '../store/toolStore'
 import type { StlModelBounds } from '../importers/svgImporter'
@@ -245,7 +246,7 @@ function generateStepDownPasses(
   for (let n = 1; n <= numPasses; n++) {
     const passDepth   = Math.min(n * stepDownMM, effectiveMaxDepth)
     const prevDepthMM = (n - 1) * stepDownMM   // skip areas already cut in previous pass
-    segs.push(...generateRaster(grid, nx, ny, bbox, cellX, cellY,
+    pushAll(segs, generateRaster(grid, nx, ny, bbox, cellX, cellY,
       stepoverMM, rasterAngleDeg, passDepth, stockAllowanceMM, prevDepthMM, safeZ))
   }
 

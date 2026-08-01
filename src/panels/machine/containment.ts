@@ -48,12 +48,19 @@ function insideCompound(x: number, y: number, subs: [number, number][][]): boole
 // `invert` machines the other half: the levels that would have been holes become the
 // boundaries. Nothing else changes — same tree, same direct-children islands, just started
 // one level in.
+//
+// `islandPlugs[k]` is the direct children of `islands[k]` — one nesting level past the
+// islands, i.e. the boundaries of the groups an inverted grouping would produce inside
+// this one. The inlay's male part needs it: a hole cut into the plug has the next level's
+// plugs standing inside it, and clearing the hole flat would machine them away.
 export function groupPathsByContainment(
   selectedPaths: ImportedPath[],
   opts: { invert?: boolean } = {},
-): { boundary: ImportedPath; islands: ImportedPath[] }[] {
+): { boundary: ImportedPath; islands: ImportedPath[]; islandPlugs: ImportedPath[][] }[] {
   if (selectedPaths.length === 0) return []
-  if (selectedPaths.length === 1) return opts.invert ? [] : [{ boundary: selectedPaths[0], islands: [] }]
+  if (selectedPaths.length === 1) {
+    return opts.invert ? [] : [{ boundary: selectedPaths[0], islands: [], islandPlugs: [] }]
+  }
 
   // One pre-pass computes polygon, centroid, and bbox per path from the cached
   // flatten — the nested loops below used to call getBBox (a full re-flatten)
@@ -136,10 +143,11 @@ export function groupPathsByContainment(
   }
 
   const wantParity = opts.invert ? 1 : 0
+  const childrenOf = (id: string) => selectedPaths.filter(p => parentId.get(p.id) === id)
   return selectedPaths
     .filter(p => depth(p.id) % 2 === wantParity)
-    .map(b => ({
-      boundary: b,
-      islands: selectedPaths.filter(p => parentId.get(p.id) === b.id),
-    }))
+    .map(b => {
+      const islands = childrenOf(b.id)
+      return { boundary: b, islands, islandPlugs: islands.map(i => childrenOf(i.id)) }
+    })
 }

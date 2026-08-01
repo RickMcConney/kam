@@ -122,6 +122,10 @@ export interface InlayOperation extends BaseOperation {
   phase: 'vbit' | 'endmill'  // which tool phase this operation represents
   pathId: string
   islandIds: string[]
+  // Male only, parallel to islandIds: the paths nested directly inside each island — the
+  // next level's plugs, which the male must leave standing inside the hole it cuts.
+  // Absent on projects saved before nested inlay support; treated as "no nesting".
+  islandPlugIds?: string[][]
   pocketToolId: string    // flat end mill ID (always the endmill, regardless of phase)
   vbitToolId: string      // vbit ID (always the vbit, regardless of phase)
   angleDeg: number
@@ -132,6 +136,7 @@ export interface InlayOperation extends BaseOperation {
   clearanceMM: number
   rampIn: boolean         // ramp/helical entry on roughing pockets instead of straight plunge
   mirrorX?: boolean       // male only: mirror shape around vertical axis before cutting
+  mirrorAxisX?: number    // male only: X of that axis, shared by every op cut from one board
   linkedOpId?: string     // ID of the paired phase operation
 }
 

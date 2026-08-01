@@ -113,11 +113,33 @@ declare global {
     __fkamReplayCheck: () => boolean
     __fkamTimeline: () => { events: unknown[]; cursor: number }
     __fkamScrub: (seq: number) => void
+    __fkamOps: () => unknown[]
   }
 }
 
 window.__fkamReplayCheck = replayCheck
 window.__fkamScrub = (seq: number) => useTimelineStore.getState().scrubTo(seq)
+
+// Why an operation shows no toolpath. The canvas draws only ops that are `done` AND
+// visible AND non-empty (ToolpathLayer), so a chip with nothing under it can mean four
+// different things — still generating, errored, empty result, hidden — and the strip looks
+// the same for all of them. This prints which.
+window.__fkamOps = () => {
+  const ops = useToolpathStore.getState().operations
+  const rows = ops.map((o) => ({
+    name: o.name,
+    type: o.type,
+    detail: o.type === 'inlay' ? `${o.role}/${o.phase}` : '',
+    status: o.status,
+    segments: o.segments.length,
+    visible: o.visible,
+    drawn: o.visible && o.status === 'done' && o.segments.length > 0,
+    error: o.errorMessage ?? '',
+    pathId: 'pathId' in o ? o.pathId : '',
+  }))
+  console.table(rows)
+  return rows
+}
 window.__fkamTimeline = () => {
   const { events, cursor } = useTimelineStore.getState()
   console.table(events.map((e) => ({ seq: e.seq, kind: e.kind, label: e.label, t: new Date(e.t).toLocaleTimeString() })))

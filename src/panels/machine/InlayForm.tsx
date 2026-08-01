@@ -13,6 +13,7 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
+import { getMultiBBox } from '../../canvas/selectionUtils'
 
 interface InlayFormState {
   vbitToolId: string
@@ -66,9 +67,23 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const vbitTool = finishIsNone ? null : tools.find((t) => t.id === form.vbitToolId)
   const pocketTool = tools.find((t) => t.id === form.pocketToolId)
   const editBoundary = editOp ? paths.find((p) => p.id === editOp.pathId) : null
-  const editIslands = editOp ? paths.filter((p) => editOp.islandIds.includes(p.id)) : []
+  // Walked in islandIds order, not paths order: islandPlugIds is indexed in parallel with
+  // islandIds, so a deleted island has to drop both halves of the pair together.
+  const editIslandPairs = editOp
+    ? editOp.islandIds
+        .map((id, i) => ({
+          path: paths.find((p) => p.id === id),
+          plugs: (editOp.islandPlugIds?.[i] ?? []).flatMap((pid) => {
+            const p = paths.find((x) => x.id === pid)
+            return p ? [p] : []
+          }),
+        }))
+        .filter((e): e is { path: typeof paths[number]; plugs: typeof paths } => !!e.path)
+    : []
+  const editIslands = editIslandPairs.map((e) => e.path)
+  const editIslandPlugs = editIslandPairs.map((e) => e.plugs)
   const groups = editOp && editBoundary
-    ? [{ boundary: editBoundary, islands: editIslands }]
+    ? [{ boundary: editBoundary, islands: editIslands, islandPlugs: editIslandPlugs }]
     : groupPathsByContainment(selPaths)
   const session = useSessionOps()
 
@@ -95,6 +110,12 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     // After the guard, the wall tool is present unless finishIsNone (roughing-only); the
     // finishIsNone path returns early below, so non-None branches always have a real tool.
     const wallTool: Tool | null = vbitTool ?? null
+    // One flip axis for the whole selection: the male board is turned over once, so a
+    // nested design's inner groups must mirror about the same line as the outer one, not
+    // about their own centres (which would slide them across the part).
+    const mirrorAxisX = editOp
+      ? (editOp.mirrorAxisX ?? getMultiBBox([editBoundary?.d ?? ''])?.cx)
+      : getMultiBBox(groups.map((g) => g.boundary.d))?.cx
     const angleDeg = vbitTool?.vbitAngleDeg ?? 60
     const baseParams = {
       angleDeg,
@@ -105,6 +126,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       clearanceMM: form.clearanceMM,
       rampIn: form.rampIn,
       mirrorX: form.mirrorX,
+      mirrorAxisX,
       safeHeightMM,
     }
     const sharedOpFields = {
@@ -118,10 +140,12 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       clearanceMM: form.clearanceMM,
       rampIn: form.rampIn,
       mirrorX: form.mirrorX,
+      mirrorAxisX,
     }
 
     if (editOp && editBoundary) {
-      const inlayParams = { ...baseParams, islandDs: editIslands.map((p) => p.d) }
+      const inlayParams = { ...baseParams, islandDs: editIslands.map((p) => p.d),
+        islandPlugDs: editIslandPlugs.map((ps) => ps.map((p) => p.d)) }
       // Update both the edited op and its linked counterpart with new params.
       const linkedOp = editOp.linkedOpId
         ? (operations.find((o) => o.id === editOp.linkedOpId) as InlayOperation | undefined)
@@ -169,25 +193,28 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       const role = form.role
       const roleLabel = role === 'female' ? 'Female' : 'Male'
       const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
-      const ids = groups.map(({ boundary, islands }) => {
+      const ids = groups.map(({ boundary, islands, islandPlugs }) => {
         // Re-Generate on a boundary this form already generated for updates that op in place.
         const existingId = session.liveOpId(groupKey(boundary.id))
         const name = `Inlay ${roleLabel} (End Mill): ${boundary.name}`
         if (existingId) {
           updateOperation(existingId, { ...sharedOpFields, phase: 'endmill', toolId: form.pocketToolId,
-            islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+            islandIds: islands.map((p) => p.id), islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+            name, status: 'generating' } as Partial<AnyOperation>)
           return existingId
         }
         const id = addOperation({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
-          pathId: boundary.id, islandIds: islands.map((p) => p.id), name })
+          pathId: boundary.id, islandIds: islands.map((p) => p.id),
+          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name })
         updateOperation(id, { status: 'generating' })
         session.remember(groupKey(boundary.id), id)
         return id
       })
       setTimeout(async () => {
         for (let i = 0; i < groups.length; i++) {
-          const { boundary, islands } = groups[i]
-          const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
+          const { boundary, islands, islandPlugs } = groups[i]
+          const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d),
+            islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)) }
           try {
             const result = role === 'female'
               ? await runInWorkerFor(ids[i], 'generateInlayFemale', boundary.d, pocketTool, null, inlayParams)
@@ -240,17 +267,19 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     const newOps: Parameters<typeof addOperations>[0] = []
     const phaseSlots = ([firstPhase, secondPhase] as const).map((phase) => {
       const toolId = phase === firstPhase ? firstToolId : secondToolId
-      return groups.map(({ boundary, islands }, i) => {
+      return groups.map(({ boundary, islands, islandPlugs }, i) => {
         const name = `Inlay ${roleLabel} (${phaseLabel(phase)}): ${boundary.name}`
         const pair = existingPairs[i]
         if (pair) {
           const id = phase === firstPhase ? pair.firstId : pair.secondId
           updateOperation(id, { ...sharedOpFields, phase, toolId,
-            islandIds: islands.map((p) => p.id), name, status: 'generating' } as Partial<AnyOperation>)
+            islandIds: islands.map((p) => p.id), islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+            name, status: 'generating' } as Partial<AnyOperation>)
           return id
         }
         return newOps.push({ ...opBase, phase, toolId,
-          pathId: boundary.id, islandIds: islands.map((p) => p.id), name }) - 1
+          pathId: boundary.id, islandIds: islands.map((p) => p.id),
+          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name }) - 1
       })
     })
     const newIds = addOperations(newOps)
@@ -268,8 +297,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
     setTimeout(async () => {
       for (let i = 0; i < groups.length; i++) {
-        const { boundary, islands } = groups[i]
-        const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d) }
+        const { boundary, islands, islandPlugs } = groups[i]
+        const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d),
+          islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)) }
         try {
           const result = role === 'female'
             ? await runInWorkerFor(firstIds[i], 'generateInlayFemale', boundary.d, pocketTool, wallTool, inlayParams)

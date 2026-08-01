@@ -232,3 +232,22 @@ export function ptSegDistSq(px: number, py: number, ax: number, ay: number, bx: 
   const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / len2))
   return (px - ax - t * abx) ** 2 + (py - ay - t * aby) ** 2
 }
+
+/**
+ * Append `src` to `dst` in place.
+ *
+ * Use this, never `dst.push(...src)`, whenever `src` is a generated motion path. Spreading
+ * passes every element as a separate function argument and engines cap how many they will
+ * take (~65–125k in V8); past that it throws "Maximum call stack size exceeded". Toolpaths
+ * cross that line routinely — one inlay socket came to 97k segments with ramp-in, 110k at a
+ * 10% stepover, 320k with both — and the limit is engine-dependent, so the same project can
+ * work on one machine and fail on another.
+ *
+ * It fails in the worst possible way: the throw escapes the generator, the form's catch
+ * calls setError, and setError clears the segments. The operation ends up with no toolpath
+ * at all, and the harder the job the user asked for, the likelier it is to happen. Nothing
+ * about the geometry looks wrong, which is why it read as "the inlay just doesn't work".
+ */
+export function pushAll<T>(dst: T[], src: readonly T[]): void {
+  for (let i = 0; i < src.length; i++) dst.push(src[i])
+}
