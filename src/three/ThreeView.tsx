@@ -12,7 +12,7 @@ import { flattenPath } from '../cam/pathFlattener'
 import { getBBox } from '../canvas/selectionUtils'
 import { THREE_BG_COLOR_THREE } from '../colors'
 import { HeightfieldMaterial } from './HeightfieldMaterial'
-import { getWoodTexture, setWoodTextureListener } from './woodTexture'
+import { getWoodTexture, setWoodTextureListener, woodTileMM } from './woodTexture'
 import SimulationPlayer from '../sim/SimulationPlayer'
 // M3 (clockwise viewed from above) is negative rotation about three's +Y.
 import { SPINDLE_VIS_RPS } from '../sim/spindleVis'
@@ -671,7 +671,7 @@ function rebuildHeightfield(refs: SceneRefs) {
   const segments = normalizeSimZ(rawSegs, genZOff)
   refs.simSegments = segments
 
-  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, getWoodTexture(material), zOrigin)
+  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, getWoodTexture(material), woodTileMM(material), zOrigin)
   refs.heightfield = hf
   refs.scene.add(hf.group)
   perfLog(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)

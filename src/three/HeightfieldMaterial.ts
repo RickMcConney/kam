@@ -3,7 +3,7 @@ import { segTool, type SimSegment, type ToolState } from '../sim/gcodeParser'
 import { Heightfield, gridForSegments } from '../sim/heightfield'
 import type { ZOrigin } from '../store/workpieceStore'
 import { Z_DATUM_COLOR_THREE } from '../colors'
-import { WOOD_TILE_MM } from './woodTexture'
+import { DEFAULT_TILE_MM } from './woodTexture'
 
 // ─── Heightfield material-removal simulation ──────────────────────────────────
 //
@@ -36,13 +36,14 @@ function patchSurfaceShader(
   sx: number, sy: number,
   T: number,
   woodTex: THREE.Texture,
+  tileMM: [number, number],
 ) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHeight = { value: texture }
     shader.uniforms.uTexel = { value: new THREE.Vector2(1 / NX, 1 / NY) }
     shader.uniforms.uSpacing = { value: new THREE.Vector2(sx, sy) }
     shader.uniforms.uWoodTex = { value: woodTex }
-    shader.uniforms.uWoodScale = { value: 1 / WOOD_TILE_MM }
+    shader.uniforms.uWoodScale = { value: new THREE.Vector2(1 / tileMM[0], 1 / tileMM[1]) }
     shader.uniforms.uThickness = { value: T }
 
     shader.vertexShader = shader.vertexShader
@@ -73,7 +74,7 @@ function patchSurfaceShader(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', /* glsl */ `#include <common>
         uniform sampler2D uWoodTex;
-        uniform float uWoodScale;
+        uniform vec2 uWoodScale;
         uniform float uThickness;
         varying float vH;
         varying vec2 vWUv;`)
@@ -151,13 +152,14 @@ function patchSkirtShader(
   texture: THREE.DataTexture,
   T: number,
   woodTex: THREE.Texture,
+  tileMM: [number, number],
   datumColor: number,
   datumTop: boolean,
 ) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHeight = { value: texture }
     shader.uniforms.uWoodTex = { value: woodTex }
-    shader.uniforms.uWoodScale = { value: 1 / WOOD_TILE_MM }
+    shader.uniforms.uWoodScale = { value: new THREE.Vector2(1 / tileMM[0], 1 / tileMM[1]) }
     shader.uniforms.uDatum = { value: new THREE.Color(datumColor) }
     shader.uniforms.uThickness = { value: T }
     shader.uniforms.uDatumTop = { value: datumTop ? 1 : 0 }
@@ -181,7 +183,7 @@ function patchSkirtShader(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', /* glsl */ `#include <common>
         uniform sampler2D uWoodTex;
-        uniform float uWoodScale;
+        uniform vec2 uWoodScale;
         uniform vec3 uDatum;
         uniform float uThickness;
         uniform float uDatumTop;
@@ -225,6 +227,8 @@ export class HeightfieldMaterial {
     toolStates: ToolState[],
     orgX: number, orgY: number,
     woodTex: THREE.Texture,
+    // Physical (u, v) mm the wood tile covers — see woodTileMM in woodTexture.ts.
+    tileMM: [number, number] = [DEFAULT_TILE_MM, DEFAULT_TILE_MM],
     zOrigin: ZOrigin = 'top',
   ) {
     this._toolStates = toolStates
@@ -262,8 +266,8 @@ export class HeightfieldMaterial {
         positions[k * 3 + 2] = -(gy0 + j * this._sy)
         uvs[k * 2] = (i + 0.5) / NX
         uvs[k * 2 + 1] = (j + 0.5) / NY
-        woodUvs[k * 2] = (gx0 + i * this._sx) / WOOD_TILE_MM
-        woodUvs[k * 2 + 1] = (gy0 + j * this._sy) / WOOD_TILE_MM
+        woodUvs[k * 2] = (gx0 + i * this._sx) / tileMM[0]
+        woodUvs[k * 2 + 1] = (gy0 + j * this._sy) / tileMM[1]
       }
     }
     const indexCount = (NX - 1) * (NY - 1) * 6
@@ -283,7 +287,7 @@ export class HeightfieldMaterial {
     this._surfaceGeo.setIndex(new THREE.BufferAttribute(indices, 1))
 
     this._surfaceMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodTex)
+    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodTex, tileMM)
 
     // Flat bottom of the stock over the cut region — reuses the surface grid
     // (undisplaced at Y=0) and punches through where the cut goes clean through.
@@ -298,7 +302,7 @@ export class HeightfieldMaterial {
     // or stock bottom, per zOrigin), giving a visual cue of where Z0 sits.
     this._stockMat = new THREE.MeshLambertMaterial({ map: woodTex, side: THREE.DoubleSide })
     patchStockShader(this._stockMat, Z_DATUM_COLOR_THREE)
-    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1, zOrigin)
+    this._stockGeo = buildStock(W, H, T, bounds.x0, bounds.y0, bounds.x1, bounds.y1, zOrigin, tileMM)
 
     // Heightfield-driven "skirt" along any stock edge the cut region reaches (a
     // surfacing pass or a pocket overlapping the boundary). Its top edge samples
@@ -307,7 +311,7 @@ export class HeightfieldMaterial {
     this._skirtGeo = buildSkirt(NX, NY, this._sx, this._sy, gx0, gy0, W, H)
     if (this._skirtGeo) {
       this._skirtMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-      patchSkirtShader(this._skirtMat, this._texture, T, woodTex, Z_DATUM_COLOR_THREE, zOrigin === 'top')
+      patchSkirtShader(this._skirtMat, this._texture, T, woodTex, tileMM, Z_DATUM_COLOR_THREE, zOrigin === 'top')
     } else {
       this._skirtMat = null
     }
@@ -398,6 +402,7 @@ function buildStock(
   W: number, H: number, T: number,
   gx0: number, gy0: number, gx1: number, gy1: number,
   zOrigin: ZOrigin,
+  tileMM: [number, number],
 ): THREE.BufferGeometry {
   const pos: number[] = []
   const uv: number[] = []
@@ -412,7 +417,8 @@ function buildStock(
   // walls map (along-edge, height). The wall form (x - z = localX + localY, one
   // term constant per wall) matches the skirt shader's mapping so the textures
   // agree where a static wall meets a skirt strip.
-  const s = 1 / WOOD_TILE_MM
+  const su = 1 / tileMM[0]
+  const sv = 1 / tileMM[1]
   const quad = (
     p0: [number, number, number], p1: [number, number, number],
     p2: [number, number, number], p3: [number, number, number],
@@ -421,8 +427,8 @@ function buildStock(
     const b = pos.length / 3
     pos.push(...p0, ...p1, ...p2, ...p3)
     for (const p of [p0, p1, p2, p3]) {
-      if (colored) uv.push((p[0] - p[2]) * s, p[1] * s)
-      else uv.push(p[0] * s, -p[2] * s)
+      if (colored) uv.push((p[0] - p[2]) * su, p[1] * sv)
+      else uv.push(p[0] * su, -p[2] * sv)
       datum.push(colored ? wallDatum(p[1]) : 0)
     }
     idx.push(b, b + 1, b + 2, b, b + 2, b + 3)

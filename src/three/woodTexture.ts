@@ -4,15 +4,16 @@ import { MATERIAL_COLORS } from '../colors'
 
 // ─── Stock textures ────────────────────────────────────────────────────────
 //
-// Wood materials use real CC0 photo textures bundled in public/textures/wood/
-// (sources in the README there — Poly Haven + ambientCG, all seamless, grain
-// running along +X). Non-wood materials (MDF, plastics, metals) get a small
-// procedurally generated tile: speckle for MDF, subtle brushed/flat noise for
-// the rest, tinted from MATERIAL_COLORS so they match the 2D renderer.
+// Wood materials and the two metals use real CC0 photo textures bundled in
+// public/textures/wood/ (sources in the README there — Poly Haven + ambientCG,
+// all seamless 1K tiles, grain and brush lines running along +X, which is the
+// convention every mapping below assumes). MDF, plastics and "other" get a
+// small procedurally generated tile: speckle for MDF, subtle brushed/flat noise
+// for the rest, tinted from MATERIAL_COLORS so they match the 2D renderer.
 //
 // Everything that maps these textures uses planar world-mm UVs (u = localX,
-// v = localY on faces; u = along-edge, v = height on walls) divided by
-// WOOD_TILE_MM, so grain scale is physical and continuous across the
+// v = localY on faces; u = along-edge, v = height on walls) divided by the
+// material's tile size, so grain scale is physical and continuous across the
 // heightfield surface, the apron, and the walls.
 //
 // Photo textures load asynchronously: the texture starts as a flat tile of the
@@ -20,28 +21,63 @@ import { MATERIAL_COLORS } from '../colors'
 // render loop is render-on-demand, so it registers a listener to repaint when
 // a load lands.
 
-// World size (mm) one texture tile covers.
-export const WOOD_TILE_MM = 128
+// World size (mm) one texture tile covers, when nothing better is known — used
+// by the procedural tiles, whose noise has no physical size of its own.
+export const DEFAULT_TILE_MM = 128
 
-// Photo texture per wood material; absent = procedural.
+// World size (mm) of the real area each photo tile covers, so grain renders
+// life-sized. Taken from the source library's published dimensions where they
+// exist; the rest are estimates and marked as such. Two numbers because the
+// sample is not always square — Wood095 is a 2:1 image of a 2:1 area, and
+// mapping it over a square patch of stock would stretch the figure.
+//
+// These are much larger than DEFAULT_TILE_MM, so a photo tile spread over a
+// small workpiece is magnified: texel density runs 0.4–2 px/mm against the
+// 8 px/mm the old 128 mm mapping gave. That is the honest cost of correct
+// scale at 1K, and the fix if it reads soft is a higher-resolution source, not
+// a smaller tile.
+const TILE_MM: Partial<Record<Material, [number, number]>> = {
+  pine:     [800, 800],    // ambientCG: 80 × 80 cm
+  oak:      [1830, 1830],  // Poly Haven: 1830 mm
+  walnut:   [2000, 1938],  // Poly Haven: 2000 mm, less the de-seamed strip (see README)
+  cherry:   [2430, 2430],  // Poly Haven: 2430 mm
+  plywood:  [500, 500],    // Poly Haven: 500 mm
+  cedar:    [800, 800],    // estimated — ambientCG publishes no size for Wood030
+  maple:    [800, 400],    // estimated — Wood095 likewise; image is 2:1, so area is
+  aluminum: [400, 400],    // estimated — a brushed lay has no meaningful true size
+  brass:    [400, 400],
+}
+
+// Physical (u, v) extent in mm of one tile of this material's texture.
+export function woodTileMM(m: Material): [number, number] {
+  return TILE_MM[m] ?? [DEFAULT_TILE_MM, DEFAULT_TILE_MM]
+}
+
+// Photo texture per material; absent = procedural.
 const WOOD_FILES: Partial<Record<Material, string>> = {
-  pine:    'pine.jpg',      // ambientCG Wood092
-  cedar:   'cedar.jpg',     // ambientCG Wood030
-  oak:     'oak.jpg',       // Poly Haven oak_veneer_01
-  maple:   'maple.jpg',     // ambientCG Wood095
-  walnut:  'walnut.jpg',    // Poly Haven dark_wood
-  cherry:  'cherry.jpg',    // Poly Haven rosewood_veneer1
-  plywood: 'plywood.jpg',   // Poly Haven plywood
+  pine:     'pine.jpg',      // ambientCG Wood092
+  cedar:    'cedar.jpg',     // ambientCG Wood030
+  oak:      'oak.jpg',       // Poly Haven oak_veneer_01
+  maple:    'maple.jpg',     // ambientCG Wood095
+  walnut:   'walnut.jpg',    // Poly Haven dark_wood
+  cherry:   'cherry.jpg',    // Poly Haven rosewood_veneer1
+  plywood:  'plywood.jpg',   // Poly Haven plywood
+  aluminum: 'brushed-metal.jpg',  // ambientCG Metal009, recolored below
+  brass:    'brushed-metal.jpg',  // same tile, different tint
 }
 
 // Procedural finish for materials without a photo texture.
 const PROCEDURAL: Record<string, { kind: 'speckle' } | { kind: 'flat'; streak: number }> = {
-  mdf:      { kind: 'speckle' },
-  hdpe:     { kind: 'flat', streak: 0.015 },
-  aluminum: { kind: 'flat', streak: 0.045 },
-  brass:    { kind: 'flat', streak: 0.035 },
-  other:    { kind: 'flat', streak: 0.015 },
+  mdf:   { kind: 'speckle' },
+  hdpe:  { kind: 'flat', streak: 0.015 },
+  other: { kind: 'flat', streak: 0.015 },
 }
+
+// Materials whose photo tile is recolored to their MATERIAL_COLORS hue on load.
+// Brushed aluminum and brass differ in color and reflectance, not in surface
+// structure — same abrasive, same lay — so one brushed-metal photo drives both,
+// and they come out as a matched pair in a way two unrelated photos never would.
+const TINTED: Partial<Record<Material, true>> = { aluminum: true, brass: true }
 
 let onTextureLoaded: (() => void) | null = null
 
@@ -105,6 +141,40 @@ function makeNoiseRows(
     }
     for (let i = 0; i < N; i++) out[i] *= inv
   }
+}
+
+// Recolor a loaded photo tile to the material's own hue, keeping its texture.
+// Luminance is normalized against the tile's own mean before it multiplies the
+// base color, so the brush marks survive at full strength and the average lands
+// exactly on MATERIAL_COLORS — the same relationship the procedural tiles have,
+// which is what keeps a photo material and a procedural one looking related.
+// The tile is same-origin, so the canvas is never tainted.
+function tintToMaterial(img: HTMLImageElement, m: Material): HTMLCanvasElement {
+  const base = MATERIAL_COLORS[m].three
+  const br = (base >> 16) & 255
+  const bg = (base >> 8) & 255
+  const bb = base & 255
+
+  const canvas = document.createElement('canvas')
+  canvas.width = img.naturalWidth
+  canvas.height = img.naturalHeight
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(img, 0, 0)
+
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const d = image.data
+  const lum = (i: number) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+  let sum = 0
+  for (let i = 0; i < d.length; i += 4) sum += lum(i)
+  const mean = sum / (d.length / 4) || 1
+  for (let i = 0; i < d.length; i += 4) {
+    const k = lum(i) / mean
+    d[i]     = Math.min(255, br * k)
+    d[i + 1] = Math.min(255, bg * k)
+    d[i + 2] = Math.min(255, bb * k)
+  }
+  ctx.putImageData(image, 0, 0)
+  return canvas
 }
 
 // Small canvas tile: flat base color, or base color + procedural finish.
@@ -173,7 +243,7 @@ export function getWoodTexture(m: Material): THREE.Texture {
   if (file) {
     const img = new Image()
     img.onload = () => {
-      tex!.image = img
+      tex!.image = TINTED[m] ? tintToMaterial(img, m) : img
       // The GL texture was allocated at the placeholder's size (immutable
       // storage) — dispose so the next render reallocates at the image's size
       // instead of a failing texSubImage2D upload.
