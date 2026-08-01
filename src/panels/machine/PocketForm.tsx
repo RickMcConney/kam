@@ -13,7 +13,7 @@ import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import type { PocketStrategy } from '../../cam/pocket'
-import { effectiveStepDownMM } from '../../cam/feeds'
+import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
 import { entryHintAt } from '../../cam/startOptimizer'
 
@@ -63,11 +63,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     strategy: 'hybrid' as PocketStrategy,
     // Default to the full stock thickness; the tool's max Z is only a warning.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: defaultTool?.stepDownMM ?? 3,
+    stepDownMM: seedStepDownMM(defaultTool),
     stepoverPercent: 40,
     passAngleDeg: 0,
     autoAngle: true,
-    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    direction: 'climb' as CuttingDirection,
     rampIn: false,
     allowanceMM: 0,
     // Never restored from the saved form defaults: a start reference belongs to the
@@ -107,7 +107,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   // for real at generation time.
   // Margin 0: a pocket's cutter stays a full radius INSIDE its boundary, so the cleared
   // area never reaches past the path.
-  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, editOp?.id)
+  // The ops this form already made are about to be REPLACED by the next Generate, so
+  // they must not count as cuts preceding themselves — otherwise a lone 5 mm pocket
+  // reads its own floor and the Start row shows Z −5 instead of stock top.
+  const selfOpId = editOp?.id ?? session.firstLiveOpId()
+  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, selfOpId)
   // Ops this session made from paths that are STILL selected. Scoped to the selection on
   // purpose: re-reading the same paths a different way (Invert Pocket) should replace what
   // it made, but selecting different paths and generating again is a new operation, not a
@@ -126,7 +130,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM, direction: t.direction }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: seedStepDownMM(t) }))
   }
 
   function handleStrategyChange(strategy: PocketStrategy) {
@@ -329,7 +333,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           />
         </div>
       )}
-      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />

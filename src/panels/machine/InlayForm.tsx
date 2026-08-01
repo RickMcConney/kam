@@ -11,7 +11,7 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
-import { effectiveStepDownMM } from '../../cam/feeds'
+import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
 import { getMultiBBox } from '../../canvas/selectionUtils'
 
@@ -51,7 +51,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
     pocketDepthMM: 5,
-    stepDownMM: defaultEndmill?.stepDownMM ?? 3,
+    stepDownMM: seedStepDownMM(defaultEndmill),
     stepoverPercent: 40,
     glueLineMM: 0.2,
     clearanceMM: 0.1,
@@ -335,7 +335,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           value={form.pocketToolId}
           onChange={(e) => {
             const t = tools.find((x) => x.id === e.target.value)
-            if (t) up('stepDownMM', t.stepDownMM)
+            if (t) up('stepDownMM', seedStepDownMM(t))
             up('pocketToolId', e.target.value)
           }}
           className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"

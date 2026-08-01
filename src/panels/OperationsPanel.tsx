@@ -129,14 +129,22 @@ function OpChip({ op, dragging, compact, onGrab }: {
     <div
       data-op-id={op.id}
       onMouseDown={onGrab}
+      // One line per fact, worst news first. A failure is the reason someone hovers a
+      // ringed chip, so it leads and says what it costs — an errored op has no segments,
+      // and generateGcode only emits ops that are 'done', so it is silently absent from
+      // the exported program rather than cutting anything.
       title={[
+        op.status === 'error'
+          ? `⚠ Failed to generate: ${op.errorMessage ?? 'unknown error'}\nThis operation is NOT in the exported G-code.`
+          : null,
+        op.status === 'needs-update'
+          ? '⚠ Needs regenerating — excluded from the exported G-code until you do.'
+          : null,
+        hidden ? 'Hidden — excluded from the exported G-code.' : null,
         op.name,
         gcodeDetail(op),
         'Drag to reorder · Alt-click to hide',
-        hidden ? 'Hidden — excluded from exported G-code' : null,
-        op.status === 'needs-update' ? 'Needs regenerating' : null,
-        op.status === 'error' ? (op.errorMessage ?? 'Generation failed') : null,
-      ].filter(Boolean).join(' · ')}
+      ].filter(Boolean).join('\n')}
       className={[
         'group relative flex items-center gap-1 px-1.5 h-6 rounded border text-[13px] flex-shrink-0 cursor-grab active:cursor-grabbing',
         'bg-white/60 dark:bg-neutral-900/60 hover:bg-white dark:hover:bg-neutral-700',

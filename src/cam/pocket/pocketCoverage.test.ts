@@ -14,7 +14,7 @@ import { buildOffsetLevels, closedPath, restCleanupRings } from './shared'
 
 const TOOL: Tool = {
   id: 't1', name: 'em6', type: 'endmill', diameterMM: 6, fluteCount: 2,
-  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, stepDownMM: 3, maxDepthMM: 25, direction: 'climb',
+  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 25,
 }
 
 const toD = (pts: Pt2[]) => `M ${pts.map(p => `${p[0]} ${p[1]}`).join(' L ')} Z`

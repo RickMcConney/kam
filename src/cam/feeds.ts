@@ -222,6 +222,18 @@ export function effectiveStepDownMM(tool: Tool, userStepDownMM: number, totalDep
   return calcForTool(tool, userStepDownMM, totalDepthMM, radialEngagementFraction).stepDownMM
 }
 
+// Starting step-down for a form that has just been opened (or had its tool
+// changed) — it seeds the manual field, and only survives when auto feeds are
+// off, since `effectiveStepDownMM` recomputes it otherwise. Derived from the
+// cutter rather than stored per tool: half a diameter is a conservative
+// full-slot pass for a mill, and a drill pecks a full diameter at a time.
+// Bounded by the usable flute length so the seed is never an impossible depth.
+export function seedStepDownMM(tool?: Tool | null): number {
+  if (!tool || !(tool.diameterMM > 0)) return 3
+  const seed = tool.type === 'drill' ? tool.diameterMM : tool.diameterMM * 0.5
+  return tool.maxDepthMM > 0 ? Math.min(seed, tool.maxDepthMM) : seed
+}
+
 // Radial engagement (WOC / D) of a trochoidal pass: the forward advance per loop
 // (`trochStepMM`) is the material the tool bites into each revolution of the pattern.
 export function trochoidalEngagementFraction(tool: Tool, trochStepMM: number): number {

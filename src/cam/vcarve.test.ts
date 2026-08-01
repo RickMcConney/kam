@@ -16,8 +16,7 @@ import type { Tool } from '../store/toolStore'
 // the operation form passes the angle through VCarveParams.angleDeg.
 const vbit = (vbitAngleDeg = 90): Tool => ({
   id: 'vb', name: 'V-Bit', type: 'vbit', diameterMM: 12.7, fluteCount: 2, rpm: 18000,
-  xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2, maxDepthMM: 10,
-  direction: 'climb', vbitAngleDeg,
+  xyFeedMmMin: 2000, zFeedMmMin: 400, maxDepthMM: 10, vbitAngleDeg,
 })
 
 // 40 × 10 mm rectangle. Medial axis = a horizontal ridge y=5 from (5,5) to (35,5)

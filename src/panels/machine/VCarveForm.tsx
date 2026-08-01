@@ -60,7 +60,9 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const angleDeg = selectedTool?.vbitAngleDeg ?? 60
   // Margin 0: a v-carve is bounded by the outline it carves — the widest part of the cone
   // lands ON the outline, never outside it.
-  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, editOp?.id)
+  // See PocketForm: ops this session already generated are not cuts preceding themselves.
+  const selfOpId = editOp?.id ?? session.firstLiveOpId()
+  const startZ = useStartZ(form.startFrom, groups[0]?.boundary.d ?? '', 0, selfOpId)
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => session.liveOpId(boundary.id))
 
   function handleToolChange(toolId: string) {
@@ -171,7 +173,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           V-bit angle: {angleDeg}° (set on tool)
         </p>
       )}
-      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
         <div className="flex items-center gap-1">

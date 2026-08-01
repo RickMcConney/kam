@@ -118,6 +118,55 @@ export function buildExportPreflight(): ExportPreflight {
 
   const warnings: PreflightWarning[] = []
 
+  // Operations that will NOT be in the file. `doneOps` is the export filter, so anything
+  // an operation-shaped thing that isn't in it is silently missing from the job — a pocket
+  // too small for its cutter leaves that detail uncut with nothing in the G-code to say
+  // so. Imported G-code operations are never exported by design, so they aren't reported.
+  const exportable = operations.filter((o) => o.type !== 'gcode')
+  const named = (ops: typeof operations, max = 4) =>
+    ops.slice(0, max).map((o) => o.name).join(', ') + (ops.length > max ? `, +${ops.length - max} more` : '')
+
+  const failed = exportable.filter((o) => o.visible && o.status === 'error')
+  if (failed.length > 0) {
+    // One representative message: a run of failures over the same selection is almost
+    // always the same cause (usually "too small for the selected tool diameter").
+    const reason = failed.find((o) => o.errorMessage)?.errorMessage
+    warnings.push({
+      level: 'warn',
+      text: `${failed.length} operation(s) failed to generate and are NOT in this file — ${named(failed)}.` +
+        (reason ? ` First error: "${reason}".` : '') +
+        ` Whatever they were meant to cut will be left uncut.`,
+    })
+  }
+
+  const stale = exportable.filter((o) => o.visible && o.status === 'needs-update')
+  if (stale.length > 0) {
+    warnings.push({
+      level: 'warn',
+      text: `${stale.length} operation(s) need regenerating and are NOT in this file — ${named(stale)}. ` +
+        `Regenerate them before running this job.`,
+    })
+  }
+
+  const ungenerated = exportable.filter(
+    (o) => o.visible && (o.status === 'pending' || o.status === 'generating' || (o.status === 'done' && o.segments.length === 0))
+  )
+  if (ungenerated.length > 0) {
+    warnings.push({
+      level: 'warn',
+      text: `${ungenerated.length} operation(s) have no toolpath and are NOT in this file — ${named(ungenerated)}.`,
+    })
+  }
+
+  const hiddenOps = exportable.filter((o) => !o.visible)
+  if (hiddenOps.length > 0) {
+    // Deliberate, so info rather than warn — but it still changes what gets cut.
+    warnings.push({
+      level: 'info',
+      text: `${hiddenOps.length} hidden operation(s) are excluded from this file — ${named(hiddenOps)}.`,
+    })
+  }
+
   // Toolpath crosses the stock edge — the bit will cut into the spoilboard or air.
   const tol = 0.01
   if (hasExtents && (wpMinX < -tol || wpMinY < -tol || wpMaxX > widthMM + tol || wpMaxY > heightMM + tol)) {

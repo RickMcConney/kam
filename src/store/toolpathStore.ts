@@ -6,7 +6,7 @@ import { serializeOp, DERIVED_OP_KEYS, type SerializedOperation } from '../timel
 import { useWorkpieceStore } from './workpieceStore'
 import type { CuttingDirection } from './toolStore'
 import type { StartFrom } from '../cam/startHeight'
-import { resolveStartZForOp, makeStartZCache } from '../cam/startHeight'
+import { resolveStartZForOp } from '../cam/startHeight'
 import { usePathsStore } from './pathsStore'
 import { useToolStore } from './toolStore'
 export type CutSide = 'inside' | 'outside' | 'centerline'
@@ -259,11 +259,11 @@ export function pathIdsOf(op: AnyOperation | SerializedOperation): string[] {
 
 // Resolved start Z for an op against a given ops list, using the live paths/tools/stock.
 // Returns 0 for op types with no start-height support, so their stamp never drifts.
-function startZOf(op: AnyOperation, ops: AnyOperation[], cache?: ReturnType<typeof makeStartZCache>): number {
+function startZOf(op: AnyOperation, ops: AnyOperation[]): number {
   const { widthMM, heightMM } = useWorkpieceStore.getState()
   return resolveStartZForOp(
     op, ops, usePathsStore.getState().paths, { widthMM, heightMM },
-    useToolStore.getState().tools, cache,
+    useToolStore.getState().tools,
   ).zMM
 }
 
@@ -449,16 +449,15 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
 
   revalidateStartHeights: () => {
     const ops = get().operations
-    // One cache for the whole pass — floors are shared between ops and resolving them
-    // recurses, so without it a long chain re-walks the list per operation.
-    const cache = makeStartZCache()
+    // No per-pass cache: the floor table behind resolveStartZForOp is memoised at module
+    // scope for this exact ops/paths/stock state, so the whole sweep shares one build.
     let changed = false
     const next = ops.map((o) => {
       // Only ops that finished generating can go stale, and only if we know what they
       // used. An un-stamped op (older session, mid-generation) is left alone rather than
       // flagged on a guess.
       if (o.status !== 'done' || o.generatedWith?.startZMM === undefined) return o
-      if (Math.abs(startZOf(o, ops, cache) - o.generatedWith.startZMM) < 1e-9) return o
+      if (Math.abs(startZOf(o, ops) - o.generatedWith.startZMM) < 1e-9) return o
       changed = true
       return { ...o, status: 'needs-update' } as AnyOperation
     })

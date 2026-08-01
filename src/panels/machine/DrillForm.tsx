@@ -11,7 +11,7 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { useUIStore } from '../../store/uiStore'
 import { generatePeckDrill, generateHelicalDrill } from '../../cam/drill'
-import { effectiveStepDownMM } from '../../cam/feeds'
+import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { extractCircle } from '../../canvas/selectionUtils'
 
 interface DrillFormState {
@@ -38,7 +38,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     drillMode: 'peck' as const,
     // Default to the full stock thickness; the tool's max Z is only a warning.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: defaultTool?.stepDownMM ?? 3,
+    stepDownMM: seedStepDownMM(defaultTool),
   }, tools))
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
@@ -73,7 +73,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: seedStepDownMM(t) }))
   }
 
   function up<K extends keyof DrillFormState>(k: K, v: DrillFormState[K]) {

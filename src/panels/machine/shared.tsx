@@ -33,6 +33,15 @@ export function useSessionOps() {
     // different set of boundaries.
     liveEntries: (): { key: string; opId: string }[] =>
       Object.entries(byKey).flatMap(([key, id]) => (isLive(id) ? [{ key, opId: id }] : [])),
+    // Earliest live op of this session in PROGRAM order — the one to hand the start-height
+    // resolver as "this operation", since it ignores that op and everything after it. A
+    // form that has already generated is looking at ops it is about to overwrite; without
+    // this they count as preceding cuts and a pocket reads its own floor as its start
+    // height (a 5 mm pocket resolving to Z −5).
+    firstLiveOpId: (): string | undefined => {
+      const ids = new Set(Object.values(byKey))
+      return operations.find((o) => ids.has(o.id))?.id
+    },
     forget: (keys: string[]) => setByKey((m) => {
       const next = { ...m }
       for (const k of keys) delete next[k]

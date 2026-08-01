@@ -6,7 +6,7 @@ import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../.
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
-import { effectiveStepDownMM } from '../../cam/feeds'
+import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 
 interface SurfaceFormState {
   toolId: string
@@ -29,8 +29,8 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
     stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
   } : mergeWithDefaults(load('surface'), {
     toolId: defaultTool?.id ?? '',
-    depthMM: defaultTool?.stepDownMM ?? 1,
-    stepDownMM: defaultTool?.stepDownMM ?? 1,
+    depthMM: seedStepDownMM(defaultTool),
+    stepDownMM: seedStepDownMM(defaultTool),
     stepoverPercent: 40,
     passAngleDeg: 0,
   }, tools))
@@ -41,7 +41,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: seedStepDownMM(t) }))
   }
 
   function up<K extends keyof SurfaceFormState>(k: K, v: SurfaceFormState[K]) {

@@ -12,7 +12,7 @@ import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
-import { effectiveStepDownMM, trochoidalEngagementFraction } from '../../cam/feeds'
+import { effectiveStepDownMM, trochoidalEngagementFraction, seedStepDownMM } from '../../cam/feeds'
 
 interface TrochoidalFormState {
   toolId: string
@@ -45,8 +45,8 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     side: 'outside' as CutSide,
     // Default to the full stock thickness; the tool's max Z is only a warning.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: defaultTool?.stepDownMM ?? 3,
-    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    stepDownMM: seedStepDownMM(defaultTool),
+    direction: 'climb' as CuttingDirection,
     trochStepMM: (defaultTool?.diameterMM ?? 6) * 0.15,
     trochRadiusMM: (defaultTool?.diameterMM ?? 6) * 0.5,
     finishingPass: true,
@@ -70,8 +70,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     const t = tools.find((x) => x.id === toolId)
     if (t) setForm((f) => ({
       ...f, toolId,
-      stepDownMM: t.stepDownMM,
-      direction: t.direction,
+      stepDownMM: seedStepDownMM(t),
       trochStepMM: parseFloat((t.diameterMM * 0.15).toFixed(3)),
       trochRadiusMM: parseFloat((t.diameterMM * 0.5).toFixed(3)),
     }))

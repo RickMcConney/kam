@@ -27,11 +27,11 @@ const POST: PostProcessorProfile = {
 
 const TOOL: Tool = {
   id: 't1', name: 'Test End Mill', type: 'endmill', diameterMM: 6, fluteCount: 2,
-  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, stepDownMM: 3, maxDepthMM: 25, direction: 'climb',
+  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 25,
 }
 const TOOL2: Tool = {
   id: 't2', name: 'Small End Mill', type: 'endmill', diameterMM: 3.175, fluteCount: 2,
-  rpm: 24000, xyFeedMmMin: 600, zFeedMmMin: 200, stepDownMM: 1.5, maxDepthMM: 15, direction: 'climb',
+  rpm: 24000, xyFeedMmMin: 600, zFeedMmMin: 200, maxDepthMM: 15,
 }
 const TOOLS = { t1: TOOL, t2: TOOL2 }
 

@@ -17,7 +17,7 @@
 // The stock model in the simulator is the backstop that sees all of those.
 import polygonClipping, { type MultiPolygon, type Ring } from 'polygon-clipping'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
-import { classifySubpaths } from './geom'
+import { classifySubpaths, interiorPoint, pointInPolygon } from './geom'
 import { flattenPath, splitSelfIntersecting, ensureWinding, type Pt2 } from './pathFlattener'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { ImportedPath } from '../store/pathsStore'
@@ -119,29 +119,119 @@ function safeClip(fn: () => MultiPolygon): MultiPolygon | null {
   try { return fn() } catch { return null }
 }
 
-// ─── Candidate floors ─────────────────────────────────────────────────────────
+/** Is the point inside the filled area — inside some polygon's outer ring and none of its
+ *  holes? Same even-odd convention as the rest of the CAM. */
+function pointInArea(x: number, y: number, mp: MultiPolygon): boolean {
+  for (const poly of mp) {
+    const [outer, ...holes] = poly
+    if (!outer || outer.length < 3) continue
+    if (!pointInPolygon(x, y, outer as Pt2[])) continue
+    if (holes.some((h) => h.length >= 3 && pointInPolygon(x, y, h as Pt2[]))) continue
+    return true
+  }
+  return false
+}
+
+// ─── Floors ───────────────────────────────────────────────────────────────────
 
 export interface Floor { z: number; area: MultiPolygon; opId: string; opName: string }
 
-/** Shared across a batch of resolves so a run of ops doesn't re-walk the same floors. */
-export type StartZCache = Map<string, Floor | null>
-export const makeStartZCache = (): StartZCache => new Map()
+/** Whether an op is the KIND that leaves a flat floor — no geometry, just its type. */
+function leavesFlatFloor(op: AnyOperation): boolean {
+  return op.type === 'pocket' || op.type === 'surface' ||
+    (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')
+}
 
-// ─── Cross-call floor memo ────────────────────────────────────────────────────
+/**
+ * The flat floor an operation leaves behind, or null if it doesn't leave one, given the
+ * floors of every operation BEFORE it.
+ *
+ * Depth is measured from wherever that operation started, so the floor needs the op's own
+ * start height — resolved against `preceding` alone. That is what makes the whole thing a
+ * forward pass: an op can only ever sit on ground that earlier ops left, so walking the
+ * program once in order and carrying the floors along answers everything, with no
+ * recursion to memoise and no cycle to guard against.
+ *
+ * The region is the op's nominal cleared area, NOT its tool-reachable opening — a pocket
+ * with a radius bigger than an inside corner leaves stock there that this over-reports.
+ * That's the one place the resolver can read low, and it needs the footprint to reach
+ * into a corner the previous tool couldn't; the simulator's stock model is what catches it.
+ */
+function floorLeftBy(
+  op: AnyOperation,
+  preceding: Floor[],
+  pathById: Map<string, ImportedPath>,
+  stock: Stock,
+): FloorRow {
+  const common = { opId: op.id, opName: op.name }
+
+  if (op.type === 'pocket' || (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')) {
+    const boundary = pathById.get(op.pathId)
+    if (!boundary) return { floor: null }
+    const depth = op.type === 'pocket' ? op.depthMM : op.pocketDepthMM
+    let area = areaOfD(boundary.d)
+    if (area.length === 0) return { floor: null }
+    const islands = op.islandIds.flatMap((id) => { const p = pathById.get(id); return p ? areaOfD(p.d) : [] })
+    if (islands.length > 0) {
+      const cut = safeClip(() => polygonClipping.difference(area, ...islands))
+      if (!cut) return { floor: null }
+      area = cut
+    }
+    // Same inputs the op's own generation used (margin 0, its own boundary) — so the
+    // floor reported here is the Z its G-code actually reaches. Keep the answer, not just the number: this is the same question generation asks
+    // about the op (its own boundary, margin 0, its own reference), and answering it is
+    // the expensive half of building the table. Handing it back instead of recomputing it
+    // halves the start-height cost of a Generate over a whole drawing.
+    const own = queryStartZ({ startFrom: op.startFrom, footprintD: boundary.d, cutMarginMM: 0 }, preceding)
+    return {
+      floor: { ...common, z: own.zMM - Math.abs(depth), area },
+      own: { startZ: own, footprintD: boundary.d, sfKey: startFromKey(op.startFrom) },
+    }
+  }
+
+  // Surfacing always runs from the stock top — it has no start reference of its own.
+  if (op.type === 'surface') {
+    return { floor: { ...common, z: -Math.abs(op.depthMM), area: rectPoly(0, 0, stock.widthMM, stock.heightMM) } }
+  }
+
+  return { floor: null }
+}
+
+/** One operation's contribution to the table: the floor it leaves, and — for the ops that
+ *  leave one — the start height it was itself resolved to on the way there. */
+interface FloorRow {
+  floor: Floor | null
+  own?: { startZ: StartZ; footprintD: string; sfKey: string }
+}
+
+/**
+ * Every operation's floor, in program order — index i holds op i's floor, or null where it
+ * leaves none. Built in one forward pass: op i is resolved against floors 0…i-1, which are
+ * already final by the time it is reached.
+ */
+function buildFloors(ops: AnyOperation[], pathById: Map<string, ImportedPath>, stock: Stock): FloorRow[] {
+  const rows: FloorRow[] = []
+  const soFar: Floor[] = []
+  for (const op of ops) {
+    const row = leavesFlatFloor(op) ? floorLeftBy(op, soFar, pathById, stock) : { floor: null }
+    rows.push(row)
+    if (row.floor) soFar.push(row.floor)
+  }
+  return rows
+}
+
+// ─── Cross-call memo ──────────────────────────────────────────────────────────
 //
-// Resolving one operation's start height costs a union of every preceding floor plus a
-// difference against the footprint — and each of those floors is itself a full resolve,
-// because depth is measured from wherever THAT op started. Within one call `ctx.cache`
-// keeps that from re-walking the chain. Across calls it used to be thrown away, and the
+// Building the table costs a polygon union + difference per floor-leaving op, and the
 // callers are anything but one-shot: the pocket form resolves once per Generate, and
 // useStartZ + listFlatFloorOps re-resolve on every render, which every store write during
 // a generation run triggers. Generating 26 nested pockets ran 3302 of those unions instead
-// of 26 — 34 s of polygon clipping, growing with each op added (scratch/dog.fkam).
+// of 26 — 34 s of polygon clipping (scratch/dog.fkam) — before any of this existed.
 //
-// So the memo lives here instead, and is dropped whole whenever anything a floor could
-// depend on changes. What it depends on is each op's floor-defining SETTINGS and the
-// geometry of the paths they name — not segments, status or entry hints, which is exactly
-// why a run of setSegments calls can share it.
+// So the table is memoised, and dropped whole whenever anything a floor could depend on
+// changes. What it depends on is each op's floor-defining SETTINGS and the geometry of the
+// paths they name — not segments, status or entry hints, which is exactly why a run of
+// setSegments calls can share it.
 //
 // Invalidation is deliberately all-or-nothing and errs on the side of dropping too much: a
 // stale floor reads as a surface that isn't there, and reading a surface too LOW is the
@@ -172,85 +262,66 @@ function floorSig(op: AnyOperation, pathById: Map<string, ImportedPath>): string
   return `${op.id}-`
 }
 
-let memoKey: string | null = null
-let memoFloors: StartZCache = new Map()
-/** Resolved answers under the same key as the floors they were derived from. */
-let memoAnswers = new Map<string, StartZ>()
+interface FloorTable {
+  /** Parallel to the ops list: index i is op i's row. */
+  floors: FloorRow[]
+  /** Op id → its position, so a caller's `opId` becomes a prefix length. */
+  indexById: Map<string, number>
+}
 
-// The floor memo for this exact (ops, paths, stock) state, rebuilt when any of it moves.
-function sharedCache(ops: AnyOperation[], pathById: Map<string, ImportedPath>, stock: Stock): StartZCache {
+let memoKey: string | null = null
+let memoTable: FloorTable = { floors: [], indexById: new Map() }
+// Resolved answers, under the same key as the floors they were derived from. Two levels
+// so the footprint — a whole path d string, tens of kB — is never concatenated into a
+// key: the cheap part of the question picks the inner map, and the d string is only ever
+// looked up, which V8 does against its cached hash.
+let memoAnswers = new Map<string, Map<string, StartZ>>()
+let memoAnswerCount = 0
+
+// Identity fast path. Every store replaces its array rather than mutating it, so the same
+// `ops` and `paths` objects mean the same content — and the callers ask repeatedly between
+// writes (useStartZ and listFlatFloorOps on every render, resolveStartZForOp once per op in
+// a revalidate sweep). Without this, each of those calls rebuilds the memo key: a
+// path-id map over every path in the document plus a signature per operation.
+let lastOps: AnyOperation[] | null = null
+let lastPaths: ImportedPath[] | null = null
+let lastStock = ''
+
+/** The floor table for this exact (ops, paths, stock) state, rebuilt when any of it moves. */
+function tableFor(ops: AnyOperation[], paths: ImportedPath[], stock: Stock): FloorTable {
+  const stockKey = `${stock.widthMM}x${stock.heightMM}`
+  if (memoKey !== null && ops === lastOps && paths === lastPaths && stockKey === lastStock) return memoTable
+  const table = sharedTable(ops, new Map(paths.map((p) => [p.id, p])), stock)
+  lastOps = ops
+  lastPaths = paths
+  lastStock = stockKey
+  return table
+}
+
+function sharedTable(ops: AnyOperation[], pathById: Map<string, ImportedPath>, stock: Stock): FloorTable {
   let key = `${stock.widthMM}x${stock.heightMM}`
   for (const op of ops) key += '|' + floorSig(op, pathById)
-  if (key !== memoKey) { memoKey = key; memoFloors = new Map(); memoAnswers = new Map() }
-  return memoFloors
-}
-
-interface Ctx {
-  ops: AnyOperation[]
-  paths: ImportedPath[]
-  pathById: Map<string, ImportedPath>
-  stock: Stock
-  /** Memoised floors for this resolve — floors recurse, and a chain would re-walk otherwise. */
-  cache: Map<string, Floor | null>
-}
-
-/**
- * The flat floor an operation leaves behind, or null if it doesn't leave one.
- *
- * Depth is measured from wherever THAT operation started, so this recurses: a 2 mm pocket
- * cut in the floor of another 2 mm pocket leaves its floor at −4, not −2. The recursion
- * terminates because an op's own start only ever looks at ops strictly before it.
- *
- * The region is the op's nominal cleared area, NOT its tool-reachable opening — a pocket
- * with a radius bigger than an inside corner leaves stock there that this over-reports.
- * That's the one place the resolver can read low, and it needs the footprint to reach
- * into a corner the previous tool couldn't; the simulator's stock model is what catches it.
- */
-function floorOf(op: AnyOperation, ctx: Ctx): Floor | null {
-  const cached = ctx.cache.get(op.id)
-  if (cached !== undefined) return cached
-  ctx.cache.set(op.id, null)   // in-progress marker: a cyclic reference reads as "no floor"
-  const floor = computeFloor(op, ctx)
-  ctx.cache.set(op.id, floor)
-  return floor
-}
-
-/** Whether an op is the KIND that leaves a flat floor — no geometry, just its type. */
-function leavesFlatFloor(op: AnyOperation): boolean {
-  return op.type === 'pocket' || op.type === 'surface' ||
-    (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')
-}
-
-function computeFloor(op: AnyOperation, ctx: Ctx): Floor | null {
-  const common = { opId: op.id, opName: op.name }
-
-  if (op.type === 'pocket' || (op.type === 'inlay' && op.role === 'female' && op.phase === 'endmill')) {
-    const boundary = ctx.pathById.get(op.pathId)
-    if (!boundary) return null
-    const depth = op.type === 'pocket' ? op.depthMM : op.pocketDepthMM
-    let area = areaOfD(boundary.d)
-    if (area.length === 0) return null
-    const islands = op.islandIds.flatMap((id) => { const p = ctx.pathById.get(id); return p ? areaOfD(p.d) : [] })
-    if (islands.length > 0) {
-      const cut = safeClip(() => polygonClipping.difference(area, ...islands))
-      if (!cut) return null
-      area = cut
+  if (key !== memoKey) {
+    memoKey = key
+    memoAnswers = new Map()
+    memoAnswerCount = 0
+    memoTable = {
+      floors: buildFloors(ops, pathById, stock),
+      indexById: new Map(ops.map((op, i) => [op.id, i])),
     }
-    // Same inputs the op's own generation used (margin 0, its own boundary) — so the
-    // floor reported here is the Z its G-code actually reaches.
-    const ownStart = resolveStartZ(
-      { startFrom: op.startFrom, footprintD: boundary.d, cutMarginMM: 0, opId: op.id },
-      ctx.ops, ctx.paths, ctx.stock, ctx.cache,
-    ).zMM
-    return { ...common, z: ownStart - Math.abs(depth), area }
   }
+  return memoTable
+}
 
-  // Surfacing always runs from the stock top — it has no start reference of its own.
-  if (op.type === 'surface') {
-    return { ...common, z: -Math.abs(op.depthMM), area: rectPoly(0, 0, ctx.stock.widthMM, ctx.stock.heightMM) }
-  }
-
-  return null
+/** Test/harness hook: forget the memo so the next call rebuilds from scratch. */
+export function __resetStartZMemo(): void {
+  memoKey = null
+  memoTable = { floors: [], indexById: new Map() }
+  memoAnswers = new Map()
+  memoAnswerCount = 0
+  lastOps = null
+  lastPaths = null
+  lastStock = ''
 }
 
 // ─── Resolution ───────────────────────────────────────────────────────────────
@@ -264,21 +335,25 @@ export function listFlatFloorOps(
   stock: Stock,
   opId?: string,
 ): { opId: string; name: string; zMM: number }[] {
-  const ctx = makeCtx(ops, paths, stock)
-  const endIdx = opId ? ops.findIndex((o) => o.id === opId) : -1
-  const preceding = endIdx >= 0 ? ops.slice(0, endIdx) : ops
-  return preceding.flatMap((op) => {
-    const floor = floorOf(op, ctx)
-    return floor && floor.z < 0 ? [{ opId: floor.opId, name: floor.opName, zMM: floor.z }] : []
-  })
+  return precedingFloors(ops, paths, stock, opId)
+    .filter((f) => f.z < 0)
+    .map((f) => ({ opId: f.opId, name: f.opName, zMM: f.z }))
 }
 
-function makeCtx(ops: AnyOperation[], paths: ImportedPath[], stock: Stock, cache?: Map<string, Floor | null>): Ctx {
-  const pathById = new Map(paths.map((p) => [p.id, p]))
-  // A caller-supplied cache is the recursion threading its own through; anything else
-  // shares the module memo, which survives until the ops' floor settings or their paths
-  // change.
-  return { ops, paths, pathById, stock, cache: cache ?? sharedCache(ops, pathById, stock) }
+/**
+ * Floors of the ops strictly before `opId`, in program order. An unknown (or omitted) id
+ * means every op counts — a form asking about an operation that does not exist yet.
+ */
+function precedingFloors(ops: AnyOperation[], paths: ImportedPath[], stock: Stock, opId?: string): Floor[] {
+  const table = tableFor(ops, paths, stock)
+  return floorsBefore(table, opId !== undefined ? table.indexById.get(opId) : undefined)
+}
+
+function floorsBefore(table: FloorTable, idx: number | undefined): Floor[] {
+  const end = idx ?? table.floors.length
+  const out: Floor[] = []
+  for (let i = 0; i < end; i++) { const f = table.floors[i].floor; if (f) out.push(f) }
+  return out
 }
 
 export interface ResolveInput {
@@ -306,8 +381,6 @@ export function resolveStartZ(
   ops: AnyOperation[],
   paths: ImportedPath[],
   stock: Stock,
-  // Threaded through by the recursive floor lookup; callers never pass it.
-  cache?: Map<string, Floor | null>,
 ): StartZ {
   // No reference at all = stock top, NOT auto. Operations saved before start heights
   // existed have no `startFrom`, and a project must emit the same G-code it always did;
@@ -315,59 +388,64 @@ export function resolveStartZ(
   // `{ mode: 'auto' }` on every op they create).
   const mode = input.startFrom ?? { mode: 'stock' }
   if (mode.mode === 'stock') return STOCK_TOP
-  if (mode.mode === 'manual') {
-    return { zMM: Math.min(0, mode.zMM), label: 'Custom' }
-  }
+  if (mode.mode === 'manual') return { zMM: Math.min(0, mode.zMM), label: 'Custom' }
 
-  const ctx = makeCtx(ops, paths, stock, cache)
+  const table = tableFor(ops, paths, stock)
+  const idx = input.opId !== undefined ? table.indexById.get(input.opId) : undefined
+  // The forward pass already answered this exact question on its way to building this op's
+  // floor — same boundary, same reference, no overhang. Generation then asks it again, and
+  // that second ask was half the start-height cost of a Generate over a whole drawing.
+  const own = idx !== undefined ? table.floors[idx].own : undefined
+  if (own && input.cutMarginMM === 0 && input.footprintD === own.footprintD &&
+      startFromKey(input.startFrom) === own.sfKey) return own.startZ
+
+  const preceding = floorsBefore(table, idx)
   // Repeat resolves of the SAME question are the common case, not an edge one: useStartZ
-  // re-runs on every render with the form's own unchanged footprint. The floor memo makes
-  // the chain free but the footprint clip against it is still ~20 ms, so the answer itself
+  // re-runs on every render with the form's own unchanged footprint. The table makes the
+  // floors free but the footprint clip against them is still ~20 ms, so the answer itself
   // is memoised too — under the same key, so it dies with the floors it was derived from.
-  // Only for top-level calls: a caller-supplied cache means this is the recursion, whose
-  // key is not `memoKey`.
-  const answerKey = cache === undefined
-    ? `${memoKey} ${mode.mode === 'op' ? mode.opId : 'a'} ${input.opId ?? ''} ${input.cutMarginMM} ${input.footprintD}`
-    : null
-  if (answerKey !== null) {
-    const hit = memoAnswers.get(answerKey)
-    if (hit) return hit
-  }
-  const answer = resolveResolved(input, mode, ops, ctx)
-  if (answerKey !== null) {
-    // Bounded: footprints are whole path d strings, and a session of edits would otherwise
-    // accumulate one entry per version of every path.
-    if (memoAnswers.size > 400) memoAnswers.clear()
-    memoAnswers.set(answerKey, answer)
-  }
+  const answerKey = `${mode.mode === 'op' ? mode.opId : 'a'} ${input.opId ?? ''} ${input.cutMarginMM}`
+  let byFootprint = memoAnswers.get(answerKey)
+  const hit = byFootprint?.get(input.footprintD)
+  if (hit) return hit
+
+  const answer = queryStartZ(input, preceding)
+  // Bounded: a session of edits would otherwise accumulate one entry per version of every
+  // path. Dropping the lot is fine — the floors, which are the expensive part, survive.
+  if (memoAnswerCount > 400) { memoAnswers.clear(); memoAnswerCount = 0; byFootprint = undefined }
+  if (!byFootprint) { byFootprint = new Map(); memoAnswers.set(answerKey, byFootprint) }
+  byFootprint.set(input.footprintD, answer)
+  memoAnswerCount++
   return answer
 }
 
-function resolveResolved(
-  input: ResolveInput,
-  mode: Exclude<StartFrom, { mode: 'stock' } | { mode: 'manual' }>,
-  ops: AnyOperation[],
-  ctx: Ctx,
+/**
+ * The whole start-height question, against a fixed set of preceding floors: pure, no
+ * stores, no memo, no ops list. Both entry points funnel through here — the forward pass
+ * asking what an op sits on, and a caller asking about an arbitrary footprint.
+ */
+function queryStartZ(
+  input: { startFrom?: StartFrom; footprintD: string; cutMarginMM: number },
+  preceding: Floor[],
 ): StartZ {
-  const endIdx = input.opId ? ops.findIndex((o) => o.id === input.opId) : -1
-  const preceding = endIdx >= 0 ? ops.slice(0, endIdx) : ops
+  const mode = input.startFrom ?? { mode: 'stock' }
+  if (mode.mode === 'stock') return STOCK_TOP
+  if (mode.mode === 'manual') return { zMM: Math.min(0, mode.zMM), label: 'Custom' }
 
   if (mode.mode === 'op') {
-    const target = preceding.find((o) => o.id === mode.opId)
-    const floor = target ? floorOf(target, ctx) : null
+    // Only backwards: a reference to a later op (or a deleted one) has no floor to stand
+    // on, and stock top is the safe reading.
+    const floor = preceding.find((f) => f.opId === mode.opId)
     if (!floor) return STOCK_TOP
     return { zMM: floor.z, sourceOpId: floor.opId, label: `Floor of ${floor.opName}` }
   }
 
   // ── auto ──
-  // Nothing before this operation is even the KIND of thing that leaves a flat floor, so
-  // the answer is stock top and no geometry has to be touched to know it. This is the
-  // whole answer for the first operation in a project, and it skips flattening the
-  // footprint — which for a traced outline is the most expensive part of a resolve that
-  // was always going to return 0.
-  if (!preceding.some(leavesFlatFloor)) {
-    return { zMM: 0, label: 'Stock top — nothing cut here yet' }
-  }
+  // Nothing before this operation left a flat floor, so the answer is stock top and no
+  // geometry has to be touched to know it. This is the whole answer for the first
+  // operation in a project, and it skips flattening the footprint — which for a traced
+  // outline is the most expensive part of a resolve that was always going to return 0.
+  if (preceding.length === 0) return { zMM: 0, label: 'Stock top — nothing cut here yet' }
 
   // Footprint: the path's own filled outline, grown by however far the cut reaches past it.
   // The outline and not its bounding box — a bbox squares off every curve, and the corners
@@ -378,20 +456,31 @@ function resolveResolved(
   const bb = bboxOf(footprint)
   if (!bb) return STOCK_TOP
 
-  // Candidates: preceding flat-floor ops whose bbox overlaps the footprint. This is the
-  // rejection that keeps the whole thing at "free" — the real polygon work below only
-  // ever runs on the handful that survive (usually zero or one).
+  // Candidates: preceding floors whose bbox overlaps the footprint. This is the rejection
+  // that keeps the whole thing at "free" — the real polygon work below only ever runs on
+  // the handful that survive (usually zero or one).
   const candidates: Floor[] = []
-  for (const op of preceding) {
-    const floor = floorOf(op, ctx)
-    if (!floor || floor.z >= 0) continue
+  for (const floor of preceding) {
+    if (floor.z >= 0) continue
     const fb = bboxOf(floor.area)
     if (!fb) continue
     if (fb.maxX < bb.minX || fb.minX > bb.maxX || fb.maxY < bb.minY || fb.minY > bb.maxY) continue
     candidates.push(floor)
   }
-  if (candidates.length === 0) {
-    return { zMM: 0, label: 'Stock top — nothing cut here yet' }
+  if (candidates.length === 0) return { zMM: 0, label: 'Stock top — nothing cut here yet' }
+
+  // Cheap proof of uncut stock before any boolean: if an interior point of the footprint
+  // lies outside every candidate floor, the footprint is not covered and the answer is
+  // stock top. One point test per candidate instead of a union and a difference — and it
+  // is the answer for the everyday case, a drawing pocketed in one go where each shape
+  // sits in a HOLE of the shape around it. Only ever reads HIGH: a point that lands
+  // exactly on a floor's edge reads as uncovered, which is the safe direction.
+  const probes = footprint.map((poly) => interiorPoint(poly.map((r) => r.map(([x, y]) => [x, y] as Pt2))))
+  for (const probe of probes) {
+    if (!probe) continue
+    if (!candidates.some((c) => pointInArea(probe[0], probe[1], c.area))) {
+      return { zMM: 0, label: 'Stock top — part of this reaches uncut stock' }
+    }
   }
 
   // Any part of the footprint over uncut stock and the answer is stock top — the tool
@@ -474,9 +563,8 @@ export function resolveStartZForOp(
   paths: ImportedPath[],
   stock: Stock,
   tools: { id: string; diameterMM: number }[],
-  cache?: StartZCache,
 ): StartZ {
   const input = startInputForOp(op, paths, tools)
   if (!input) return STOCK_TOP
-  return resolveStartZ(input, ops, paths, stock, cache)
+  return resolveStartZ(input, ops, paths, stock)
 }

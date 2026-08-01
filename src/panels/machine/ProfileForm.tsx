@@ -12,7 +12,7 @@ import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
-import { effectiveStepDownMM } from '../../cam/feeds'
+import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { toolRadiusAtHeight } from '../../cam/geom'
 
 interface ProfileFormState {
@@ -45,8 +45,8 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     // A profile typically cuts the part free, so default to the full stock
     // thickness rather than the tool's max flute depth.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: defaultTool?.stepDownMM ?? 3,
-    direction: (defaultTool?.direction ?? 'climb') as CuttingDirection,
+    stepDownMM: seedStepDownMM(defaultTool),
+    direction: 'climb' as CuttingDirection,
     rampIn: false,
     // Deliberately not carried over from the saved defaults — see PocketForm.
     startFrom: { mode: 'auto' } as StartFrom,
@@ -68,7 +68,9 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   // centerline half that, inside not at all.
   const cutMarginMM = form.side === 'outside' ? (selectedTool?.diameterMM ?? 0)
     : form.side === 'centerline' ? (selectedTool?.diameterMM ?? 0) / 2 : 0
-  const startZ = useStartZ(form.startFrom, selectedPaths[0]?.d ?? '', cutMarginMM, editOp?.id)
+  // See PocketForm: ops this session already generated are not cuts preceding themselves.
+  const selfOpId = editOp?.id ?? session.firstLiveOpId()
+  const startZ = useStartZ(form.startFrom, selectedPaths[0]?.d ?? '', cutMarginMM, selfOpId)
   // A tapered/round tool that never reaches full diameter at this depth offsets by less
   // than its radius, so the wall it leaves is a taper that meets the path at the surface.
   // Say so — otherwise the toolpath just looks like it's in the wrong place.
@@ -81,7 +83,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
-    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: t.stepDownMM, direction: t.direction }))
+    if (t) setForm((f) => ({ ...f, toolId, stepDownMM: seedStepDownMM(t) }))
   }
 
   function up<K extends keyof ProfileFormState>(k: K, v: ProfileFormState[K]) {
@@ -193,7 +195,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       )}
       <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
-      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={editOp?.id} />
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />

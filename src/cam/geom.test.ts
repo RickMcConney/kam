@@ -5,7 +5,7 @@ import type { Tool } from '../store/toolStore'
 
 const mkTool = (over: Partial<Tool>): Tool => ({
   id: 't', name: 't', type: 'endmill', diameterMM: 6.35, fluteCount: 2, rpm: 18000,
-  xyFeedMmMin: 2000, zFeedMmMin: 400, stepDownMM: 2, maxDepthMM: 20, direction: 'climb',
+  xyFeedMmMin: 2000, zFeedMmMin: 400, maxDepthMM: 20,
   ...over,
 })
 

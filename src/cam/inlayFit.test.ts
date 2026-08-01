@@ -17,12 +17,11 @@ import type { Tool } from '../store/toolStore'
 
 const ENDMILL: Tool = {
   id: 'em', name: '1/8 EM', type: 'endmill', diameterMM: 3.175, fluteCount: 2,
-  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, stepDownMM: 3, maxDepthMM: 25, direction: 'climb',
+  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 25,
 }
 const VBIT: Tool = {
   id: 'vb', name: '60 V-bit', type: 'vbit', diameterMM: 6.35, fluteCount: 2,
-  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, stepDownMM: 3, maxDepthMM: 20,
-  direction: 'climb', vbitAngleDeg: 60,
+  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 20, vbitAngleDeg: 60,
 }
 
 const PARAMS = {
