@@ -445,7 +445,25 @@ function restoreStateAt(seq: number, events: TimelineEvent[]): void {
   }
 
   const pathIds = new Set(state.paths.map((p) => p.id))
-  const selection = (seq > 0 ? events[seq - 1].selectionAfter : [])
+  // Selection is view state, not document state, and selecting is not a recorded event —
+  // so `selectionAfter` is only ever the selection as it stood at some OTHER edit. Replaying
+  // it over a step that did not change which paths exist throws away a selection the user
+  // made by hand since: generate an inlay over two selected paths, undo it, and the ops go
+  // (right) but the selection collapses to whatever was selected at the previous recorded
+  // event — usually the single path that was added last — so the paths have to be picked
+  // again before the operation can be retried.
+  //
+  // Restore it only when the set of paths itself differs, which is the case it exists for:
+  // scrubbing to an era with different paths, or undoing an add/delete, where carrying the
+  // current selection forward would be meaningless. A pure `d` change (move, scale, node
+  // edit) keeps the same ids and so keeps the selection, which is what you want anyway —
+  // undoing a move should leave the thing you moved selected.
+  const curPaths = usePathsStore.getState()
+  const samePathSet = curPaths.paths.length === state.paths.length
+    && curPaths.paths.every((p) => pathIds.has(p.id))
+  const selection = (samePathSet
+    ? curPaths.selectedIds
+    : (seq > 0 ? events[seq - 1].selectionAfter : []))
     .filter((id) => pathIds.has(id))
 
   usePathsStore.setState({ paths: state.paths, selectedIds: selection })

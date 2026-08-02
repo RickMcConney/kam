@@ -26,13 +26,14 @@ interface InlayFormState {
   role: 'female' | 'male'
   rampIn: boolean
   mirrorX: boolean
+  invert: boolean
 }
 
 export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: InlayOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperation, addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
+  const { addOperations, setSegments, setError, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
 
@@ -47,7 +48,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
     glueLineMM: editOp.glueLineMM, clearanceMM: editOp.clearanceMM,
     role: editOp.role, rampIn: editOp.rampIn ?? false, mirrorX: editOp.mirrorX ?? false,
-  } : mergeWithDefaults(load('inlay'), {
+    invert: false,
+  } : { ...mergeWithDefaults(load('inlay'), {
     vbitToolId: defaultVbit?.id ?? '',
     pocketToolId: defaultEndmill?.id ?? '',
     pocketDepthMM: 5,
@@ -58,7 +60,12 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     role: 'female' as const,
     rampIn: false,
     mirrorX: false,
-  }, tools))
+    // A grouping choice, never a stored op field — inverting just reads the same selection
+    // into a different set of boundaries, so the ops that come out are ordinary ones.
+    // Deliberately not restored from saved defaults: which half of a nested selection is
+    // the part is a property of THAT selection, not a preference.
+    invert: false,
+  }, tools), invert: false })
   const [generating, setGenerating] = useState(false)
 
   // Finish = "None": roughing tool only, no separate wall-finish pass. Female → flat-walled
@@ -84,13 +91,33 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const editIslandPlugs = editIslandPairs.map((e) => e.plugs)
   const groups = editOp && editBoundary
     ? [{ boundary: editBoundary, islands: editIslands, islandPlugs: editIslandPlugs }]
-    : groupPathsByContainment(selPaths)
+    : groupPathsByContainment(selPaths, { invert: form.invert })
+  // Nested outlines alternate solid/hole, so a selection that nests has two valid readings
+  // and only the user knows which wood is meant to end up as the plug. Once inverted the
+  // row has to stay up whatever the grouping looks like, or there is no way back.
+  const nested = form.invert || groups.some((g) => g.islands.length > 0)
   const session = useSessionOps()
 
   // Session key includes role and pair/solo structure: a female and male op for the same
   // shape is a legit paired workflow, and toggling "None — roughing only" changes the op
   // count, so those combinations create fresh ops instead of updating the counterpart.
-  const groupKey = (boundaryId: string) => `${form.role}:${finishIsNone ? 'solo' : 'pair'}:${boundaryId}`
+  const keyPrefix = `${form.role}:${finishIsNone ? 'solo' : 'pair'}:`
+  const groupKey = (boundaryId: string) => `${keyPrefix}${boundaryId}`
+  // Ops this form session made, for the SAME role and pairing, from paths still selected.
+  // The role has to match: generating a female and then a male for one shape is the normal
+  // paired workflow, and those must not read as each other's leftovers.
+  const selectedIds = new Set(selPaths.map((p) => p.id))
+  const sessionOps = editOp ? [] : session.liveEntries()
+    .filter((e) => e.key.startsWith(keyPrefix) && selectedIds.has(e.key.slice(keyPrefix.length)))
+  // Boundaries this session already covers that the current grouping no longer has —
+  // inverting turns every boundary into an island and vice versa, so the whole set is
+  // replaced rather than left behind as a second, contradictory pair of operations.
+  const staleOps = sessionOps.filter((e) => !groups.some((g) => g.boundary.id === e.key.slice(keyPrefix.length)))
+  // Both phases of a stale pair go: they are one operation to the user.
+  const staleDeleteIds = staleOps.flatMap((e) => {
+    const op = operations.find((o) => o.id === e.opId) as InlayOperation | undefined
+    return op?.linkedOpId ? [e.opId, op.linkedOpId] : [e.opId]
+  })
   const updating = !editOp && groups.length > 0 && groups.every(({ boundary }) => {
     const firstId = session.liveOpId(groupKey(boundary.id))
     if (!firstId) return false
@@ -115,7 +142,10 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     // about their own centres (which would slide them across the part).
     const mirrorAxisX = editOp
       ? (editOp.mirrorAxisX ?? getMultiBBox([editBoundary?.d ?? ''])?.cx)
-      : getMultiBBox(groups.map((g) => g.boundary.d))?.cx
+      // The whole SELECTION, not the current grouping's boundaries: turning the male board
+      // over is one rigid motion for the part, and inverting changes which paths are
+      // boundaries without moving anything.
+      : getMultiBBox(selPaths.map((p) => p.d))?.cx
     const angleDeg = vbitTool?.vbitAngleDeg ?? 60
     const baseParams = {
       angleDeg,
@@ -193,7 +223,12 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       const role = form.role
       const roleLabel = role === 'female' ? 'Female' : 'Male'
       const opBase = { type: 'inlay' as const, role, ...sharedOpFields }
-      const ids = groups.map(({ boundary, islands, islandPlugs }) => {
+      // Built as slots (an existing op's id, or an index into `soloNew`) so every new op
+      // goes in ONE call — and so an Invert toggle REPLACES the set it made last time
+      // instead of appending a contradictory second one. Replacing amends the chip that
+      // created them, the way a depth edit does, rather than recording a delete and an add.
+      const soloPayloads: Parameters<typeof addOperations>[0] = []
+      const soloSlots = groups.map(({ boundary, islands, islandPlugs }) => {
         // Re-Generate on a boundary this form already generated for updates that op in place.
         const existingId = session.liveOpId(groupKey(boundary.id))
         const name = `Inlay ${roleLabel} (End Mill): ${boundary.name}`
@@ -203,12 +238,18 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
             name, status: 'generating' } as Partial<AnyOperation>)
           return existingId
         }
-        const id = addOperation({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
+        return soloPayloads.push({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
           pathId: boundary.id, islandIds: islands.map((p) => p.id),
-          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name })
-        updateOperation(id, { status: 'generating' })
-        session.remember(groupKey(boundary.id), id)
-        return id
+          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name }) - 1
+      })
+      const soloNew = staleDeleteIds.length > 0
+        ? replaceGeneratedOperations({ anchorId: staleDeleteIds[0], deleteIds: staleDeleteIds, add: soloPayloads })
+        : addOperations(soloPayloads)
+      if (staleOps.length > 0) session.forget(staleOps.map((e) => e.key))
+      for (const id of soloNew) updateOperation(id, { status: 'generating' })
+      const ids = soloSlots.map((slot) => typeof slot === 'string' ? slot : soloNew[slot])
+      groups.forEach(({ boundary }, i) => {
+        if (typeof soloSlots[i] === 'number') session.remember(groupKey(boundary.id), ids[i])
       })
       setTimeout(async () => {
         for (let i = 0; i < groups.length; i++) {
@@ -282,7 +323,13 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name }) - 1
       })
     })
-    const newIds = addOperations(newOps)
+    // Same replace-don't-append rule as the roughing-only path above: an Invert toggle
+    // re-reads the SAME selection into a different set of boundaries, so the pair this
+    // session made for the old reading is a revision of this Generate, not a separate one.
+    const newIds = staleDeleteIds.length > 0
+      ? replaceGeneratedOperations({ anchorId: staleDeleteIds[0], deleteIds: staleDeleteIds, add: newOps })
+      : addOperations(newOps)
+    if (staleOps.length > 0) session.forget(staleOps.map((e) => e.key))
     const resolve = (slot: string | number) => typeof slot === 'number' ? newIds[slot] : slot
     const firstIds = phaseSlots[0].map(resolve)
     const secondIds = phaseSlots[1].map(resolve)
@@ -457,6 +504,26 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           </p>
         </div>
       )}
+      {/* Which half of a nested selection is the plug. Same grouping flip as Invert Pocket:
+          nested outlines alternate solid/hole, so a field with a design inside it can be
+          read either way and only the user knows which wood is meant to show. */}
+      {!editOp && nested && (
+        <div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="inlay-invert" checked={form.invert}
+              onChange={(e) => up('invert', e.target.checked)} className="accent-blue-500" />
+            <label htmlFor="inlay-invert" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
+              Invert
+            </label>
+          </div>
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+            {form.invert
+              ? 'The inner shapes are the plug — they end up in the male board’s wood on a field of the female’s.'
+              : 'The field around the inner shapes is the plug — the shapes end up in the female board’s wood.'}
+          </p>
+        </div>
+      )}
+
       {/* Ramp In — angled/helical entry on roughing pockets and end-mill finish passes */}
       <div className="flex items-center gap-2">
         <input type="checkbox" id="inlay-ramp-in" checked={form.rampIn}

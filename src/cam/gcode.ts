@@ -92,10 +92,26 @@ function reconstructArcs(segments: MotionSegment[]): MotionSegment[] {
     let e = i
     while (e < n && eligible(segments[e]) && Math.abs(segments[e].z - z0) <= 1e-4) e++
 
+    // The run is thinned against an anchor, and the anchor must already be at z0 —
+    // only then is dropping an intermediate point a pure XY simplification. When the
+    // preceding point sits at a DIFFERENT Z, the run's first point is the knee where
+    // the sloped move ends and the constant-Z cut begins; thinning it away merges the
+    // two into one move and spreads the Z change over the whole run. A V-carve leaving
+    // a deep stroke junction onto a constant-depth stroke is exactly that shape, and
+    // the whole stroke came out ramped: E's middle arm should sit flat at 2.76 mm and
+    // instead tapered 3.86 → 2.74 mm over its 11 mm, over 1 mm too deep at the stem.
+    // Emit that first point verbatim and anchor the run on it.
+    let start = i
+    if (Math.abs(segments[i - 1].z - z0) > 1e-4) {
+      out.push(s)
+      start = i + 1
+      if (start >= e) { i = e; continue }
+    }
+
     // arcFitPolyline treats pts[0] as the (already-emitted) current position and
     // returns one segment per pts[1..]; circular spans collapse to a single arc.
-    const pts: Pt2[] = [[segments[i - 1].x, segments[i - 1].y]]
-    for (let k = i; k < e; k++) pts.push([segments[k].x, segments[k].y])
+    const pts: Pt2[] = [[segments[start - 1].x, segments[start - 1].y]]
+    for (let k = start; k < e; k++) pts.push([segments[k].x, segments[k].y])
 
     // Walk the arc-fit result; RDP-thin each maximal straight span (line moves
     // between arcs), anchored at the prior emitted point so collinear runs reduce

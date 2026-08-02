@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  generateVCarve,
-  generateMaleTextBoundaryVCarve,
-  findModalRadius,
-} from './vcarve'
+import { generateVCarve } from './vcarve'
 import { classifySubpaths, pointInPolygon, ptSegDistSq } from './geom'
 import { flattenPath } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
@@ -346,101 +342,7 @@ describe('generateVCarve — rejections', () => {
   })
 })
 
-// ─── Male text inlay boundary pass ────────────────────────────────────────────
-
-describe('generateMaleTextBoundaryVCarve', () => {
-  it('traces the outline at one constant depth taken from the modal radius', async () => {
-    const segs = await generateMaleTextBoundaryVCarve(RECT_40x10, vbit(), {
-      angleDeg: 90, maxDepthMM: 10, zStartMM: 0, islandDs: [],
-    })
-    const cut = cuts(segs)
-
-    // A constant-width 10 mm stroke: true half-width is 5, so at 90° the depth is
-    // ≈ −5 mm. It is not exact — findModalRadius reports a 20-bin bucket centre,
-    // which lands within half a bin of the true radius.
-    const z = cut[0].z
-    expect(z).toBeCloseTo(-5, 0)
-    expect(z).toBeLessThan(0)
-    expect(cut.every(s => s.z === z)).toBe(true) // no ramping — it's a boundary pass
-
-    // The contour is closed and visits every rectangle corner.
-    expect(cut[cut.length - 1].x).toBeCloseTo(cut[0].x, 6)
-    expect(cut[cut.length - 1].y).toBeCloseTo(cut[0].y, 6)
-    for (const [cx, cy] of [[0, 0], [40, 0], [40, 10], [0, 10]] as const) {
-      expect(at(segs, cx, cy).length).toBeGreaterThan(0)
-    }
-
-    expect(segs[0].rapid).toBe(true)
-    expect(segs[segs.length - 1].rapid).toBe(true)
-  })
-
-  it('traces counters as their own retracted contour at the same depth', async () => {
-    const segs = await generateMaleTextBoundaryVCarve(ANNULUS, vbit(), {
-      angleDeg: 90, maxDepthMM: 10, zStartMM: 0, islandDs: [], safeHeightMM: 3,
-    })
-
-    // Outer ring + hole ring, each bracketed by a rapid pair.
-    expect(segs.filter(s => s.rapid).length).toBe(4)
-    expect(segs.filter(s => s.rapid).every(s => s.z === 3)).toBe(true)
-
-    const depths = new Set(cuts(segs).map(s => s.z))
-    expect(depths.size).toBe(1) // one depth for the letter body and its counter
-
-    expect(at(segs, 10, 10).length).toBeGreaterThan(0) // hole corner is traced
-    expect(at(segs, 40, 40).length).toBeGreaterThan(0) // outer corner is traced
-  })
-
-  it('offsets the boundary depth by zStartMM', async () => {
-    const base = await generateMaleTextBoundaryVCarve(RECT_40x10, vbit(), {
-      angleDeg: 90, maxDepthMM: 10, zStartMM: 0, islandDs: [],
-    })
-    const shifted = await generateMaleTextBoundaryVCarve(RECT_40x10, vbit(), {
-      angleDeg: 90, maxDepthMM: 10, zStartMM: 0.5, islandDs: [],
-    })
-    expect(cuts(shifted)[0].z).toBeCloseTo(cuts(base)[0].z - 0.5, 6)
-  })
-
-  it('clamps the boundary depth to maxDepthMM', async () => {
-    const segs = await generateMaleTextBoundaryVCarve(RECT_40x10, vbit(), {
-      angleDeg: 90, maxDepthMM: 2, zStartMM: 0, islandDs: [],
-    })
-    expect(cuts(segs).every(s => s.z === -2)).toBe(true)
-  })
-
-  it('rejects a non-V-bit tool', async () => {
-    const endmill: Tool = { ...vbit(), type: 'endmill' }
-    await expect(generateMaleTextBoundaryVCarve(RECT_40x10, endmill, {
-      angleDeg: 90, maxDepthMM: 10, zStartMM: 0, islandDs: [],
-    })).rejects.toThrow('V-carve requires a V-bit tool')
-  })
-})
-
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
-
-describe('findModalRadius', () => {
-  it('returns 0 for no samples', () => {
-    expect(findModalRadius([])).toBe(0)
-  })
-
-  it('returns the value itself when every sample is identical', () => {
-    expect(findModalRadius([3, 3, 3])).toBe(3)
-  })
-
-  it('returns the centre of the most populated of 20 bins', () => {
-    // range 0..20 → binSize 1; the four 5s land in bin 5 → centre 5.5
-    expect(findModalRadius([0, 20, 5, 5, 5, 5])).toBeCloseTo(5.5, 9)
-  })
-
-  it('folds the maximum sample into the last bin rather than overflowing', () => {
-    // range 0..10 → binSize 0.5; 10 would index bin 20, clamped to 19 → centre 9.75
-    expect(findModalRadius([0, 10, 10, 10])).toBeCloseTo(9.75, 9)
-  })
-
-  it('is insensitive to a handful of deep outliers', () => {
-    const radii = [...Array(50).fill(2), 100]
-    expect(findModalRadius(radii)).toBeLessThan(10)
-  })
-})
 
 describe('classifySubpaths', () => {
   const square = (x: number, y: number, s: number): Pt2[] =>

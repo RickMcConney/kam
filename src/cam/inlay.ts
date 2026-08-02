@@ -1,7 +1,7 @@
 import { pointInPolygon, interiorPoint, pushAll } from './geom'
 import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
-import { generateVCarve, generateMaleTextBoundaryVCarve } from './vcarve'
+import { generateVCarve } from './vcarve'
 import { inflatePathsD, differenceD, intersectD, FillRule, JoinType, EndType } from 'clipper2-ts'
 import { applyCornerTreatment } from '../tools/cornerTreatment'
 import type { MotionSegment } from '../store/toolpathStore'
@@ -147,6 +147,220 @@ function offsetEachRing(d: string, deltaMM: number): string | null {
   return cmds.length ? cmds.join(' ') : null
 }
 
+// Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher), in cells.
+// One 1-D pass per row then per column; `seed[k] !== 0` marks the sites distance is measured
+// FROM. Cells with no site anywhere come back at INF.
+const EDT_INF = 1e12
+function edtSq(seed: Uint8Array, nx: number, ny: number): Float64Array {
+  const f = new Float64Array(nx * ny)
+  for (let k = 0; k < f.length; k++) f[k] = seed[k] ? 0 : EDT_INF
+  const pass = (n: number, stride: number, base: number) => {
+    const v = new Int32Array(n), z = new Float64Array(n + 1), out = new Float64Array(n)
+    let k = 0
+    v[0] = 0; z[0] = -EDT_INF; z[1] = EDT_INF
+    for (let q = 1; q < n; q++) {
+      let s = 0
+      for (;;) {
+        s = ((f[base + q * stride] + q * q) - (f[base + v[k] * stride] + v[k] * v[k])) / (2 * q - 2 * v[k])
+        if (s <= z[k]) k--
+        else break
+      }
+      k++; v[k] = q; z[k] = s; z[k + 1] = EDT_INF
+    }
+    k = 0
+    for (let q = 0; q < n; q++) {
+      while (z[k + 1] < q) k++
+      out[q] = (q - v[k]) * (q - v[k]) + f[base + v[k] * stride]
+    }
+    for (let q = 0; q < n; q++) f[base + q * stride] = out[q]
+  }
+  for (let j = 0; j < ny; j++) pass(nx, 1, j * nx)
+  for (let i = 0; i < nx; i++) pass(ny, nx, i)
+  return f
+}
+
+// Even-odd scanline fill of a set of rings into a cell mask. Counters nest once inside their
+// letter, so even-odd gives letter-minus-counter with no containment test.
+function fillRings(
+  rings: Pt2[][], nx: number, ny: number, gx0: number, gy0: number, cell: number,
+): Uint8Array {
+  const mask = new Uint8Array(nx * ny)
+  const xs: number[] = []
+  for (let j = 0; j < ny; j++) {
+    const py = gy0 + j * cell
+    xs.length = 0
+    for (const ring of rings) {
+      for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
+        const [x0, y0] = ring[k], [x1, y1] = ring[i]
+        if ((y0 > py) === (y1 > py)) continue
+        xs.push(x0 + ((py - y0) / (y1 - y0)) * (x1 - x0))
+      }
+    }
+    if (xs.length < 2) continue
+    xs.sort((a, b) => a - b)
+    const row = j * nx
+    for (let t = 0; t + 1 < xs.length; t += 2) {
+      const i0 = Math.max(0, Math.ceil((xs[t] - gx0) / cell))
+      const i1 = Math.min(nx - 1, Math.floor((xs[t + 1] - gx0) / cell))
+      for (let i = i0; i <= i1; i++) mask[row + i] = 1
+    }
+  }
+  return mask
+}
+
+/**
+ * V-bit plunges that clear the stock inside a letter's COUNTERS that the roughing cutter
+ * cannot reach.
+ *
+ * The wall trace leaves the plug's cone standing beside every letter edge — stock at
+ * −D + u/tan(θ/2), u being the distance out from the outline. Everywhere the end mill can
+ * get to, its pocket takes that away flat at −D and nothing is left. Where it cannot — a
+ * counter too narrow to enter, or a corner tighter than its radius — the stock stays, the
+ * female has untouched face against it, and every bit of it is interference.
+ *
+ * ── Only within a letter's bounding box ──────────────────────────────────────────────────
+ * Every patch worth a plunge belongs to a letterform: the counters (A's triangle here is
+ * narrower than a 1/8" cutter and never gets pocketed at all — enclosed by the letter, so
+ * there is no second chance), and the tight outside corners where a stroke meets a bowl —
+ * B's and G's junctions, E's and F's notches. All of them sit inside the letter's own
+ * bounding box, so that is the test.
+ *
+ * The open background beyond those boxes is deliberately left alone. The V-bit runs BEFORE
+ * the end mill (one tool change), so out there it would be plunging into full-depth solid
+ * stock the pocket is about to remove anyway. Unrestricted, the patch test also flagged the
+ * blank's own edge band and its four corners, which are far from any letter — and since the
+ * allowed depth grows with distance from the letters, that came out as 146 plunges in open
+ * stock, some at the bit's 5.5 mm limit in a 6 mm board. Inside a bounding box the same
+ * bound is self-limiting: a patch the cutter cannot reach is by definition within a radius
+ * of a letter, so nothing there can ask for more than D + R/tan(θ/2).
+ *
+ * ── The depth law ────────────────────────────────────────────────────────────────────────
+ * A tip at q, depth z, cuts the point p down to −z + |p−q|/tan(θ/2). Two consequences:
+ *
+ *   SAFE:   the plug's wall must survive, and its nearest point is the outline itself, so
+ *           z ≤ D + dist(q, outline)/tan(θ/2). At equality the cone lands exactly on the
+ *           wall the trace already cut — it can touch it but never eat into it.
+ *   USEFUL: at that same z, every p within dist(q, outline) of q is taken to −D or below.
+ *
+ * The bound and the reach are the same number, so one plunge at the deepest point of a
+ * patch is the most any single plunge can do, and the depth is read straight off the
+ * distance to the LETTER OUTLINE — never off the patch geometry. That is what makes this
+ * gouge-proof: get the patch detection wrong and the worst case is a wasted plunge in
+ * already-cut air. Deriving depth from a region boolean instead put 1038 mm² of B and D
+ * through the letters when the boolean returned the wrong side.
+ *
+ * Cutting deeper than D inside a counter costs nothing — the assembly is planed back to
+ * the female's face, so everything below the mating plane comes off anyway.
+ *
+ * Patches are found on a grid: a cell is reachable if some disc of the cutter's radius
+ * covers it without touching a letter, i.e. the reachable set is the cutter-centre set
+ * dilated by its own radius. Distances lose up to a cell to rasterization, so a cell's
+ * diagonal is subtracted from every radius before it is used — the error can then only
+ * make a plunge shallower and narrower, never deeper.
+ */
+function letterReliefPlunges(
+  letterOuterDs: string[], letterCounterDs: string[],
+  roughRadiusMM: number, plugDepthMM: number, tanHalf: number, maxDepthMM: number,
+): { x: number; y: number; z: number }[] {
+  const CELL = 0.1
+  const outerRings = letterOuterDs.flatMap(s => flattenPath(s, 0.05)).filter(r => r.length >= 3)
+  const counterRings = letterCounterDs.flatMap(s => flattenPath(s, 0.05)).filter(r => r.length >= 3)
+  if (!outerRings.length) return []
+  // One box per letter — the union of the boxes, NOT the box of the union, so the open
+  // ground between letters is not swept in with them.
+  const boxes = outerRings.map(r => {
+    let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity
+    for (const [x, y] of r) {
+      if (x < a) a = x
+      if (y < b) b = y
+      if (x > c) c = x
+      if (y > d) d = y
+    }
+    return { x0: a, y0: b, x1: c, y1: d }
+  })
+
+  // Grid spans the letters themselves, not the blank — nothing outside them is considered.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const r of outerRings) for (const [x, y] of r) {
+    if (x < x0) x0 = x
+    if (y < y0) y0 = y
+    if (x > x1) x1 = x
+    if (y > y1) y1 = y
+  }
+  const pad = roughRadiusMM + 1
+  x0 -= pad; y0 -= pad; x1 += pad; y1 += pad
+  const nx = Math.ceil((x1 - x0) / CELL) + 1
+  const ny = Math.ceil((y1 - y0) / CELL) + 1
+  if (nx < 3 || ny < 3 || nx * ny > 8e6) return []
+
+  const bbox = { x0, y0 }
+  // Letter SOLID (outers minus counters) — what the plug is made of, and what every depth
+  // is measured against. Even-odd handles the single level of nesting.
+  const letters = fillRings([...outerRings, ...counterRings], nx, ny, bbox.x0, bbox.y0, CELL)
+  // Candidate zone: inside some letter's bounding box. Counters are inside their letter's
+  // box by construction, so this covers them as well as the tight outside corners.
+  const inBox = new Uint8Array(nx * ny)
+  for (const b of boxes) {
+    const i0 = Math.max(0, Math.floor((b.x0 - bbox.x0) / CELL))
+    const i1 = Math.min(nx - 1, Math.ceil((b.x1 - bbox.x0) / CELL))
+    const j0 = Math.max(0, Math.floor((b.y0 - bbox.y0) / CELL))
+    const j1 = Math.min(ny - 1, Math.ceil((b.y1 - bbox.y0) / CELL))
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) inBox[j * nx + i] = 1
+  }
+  // Distance from every cell to the nearest letter cell. Inside a letter it is 0, which is
+  // what keeps a plunge that lands on one at plug depth exactly.
+  const distToLetter = edtSq(letters, nx, ny)
+  const rCells = roughRadiusMM / CELL
+
+  // Where the cutter's CENTRE may sit: a radius clear of every letter. Not restricted to
+  // the boxes — a cutter parked outside a box still sweeps into it, and missing that would
+  // invent patches along every box edge.
+  const centres = new Uint8Array(nx * ny)
+  for (let k = 0; k < centres.length; k++) {
+    if (!letters[k] && distToLetter[k] >= rCells * rCells) centres[k] = 1
+  }
+  const distToCentre = edtSq(centres, nx, ny)
+
+  // Leftover: background the cutter never swept, and proud enough to be worth a plunge.
+  const SAFETY_MM = CELL * Math.SQRT2
+  const MIN_RELIEF_MM = 0.05
+  const minDistCells = (MIN_RELIEF_MM * tanHalf + SAFETY_MM) / CELL
+  const open: number[] = []
+  for (let k = 0; k < letters.length; k++) {
+    if (letters[k] || !inBox[k]) continue
+    if (distToCentre[k] <= rCells * rCells) continue
+    if (distToLetter[k] <= minDistCells * minDistCells) continue
+    open.push(k)
+  }
+  if (!open.length) return []
+  // Deepest patch point first: it both reaches furthest and is the one standing proudest.
+  open.sort((a, b) => distToLetter[b] - distToLetter[a])
+
+  const done = new Uint8Array(nx * ny)
+  const out: { x: number; y: number; z: number }[] = []
+  for (const k of open) {
+    if (done[k]) continue
+    const i = k % nx, j = (k - i) / nx
+    const reachMM = Math.max(0, Math.sqrt(distToLetter[k]) * CELL - SAFETY_MM)
+    if (reachMM <= 0) continue
+    const z = -Math.min(plugDepthMM + reachMM / tanHalf, maxDepthMM)
+    out.push({ x: bbox.x0 + i * CELL, y: bbox.y0 + j * CELL, z })
+    // This plunge takes everything within reachMM down to the mating plane or below.
+    const rc = Math.ceil(reachMM / CELL), rc2 = (reachMM / CELL) * (reachMM / CELL)
+    for (let dj = -rc; dj <= rc; dj++) {
+      const jj = j + dj
+      if (jj < 0 || jj >= ny) continue
+      for (let di = -rc; di <= rc; di++) {
+        const ii = i + di
+        if (ii < 0 || ii >= nx) continue
+        if (di * di + dj * dj <= rc2) done[jj * nx + ii] = 1
+      }
+    }
+    if (out.length >= 2000) break
+  }
+  return out
+}
+
 // Returns true for geometry-constraint errors that are expected and safe to skip.
 // Unknown errors (regressions, bad config) are re-thrown so they surface immediately.
 function isExpectedGeometryError(e: unknown): boolean {
@@ -224,6 +438,35 @@ export function splitRegions(d: string): { outerD: string; islandDs: string[] }[
     regions.push({ outerD: ptsToD(outer), outerPts: outer, islandDs: holes })
   }
   return regions.map(({ outerD, islandDs }) => ({ outerD, islandDs }))
+}
+
+// Grow a text socket outward by clearanceMM — the female's share of the fit gap.
+//
+// Clearance lives on the socket and only on the socket, exactly as it does for the
+// ordinary (non-text) inlay in computeInlayFemaleOffsets: the plug stays nominal, holes
+// grow, and the gap is never doubled across the joint. glueLineMM deliberately does NOT
+// appear here — a V-carved socket already runs deeper than the plug can reach, because
+// its depth is set by the stroke width it has to open out to, so there is nowhere for a
+// glue allowance to be added that the plug would ever touch.
+//
+// This is a REGION dilation, not a per-ring offset. A counter is a hole in the letter,
+// so growing the socket means the outer ring moves out by c while the counter moves IN
+// by c. Offsetting every ring outward (offsetEachRing, which forces each ring CCW) would
+// grow the counters too and eat away the very protrusion the male's counter has to land
+// on. Returns null for c <= 0 — the caller then machines the nominal letters.
+function growTextSocket(
+  regions: { outerD: string; islandDs: string[] }[], clearanceMM: number,
+): string | null {
+  if (!(clearanceMM > 0)) return null
+  const parts: string[] = []
+  for (const r of regions) {
+    parts.push(offsetPathD(r.outerD, clearanceMM) ?? r.outerD)
+    // A counter narrower than 2c has nothing left after shrinking and the offset comes
+    // back empty. Machining it nominal leaves the protrusion a touch tight rather than
+    // dropping the counter altogether, which would carve straight through it.
+    for (const iD of r.islandDs) parts.push(offsetPathD(iD, -clearanceMM) ?? iD)
+  }
+  return parts.length ? parts.join(' ') : null
 }
 
 // Centre X of a path's bounding box — the axis the male board is turned over about.
@@ -432,11 +675,36 @@ function computeInlayFemaleOffsets(
 // roughing pocket exactly like protrusions, but get no wall pass — a protrusion's wall
 // slopes the opposite way to a plug's, so forming one here would cut the other away.
 async function insideClear(
-  boundaryD: string, protrusionDs: string[],
+  boundaryD: string, boundaryProtrusionDs: string[],
   roughTool: Tool, wallTool: Tool | null, params: InlayParams,
   plugDs: string[] = [],
 ): Promise<InlaySplitResult> {
   const totalDepthMM = params.pocketDepthMM + params.glueLineMM
+
+  // ── Clearance comes off the SOCKET, at its islands as much as at its outer wall ──
+  //
+  // computeInlayFemaleOffsets grows the outer boundary by clearanceMM. A protrusion is the
+  // same joint seen from the other side — female material standing where the male has a
+  // hole — so it shrinks by the same amount, and the socket gets bigger in both directions.
+  //
+  // The alternative, and what this used to do, was to leave protrusions nominal and grow
+  // the MALE's hole instead (generateInlayMale passed clearance down to its island
+  // inside-clears). Both give a gap of c, but that one takes it out of the plug: an 'O',
+  // any closed letter, any ring is thinnest exactly at the counter, and the hole eats into
+  // it from the inside. Plugs are the thin, fragile, VISIBLE half of an inlay and they stay
+  // nominal — which also means the male part no longer depends on clearanceMM at all, so
+  // one plug fits whatever fit-gap the socket was cut with, and the design line is rendered
+  // at nominal size everywhere instead of nominal outside and oversize in the counters.
+  //
+  // Shrinking here covers every branch below, including the two that hand the pocket a
+  // finishAllowanceMM of −c and pre-grow their islands by c to cancel it: pre-growing an
+  // already-shrunk protrusion returns it to nominal, and the allowance then takes it to
+  // −c, which is the size wanted. `plugDs` are NOT touched — those are the next nesting
+  // level's plugs standing inside a male hole, and they are plug material too.
+  const clearanceMM = params.clearanceMM
+  const protrusionDs = clearanceMM > 0
+    ? boundaryProtrusionDs.map((iD) => offsetPathD(iD, -clearanceMM) ?? iD)
+    : boundaryProtrusionDs
 
   // Every socket pocket below runs plain 'raster', NOT the 'hybrid' strategy the Pocket
   // form calls "auto".
@@ -557,8 +825,20 @@ async function insideClear(
       const bandD = subtractD(clipped, [iD, ...protrusionDs.filter(o => o !== iD), ...plugDs])
       try {
         // Same fallback as the socket wall: unclipped annulus rather than no wall.
+        //
+        // The cap is 2.5 × the socket depth, matching the socket wall above, NOT the socket
+        // depth itself. A medial-axis V-carve reproduces the exact wall only if the tool
+        // reaches every skeleton point at its own radius/tan(θ/2); cap it short and the cone
+        // from a clipped point rises away at 1/tan and leaves a wedge of stock against the
+        // wall. Along a straight run the annulus's inradius is halfWidth, so socket depth is
+        // exactly enough — but at a protrusion CORNER of half-angle α the skeleton runs out
+        // along the bisector to fullWidth/(1 + sin α), which tends to fullWidth as the corner
+        // sharpens, i.e. up to TWICE the depth a straight wall needs. starinstar.fkam wanted
+        // 4.58 mm against a 3 mm cap and left 1.4 mm of stock standing at all five points of
+        // the inner star, one patch per point. Cutting deeper here cannot reach the
+        // protrusion: a V-carve's cut rises to zero at its own region boundary.
         pushAll(vcarveSegs, await generateVCarve(bandD ?? islandVCarveOuterD, wallTool, {
-          angleDeg: params.angleDeg, maxDepthMM: totalDepthMM,
+          angleDeg: params.angleDeg, maxDepthMM: 2.5 * totalDepthMM,
           islandDs: bandD ? [] : [iD], safeHeightMM: params.safeHeightMM,
         }))
       } catch (e) { if (!isExpectedGeometryError(e)) throw e }
@@ -688,7 +968,7 @@ export async function generateInlayFemale(
   if (vbit && vbit.type === 'vbit' && regions.length > MULTI_REGION_IS_TEXT) {
     const tanHalf = Math.tan((params.angleDeg / 2) * (Math.PI / 180))
     if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
-    const vbitSegs = await generateVCarve(d, vbit, {
+    const vbitSegs = await generateVCarve(growTextSocket(regions, params.clearanceMM) ?? d, vbit, {
       angleDeg: params.angleDeg,
       maxDepthMM: (vbit.diameterMM / 2) / tanHalf,
       islandDs: params.islandDs,
@@ -734,17 +1014,39 @@ export interface InlaySplitResult {
  * subpath acts as a raised prism on the plug face.
  *
  * Core principle:
- *   The V-carve runs directly on each letter boundary (not inverted). The bit
- *   apex starts at z=0 (surface) and descends in proportion to the local MAT
- *   radius, producing continuous raised-prism walls along each letter edge.
+ *   The V-carve runs directly on each letter boundary (not inverted), with the bit
+ *   apex on the MATING plane — plugDepth below the male board's face — so the wall it
+ *   leaves is the exact cone complement of the female's V-carved wall.
  *
- *   Z_raw = r / tan(θ/2)   (r = MAT radius at each skeleton point)
- *   Z_max = vbitRadius / tan(θ/2)   (caps Z when the bit is fully engaged)
+ *   Z = plugDepthMM   (constant, every letter, every point on its boundary)
  *
  * The end mill clears the recessed background (bbox minus letter outers) to
  * pocketDepthMM, pockets any letter counters (e.g. inside of 'O') to the same
  * depth, and profiles the bounding-box perimeter to free the plug from stock.
- * glueLineMM is not applied to the male plug — it only affects the female socket.
+ * glueLineMM is not applied to the male plug — it only affects the female socket,
+ * and neither is clearanceMM (the socket carries the whole fit gap).
+ *
+ * ── Why the depth is constant ────────────────────────────────────────────────────
+ * Write both boards top-referenced, with s = distance INSIDE the letter and D = the
+ * plug depth. The female is a V-carve, F = −min(s/tan(θ/2), Dmax). Tracing the male's
+ * outline with the tip at −Z leaves M = min(0, −Z + s/tan(θ/2)) inside the letter and
+ * −D outside it, once the background pocket has run. Turning the board over, the two
+ * solids may not overlap: F + M + D ≤ 0. At Z = D that is an identity — 0 on every
+ * wall and on the land outside the letters, negative (a harmless void) only where the
+ * socket is deeper than the plug can reach. So the plug does fit a V-carve, exactly.
+ *
+ * Any other Z is a straight loss:
+ *   Z > D  undercuts the plug by (Z−D)·tan(θ/2) per side and sinks a moat around each
+ *          letter deeper than the background, so the boards cannot even meet at the
+ *          face. A stroke narrower than 2(Z−D)·tan(θ/2) is cut away completely.
+ *   Z < D  leaves the plug (D−Z) proud — it wedges, and you plane it flush. Recoverable,
+ *          which is why the V-bit's reach clamp below errs in that direction.
+ *
+ * This used to run Z = modalMATradius/tan(θ/2), i.e. the female's own depth rule. On
+ * scratch/abcdefg.fkam that put Z at 3.5–4.0 mm against a D of 2 mm: 38% of the
+ * footprint cut up to 1.85 mm too deep, every 3.2 mm stroke reduced to 1.5 mm, and a
+ * 1 mm-deep moat round every letter. It read as "no interference" in the fit audit
+ * because an undersized plug never interferes — it just rattles.
  */
 async function generateInlayMaleText(
   d: string,
@@ -755,14 +1057,15 @@ async function generateInlayMaleText(
   const safeZ = params.safeHeightMM ?? 5
   const workingD = params.mirrorX ? mirrorPathD(d) : d
 
-  const startDepthMM = 0  // Z_start: bit apex at surface; depth grows with stroke width
-
   const halfAngle    = (params.angleDeg / 2) * (Math.PI / 180)
   const tanHalfAngle = Math.tan(halfAngle)
   if (tanHalfAngle < 1e-6) throw new Error('Invalid V-bit angle')
 
-  // Z_max: depth when the V-bit is fully engaged at its widest cutting radius.
+  // Z_max: depth when the V-bit is fully engaged at its widest cutting radius. Below it
+  // the wall would be cut by the shank, not the flute, so the plug depth is clamped to
+  // it — leaving the plug proud rather than undersized (see the note above).
   const vbitMaxDepthMM = (vbitTool.diameterMM / 2) / tanHalfAngle
+  const wallDepthMM = Math.min(params.pocketDepthMM, vbitMaxDepthMM)
 
   // Split into per-letter regions (outer ring + intrinsic counter-holes like 'O', 'A').
   const regions = splitRegions(workingD)
@@ -797,19 +1100,29 @@ async function generateInlayMaleText(
   const endmillSegs: MotionSegment[] = []
 
   // ── V-bit pass ─────────────────────────────────────────────────────────────
-  // Profile each letter's boundary with the V-bit at depths set by the nearest
-  // MAT radius: Z = -(startDepth + r/tan(θ/2)).  This traces the letter outline
-  // (not the skeleton) so the cut creates the outward bevel on the raised prism.
+  // Trace every letter boundary — the outer ring and each counter — with the tip on the
+  // mating plane, forming the raised prism's bevelled wall. Counters get the same trace:
+  // a counter is a hole in the plug that receives the female's standing protrusion, and
+  // its wall slopes the same way for the same reason. Stepped down like every other
+  // contour stack, since a 60° bit at full plug depth is 2.3 mm of engagement in one bite.
+  const wallPasses = zStepsTo(wallDepthMM, params.stepDownMM)
   for (const r of regions) {
-    try {
-      pushAll(vbitSegs, await generateMaleTextBoundaryVCarve(r.outerD, vbitTool, {
-        angleDeg:   params.angleDeg,
-        maxDepthMM: vbitMaxDepthMM,
-        zStartMM:   startDepthMM,
-        islandDs:   r.islandDs,
-        safeHeightMM: params.safeHeightMM,
-      }))
-    } catch (e) { if (!isExpectedGeometryError(e)) throw e }
+    for (const pts of getOuters(r.outerD)) addContourStack(pts, wallPasses, vbitSegs, safeZ)
+    for (const iD of r.islandDs)
+      for (const pts of getOuters(iD)) addContourStack(pts, wallPasses, vbitSegs, safeZ)
+  }
+
+  // ── V-bit letter relief ────────────────────────────────────────────────────
+  // One plunge per patch inside a letter's bounding box the roughing cutter cannot reach — see
+  // letterReliefPlunges for the depth law that keeps these off the plug wall, and for why
+  // the search is confined to the letters' own bounding boxes.
+  for (const p of letterReliefPlunges(
+    letterOuterDs, letterCounterDs,
+    profileTool.diameterMM / 2, wallDepthMM, tanHalfAngle, vbitMaxDepthMM,
+  )) {
+    vbitSegs.push({ x: p.x, y: p.y, z: safeZ, rapid: true })
+    vbitSegs.push({ x: p.x, y: p.y, z: p.z, rapid: false })
+    vbitSegs.push({ x: p.x, y: p.y, z: safeZ, rapid: true })
   }
 
   // ── End mill background pocket ──────────────────────────────────────────────
@@ -854,7 +1167,16 @@ async function generateInlayMaleText(
 
   // ── Release profile ─────────────────────────────────────────────────────────
   // Profile the bounding box perimeter to inlay depth to free the plug from stock.
-  const releaseOffset = profileTool.diameterMM / 2
+  //
+  // Offset by HALF a radius, not a full one. At a full radius the cutter's edge only just
+  // touches the bbox line, so it never reaches the four fillets the background pocket has
+  // to leave standing in the blank's own corners — a round tool cannot get into a square
+  // corner, and those lumps sit at full height on the mating face and hold the whole plug
+  // off the female. Coming in half a radius sweeps everything within R/2 of each wall, and
+  // a 90° corner fillet only reaches R(1−1/√2) ≈ 0.29 R from either wall, so it goes
+  // completely. The blank simply ends up R/2 smaller all round, which costs nothing: this
+  // rectangle is one this function invented to carry the letters, not part of the design.
+  const releaseOffset = profileTool.diameterMM / 4
   const releaseD = offsetPathD(bboxD, releaseOffset)
   if (releaseD) {
     const depth = params.pocketDepthMM
@@ -943,8 +1265,13 @@ export async function generateInlayMale(
       // not selected paths, so they never carry nested plugs.
       const plugDs = (i >= extraFrom ? islandPlugDs[i - extraFrom] ?? [] : []).map(mirror)
       try {
+        // clearanceMM: 0 — the socket side carries the whole fit gap, and for this joint
+        // that is the female's protrusion (shrunk in insideClear), not this hole. Growing
+        // both would double the gap; growing this one alone would thin the plug that
+        // surrounds it. glueLineMM: 0 for the same reason it always was — glue depth
+        // belongs to the real socket floor, not to the male.
         const socket = await insideClear(holeD, [], profileTool, vbitTool,
-          { ...params, glueLineMM: 0 }, plugDs)
+          { ...params, glueLineMM: 0, clearanceMM: 0 }, plugDs)
         pushAll(vbitSegs, socket.vbitSegs)
         pushAll(endmillSegs, socket.endmillSegs)
       } catch (e) { if (!isExpectedGeometryError(e)) throw e }
