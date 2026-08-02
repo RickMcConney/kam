@@ -22,6 +22,13 @@ interface PhotoVCarveFormState {
   maxDepthMM: number
 }
 
+// Raster lines are undirected — 200° and 20° lay down the same lines — so every angle has an
+// equivalent in [0, 180), which is the range the slider offers.
+function norm180(deg: number) {
+  const d = ((deg % 180) + 180) % 180
+  return Math.round(d / 5) * 5 % 180
+}
+
 export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: PhotoVCarveOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
@@ -33,21 +40,26 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
   const defaultTool = vbits[0] ?? tools[0]
   const imagePaths = paths.filter((p) => !!p.imageSrc)
 
-  const [form, setForm] = useState<PhotoVCarveFormState>(() => editOp ? {
-    toolId: editOp.toolId,
-    pathId: editOp.pathId,
-    passAngleDeg: editOp.passAngleDeg,
-    minDepthMM: editOp.minDepthMM,
-    maxDepthMM: editOp.maxDepthMM,
-  } : mergeWithDefaults(load('photovcarve'), {
-    toolId: defaultTool?.id ?? '',
-    pathId: imagePaths[0]?.id ?? '',
-    passAngleDeg: 0,
-    // White cuts nothing, black cuts 0.6 mm. Shallow on purpose: the depth sets the line
-    // spacing, so this is the resolution control — 0.6 mm on a 60° bit gives 0.69 mm lines.
-    minDepthMM: 0,
-    maxDepthMM: 0.6,
-  }, tools))
+  const [form, setForm] = useState<PhotoVCarveFormState>(() => {
+    const init = editOp ? {
+      toolId: editOp.toolId,
+      pathId: editOp.pathId,
+      passAngleDeg: editOp.passAngleDeg,
+      minDepthMM: editOp.minDepthMM,
+      maxDepthMM: editOp.maxDepthMM,
+    } : mergeWithDefaults(load('photovcarve'), {
+      toolId: defaultTool?.id ?? '',
+      pathId: imagePaths[0]?.id ?? '',
+      passAngleDeg: 0,
+      // White cuts nothing, black cuts 0.6 mm. Shallow on purpose: the depth sets the line
+      // spacing, so this is the resolution control — 0.6 mm on a 60° bit gives 0.69 mm lines.
+      minDepthMM: 0,
+      maxDepthMM: 0.6,
+    }, tools)
+    // An op or saved default from before the slider can hold any angle in ±180. Fold it into
+    // the slider's half turn rather than let the control clamp it to a different raster.
+    return { ...init, passAngleDeg: norm180(init.passAngleDeg) }
+  })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
@@ -183,16 +195,19 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         </p>
       )}
 
-      {/* Raster angle */}
+      {/* Raster angle — a slider over half a turn, same control as the pocket pass angle.
+          Lines have no direction of their own, so 180° is 0° again and the range covers
+          every distinct raster orientation. */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Raster Angle</label>
-        <div className="flex items-center gap-1">
-          <NumericInput value={form.passAngleDeg} min={-180} max={180} step={15}
-            onChange={(v) => up('passAngleDeg', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
-        </div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          Raster Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+        </label>
+        <input
+          type="range" min={0} max={180} step={5}
+          value={form.passAngleDeg}
+          onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
+          className="w-full accent-blue-500"
+        />
       </div>
 
       {/* Depth range — the greyscale maps onto this band */}
