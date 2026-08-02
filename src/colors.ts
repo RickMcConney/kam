@@ -32,6 +32,7 @@ export const OP_TYPE_COLORS: Record<string, string> = {
   drill:    '#10b981',  // emerald-500
   surface:  '#8b5cf6',  // violet-500
   vcarve:   '#ec4899',  // pink-500
+  photovcarve: '#f472b6', // pink-400 — a v-carve variant, so a lighter shade of the same
   inlay:    '#eab308',  // yellow-500
   profile3d:  '#34d399', // emerald-400
   trochoidal: '#fb923c', // orange-400

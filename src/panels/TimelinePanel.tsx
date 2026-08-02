@@ -6,7 +6,7 @@ import {
   SquareSquare, LayoutGrid, Scissors, Pencil, Trash2, Eye, EyeOff,
   RectangleEllipsis, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   ArrowUpDown, Move, RotateCw, Scaling, Spline, Combine, FlipHorizontal2,
-  VectorSquare, X, FoldHorizontal, Wand2,
+  VectorSquare, X, FoldHorizontal, Wand2, Image as ImageIcon,
 } from 'lucide-react'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -42,6 +42,7 @@ const SHAPE_ICONS: Record<string, ChipIcon> = {
 const OP_ICONS: Record<string, ChipIcon> = {
   profile: Circle, trochoidal: RefreshCw, pocket: Target, drill: CircleDot,
   surface: Layers, vcarve: Star, inlay: InlayIcon, profile3d: Box, gcode: FileCode,
+  photovcarve: ImageIcon,
 }
 
 // paths.edit gesture icons — Corner matches the "Corners" path-tool icon.

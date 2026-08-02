@@ -1,6 +1,7 @@
 import { generateProfile } from '../cam/profile'
 import { generatePocket } from '../cam/pocket'
 import { generateVCarve } from '../cam/vcarve'
+import { generatePhotoVCarve } from '../cam/photoVcarve'
 import { generateProfile3d } from '../cam/profile3d'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { generateTrochoidal } from '../cam/trochoidal'
@@ -11,6 +12,7 @@ const handlers = {
   generateProfile,
   generatePocket,
   generateVCarve,
+  generatePhotoVCarve,
   generateProfile3d,
   generateInlayFemale,
   generateInlayMale,

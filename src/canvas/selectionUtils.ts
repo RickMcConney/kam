@@ -305,6 +305,36 @@ export function transformPoint(
   }
 }
 
+/** The placement of an image- or STL-backed path's bounding rectangle. */
+export interface RectInfo {
+  p0: { x: number; y: number } // first corner (conceptual bottom-left when rotation = 0)
+  widthMM: number              // length of the p0→p1 edge
+  heightMM: number             // length of the p1→p2 edge
+  rotationDeg: number          // angle of the p0→p1 edge, CCW from +X in CNC Y-up
+}
+
+// An image-backed path IS a rectangle — importFile writes four corners — and its picture
+// is pinned to those corners: bottom edge along p0→p1, top edge one heightMM away on the
+// CCW side. Both the canvas (DesignLayer) and the photo V-carve toolpath read the
+// placement through this one function, so what is carved is what is drawn, rotation
+// included. Returns null for anything that isn't four corners.
+export function extractRectInfo(d: string): RectInfo | null {
+  const cmds = parseD(d)
+  const pts: { x: number; y: number }[] = []
+  for (const cmd of cmds) {
+    if (cmd.t === 'M' || cmd.t === 'L') {
+      pts.push({ x: cmd.x, y: cmd.y })
+      if (pts.length === 4) break
+    }
+  }
+  if (pts.length < 4) return null
+  const widthMM = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+  const heightMM = Math.hypot(pts[2].x - pts[1].x, pts[2].y - pts[1].y)
+  if (widthMM < 0.001 || heightMM < 0.001) return null
+  const rotationDeg = (Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x) * 180) / Math.PI
+  return { p0: pts[0], widthMM, heightMM, rotationDeg }
+}
+
 export function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: number } | null {
   if (path.shapeParams?.type === 'circle') {
     return { cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }

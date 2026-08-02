@@ -1,87 +1,17 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { SIM_CUT_COLOR, SIM_TOOL_CUTTING_COLOR, SIM_TOOL_RAPID_COLOR } from '../../colors'
-import { Group, Line, Shape } from 'react-konva'
+import { Group, Shape, Image as KonvaImage } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
 import { useSimStore } from '../../store/simStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { getCurrentSegIdx, interpolatePos, segTool, type SimSegment, type ToolState } from '../../sim/gcodeParser'
+import { CutTrail, effectiveCutWidthAt, type FrustumSeg } from '../../sim/cutTrail'
+import { TrailRaster, cutBBox, type TrailBBox } from '../../sim/trailRaster'
 import { SPINDLE_VIS_RPS } from '../../sim/spindleVis'
 import { originWorldXY } from '../layers/WorkpieceLayer'
 
 interface Props {
   viewport: Viewport
-}
-
-// For V-bit segments, cut width = 2 * |z| * tan(halfAngle), capped at tool diameter.
-function effectiveCutWidthAt(seg: SimSegment, z: number, toolStates: ToolState[]): number {
-  const ts = segTool(seg, toolStates)
-  if (ts.toolVbitHalfAngleTan !== undefined) {
-    return Math.min(2 * Math.abs(z) * ts.toolVbitHalfAngleTan, ts.toolDiameterMM)
-  }
-  return ts.toolDiameterMM
-}
-
-function roundWidth(w: number): number {
-  return Math.round(w * 10) / 10
-}
-
-interface FrustumSeg {
-  x0: number; y0: number; w0: number
-  x1: number; y1: number; w1: number
-}
-
-interface TrailResult {
-  lineSections: { points: number[]; width: number }[]
-  frustumSegs: FrustumSeg[]
-}
-
-// Groups non-rapid cutting segments into:
-//   lineSections — consecutive uniform-width segs rendered as Konva Lines
-//   frustumSegs  — segs where start/end widths differ by ≥ 0.1mm, rendered as filled trapezoids
-function computeTrail(
-  segments: SimSegment[],
-  upToIdx: number,
-  ox: number,
-  oy: number,
-  toolStates: ToolState[],
-): TrailResult {
-  const lineSections: { points: number[]; width: number }[] = []
-  const frustumSegs: FrustumSeg[] = []
-  let pts: number[] | null = null
-  let curWidth = 0
-
-  const flushLine = () => {
-    if (pts && pts.length >= 4) lineSections.push({ points: pts, width: curWidth })
-    pts = null
-    curWidth = 0
-  }
-
-  for (let i = 0; i <= upToIdx && i < segments.length; i++) {
-    const seg = segments[i]
-    if (seg.rapid || (seg.prevZ >= -0.001 && seg.z >= -0.001)) { flushLine(); continue }
-
-    const w0 = effectiveCutWidthAt(seg, seg.prevZ, toolStates)
-    const w1 = effectiveCutWidthAt(seg, seg.z, toolStates)
-    const x0 = seg.prevX + ox, y0 = seg.prevY + oy
-    const x1 = seg.x + ox,    y1 = seg.y + oy
-
-    if (Math.abs(w0 - w1) < 0.1) {
-      const w = roundWidth((w0 + w1) / 2)
-      if (w !== curWidth || pts === null) {
-        flushLine()
-        pts = [x0, y0, x1, y1]
-        curWidth = w
-      } else {
-        pts.push(x1, y1)
-      }
-    } else {
-      flushLine()
-      frustumSegs.push({ x0, y0, w0, x1, y1, w1 })
-    }
-  }
-
-  flushLine()
-  return { lineSections, frustumSegs }
 }
 
 // Top-down cross-section of an N-flute cutter: body circle with one gullet
@@ -144,45 +74,65 @@ function makeFrustumSceneFunc(segs: FrustumSeg[]) {
   }
 }
 
-// Completed trail — re-renders only when the current segment index changes.
+// Completed trail: ONE Konva node — an image of everything cut so far — however long
+// the program. What each frame does is paint the segments cut during it into that
+// image (see trailRaster.ts); what each REDRAW does, whether from playback, a pan or
+// a zoom, is blit it. Re-stroking the vector geometry instead cost tens of ms per
+// redraw on a photo v-carve, which is a slow pan long after the program had finished.
 interface CompletedTrailProps {
   segments: SimSegment[]
   upToIdx: number
   ox: number
   oy: number
   toolStates: ToolState[]
+  bbox: TrailBBox | null
+  scale: number
 }
-const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy, toolStates }: CompletedTrailProps) {
-  const trail = useMemo(
-    () => computeTrail(segments, upToIdx, ox, oy, toolStates),
-    [segments, upToIdx, ox, oy, toolStates],
-  )
-  const frustumFn = useMemo(() => makeFrustumSceneFunc(trail.frustumSegs), [trail.frustumSegs])
+const CompletedTrail = memo(function CompletedTrail({ segments, upToIdx, ox, oy, toolStates, bbox, scale }: CompletedTrailProps) {
+  const trailRef = useRef<CutTrail | null>(null)
+  const rasterRef = useRef<TrailRaster | null>(null)
+  const drawnGenRef = useRef(-1)
+  const trail = trailRef.current ?? (trailRef.current = new CutTrail())
+  const raster = rasterRef.current ?? (rasterRef.current = new TrailRaster())
 
+  trail.sync(segments, upToIdx, ox, oy, toolStates)
+
+  // Reallocated (first frame, or the user zoomed in past what the image holds) or
+  // restarted (rewind, new program) — either way what is on the image is not what the
+  // trail says, so paint all of it. Otherwise paint only the difference.
+  const resized = bbox ? raster.ensure(bbox, scale) : false
+  if (bbox) {
+    if (resized || trail.generation !== drawnGenRef.current) {
+      if (!resized) raster.clear()
+      raster.strokePolys(trail.byWidth, SIM_CUT_COLOR)
+      raster.fillFrustums(trail.frustums, SIM_CUT_COLOR)
+      drawnGenRef.current = trail.generation
+    } else {
+      raster.strokePolys(trail.pendingByWidth, SIM_CUT_COLOR)
+      raster.fillFrustums(trail.pendingFrustums, SIM_CUT_COLOR)
+    }
+  }
+  trail.drainPending()
+
+  const img = raster.canvas
+  if (!img || !bbox) return null
+
+  // The image is painted rows-down; this layer is Y-flipped, so un-flip it the same
+  // way DesignLayer draws an imported picture.
   return (
-    <>
-      {trail.lineSections.map((sec, i) => (
-        <Line
-          key={i}
-          points={sec.points}
-          stroke={SIM_CUT_COLOR}
-          strokeWidth={sec.width}
-          lineCap="round"
-          lineJoin="round"
+    <Group x={bbox.x0} y={bbox.y0} listening={false}>
+      <Group scaleY={-1}>
+        <KonvaImage
+          image={img}
+          x={0}
+          y={-raster.heightMM}
+          width={raster.widthMM}
+          height={raster.heightMM}
           opacity={0.55}
           listening={false}
         />
-      ))}
-      {trail.frustumSegs.length > 0 && (
-        <Shape
-          sceneFunc={frustumFn}
-          fill={SIM_CUT_COLOR}
-          strokeWidth={0}
-          opacity={0.55}
-          listening={false}
-        />
-      )}
-    </>
+      </Group>
+    </Group>
   )
 })
 
@@ -206,6 +156,14 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
     if (!genZOff) return rawSegments
     return rawSegments.map((s) => ({ ...s, z: s.z - genZOff, prevZ: s.prevZ - genZOff }))
   }, [rawSegments, genZOff])
+
+  // Where the trail image has to reach. Grown by the widest cut in the program so a
+  // stroke at the edge isn't clipped in half.
+  const trailBBox = useMemo(() => {
+    let widest = 0
+    for (const ts of toolStates) if (ts.toolDiameterMM > widest) widest = ts.toolDiameterMM
+    return cutBBox(segments, ox, oy, widest / 2 + 1)
+  }, [segments, toolStates, ox, oy])
 
   if (!gcode || segments.length === 0) return null
 
@@ -232,7 +190,11 @@ export const SimulationLayer = memo(function SimulationLayer({ viewport }: Props
 
   return (
     <Group listening={false}>
-      <CompletedTrail segments={segments} upToIdx={curSegIdx - 1} ox={ox} oy={oy} toolStates={toolStates} />
+      <CompletedTrail
+        segments={segments} upToIdx={curSegIdx - 1}
+        ox={ox} oy={oy} toolStates={toolStates}
+        bbox={trailBBox} scale={scale}
+      />
 
       {/* Active partial segment — 60fps updates */}
       {activeFrustum && (() => {

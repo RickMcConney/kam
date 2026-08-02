@@ -7,6 +7,7 @@ import { SPINDLE_INFO, spindleDialLabel } from '../store/spindle'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { feedsForTool } from './feeds'
 import { arcFitPolyline, douglasPeucker, ARC_FIT_MAX_SPAN, type Pt2 } from './pathFlattener'
+import { lineSpacingMM } from './photoVcarve'
 import { sanitizeFileName } from '../io/filename'
 
 const MM_PER_IN = 25.4
@@ -32,6 +33,8 @@ function opDesc(op: AnyOperation): string {
   if (op.type === 'drill') return `${op.drillMode} drill · ${op.depthMM}mm`
   if (op.type === 'surface') return `surface · ${op.stepoverPercent}% stepover · ${op.passAngleDeg}° · ${op.depthMM}mm`
   if (op.type === 'vcarve') return `vcarve · ${op.angleDeg}° · ${op.maxDepthMM}mm max`
+  // Line spacing is derived, so the operator can't read it off the settings — spell it out.
+  if (op.type === 'photovcarve') return `photo vcarve · ${op.angleDeg}° · ${op.minDepthMM}–${op.maxDepthMM}mm · ${lineSpacingMM(op.maxDepthMM, op.angleDeg).toFixed(2)}mm lines`
   if (op.type === 'profile3d') return `3D raster · ${op.stepoverPercent}% stepover · ${op.maxDepthMM}mm max depth`
   return ''
 }
@@ -214,7 +217,7 @@ export function generateGcode(
     } else {
       c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  flutes:${finishTool.fluteCount}  ${opDesc(op)}`)
       if (finishTool.type === 'vbit') {
-        const angleDeg = (op.type === 'vcarve' || op.type === 'inlay')
+        const angleDeg = (op.type === 'vcarve' || op.type === 'inlay' || op.type === 'photovcarve')
           ? op.angleDeg
           : (finishTool.vbitAngleDeg ?? 60)
         c(`vbit-angle:${f(angleDeg / 2)}`)

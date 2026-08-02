@@ -6,8 +6,7 @@ import { useUIStore } from '../../store/uiStore'
 import { canvasTheme } from '../../theme'
 import type { LiveTransform } from '../types'
 import type { ImportedPath } from '../../store/pathsStore'
-import { parseD } from '../../importers/svgImporter'
-import { getBBox } from '../selectionUtils'
+import { getBBox, extractRectInfo } from '../selectionUtils'
 import { parseStlGeometry, base64ToArrayBuffer } from '../../importers/stlImporter'
 import { buildHeightMap } from '../../cam/profile3d'
 
@@ -15,30 +14,6 @@ interface Props {
   viewport: Viewport
   liveTransform: LiveTransform | null
   excludePathId?: string | null
-}
-
-// Extract geometric properties from a rectangular d string (possibly rotated after baking).
-// d must start M p0 L p1 L p2 L p3 (Z). Returns null if the d doesn't look like a rectangle.
-function extractRectInfo(d: string): {
-  p0: { x: number; y: number } // first corner (conceptual bottom-left when rotation=0)
-  widthMM: number               // length of the p0→p1 edge
-  heightMM: number              // length of the p1→p2 edge
-  rotationDeg: number           // angle of p0→p1 edge, CCW from +X in CNC Y-up
-} | null {
-  const cmds = parseD(d)
-  const pts: { x: number; y: number }[] = []
-  for (const cmd of cmds) {
-    if (cmd.t === 'M' || cmd.t === 'L') {
-      pts.push({ x: cmd.x, y: cmd.y })
-      if (pts.length === 4) break
-    }
-  }
-  if (pts.length < 4) return null
-  const widthMM = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
-  const heightMM = Math.hypot(pts[2].x - pts[1].x, pts[2].y - pts[1].y)
-  if (widthMM < 0.001 || heightMM < 0.001) return null
-  const rotationDeg = (Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x) * 180) / Math.PI
-  return { p0: pts[0], widthMM, heightMM, rotationDeg }
 }
 
 // ── Live-transform → Konva node attrs ─────────────────────────────────────────

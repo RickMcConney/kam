@@ -78,10 +78,11 @@ export async function optimizeStartPoints(): Promise<void> {
     if (op.status !== 'done') continue
 
     // Types whose output cannot depend on the entry hint: surfacing and inlay carry their
-    // own entry, 3D profile and imported G-code ignore startNear entirely. Regenerating
-    // them for a hint would cost their full generation and change nothing, so they only
-    // move the cursor along.
-    if (op.type === 'surface' || op.type === 'inlay' || op.type === 'profile3d' || op.type === 'gcode') {
+    // own entry, 3D profile, photo v-carve and imported G-code ignore startNear entirely
+    // (a raster field starts at a corner of the image, wherever the tool came from).
+    // Regenerating them for a hint would cost their full generation and change nothing,
+    // so they only move the cursor along.
+    if (op.type === 'surface' || op.type === 'inlay' || op.type === 'profile3d' || op.type === 'photovcarve' || op.type === 'gcode') {
       const e = exitOf(op, cx, cy)
       cx = e.x; cy = e.y
       havePredecessor = true

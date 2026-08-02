@@ -671,7 +671,14 @@ function rebuildHeightfield(refs: SceneRefs) {
   const segments = normalizeSimZ(rawSegs, genZOff)
   refs.simSegments = segments
 
-  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, getWoodTexture(material), woodTileMM(material), zOrigin)
+  // A photo v-carve is finished by painting the board and sanding the face back, so
+  // the cuts end up DARK against bare wood — the opposite of the fresh-cut look, and
+  // the only way to judge whether the carve reads as a picture. When the program
+  // contains one, show the whole board that way: the paint doesn't stop at the photo's
+  // edge, it fills every cut that was made before it.
+  const paintedCuts = useToolpathStore.getState().operations
+    .some((o) => o.type === 'photovcarve' && o.visible)
+  const hf = new HeightfieldMaterial(W, H, T, segments, toolStates, org.x, org.y, getWoodTexture(material), woodTileMM(material), zOrigin, paintedCuts)
   refs.heightfield = hf
   refs.scene.add(hf.group)
   perfLog(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)

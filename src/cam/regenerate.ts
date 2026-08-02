@@ -7,7 +7,8 @@ import { useToolStore, type Tool } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
-import { getBBox, extractCircle } from '../canvas/selectionUtils'
+import { getBBox, extractCircle, extractRectInfo } from '../canvas/selectionUtils'
+import { loadImageLuminance } from '../io/imageLuminance'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { effectiveStepDownMM, trochoidalEngagementFraction } from './feeds'
 import { resolveStartZForOp } from './startHeight'
@@ -115,6 +116,20 @@ export async function regenerateOperation(opId: string): Promise<void> {
       setSegments(opId, await runInWorkerFor(opId, 'generateVCarve', path.d, tool, {
         angleDeg: op.angleDeg, maxDepthMM: op.maxDepthMM + zStartMM, zStartMM, islandDs,
         startNear: op.entryHint, safeHeightMM,
+      }))
+
+    } else if (op.type === 'photovcarve') {
+      const imgPath = paths.find((p) => p.id === op.pathId)
+      if (!imgPath) throw new Error('Image path not found')
+      if (!imgPath.imageSrc) throw new Error('Path is not an image import')
+      const rect = extractRectInfo(imgPath.d)
+      if (!rect) throw new Error('Image path is no longer a rectangle')
+      // Decoded here rather than in the worker: pixel decoding needs a canvas, and the
+      // loader caches by data URL so a regenerate sweep decodes each photo once.
+      const image = await loadImageLuminance(imgPath.imageSrc)
+      setSegments(opId, await runInWorkerFor(opId, 'generatePhotoVCarve', image, rect, tool, {
+        angleDeg: op.angleDeg, passAngleDeg: op.passAngleDeg,
+        minDepthMM: op.minDepthMM, maxDepthMM: op.maxDepthMM, safeHeightMM,
       }))
 
     } else if (op.type === 'profile3d') {

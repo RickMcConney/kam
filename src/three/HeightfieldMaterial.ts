@@ -24,11 +24,26 @@ function isCuttingSeg(seg: SimSegment): boolean {
   return !seg.rapid && (seg.prevZ < 0 || seg.z < 0)
 }
 
+// Paint left in the cuts after the face is sanded back. Not quite black: a groove
+// full of paint still catches a little light off its walls, and a dead 0 reads as a
+// hole in the mesh rather than a filled line. Sampled in the same space as the wood
+// texture's raw texels (see the gamma lift below), so it is a value tuned by eye
+// against the wood, not a colorimetric one.
+const PAINT_RGB: [number, number, number] = [0.035, 0.032, 0.03]
+
 // The surface uses a stock MeshLambertMaterial so it lights like the rest of the
 // scene. onBeforeCompile injects the heightfield
 // displacement and per-vertex normals, and samples the planar world-mm-mapped
 // wood texture for the diffuse colour — carved surfaces read as wood too,
 // distinguished by depth and lighting rather than a highlight colour.
+//
+// `paintedCuts` swaps that for the opposite finish: cuts DARK against bare wood.
+// It is how a photo v-carve is actually finished — flood the board with paint, then
+// sand the face back so paint survives only in the grooves — and it is the only way
+// to see whether the carve reads as a picture, since the image lives entirely in how
+// wide each groove is. Whole-surface rather than per-operation because that is what
+// the finish does: paint fills every cut on the board, and sanding only reaches the
+// uncut top face.
 function patchSurfaceShader(
   mat: THREE.MeshLambertMaterial,
   texture: THREE.DataTexture,
@@ -37,6 +52,7 @@ function patchSurfaceShader(
   T: number,
   woodTex: THREE.Texture,
   tileMM: [number, number],
+  paintedCuts: boolean,
 ) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uHeight = { value: texture }
@@ -45,6 +61,8 @@ function patchSurfaceShader(
     shader.uniforms.uWoodTex = { value: woodTex }
     shader.uniforms.uWoodScale = { value: new THREE.Vector2(1 / tileMM[0], 1 / tileMM[1]) }
     shader.uniforms.uThickness = { value: T }
+    shader.uniforms.uPainted = { value: paintedCuts ? 1 : 0 }
+    shader.uniforms.uPaint = { value: new THREE.Color(...PAINT_RGB) }
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */ `#include <common>
@@ -76,6 +94,8 @@ function patchSurfaceShader(
         uniform sampler2D uWoodTex;
         uniform vec2 uWoodScale;
         uniform float uThickness;
+        uniform float uPainted;
+        uniform vec3 uPaint;
         varying float vH;
         varying vec2 vWUv;`)
       .replace('#include <color_fragment>', /* glsl */ `#include <color_fragment>
@@ -83,15 +103,21 @@ function patchSurfaceShader(
         // fragment so the scene background shows through the hole instead of a floor.
         if (vH <= 0.001) discard;
         vec3 _wood = texture2D(uWoodTex, vWUv * uWoodScale).rgb;
-        // Freshly machined surfaces read lighter than the oxidized/aged outer
-        // face: slightly desaturate, then gamma-lift carved fragments. The
-        // gamma curve lightens dark species (walnut, cherry) strongly while
-        // barely moving already-pale stock (maple), so the carve stays visible
-        // on any wood without washing light ones out.
         if (vH < uThickness - 0.001) {
           float _lum = dot(_wood, vec3(0.299, 0.587, 0.114));
-          _wood = mix(_wood, vec3(_lum), 0.2);
-          _wood = pow(_wood, vec3(0.5));
+          if (uPainted > 0.5) {
+            // Painted-and-sanded: the cut holds paint. Modulated by the wood's own
+            // luminance so the grooves keep some tooth instead of going flat black.
+            _wood = uPaint * (0.85 + 0.3 * _lum);
+          } else {
+            // Freshly machined surfaces read lighter than the oxidized/aged outer
+            // face: slightly desaturate, then gamma-lift carved fragments. The
+            // gamma curve lightens dark species (walnut, cherry) strongly while
+            // barely moving already-pale stock (maple), so the carve stays visible
+            // on any wood without washing light ones out.
+            _wood = mix(_wood, vec3(_lum), 0.2);
+            _wood = pow(_wood, vec3(0.5));
+          }
         }
         diffuseColor.rgb = _wood;`)
   }
@@ -230,6 +256,9 @@ export class HeightfieldMaterial {
     // Physical (u, v) mm the wood tile covers — see woodTileMM in woodTexture.ts.
     tileMM: [number, number] = [DEFAULT_TILE_MM, DEFAULT_TILE_MM],
     zOrigin: ZOrigin = 'top',
+    // Show the board painted and sanded back — cuts dark against bare wood — instead
+    // of the fresh-cut look. See patchSurfaceShader.
+    paintedCuts = false,
   ) {
     this._toolStates = toolStates
 
@@ -287,7 +316,7 @@ export class HeightfieldMaterial {
     this._surfaceGeo.setIndex(new THREE.BufferAttribute(indices, 1))
 
     this._surfaceMat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodTex, tileMM)
+    patchSurfaceShader(this._surfaceMat, this._texture, NX, NY, this._sx, this._sy, T, woodTex, tileMM, paintedCuts)
 
     // Flat bottom of the stock over the cut region — reuses the surface grid
     // (undisplaced at Y=0) and punches through where the cut goes clean through.

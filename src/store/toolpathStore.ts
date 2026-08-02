@@ -112,6 +112,23 @@ export interface VCarveOperation extends BaseOperation {
   angleDeg: number
 }
 
+// Carves a photo as parallel V-grooves whose depth tracks image brightness. `pathId` is
+// an image-backed path (ImportedPath.imageSrc) — the picture is pinned to that path's
+// rectangle, so moving or resizing it moves the carve. Depths run from the stock top:
+// unlike pocket/v-carve there is no `startFrom`, because a photo is carved on a flat
+// face, and stock top is the safe answer anywhere else.
+export interface PhotoVCarveOperation extends BaseOperation {
+  type: 'photovcarve'
+  pathId: string
+  angleDeg: number       // V-bit included angle (from the tool)
+  passAngleDeg: number   // raster direction, CCW from the image's own bottom edge
+  minDepthMM: number     // depth cut where the image is white
+  maxDepthMM: number     // depth cut where the image is black
+  // No line spacing: it is the width of the deepest groove, derived from maxDepthMM and
+  // the bit angle at generation time (cam/photoVcarve.ts). Storing it would let a copy
+  // drift from the depth that defines it.
+}
+
 // vbitToolId sentinel: skip the finish/wall pass entirely (female roughing-only —
 // just the raster pocket, no separate wall-finish contour). Only valid for female.
 export const INLAY_NO_FINISH = 'none'
@@ -173,7 +190,7 @@ export interface GcodeOperation extends BaseOperation {
 
 export const GCODE_IMPORT_TOOL_ID = '__gcode_import__'
 
-export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation | VCarveOperation | InlayOperation | Profile3dOperation | TrochoidalOperation | GcodeOperation
+export type AnyOperation = ProfileOperation | PocketOperation | DrillOperation | SurfaceOperation | VCarveOperation | PhotoVCarveOperation | InlayOperation | Profile3dOperation | TrochoidalOperation | GcodeOperation
 
 type AddPayload =
   | Omit<ProfileOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
@@ -181,6 +198,7 @@ type AddPayload =
   | Omit<DrillOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<SurfaceOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<VCarveOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
+  | Omit<PhotoVCarveOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<InlayOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<Profile3dOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
   | Omit<TrochoidalOperation, 'id' | 'status' | 'segments' | 'color' | 'visible'>
@@ -234,6 +252,7 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   if (op.type === 'pocket') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'drill') return op.pathId === pathId
   if (op.type === 'vcarve') return op.pathId === pathId || op.islandIds.includes(pathId)
+  if (op.type === 'photovcarve') return op.pathId === pathId
   if (op.type === 'inlay') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'profile3d') return op.pathId === pathId
   return false

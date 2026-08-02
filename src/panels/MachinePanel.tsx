@@ -1,4 +1,4 @@
-import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, VCarveForm, InlayForm, Profile3dForm, SurfaceForm, BooleanForm, OffsetForm, PatternForm, TabsForm, NodeEditForm } from './machine'
+import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, VCarveForm, PhotoVCarveForm, InlayForm, Profile3dForm, SurfaceForm, BooleanForm, OffsetForm, PatternForm, TabsForm, NodeEditForm } from './machine'
 import { useState, useEffect } from 'react'
 import { useToolpathStore } from '../store/toolpathStore'
 import { useTimelineStore } from '../timeline/timelineStore'
@@ -7,7 +7,7 @@ import type { OffsetEditCtx } from './machine/OffsetForm'
 import type { PatternEditCtx } from './machine/PatternForm'
 import { OP_TYPE_COLORS } from '../colors'
 import { ICON } from '../theme'
-import { Circle, CircleDot, Target, Layers, Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, RefreshCw } from 'lucide-react'
+import { Circle, CircleDot, Target, Layers, Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, RefreshCw, Image as ImageIcon } from 'lucide-react'
 import { useUIStore } from '../store/uiStore'
 
 // Exported for reuse (TimelinePanel chips use the same per-op icons as this menu)
@@ -20,7 +20,7 @@ export const InlayIcon = ({ size = 24 }: { size?: number }) => (
 
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
+type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'photovcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
 type FormState = null | 'menu' | OpType
 
 const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500'
@@ -37,6 +37,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
           ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
           ['vcarve', 'V-Carve', 'V-bit depth-varying carve', <Star size={ICON.md} />],
+          ['photovcarve', 'Photo V-Carve', 'Raster a photo as V-grooves — dark areas cut deeper', <ImageIcon size={ICON.md} />],
           ['inlay', 'Inlay', 'V-carved sloped walls with flat pocket bottom', <InlayIcon size={ICON.md} />],
           ['profile3d', '3D Profile', 'Follow STL relief surface with ball nose', <Box size={ICON.md} />],
         ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
@@ -162,6 +163,8 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
         <SurfaceForm key={editOpId ?? 'new'} onClose={closeForm} editOp={editOp?.type === 'surface' ? editOp : undefined} />
       ) : activeForm === 'vcarve' ? (
         <VCarveForm key={editOpId ?? 'new'} onClose={closeForm} editOp={editOp?.type === 'vcarve' ? editOp : undefined} />
+      ) : activeForm === 'photovcarve' ? (
+        <PhotoVCarveForm key={editOpId ?? 'new'} onClose={closeForm} editOp={editOp?.type === 'photovcarve' ? editOp : undefined} />
       ) : activeForm === 'inlay' ? (
         <InlayForm key={editOpId ?? 'new'} onClose={closeForm} editOp={editOp?.type === 'inlay' ? editOp : undefined} />
       ) : activeForm === 'boolean' ? (

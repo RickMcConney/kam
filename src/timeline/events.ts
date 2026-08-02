@@ -214,6 +214,7 @@ export const OP_DISPLAY_NAMES: Record<string, string> = {
   drill: 'Drill',
   surface: 'Surface',
   vcarve: 'V-Carve',
+  photovcarve: 'Photo V-Carve',
   inlay: 'Inlay',
   profile3d: '3D Profile',
   gcode: 'G-code',
