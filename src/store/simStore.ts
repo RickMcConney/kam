@@ -59,15 +59,21 @@ export const useSimStore = create<SimState>()((set, get) => ({
       segments: parsed.segments,
       toolStates: parsed.toolStates,
       totalTimeS: parsed.totalTimeS,
-      elapsedTimeS: 0,
+      // A loaded program shows its RESULT: the finished part, every cut made. That is
+      // what the user opened the simulator to see, and watching it happen is the second
+      // question, not the first — so playback starts from the answer and Play rewinds to
+      // the start (see `play`). Both views derive the material state from elapsedTimeS
+      // alone, so parking it at the end is the whole of "render the final result"; the
+      // 3D carve that backs it is spread over frames (HeightfieldMaterial.applyUpTo).
+      elapsedTimeS: parsed.totalTimeS,
       playing: false,
       genZOff,
     })
   },
 
-  // Play from the start again when the run has already finished, so replaying doesn't
-  // need a reset first — pressing play on a finished run is only ever a request to
-  // watch it again. A paused run mid-way still resumes where it was.
+  // Play from the start when the run is sitting at its end — which is where a freshly
+  // loaded program sits, and where a finished one is left. Pressing Play on a finished
+  // run is only ever a request to watch it happen. A paused run mid-way resumes.
   play: () =>
     set((s) => (s.totalTimeS > 0 && s.elapsedTimeS >= s.totalTimeS
       ? { playing: true, elapsedTimeS: 0 }

@@ -197,6 +197,13 @@ export async function regenerateOperation(opId: string): Promise<void> {
         rampIn: op.rampIn, mirrorX: op.mirrorX, mirrorAxisX: op.mirrorAxisX,
         islandDs: islandEntries.map((e) => e.d),
         islandPlugDs: islandEntries.map((e) => e.plugs),
+        // Male, inverted grouping: the background outline and the other plugs standing in
+        // it. A deleted field simply drops the clearance rather than failing the op.
+        fieldD: op.fieldId ? paths.find((p) => p.id === op.fieldId)?.d : undefined,
+        fieldPlugDs: (op.fieldPlugIds ?? []).flatMap((id) => {
+          const p = paths.find((x) => x.id === id)
+          return p ? [p.d] : []
+        }),
         safeHeightMM,
       }
       const result = op.role === 'female'

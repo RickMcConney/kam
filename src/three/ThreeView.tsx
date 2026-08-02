@@ -497,7 +497,10 @@ export default function ThreeView() {
       // Keep going only while something is actually animating. renderNeeded can
       // have been set again during this frame (a store subscription firing
       // mid-frame, or heightfield work that outlived the render).
-      if (sim.playing || controlsMoving || refs.renderNeeded) {
+      // …including a carve that ran out of its frame budget: a jump (a program opening on
+      // its finished state, a rewind, a scrubber drag) is carved over several frames, and
+      // a chunk that lowered nothing has no dirty texture to keep the loop awake for it.
+      if (sim.playing || controlsMoving || refs.renderNeeded || refs.heightfield?.catchingUp) {
         refs.rafId = requestAnimationFrame(animate)
       } else {
         refs.running = false

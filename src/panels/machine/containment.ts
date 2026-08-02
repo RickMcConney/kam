@@ -53,10 +53,22 @@ function insideCompound(x: number, y: number, subs: [number, number][][]): boole
 // islands, i.e. the boundaries of the groups an inverted grouping would produce inside
 // this one. The inlay's male part needs it: a hole cut into the plug has the next level's
 // plugs standing inside it, and clearing the hole flat would machine them away.
+//
+// `field` is the one path an inverted grouping leaves out. Inverting starts one level in,
+// so the outermost paths (depth 0) become neither boundaries nor islands and nothing
+// machines them — yet the wood between them and the plugs standing inside them is
+// background, and the inlay's male part has to clear it to the mating plane or the plug
+// never seats. It is reported on the FIRST group of each such parent only, with the other
+// plugs sharing it in `fieldPlugs`: one clearance covers the lot, and repeating it per
+// sibling would machine the siblings away. Deeper levels need none — a depth-2 path is
+// already some depth-1 boundary's island, i.e. a hole that group's operation clears.
 export function groupPathsByContainment(
   selectedPaths: ImportedPath[],
   opts: { invert?: boolean } = {},
-): { boundary: ImportedPath; islands: ImportedPath[]; islandPlugs: ImportedPath[][] }[] {
+): {
+  boundary: ImportedPath; islands: ImportedPath[]; islandPlugs: ImportedPath[][]
+  field?: ImportedPath; fieldPlugs?: ImportedPath[]
+}[] {
   if (selectedPaths.length === 0) return []
   if (selectedPaths.length === 1) {
     return opts.invert ? [] : [{ boundary: selectedPaths[0], islands: [], islandPlugs: [] }]
@@ -144,10 +156,21 @@ export function groupPathsByContainment(
 
   const wantParity = opts.invert ? 1 : 0
   const childrenOf = (id: string) => selectedPaths.filter(p => parentId.get(p.id) === id)
+  const byId = new Map(selectedPaths.map(p => [p.id, p]))
+  // One clearance per field, on whichever of its plugs comes first.
+  const fieldTaken = new Set<string>()
   return selectedPaths
     .filter(p => depth(p.id) % 2 === wantParity)
     .map(b => {
       const islands = childrenOf(b.id)
-      return { boundary: b, islands, islandPlugs: islands.map(i => childrenOf(i.id)) }
+      const group = { boundary: b, islands, islandPlugs: islands.map(i => childrenOf(i.id)) }
+      const parent = parentId.get(b.id)
+      // Only a root parent is unmachined (see the note above), which is only reachable
+      // when inverting — without it every boundary is itself a root.
+      if (parent === undefined || depth(parent) !== 0 || fieldTaken.has(parent)) return group
+      const field = byId.get(parent)
+      if (!field) return group
+      fieldTaken.add(parent)
+      return { ...group, field, fieldPlugs: childrenOf(parent).filter(p => p.id !== b.id) }
     })
 }

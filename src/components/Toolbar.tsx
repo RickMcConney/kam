@@ -150,8 +150,9 @@ export default function Toolbar() {
   async function handleSimulate() {
     const { operations: ops, toolsById, profile } = await buildGcodeInputs()
     const gcode = generateGcode(ops, toolsById, name, profile)
+    // Load only — the sim opens on the finished part (loadGcode parks the clock at the
+    // end). Play is what rewinds and runs it.
     useSimStore.getState().loadGcode(gcode)
-    useSimStore.getState().play()
     const cur = useUIStore.getState().workspaceTab
     if (cur !== '2d' && cur !== '3d') setWorkspaceTab('2d')
   }

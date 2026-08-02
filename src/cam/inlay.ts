@@ -21,6 +21,17 @@ export interface InlayParams {
   // standing. Omitted/short = no nested plugs. The female ignores it: a nested group cuts
   // its own socket into the island it stands on, so nothing is needed there.
   islandPlugDs?: string[][]
+  // Male only: the selected path this plug stands INSIDE — the outline of the background
+  // the male board has to clear. An inverted grouping machines the levels the default
+  // reading treats as holes, so the plug is a shape nested inside another selected path
+  // and the wood between the two is background: leave it at full height and the male board
+  // lands on the female's uncut face with the plug still a plug-depth clear of its socket.
+  // Absent → the plug's surroundings are scrap the release profile alone frees (the
+  // default, un-nested reading, where the boundary IS the outline of the male piece).
+  fieldD?: string
+  // Male only, with fieldD: the OTHER plugs standing in that same field. One operation
+  // clears the field for all of them, so every one of them has to be kept out of it.
+  fieldPlugDs?: string[]
   rampIn?: boolean           // ramp/helical entry on roughing pockets instead of plunging
   mirrorX?: boolean          // male only: mirror shape around vertical axis
   // Male only: the X of that axis. Turning the board over is one rigid motion for the
@@ -511,6 +522,15 @@ function boundariesOf(
     // islandPlugDs aligned, since a region's own holes have no nested plugs.
     extraFrom: r.islandDs.length,
   }))
+}
+
+// The outer rings of a path, as separate d strings — one per region for a compound path
+// (text, an SVG import), the path itself otherwise. Used where another operation's plug
+// has to be kept out of this one's pocket: its holes are that operation's business, so
+// only what it leaves standing matters here.
+function outerRingDs(d: string): string[] {
+  const regions = splitRegions(d)
+  return regions.length ? regions.map(r => r.outerD) : [d]
 }
 
 // Mirror a path string around the vertical axis x = cx.
@@ -1250,7 +1270,11 @@ export async function generateInlayMale(
   // came out halfWidth too small at every depth and the plug jammed on the protrusion —
   // 4.65 mm of interference on a plain square-with-a-round-island at 5 mm deep.
   const islandPlugDs = params.islandPlugDs ?? []
+  // Every ring this operation leaves standing as plug material, in the mirrored frame —
+  // what the field clearance below has to machine around.
+  const standingDs: string[] = []
   for (const { boundaryD, islandDs, extraFrom } of boundariesOf(d, regions, params.islandDs)) {
+    standingDs.push(mirror(boundaryD))
     // Plug border: outer-cut (no clearance — the plug stays nominal).
     const border = outerCut(mirror(boundaryD), profileTool, vbitTool, params)
     pushAll(vbitSegs, border.vbitSegs)
@@ -1275,6 +1299,59 @@ export async function generateInlayMale(
         pushAll(vbitSegs, socket.vbitSegs)
         pushAll(endmillSegs, socket.endmillSegs)
       } catch (e) { if (!isExpectedGeometryError(e)) throw e }
+    }
+  }
+
+  // ── Field clearance ─────────────────────────────────────────────────────────
+  //
+  // The plug stands inside another selected path (an inverted grouping — see fieldD).
+  // Everything between the two is background and has to come down to the mating plane:
+  // the female board is untouched face out there, so any stock left standing holds the
+  // whole male board off it and the plug never reaches its socket. This is the same
+  // construction the raised-prism text plug uses, with the user's own outline in place of
+  // the bounding box it has to invent.
+  //
+  // Islands are the plugs at NOMINAL size. The V-carve traces each plug outline with the
+  // tip on the mating plane, so plug material only ever lies inside that line (it narrows
+  // going up, which is what makes it the socket's complement once the board is turned
+  // over) — a vertical pocket that stops on the line cannot touch it, and the bevel above
+  // the line is the V-bit's own work.
+  if (params.fieldD) {
+    const safeZ = params.safeHeightMM ?? 5
+    const fieldD = mirror(params.fieldD)
+    const plugDs = [
+      ...standingDs,
+      ...(params.fieldPlugDs ?? []).flatMap(outerRingDs).map(mirror),
+    ]
+    try {
+      pushAll(endmillSegs, generatePocket(fieldD, profileTool, {
+        // 'raster' for the reason insideClear rasters its socket: this background is the
+        // male's mating land, and a wedge of stock left at a strategy seam holds the
+        // whole plug off the female. One angle, no seams.
+        strategy:        'raster',
+        depthMM:         params.pocketDepthMM,
+        stepDownMM:      params.stepDownMM,
+        stepoverPercent: params.stepoverPercent,
+        direction:       'climb',
+        islandDs:        plugDs,
+        angle:           0,
+        safeHeightMM:    params.safeHeightMM,
+        rampIn:          params.rampIn,
+      }))
+    } catch (e) { if (!isExpectedGeometryError(e)) throw e }
+
+    // Release profile — frees the male piece the way outerCut's does for an un-nested
+    // plug, since the field outline is this piece's own perimeter. Offset by HALF a
+    // radius so it also sweeps the fillets the pocket has to leave in the field's own
+    // corners: a round tool cannot get into a square corner, and those lumps sit at full
+    // height on the mating land. A 90° fillet only reaches R(1−1/√2) ≈ 0.29 R from either
+    // wall, so R/2 takes it completely; the piece simply ends up R/2 smaller all round,
+    // which costs nothing out here — the land is background, not design.
+    const releaseD = offsetPathD(fieldD, profileTool.diameterMM / 4)
+    if (releaseD) {
+      const rampLen = params.rampIn ? 2 * profileTool.diameterMM : undefined
+      const zPasses = zStepsTo(params.pocketDepthMM, params.stepDownMM)
+      for (const pts of getOuters(releaseD)) addContourStack(pts, zPasses, endmillSegs, safeZ, rampLen)
     }
   }
 

@@ -7,7 +7,7 @@ import { AlertCircle } from 'lucide-react'
 import { useToolStore, type Tool } from '../../store/toolStore'
 import { useToolpathStore, INLAY_NO_FINISH, type AnyOperation, type InlayOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
-import { usePathsStore } from '../../store/pathsStore'
+import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
@@ -27,6 +27,21 @@ interface InlayFormState {
   rampIn: boolean
   mirrorX: boolean
   invert: boolean
+}
+
+// The field a group's plug stands in — only an inverted grouping has one, and only on the
+// first plug of each field (see groupPathsByContainment). Carried on the operation so a
+// regenerate can find it again, and handed to the male generator as geometry. MALE ONLY:
+// the female never machines outside its socket, and an op that names a path is regenerated
+// (and deleted) with it. Always spread, never conditionally — a group that has stopped
+// having a field (Invert unticked, re-generated over the same op) has to lose the stale one.
+function fieldFields(role: 'female' | 'male', field?: ImportedPath, fieldPlugs?: ImportedPath[]) {
+  if (role !== 'male') return { fieldId: undefined, fieldPlugIds: undefined }
+  return { fieldId: field?.id, fieldPlugIds: fieldPlugs?.map((p) => p.id) }
+}
+function fieldParams(role: 'female' | 'male', field?: ImportedPath, fieldPlugs?: ImportedPath[]) {
+  if (role !== 'male') return { fieldD: undefined, fieldPlugDs: [] }
+  return { fieldD: field?.d, fieldPlugDs: (fieldPlugs ?? []).map((p) => p.d) }
 }
 
 export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: InlayOperation }) {
@@ -89,8 +104,14 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     : []
   const editIslands = editIslandPairs.map((e) => e.path)
   const editIslandPlugs = editIslandPairs.map((e) => e.plugs)
+  const editField = editOp?.fieldId ? paths.find((p) => p.id === editOp.fieldId) : undefined
+  const editFieldPlugs = (editOp?.fieldPlugIds ?? []).flatMap((id) => {
+    const p = paths.find((x) => x.id === id)
+    return p ? [p] : []
+  })
   const groups = editOp && editBoundary
-    ? [{ boundary: editBoundary, islands: editIslands, islandPlugs: editIslandPlugs }]
+    ? [{ boundary: editBoundary, islands: editIslands, islandPlugs: editIslandPlugs,
+         field: editField, fieldPlugs: editFieldPlugs }]
     : groupPathsByContainment(selPaths, { invert: form.invert })
   // Nested outlines alternate solid/hole, so a selection that nests has two valid readings
   // and only the user knows which wood is meant to end up as the plug. Once inverted the
@@ -175,7 +196,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
     if (editOp && editBoundary) {
       const inlayParams = { ...baseParams, islandDs: editIslands.map((p) => p.d),
-        islandPlugDs: editIslandPlugs.map((ps) => ps.map((p) => p.d)) }
+        islandPlugDs: editIslandPlugs.map((ps) => ps.map((p) => p.d)),
+        ...fieldParams(editOp.role, editField, editFieldPlugs) }
       // Update both the edited op and its linked counterpart with new params.
       const linkedOp = editOp.linkedOpId
         ? (operations.find((o) => o.id === editOp.linkedOpId) as InlayOperation | undefined)
@@ -228,19 +250,21 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       // instead of appending a contradictory second one. Replacing amends the chip that
       // created them, the way a depth edit does, rather than recording a delete and an add.
       const soloPayloads: Parameters<typeof addOperations>[0] = []
-      const soloSlots = groups.map(({ boundary, islands, islandPlugs }) => {
+      const soloSlots = groups.map(({ boundary, islands, islandPlugs, field, fieldPlugs }) => {
         // Re-Generate on a boundary this form already generated for updates that op in place.
         const existingId = session.liveOpId(groupKey(boundary.id))
         const name = `Inlay ${roleLabel} (End Mill): ${boundary.name}`
         if (existingId) {
           updateOperation(existingId, { ...sharedOpFields, phase: 'endmill', toolId: form.pocketToolId,
             islandIds: islands.map((p) => p.id), islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+            ...fieldFields(role, field, fieldPlugs),
             name, status: 'generating' } as Partial<AnyOperation>)
           return existingId
         }
         return soloPayloads.push({ ...opBase, phase: 'endmill', toolId: form.pocketToolId,
           pathId: boundary.id, islandIds: islands.map((p) => p.id),
-          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name }) - 1
+          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+          ...fieldFields(role, field, fieldPlugs), name }) - 1
       })
       const soloNew = staleDeleteIds.length > 0
         ? replaceGeneratedOperations({ anchorId: staleDeleteIds[0], deleteIds: staleDeleteIds, add: soloPayloads })
@@ -253,9 +277,10 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       })
       setTimeout(async () => {
         for (let i = 0; i < groups.length; i++) {
-          const { boundary, islands, islandPlugs } = groups[i]
+          const { boundary, islands, islandPlugs, field, fieldPlugs } = groups[i]
           const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d),
-            islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)) }
+            islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)),
+            ...fieldParams(role, field, fieldPlugs) }
           try {
             const result = role === 'female'
               ? await runInWorkerFor(ids[i], 'generateInlayFemale', boundary.d, pocketTool, null, inlayParams)
@@ -308,19 +333,21 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     const newOps: Parameters<typeof addOperations>[0] = []
     const phaseSlots = ([firstPhase, secondPhase] as const).map((phase) => {
       const toolId = phase === firstPhase ? firstToolId : secondToolId
-      return groups.map(({ boundary, islands, islandPlugs }, i) => {
+      return groups.map(({ boundary, islands, islandPlugs, field, fieldPlugs }, i) => {
         const name = `Inlay ${roleLabel} (${phaseLabel(phase)}): ${boundary.name}`
         const pair = existingPairs[i]
         if (pair) {
           const id = phase === firstPhase ? pair.firstId : pair.secondId
           updateOperation(id, { ...sharedOpFields, phase, toolId,
             islandIds: islands.map((p) => p.id), islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+            ...fieldFields(role, field, fieldPlugs),
             name, status: 'generating' } as Partial<AnyOperation>)
           return id
         }
         return newOps.push({ ...opBase, phase, toolId,
           pathId: boundary.id, islandIds: islands.map((p) => p.id),
-          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)), name }) - 1
+          islandPlugIds: islandPlugs.map((ps) => ps.map((p) => p.id)),
+          ...fieldFields(role, field, fieldPlugs), name }) - 1
       })
     })
     // Same replace-don't-append rule as the roughing-only path above: an Invert toggle
@@ -344,9 +371,10 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
     setTimeout(async () => {
       for (let i = 0; i < groups.length; i++) {
-        const { boundary, islands, islandPlugs } = groups[i]
+        const { boundary, islands, islandPlugs, field, fieldPlugs } = groups[i]
         const inlayParams = { ...baseParams, islandDs: islands.map((p) => p.d),
-          islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)) }
+          islandPlugDs: islandPlugs.map((ps) => ps.map((p) => p.d)),
+          ...fieldParams(role, field, fieldPlugs) }
         try {
           const result = role === 'female'
             ? await runInWorkerFor(firstIds[i], 'generateInlayFemale', boundary.d, pocketTool, wallTool, inlayParams)
@@ -549,11 +577,14 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           : `${updating ? 'Update' : 'Generate'} ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
       {/* Below the button — see PathListSection. Islands keep their label because that
           is a real distinction; nothing else needs one. */}
-      <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
-        {groups.map(({ boundary, islands }) => (
+      <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length + (isMale && g.field ? 1 : 0), 0)}>
+        {groups.map(({ boundary, islands, field }) => (
           <div key={boundary.id} className="space-y-0.5">
             <PathChip path={boundary} />
             {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+            {/* The male clears the wood between the plug and this path; the female never
+                machines outside its socket, so it plays no part there. */}
+            {isMale && field && <PathChip path={field} label="field" />}
           </div>
         ))}
       </PathListSection>

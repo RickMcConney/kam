@@ -143,6 +143,12 @@ export interface InlayOperation extends BaseOperation {
   // next level's plugs, which the male must leave standing inside the hole it cuts.
   // Absent on projects saved before nested inlay support; treated as "no nesting".
   islandPlugIds?: string[][]
+  // Male only, inverted grouping: the selected path this plug stands INSIDE. Its interior,
+  // minus every plug standing in it, is background the male clears to the mating plane —
+  // without it the male board rests on the female's uncut face. Set on ONE op per field
+  // (the first of its plugs); `fieldPlugIds` are the others it must leave standing.
+  fieldId?: string
+  fieldPlugIds?: string[]
   pocketToolId: string    // flat end mill ID (always the endmill, regardless of phase)
   vbitToolId: string      // vbit ID (always the vbit, regardless of phase)
   angleDeg: number
@@ -253,7 +259,10 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   if (op.type === 'drill') return op.pathId === pathId
   if (op.type === 'vcarve') return op.pathId === pathId || op.islandIds.includes(pathId)
   if (op.type === 'photovcarve') return op.pathId === pathId
-  if (op.type === 'inlay') return op.pathId === pathId || op.islandIds.includes(pathId)
+  // The male's field is geometry it machines (its background clearance), so it counts as a
+  // source path like any island: edit it and the op is stale, delete it and the op goes.
+  if (op.type === 'inlay') return op.pathId === pathId || op.islandIds.includes(pathId) ||
+    op.fieldId === pathId || !!op.fieldPlugIds?.includes(pathId)
   if (op.type === 'profile3d') return op.pathId === pathId
   return false
 }
@@ -273,6 +282,9 @@ export function pathIdsOf(op: AnyOperation | SerializedOperation): string[] {
   const ids: string[] = []
   if ('pathId' in op && op.pathId) ids.push(op.pathId)
   if ('islandIds' in op && op.islandIds) ids.push(...op.islandIds)
+  // Inlay male: the background outline it clears, and the sibling plugs standing in it.
+  if ('fieldId' in op && op.fieldId) ids.push(op.fieldId)
+  if ('fieldPlugIds' in op && op.fieldPlugIds) ids.push(...op.fieldPlugIds)
   return ids
 }
 

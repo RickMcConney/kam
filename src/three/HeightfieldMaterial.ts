@@ -246,6 +246,7 @@ export class HeightfieldMaterial {
   private _lastFullIdx = -1
   private _lastPartialIdx = -1
   private _lastPartialT = 0
+  private _catchingUp = false
 
   constructor(
     W: number, H: number, T: number,
@@ -361,25 +362,56 @@ export class HeightfieldMaterial {
     this._lastFullIdx = -1
     this._lastPartialIdx = -1
     this._lastPartialT = 0
+    this._catchingUp = false
   }
+
+  /** True while a jump is still being carved — the caller must keep the frame loop alive. */
+  get catchingUp(): boolean { return this._catchingUp }
 
   // Incrementally carve completed segments plus the partial current one,
   // resetting if playback scrubbed backwards.
-  applyUpTo(segments: SimSegment[], segIdx: number, t: number): boolean {
+  //
+  // A frame carves at most `budgetMs` worth and picks up where it left off on the next
+  // one. Playback's per-frame increment is a handful of segments and never reaches the
+  // budget; what does is a JUMP — loading a program (which opens on the finished part),
+  // a rewind, a scrubber drag across the whole run. Carving a full-sheet program in one
+  // go is ~2 s of arithmetic, and doing it inside a single frame froze the view and the
+  // browser with it. Spread out, the part fills in over a few frames instead.
+  //
+  // Order does not matter to the result: every carve lowers cells to a minimum, so a
+  // partially applied jump is exactly the same surface as the complete one, minus the
+  // segments not reached yet.
+  applyUpTo(segments: SimSegment[], segIdx: number, t: number, budgetMs = 24): boolean {
     if (segments.length === 0) return false
 
-    const goingBack = segIdx < this._lastPartialIdx ||
+    // `_lastFullIdx` is the honest record of what has actually been carved (it lags
+    // segIdx while catching up), so it — not the requested index — is what says whether
+    // this call is asking for LESS than is already cut, which only a reset can undo.
+    const goingBack = segIdx - 1 < this._lastFullIdx ||
       (segIdx === this._lastPartialIdx && t < this._lastPartialT - 1e-6)
     if (goingBack) this.reset()
 
-    for (let i = this._lastFullIdx + 1; i < segIdx && i < segments.length; i++) {
+    const deadline = performance.now() + budgetMs
+    const end = Math.min(segIdx, segments.length)
+    let i = this._lastFullIdx + 1
+    for (; i < end; i++) {
       const s = segments[i]
       if (isCuttingSeg(s)) {
         const ts = segTool(s, this._toolStates)
         this._hf.carve(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
       }
+      // Checked in blocks: performance.now() per segment costs more than the carve on
+      // the short moves a fine toolpath is made of.
+      if ((i & 255) === 255 && performance.now() >= deadline) { i++; break }
     }
-    this._lastFullIdx = segIdx - 1
+    this._lastFullIdx = i - 1
+    if (i < end) {
+      // Out of budget. The partial move below belongs on top of everything before it,
+      // so it waits for the next frame along with the rest.
+      this._catchingUp = true
+      return this._hf.dirty
+    }
+    this._catchingUp = false
 
     const seg = segIdx < segments.length ? segments[segIdx] : null
     if (seg && isCuttingSeg(seg)) {
