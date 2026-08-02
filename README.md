@@ -18,6 +18,10 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 
 *The 3D view simulating material removal, with the carved surface updating as the tool cuts.*
 
+![Photo V-Carve — a photograph rastered as V-grooves](screen%20shots/photo%20vcarve.png)
+
+*A photograph carved as V-grooves whose depth follows image brightness. The 3D view renders the cuts dark, the way the finished board looks once paint is flooded over it and sanded back off the face.*
+
 ---
 
 ## Features
@@ -26,7 +30,7 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 - **SVG** — paths, shapes, groups, nested transforms, real-world dimensions
 - **DXF** — LINE, LWPOLYLINE, ARC, CIRCLE, SPLINE, ELLIPSE entities; prompts for units when missing
 - **STL** — binary and ASCII for 3D surface machining workflows
-- **Images** — PNG, JPEG, WebP as visual canvas references
+- **Images** — PNG, JPEG, WebP as canvas references, or as the source for a photo V-carve
 - **G-code** — `.gcode`, `.nc`, `.ngc`, `.tap` for inspection and simulation
 
 ### Drawing Tools
@@ -61,6 +65,7 @@ The bar under the canvas holds two strips — they look alike but are different 
 | Drill | Peck drilling at placed points or helical drilling from circular paths |
 | Surface | Full-workpiece facing passes |
 | V-Carve | Medial-axis depth from V-bit geometry, island/letter-hole support |
+| Photo V-Carve | Rasters a photograph as V-grooves whose depth tracks image brightness |
 | Inlay | Female socket (pocket + V-carved walls) and male plug generation |
 | 3D Profile | Raster surface following from imported STL with optional roughing pass |
 
