@@ -27,8 +27,16 @@
 // would fragment every line into hundreds of retracts on a noisy photograph, and the
 // re-entry marks would show.
 //
-// Depths here are measured DOWN from `zStartMM` (0 = stock top); emitted Z is the
-// tool tip, like every other generator.
+// The same argument links the lines to each other. Cut serpentine, a line ends one
+// stepover from where the next one starts, so the tool is already there: it stays down
+// and cuts across, and the whole carve is one plunge and one retract instead of two
+// rapids and a plunge per line. The link runs along the edge of the picture, between
+// two grooves that a full-depth pixel would have joined anyway.
+//
+// Depths here are measured DOWN from `zStartMM` — the surface the picture is carved
+// into, which is stock top (0) on bare material and a pocket floor when the photo sits
+// in one (cam/startHeight.ts resolves it). Emitted Z is the tool tip, like every other
+// generator.
 
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -201,7 +209,18 @@ export function generatePhotoVCarve(
   const worldX = (u: number, v: number) => rect.p0.x + u * cosR - v * sinR
   const worldY = (u: number, v: number) => rect.p0.y + u * sinR + v * cosR
 
+  // How far apart two lines' facing ends may be before the tool lifts between them
+  // instead of cutting across. Serpentine ends sit one stepover apart when the raster
+  // runs square to the edge it exits through, and stepover/sin(angle) when it doesn't —
+  // so the allowance is in stepovers, not mm. What it catches is the corner of the
+  // rectangle, where a line exiting the top edge follows one that exited the side and
+  // the two ends can be most of an edge apart; dragging the bit along that would carve
+  // a border into the picture.
+  const maxLink = 3 * stepover
+
   const segs: MotionSegment[] = []
+  // Where the previous line left the tool, at cutting depth. Null before the first.
+  let prevEnd: { x: number; y: number } | null = null
   for (let li = 0; li < lines.length; li++) {
     const { b, t0, t1 } = lines[li]
     const bu = b * nx, bv = b * ny
@@ -228,18 +247,26 @@ export function generatePhotoVCarve(
     if (li % 2 === 1) thinned.reverse()
 
     const [ft, fz] = thinned[0]
-    segs.push({ x: worldX(bu + ft * dx, bv + ft * dy), y: worldY(bu + ft * dx, bv + ft * dy), z: safeZ, rapid: true })
-    segs.push({ x: worldX(bu + ft * dx, bv + ft * dy), y: worldY(bu + ft * dx, bv + ft * dy), z: fz, rapid: false })
+    const fx = worldX(bu + ft * dx, bv + ft * dy), fy = worldY(bu + ft * dx, bv + ft * dy)
+    if (prevEnd && Math.hypot(fx - prevEnd.x, fy - prevEnd.y) <= maxLink) {
+      // Already there — cut across to the next groove rather than lift and re-plunge.
+      segs.push({ x: fx, y: fy, z: fz, rapid: false })
+    } else {
+      if (prevEnd) segs.push({ x: prevEnd.x, y: prevEnd.y, z: safeZ, rapid: true })
+      segs.push({ x: fx, y: fy, z: safeZ, rapid: true })
+      segs.push({ x: fx, y: fy, z: fz, rapid: false })
+    }
     for (let i = 1; i < thinned.length; i++) {
       const [t, z] = thinned[i]
       const u = bu + t * dx, v = bv + t * dy
       segs.push({ x: worldX(u, v), y: worldY(u, v), z, rapid: false })
     }
     const [lt] = thinned[thinned.length - 1]
-    segs.push({ x: worldX(bu + lt * dx, bv + lt * dy), y: worldY(bu + lt * dx, bv + lt * dy), z: safeZ, rapid: true })
+    prevEnd = { x: worldX(bu + lt * dx, bv + lt * dy), y: worldY(bu + lt * dx, bv + lt * dy) }
 
     reportProgress((li + 1) / lines.length, 'carving')
   }
+  if (prevEnd) segs.push({ x: prevEnd.x, y: prevEnd.y, z: safeZ, rapid: true })
 
   perfLog(`[photovcarve] ${lines.length} lines, ds=${ds.toFixed(3)}mm → ${segs.length} segs in ${(performance.now() - _t0).toFixed(0)}ms`)
   return segs

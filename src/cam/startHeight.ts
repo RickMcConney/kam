@@ -11,8 +11,8 @@
 // is a crash. That is what lets the candidate filter below be as crude as it likes —
 // preceding ops only, flat floors only, bbox rejection — without ever being unsafe.
 //
-// Deliberately NOT modelled (each one errs high, i.e. safe): v-carve and 3D surfaces
-// (not flat), drilled holes (not a surface the cutter rides on), profile slots (a
+// Deliberately NOT modelled (each one errs high, i.e. safe): v-carve, photo v-carve and
+// 3D surfaces (not flat — a photo carve leaves a groove field, not a floor), drilled holes (not a surface the cutter rides on), profile slots (a
 // tool-width band, rarely what anything starts from), imported G-code (opaque).
 // The stock model in the simulator is the backstop that sees all of those.
 import polygonClipping, { type MultiPolygon, type Ring } from 'polygon-clipping'
@@ -544,10 +544,11 @@ export function startInputForOp(
   paths: ImportedPath[],
   tools: { id: string; diameterMM: number }[],
 ): ResolveInput | null {
-  if (op.type !== 'pocket' && op.type !== 'vcarve' && op.type !== 'profile') return null
+  if (op.type !== 'pocket' && op.type !== 'vcarve' && op.type !== 'profile' && op.type !== 'photovcarve') return null
   const path = paths.find((p) => p.id === op.pathId)
   if (!path) return null
-  // Pocket and v-carve stay inside their outline; a profile swings the tool outside it.
+  // Pocket, v-carve and photo v-carve stay inside their outline (the photo's own rectangle,
+  // which is where its raster lines are clipped); a profile swings the tool outside it.
   let cutMarginMM = 0
   if (op.type === 'profile') {
     const dia = tools.find((t) => t.id === op.toolId)?.diameterMM ?? 0

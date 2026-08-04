@@ -114,9 +114,10 @@ export interface VCarveOperation extends BaseOperation {
 
 // Carves a photo as parallel V-grooves whose depth tracks image brightness. `pathId` is
 // an image-backed path (ImportedPath.imageSrc) — the picture is pinned to that path's
-// rectangle, so moving or resizing it moves the carve. Depths run from the stock top:
-// unlike pocket/v-carve there is no `startFrom`, because a photo is carved on a flat
-// face, and stock top is the safe answer anywhere else.
+// rectangle, so moving or resizing it moves the carve. Depths run DOWN FROM the surface
+// `startFrom` resolves to (BaseOperation), not from the stock top: a photo dropped into
+// the floor of a pocket carves the same greyscale band into that floor. The carve itself
+// leaves a groove field, never a flat floor, so nothing can start from it.
 export interface PhotoVCarveOperation extends BaseOperation {
   type: 'photovcarve'
   pathId: string

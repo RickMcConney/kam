@@ -1,5 +1,6 @@
 // ─── Photo V-Carve form ───────────────────────────────────────────────────────
-import { FormShell, ToolSelector, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState, useEffect } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -20,6 +21,7 @@ interface PhotoVCarveFormState {
   passAngleDeg: number
   minDepthMM: number
   maxDepthMM: number
+  startFrom: StartFrom
 }
 
 // Raster lines are undirected — 200° and 20° lay down the same lines — so every angle has an
@@ -34,7 +36,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
   const { paths } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM } = useWorkpieceStore()
+  const { safeHeightMM, widthMM, heightMM } = useWorkpieceStore()
 
   const vbits = tools.filter((t) => t.type === 'vbit')
   const defaultTool = vbits[0] ?? tools[0]
@@ -47,6 +49,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
       passAngleDeg: editOp.passAngleDeg,
       minDepthMM: editOp.minDepthMM,
       maxDepthMM: editOp.maxDepthMM,
+      startFrom: editOp.startFrom ?? { mode: 'stock' as const },
     } : mergeWithDefaults(load('photovcarve'), {
       toolId: defaultTool?.id ?? '',
       pathId: imagePaths[0]?.id ?? '',
@@ -55,10 +58,16 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
       // spacing, so this is the resolution control — 0.6 mm on a 60° bit gives 0.69 mm lines.
       minDepthMM: 0,
       maxDepthMM: 0.6,
+      // Deliberately not carried over from the saved defaults — see PocketForm.
+      startFrom: { mode: 'auto' } as StartFrom,
     }, tools)
     // An op or saved default from before the slider can hold any angle in ±180. Fold it into
     // the slider's half turn rather than let the control clamp it to a different raster.
-    return { ...init, passAngleDeg: norm180(init.passAngleDeg) }
+    return {
+      ...init,
+      passAngleDeg: norm180(init.passAngleDeg),
+      ...(editOp ? {} : { startFrom: { mode: 'auto' as const } }),
+    }
   })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -86,6 +95,10 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
   const th = form.passAngleDeg * Math.PI / 180
   const bandMM = rect ? Math.abs(rect.widthMM * Math.sin(th)) + Math.abs(rect.heightMM * Math.cos(th)) : 0
   const lineCount = rect ? Math.max(1, Math.floor(bandMM / spacingMM) + 1) : 0
+  // Margin 0: the raster is clipped to the picture's own rectangle. See VCarveForm for
+  // why an op this session already generated is not a cut preceding itself.
+  const selfOpId = editOp?.id ?? session.liveOpId(form.pathId)
+  const startZ = useStartZ(form.startFrom, selectedPath?.d ?? '', 0, selfOpId)
 
   function up<K extends keyof PhotoVCarveFormState>(k: K, v: PhotoVCarveFormState[K]) {
     setForm((f) => ({ ...f, [k]: v }))
@@ -104,11 +117,20 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         if (!imgRect) throw new Error('Image path is no longer a rectangle')
         const image = await loadImageLuminance(selectedPath.imageSrc!)
 
+        // Resolved here, against the state as it is at Generate time, exactly as
+        // regenerateOperation does — the depths below are measured DOWN from it, so a
+        // photo sitting in a pocket floor carves into that floor instead of into air.
+        const zStartMM = resolveStartZ(
+          { startFrom: form.startFrom, footprintD: selectedPath.d, cutMarginMM: 0, opId: editOp?.id ?? existingId },
+          useToolpathStore.getState().operations, usePathsStore.getState().paths,
+          { widthMM, heightMM },
+        ).zMM
         const params = {
           angleDeg,
           passAngleDeg: form.passAngleDeg,
           minDepthMM: form.minDepthMM,
           maxDepthMM: form.maxDepthMM,
+          zStartMM,
           safeHeightMM,
         }
         const opName = `Photo V-Carve: ${selectedPath.name} (${selectedTool.name})`
@@ -121,6 +143,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           updateOperation(updateId, {
             toolId: form.toolId, angleDeg, passAngleDeg: form.passAngleDeg,
             minDepthMM: form.minDepthMM, maxDepthMM: form.maxDepthMM,
+            startFrom: form.startFrom,
             name: opName, status: 'generating',
           } as Partial<AnyOperation>)
           setSegments(updateId, segments)
@@ -134,6 +157,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
             passAngleDeg: form.passAngleDeg,
             minDepthMM: form.minDepthMM,
             maxDepthMM: form.maxDepthMM,
+            startFrom: form.startFrom,
           })
           updateOperation(newOpId, { status: 'generating' })
           setSegments(newOpId, segments)
@@ -195,6 +219,8 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         </p>
       )}
 
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
+
       {/* Raster angle — a slider over half a turn, same control as the pocket pass angle.
           Lines have no direction of their own, so 180° is 0° again and the range covers
           every distinct raster orientation. */}
@@ -254,7 +280,8 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           carve is a finer one. A deeper carve has more contrast and fewer, wider lines.
         </p>
       </div>
-      {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
+      {/* Reach from stock top: carving into a pocket floor adds that much to the total. */}
+      {selectedTool && form.maxDepthMM - startZ.zMM > selectedTool.maxDepthMM && (
         <p className="text-label text-amber-500 flex items-center gap-1">
           <AlertCircle size={10} className="shrink-0" />
           Exceeds tool max ({selectedTool.maxDepthMM} mm)

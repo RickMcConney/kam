@@ -129,7 +129,9 @@ export async function regenerateOperation(opId: string): Promise<void> {
       const image = await loadImageLuminance(imgPath.imageSrc)
       setSegments(opId, await runInWorkerFor(opId, 'generatePhotoVCarve', image, rect, tool, {
         angleDeg: op.angleDeg, passAngleDeg: op.passAngleDeg,
-        minDepthMM: op.minDepthMM, maxDepthMM: op.maxDepthMM, safeHeightMM,
+        // Depths are relative to the surface the photo is carved into, so a picture in a
+        // pocket floor cuts the same greyscale band there that it would on bare stock.
+        minDepthMM: op.minDepthMM, maxDepthMM: op.maxDepthMM, zStartMM: startZMM, safeHeightMM,
       }))
 
     } else if (op.type === 'profile3d') {

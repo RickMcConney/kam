@@ -82,6 +82,18 @@ describe('depth follows image brightness', () => {
     }
   })
 
+  it('measures depth down from the start surface, not from stock top', () => {
+    // The same picture carved into the floor of a 3 mm pocket: every cut 3 mm lower, and
+    // the rapids still at absolute safe height so the retract clears the pocket wall.
+    const flat = generatePhotoVCarve(image([[0, 128, 255]]), RECT, vbit(), params({ maxDepthMM: 2 }))
+    const inPocket = generatePhotoVCarve(image([[0, 128, 255]]), RECT, vbit(), params({ maxDepthMM: 2, zStartMM: -3 }))
+    expect(inPocket.length).toBe(flat.length)
+    for (let i = 0; i < flat.length; i++) {
+      expect(inPocket[i].rapid).toBe(flat[i].rapid)
+      expect(inPocket[i].z).toBeCloseTo(flat[i].rapid ? flat[i].z : flat[i].z - 3, 9)
+    }
+  })
+
   it('mid grey lands halfway down the depth band', () => {
     const segs = generatePhotoVCarve(image([[128]]), RECT, vbit(), params({ minDepthMM: 1, maxDepthMM: 3 }))
     for (const s of segs.filter((x) => !x.rapid)) expect(s.z).toBeCloseTo(-2, 1)
@@ -154,7 +166,7 @@ describe('raster layout', () => {
 // ─── Motion ───────────────────────────────────────────────────────────────────
 
 describe('motion', () => {
-  it('enters and leaves every groove at safe height', () => {
+  it('enters and leaves at safe height', () => {
     const segs = generatePhotoVCarve(image([[128]]), RECT, vbit(), params({ safeHeightMM: 7 }))
     expect(segs[0].rapid).toBe(true)
     expect(segs[0].z).toBe(7)
@@ -170,14 +182,48 @@ describe('motion', () => {
     }
   })
 
+  it('stays down between lines — one plunge and one retract for the whole carve', () => {
+    // 2 mm at black on a 90° bit → 4 mm lines → 13 lines across the 50 mm image.
+    const segs = generatePhotoVCarve(image([[128]]), RECT, vbit(), params({ maxDepthMM: 2 }))
+    const rapids = segs.filter((s) => s.rapid)
+    expect(rapids.length).toBe(2)
+    expect(segs.indexOf(rapids[0])).toBe(0)
+    expect(segs.indexOf(rapids[1])).toBe(segs.length - 1)
+    // Every line is joined to the next by one cutting move across of exactly one stepover
+    // (a uniform image thins each groove to its two ends, so nothing else holds x).
+    let links = 0
+    for (let i = 2; i < segs.length; i++) {
+      if (segs[i].rapid || Math.abs(segs[i].x - segs[i - 1].x) > 1e-9) continue
+      links++
+      expect(Math.abs(segs[i].y - segs[i - 1].y)).toBeCloseTo(4, 6)
+    }
+    expect(links).toBe(12)
+  })
+
+  it('lifts when the next line does not start where this one ended', () => {
+    // A shallow raster angle over a wide rectangle: most lines cross the image and exit
+    // the right edge a stepover apart, but the ones that run out of the top exit along
+    // an edge they barely cross, so their ends are far apart. Those must not be linked.
+    const segs = generatePhotoVCarve(image([[128]]), RECT, vbit(), params({ passAngleDeg: 5, maxDepthMM: 2 }))
+    expect(segs.filter((s) => s.rapid).length).toBeGreaterThan(2)
+    // Each lift is a retract straight up followed by a rapid across at safe height.
+    for (let i = 1; i < segs.length - 1; i++) {
+      if (!segs[i].rapid || segs[i - 1].rapid) continue
+      expect(segs[i].x).toBeCloseTo(segs[i - 1].x, 9)
+      expect(segs[i].y).toBeCloseTo(segs[i - 1].y, 9)
+      expect(segs[i + 1].rapid).toBe(true)
+    }
+  })
+
   it('cuts alternate lines in opposite directions', () => {
     const segs = generatePhotoVCarve(image([[128]]), RECT, vbit(), params({ maxDepthMM: 5 }))
-    // Per line: rapid-in, plunge, … , retract. Direction = sign of (last x − first x).
+    // A uniform image thins each groove to its two ends, so one x-moving cut per line;
+    // the moves between them are pure stepovers across.
     const dirs: number[] = []
-    let start: number | null = null
-    for (const s of segs) {
-      if (!s.rapid && start === null) start = s.x
-      else if (s.rapid && start !== null) { dirs.push(Math.sign(s.x - start)); start = null }
+    for (let i = 1; i < segs.length; i++) {
+      if (segs[i].rapid || segs[i - 1].rapid) continue
+      const d = Math.sign(+(segs[i].x - segs[i - 1].x).toFixed(6))
+      if (d !== 0) dirs.push(d)
     }
     expect(dirs.length).toBeGreaterThan(2)
     for (let i = 1; i < dirs.length; i++) expect(dirs[i]).toBe(-dirs[i - 1])
