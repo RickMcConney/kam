@@ -315,7 +315,10 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   )
 }
 
-export function GenerateBtn({ disabled, generating, onClick, label = 'Generate Toolpath' }: { disabled: boolean; generating: boolean; onClick: () => void; label?: string }) {
+// `onClick` receives the mouse event so a form can read modifiers — PocketForm uses
+// alt-click to force a strategy the shape would otherwise decline. Handlers that take no
+// argument stay assignable, so the other forms are unaffected.
+export function GenerateBtn({ disabled, generating, onClick, label = 'Generate Toolpath', title }: { disabled: boolean; generating: boolean; onClick: (e: React.MouseEvent) => void; label?: string; title?: string }) {
   // Progress is only published once a generation has been running long enough to be worth
   // showing (see genProgressStore); short ones keep the plain spinner.
   const pct = useGenProgressStore((s) => s.overall)
@@ -323,7 +326,7 @@ export function GenerateBtn({ disabled, generating, onClick, label = 'Generate T
   const showBar = generating && pct !== null
 
   return (
-    <button onClick={onClick} disabled={disabled}
+    <button onClick={onClick} disabled={disabled} title={title}
       className="relative w-full py-1.5 rounded text-body font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5 overflow-hidden">
       {/* Fill behind the label, so the button itself is the progress bar. */}
       {showBar && (

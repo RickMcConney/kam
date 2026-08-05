@@ -42,14 +42,42 @@ function generateScanlines(
   return segments
 }
 
+/** An island exclusion with its bounding box, in the rotated (scanline-aligned) frame. */
+interface Exclusion { ring: Pt2[]; box: [number, number, number, number] }
+
+function boxOf(ring: Pt2[]): [number, number, number, number] {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const [x, y] of ring) {
+    if (x < x0) x0 = x
+    if (x > x1) x1 = x
+    if (y < y0) y0 = y
+    if (y > y1) y1 = y
+  }
+  return [x0, y0, x1, y1]
+}
+
 function clipScanlineAgainstIslands(
-  p1: Pt2, p2: Pt2, exclusions: Pt2[][],
+  p1: Pt2, p2: Pt2, exclusions: Exclusion[],
 ): { p1: Pt2; p2: Pt2 }[] {
   if (exclusions.length === 0) return [{ p1, p2 }]
   const y = p1[1]
   const xL = Math.min(p1[0], p2[0]), xR = Math.max(p1[0], p2[0])
   const blocked: [number, number][] = []
-  for (const poly of exclusions) {
+  for (const { ring: poly, box } of exclusions) {
+    // Islands whose y-band the scanline misses, rejected by box before walking their
+    // edges. A scanline is one row of a fill spanning the whole pocket, so on anything
+    // with several islands most of them are nowhere near it. Exact, not an approximation:
+    // with y outside [y0, y1] no edge can satisfy the half-open crossing test below, so
+    // `hits` comes out empty, and no point at that y lies inside the ring either — which
+    // is the only other way this iteration has an effect (the pointInPolygon fallback).
+    // Kept deliberately loose at both ends (y == y0 can produce a hit off a flat bottom
+    // edge; y == y1 cannot, but is cheaper to admit than to reason about).
+    //
+    // No x test: an island wholly left or right of the span blocks nothing, but its mere
+    // presence in `blocked` diverts the function from the `blocked.length === 0` early
+    // return to the cursor walk, and only the walk applies the 0.1 mm minimum-span filter.
+    // Skipping it would therefore change the output for a sub-0.1 mm scanline.
+    if (y < box[1] || y > box[3]) continue
     const hits: number[] = []
     const n = poly.length
     for (let i = 0; i < n; i++) {
@@ -315,6 +343,7 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   //
   // The first scanline still lands half a stepover in from there (generateScanlines starts
   // at minY + spacing/2), so it does not sit on top of the finishing pass.
+  // Also the raster's travel-safety edge below — same inset, same ring, one Clipper offset.
   const rasterBoundary = insetRing(boundary, toolRadius)
   const rawScanlines = rasterBoundary.length >= 3
     ? generateScanlines(rasterBoundary, stepoverMM, params.angle ?? 0)
@@ -330,7 +359,12 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   // scanline may run right up to where the tool would touch the island, and no further.
   // islandExclusions (a full diameter) stays what TRAVEL is tested against — where the
   // tool may cross uncleared stock is a separate question from where it may cut.
-  const islandExclusionsRot = islandFinish.map(e => e.map(p => rotPt(p, cosF, sinF)))
+  // Boxed once here rather than per scanline: the clip below runs one pass per row over
+  // every island, and each box is a function of the island alone.
+  const islandExclusionsRot: Exclusion[] = islandFinish.map(e => {
+    const ring = e.map(p => rotPt(p, cosF, sinF))
+    return { ring, box: boxOf(ring) }
+  })
   const clippedScanlines = rawScanlines.flatMap(s => {
     const p1r = rotPt(s.p1, cosF, sinF)
     const p2r = rotPt(s.p2, cosF, sinF)
@@ -346,7 +380,11 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   // like star inner corners, so micro-lifts through those areas aren't caught as
   // unsafe. The finishing ring (inset by only tool radius) preserves those concave
   // edges, correctly blocking transitions that would cut through uncleared wall material.
-  const finishRing = insetRing(boundary, toolRadius)
+  //
+  // (The comment above is from when the raster fill inset by a full diameter. It insets by
+  // a radius now — see rasterBoundary — so this IS that same ring, reused rather than
+  // offset a second time. The travel-safety reasoning stands either way.)
+  const finishRing = rasterBoundary
   const rasterTravelEdge = finishRing.length >= 3 ? finishRing : boundary
   const rasterTravel: TravelSafetyObstacles = {
     edgeObstacles: [rasterTravelEdge, ...islandFinish], solidObstacles: islandFinish,

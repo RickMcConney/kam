@@ -21,6 +21,11 @@ import type {  CuttingDirection, Tool } from '../../store/toolStore'
 export type PocketStrategy = 'raster' | 'contour' | 'adaptive' | 'morph' | 'adaptive2' | 'hybrid'
 
 export interface PocketParams {
+  /** Run the chosen strategy even where it would normally decline the shape as a poor fit
+   *  (see REDUNDANCY_LIMIT in fieldSpiral). Set by an explicit user gesture — alt-clicking
+   *  Generate — never by default: the whole point of declining is that the path it would
+   *  have produced is one nobody would run. */
+  forceStrategy?: boolean
   strategy?: PocketStrategy
   depthMM: number
   stepDownMM: number
@@ -228,6 +233,11 @@ function ringBBox(poly: Pt2[]): [number, number, number, number] {
   return box
 }
 
+// Scratch for the containment scan in isTravelSafe — see the comment at its use. Grows to
+// the largest containment set seen and is then reused; entries past `liveCount` are stale
+// and never read.
+const liveScratch: Pt2[][] = []
+
 export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacles): boolean {
   if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 1e-6) return true
 
@@ -261,15 +271,28 @@ export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacle
   const containment = obstacles.containment
   if (containment && containment.length > 0) {
     // Only rings whose box overlaps the move can contain any of its sample points, so the
-    // per-sample `some` runs over those instead of over every finishing ring in the pocket.
-    const live = containment.filter(poly => !misses(poly))
-    if (live.length === 0) return false
+    // per-sample scan runs over those instead of over every finishing ring in the pocket.
+    // The overlapping set is gathered ONCE per call (the box test is a WeakMap lookup, so
+    // re-testing it per sample would cost more than it saves) into a scratch array reused
+    // across calls — this is the hottest function in the module, tens of thousands of
+    // calls per plan, and that array was its only allocation. Safe to share: there is no
+    // await and no reentry between filling it and finishing with it.
+    let liveCount = 0
+    for (let i = 0; i < containment.length; i++) {
+      const poly = containment[i]
+      if (!misses(poly)) liveScratch[liveCount++] = poly
+    }
+    if (liveCount === 0) return false
     const N = 8
     for (let k = 1; k < N; k++) {
       const t = k / N
       const x = from[0] + (to[0] - from[0]) * t
       const y = from[1] + (to[1] - from[1]) * t
-      if (!live.some(poly => pointInPolygon(x, y, poly))) return false
+      let inside = false
+      for (let i = 0; i < liveCount; i++) {
+        if (pointInPolygon(x, y, liveScratch[i])) { inside = true; break }
+      }
+      if (!inside) return false
     }
   }
 
@@ -1199,28 +1222,115 @@ export function restCleanupRings(
 // Distance is to the nearest EDGE, not vertex — a low-vertex outer loop (e.g. an
 // inset square's 4 corners) would otherwise read points mid-edge as far away and
 // break the stepover spacing. Inner points subsampled; outer kept as edges.
-export function setGap(inners: Pt2[][], outers: Pt2[][]): number {
-  const subVerts = (loop: Pt2[], target: number) => {
-    const step = Math.max(1, Math.floor(loop.length / target))
-    const out: Pt2[] = []
-    for (let i = 0; i < loop.length; i += step) out.push(loop[i])
-    return out
+// Uniform grid over the outer EDGES, so the distance query below can afford to keep every
+// one of them. A segment is filed in every cell its bounding box touches, so a ring-r cell
+// holds nothing closer than (r-1) cells and the search can stop the moment that exceeds the
+// best distance found.
+class SegmentGrid {
+  private readonly cell: number
+  private readonly minX: number
+  private readonly minY: number
+  private readonly cols: number
+  private readonly rows: number
+  private readonly buckets: number[][]
+  private readonly segs: readonly [Pt2, Pt2][]
+
+  constructor(segs: readonly [Pt2, Pt2][]) {
+    this.segs = segs
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const [a, b] of segs) {
+      if (a[0] < minX) minX = a[0]; if (a[0] > maxX) maxX = a[0]
+      if (b[0] < minX) minX = b[0]; if (b[0] > maxX) maxX = b[0]
+      if (a[1] < minY) minY = a[1]; if (a[1] > maxY) maxY = a[1]
+      if (b[1] < minY) minY = b[1]; if (b[1] > maxY) maxY = b[1]
+    }
+    const span = Math.max(maxX - minX, maxY - minY)
+    this.cell = span > 0 ? Math.max(span / Math.max(1, Math.ceil(Math.sqrt(segs.length))), 1e-6) : 1
+    this.minX = minX; this.minY = minY
+    this.cols = Math.max(1, Math.floor((maxX - minX) / this.cell) + 1)
+    this.rows = Math.max(1, Math.floor((maxY - minY) / this.cell) + 1)
+    this.buckets = Array.from({ length: this.cols * this.rows }, () => [] as number[])
+    for (let i = 0; i < segs.length; i++) {
+      const [a, b] = segs[i]
+      const c0 = this.col(Math.min(a[0], b[0])), c1 = this.col(Math.max(a[0], b[0]))
+      const r0 = this.row(Math.min(a[1], b[1])), r1 = this.row(Math.max(a[1], b[1]))
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) this.buckets[r * this.cols + c].push(i)
+    }
   }
+
+  private col(x: number) { return Math.min(this.cols - 1, Math.max(0, Math.floor((x - this.minX) / this.cell))) }
+  private row(y: number) { return Math.min(this.rows - 1, Math.max(0, Math.floor((y - this.minY) / this.cell))) }
+
+  nearestDistSq(x: number, y: number): number {
+    const cx = this.col(x), cy = this.row(y)
+    let best = Infinity
+    const maxRing = Math.max(this.cols, this.rows)
+    for (let r = 0; r <= maxRing; r++) {
+      if (best < Infinity) { const reach = (r - 1) * this.cell; if (reach > 0 && reach * reach > best) break }
+      const y0 = Math.max(0, cy - r), y1 = Math.min(this.rows - 1, cy + r)
+      for (let j = y0; j <= y1; j++) {
+        const onYEdge = j === cy - r || j === cy + r
+        const x0 = Math.max(0, cx - r), x1 = Math.min(this.cols - 1, cx + r)
+        for (let i = x0; i <= x1; i++) {
+          if (!onYEdge && i !== cx - r && i !== cx + r) continue
+          for (const id of this.buckets[j * this.cols + i]) {
+            const [a, b] = this.segs[id]
+            const d = ptSegDistSq(x, y, a[0], a[1], b[0], b[1])
+            if (d < best) best = d
+          }
+        }
+      }
+    }
+    return best
+  }
+}
+
+/**
+ * Largest distance from a set of inner loops out to the nearest EDGE of a set of outer
+ * loops (the paper's D_isoHQ, eq. 10, generalized to multiple components). Distance is to
+ * the nearest edge, not vertex — a low-vertex outer loop (an inset square's 4 corners)
+ * would otherwise read points mid-edge as far away and break the stepover spacing.
+ *
+ * Both sides are kept at FULL resolution. They used to be decimated to a fixed vertex count
+ * (outers to 200, inners to 40) and that silently destroyed the measurement on any detailed
+ * outline: decimating a 4598-vertex island 22x leaves chords cutting straight across its
+ * detail, so an isotherm hugging the real boundary reads as tens of mm from it. On the dog's
+ * 22-island pocket that made the reported gap NON-MONOTONIC in the temperature step — 21 mm
+ * at a step where the true gap was 0.39 mm — which is the one property buildIsothermChains'
+ * bisection relies on. Every candidate level was rejected, the march died having traced zero
+ * isotherms, and the "spiral" came out as a single loop. Exact distances are monotonic and
+ * land in the window as intended.
+ *
+ * Keeping every edge is only affordable with the index above; brute force over them ran ~3 s
+ * per call. Inner loops are sampled by ARC LENGTH rather than by count, so the spacing of
+ * the samples is a property of the geometry and not of how densely that particular loop
+ * happened to be tessellated.
+ */
+export function setGap(inners: Pt2[][], outers: Pt2[][], sampleMM = 0.25): number {
   const outerSegs: [Pt2, Pt2][] = []
   for (const o of outers) {
-    const v = subVerts(o, 200)
-    for (let i = 0; i < v.length; i++) outerSegs.push([v[i], v[(i + 1) % v.length]])
+    for (let i = 0; i < o.length; i++) outerSegs.push([o[i], o[(i + 1) % o.length]])
   }
   if (outerSegs.length === 0) return Infinity
+  const grid = new SegmentGrid(outerSegs)
+  const step = Math.max(sampleMM, 1e-6)
+
   let maxMin = 0
+  const take = (dSq: number) => { if (dSq > maxMin) maxMin = dSq }
   for (const inner of inners) {
-    for (const p of subVerts(inner, 40)) {
-      let mn = Infinity
-      for (const [a, b] of outerSegs) {
-        const d = ptSegDistSq(p[0], p[1], a[0], a[1], b[0], b[1])
-        if (d < mn) mn = d
+    if (inner.length === 0) continue
+    // Walk the loop at a fixed arc-length spacing, always including the vertices themselves
+    // so a corner is never stepped over.
+    let carried = 0
+    for (let i = 0; i < inner.length; i++) {
+      const a = inner[i], b = inner[(i + 1) % inner.length]
+      take(grid.nearestDistSq(a[0], a[1]))
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1])
+      for (let s = step - carried; s < len; s += step) {
+        const t = s / len
+        take(grid.nearestDistSq(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
       }
-      if (mn > maxMin) maxMin = mn
+      carried = len > 0 ? (len + carried) % step : carried
     }
   }
   return Math.sqrt(maxMin)

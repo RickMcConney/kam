@@ -22,7 +22,7 @@ import {
 } from './pocket/shared'
 import { planRasterPocket } from './pocket/raster'
 import { planContourPocket } from './pocket/contour'
-import { planFieldSpiralPocket } from './pocket/fieldSpiral'
+import { planFieldSpiralPocket, takeUnsuitableRatio } from './pocket/fieldSpiral'
 import { planAdaptivePocket } from './pocket/adaptive'
 import { planAdaptive2Pocket } from './pocket/adaptive2'
 import { planHybridPocket } from './pocket/hybrid'
@@ -37,6 +37,15 @@ const PLANNERS: Record<PocketStrategy, PocketPlanner> = {
   adaptive2: planAdaptive2Pocket,
   hybrid: planHybridPocket,
 }
+
+// Where a declined strategy lands. Hybrid is the general-purpose choice: raster over the
+// open ground, contour around the islands, and it is what a user would have picked.
+const DECLINE_FALLBACK: PocketStrategy = 'hybrid'
+
+// Non-fatal notes from the last generatePocket call — a strategy fallback, today. Drained
+// by the caller (the worker handler) so it can be shown to the user; harnesses ignore it.
+const _notes: string[] = []
+export function takePocketNotes(): string[] { return _notes.splice(0, _notes.length) }
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -99,6 +108,7 @@ export function generatePocket(
   const rampDist = params.rampIn ? 2 * tool.diameterMM : undefined
 
   _perfReset()
+  _notes.length = 0
   // Progress is split per boundary; within one, planning gets the lion's share because
   // that is where the field solve and the adaptive march live, and the depth levels are
   // just replays of the plan.
@@ -127,8 +137,26 @@ export function generatePocket(
       ...islands.filter(isl => isl.some(([x, y]) => pointInPolygon(x, y, boundary))),
     ]
 
-    const plan = _timed('plan', () => PLANNERS[strategy](boundary, localIslands, tool, params,
+    let plan = _timed('plan', () => PLANNERS[strategy](boundary, localIslands, tool, params,
       subProgress(bLo, bLo + bSpan * PLAN_SHARE, 'Planning')))
+
+    // A strategy may DECLINE a shape it does not suit, rather than spend minutes building a
+    // path nobody would run (see REDUNDANCY_LIMIT in pocket/fieldSpiral). Declining is not
+    // failing: fall back so the region is still cleared, but say so — the user picked the
+    // other strategy on purpose, and silently machining something else is how a surprise
+    // ends up on the spindle.
+    const declined = takeUnsuitableRatio()
+    if (!plan && declined > 0 && strategy !== DECLINE_FALLBACK) {
+      // Kept short on purpose: StatusBar is one truncating line, so anything past ~55
+      // characters is invisible and the alt-click hint is the part that must survive.
+      // ">" because the march stops the moment the verdict is settled, so the figure is the
+      // threshold it crossed, not the total it would have reached (5.0x on the dog against
+      // the 2.0x quoted); finishing the march for an exact number would cost the user the
+      // wait this gate exists to save.
+      _notes.push('Reverted to Auto, Alt click to force')
+      plan = _timed('plan', () => PLANNERS[DECLINE_FALLBACK](boundary, localIslands, tool, params,
+        subProgress(bLo, bLo + bSpan * PLAN_SHARE, 'Planning')))
+    }
     if (!plan) continue
 
     // Every depth level cuts an IDENTICAL 2D path. Each level is emitted with no incoming

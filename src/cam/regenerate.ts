@@ -7,6 +7,7 @@ import { useToolStore, type Tool } from '../store/toolStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
+import { useUIStore } from '../store/uiStore'
 import { getBBox, extractCircle, extractRectInfo } from '../canvas/selectionUtils'
 import { loadImageLuminance } from '../io/imageLuminance'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
@@ -54,7 +55,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         const p = paths.find((x) => x.id === id)
         return p ? [p.d] : []
       })
-      setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
+      const pocket = await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
         strategy: op.strategy ?? 'raster',
         depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
         stepoverPercent: op.stepoverPercent, direction: op.direction,
@@ -62,7 +63,11 @@ export async function regenerateOperation(opId: string): Promise<void> {
         finishAllowanceMM: op.allowanceMM,
         startZMM,
         safeHeightMM,
-      }))
+      })
+      setSegments(opId, pocket.segments)
+      // No op-name prefix: StatusBar truncates, and a name like
+      // 'Pocket: Path 1 (1/8" End Mill)' consumes the whole line before the note starts.
+      for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
 
     } else if (op.type === 'drill') {
       if (op.drillMode === 'helical') {

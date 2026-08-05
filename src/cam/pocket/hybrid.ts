@@ -4,19 +4,28 @@ import { differenceD, inflatePathsD, intersectD, unionD, EndType, JoinType, Fill
 import type { MotionSegment } from '../../store/toolpathStore'
 import { type PocketPlan, type PocketPlanner, _timed, emitLinkedContourRings, growIslands, offsetRing } from './shared'
 import { planRasterPocket } from './raster'
-import { planAdaptive2Pocket } from './adaptive2'
+import { planContourOutermost } from './contour'
 
-// ─── Hybrid: raster the open areas, adaptive the rest ────────────────────────────
+// ─── Hybrid: raster the open areas, contour the rest ─────────────────────────────
 //
 // Pure orchestration. It carves the pocket into sub-areas and runs the EXISTING strategies
-// on them — raster over the large contiguous island-free areas, adaptive over what is left
+// on them — raster over the large contiguous island-free areas, contour over what is left
 // (the surroundings of every island, and anything too small or awkward to raster). It is
 // the automation of something a user can already do by hand: draw the sub-areas, pocket
-// the open ones with raster, pocket the rest with adaptive.
+// the open ones with raster, pocket the rest with contour.
 //
-// Doing it this way rather than inside the adaptive engine means both halves keep every
-// behaviour they already have and were measured on — raster's scanline ordering and lift
-// penalties, adaptive's engagement control, entries, links.
+// Doing it this way rather than inside one engine means both halves keep every behaviour
+// they already have and were measured on — raster's scanline ordering and lift penalties,
+// contour's nesting-driven ring order and linking.
+//
+// The rest used to go to the adaptive march, for its engagement control at the medial-axis
+// junctions where island offset families merge. It was removed: unreliable, and its cost
+// was pathological rather than merely high — see openForRest below for the mechanism, and
+// note it could take 152 s over a region contour clears in seconds. `planContourOutermost`
+// is the right shape for these regions anyway: their OUTSIDE is already cleared by the
+// raster, so opening at the outermost ring and working inward gives every pass — including
+// the first — cleared material on one side and exactly one stepover of engagement. The
+// adaptive strategies remain available as strategies in their own right.
 //
 // The sub-areas only ROUGH. The finishing pass is the one for the whole pocket, following
 // the ORIGINAL boundary and islands — letting each sub-area finish its own outline instead
@@ -118,13 +127,22 @@ export const planHybridPocket: PocketPlanner = (boundary, islands, tool, params,
     // the merge zone to the march, which is the one thing that handles a medial-axis
     // junction properly.
     const toolZone = offsetRing(boundary, -toolRadius)
+    const toolZoneCP = [toCP(toolZone)]
     const insideZone = (ring: Pt2[]) =>
-      toolZone.length >= 3 && differenceD([toCP(ring)], [toCP(toolZone)], FillRule.NonZero, 3).length === 0
-    const overlapsOther = (ring: Pt2[], self: number) => islands.some((other, j) => {
-      if (j === self) return false
-      const grown = growIslands([other], toolRadius, JoinType.Round)
-      return grown.some(g => intersectD([toCP(ring)], [toCP(g)], FillRule.NonZero, 3).length > 0)
-    })
+      toolZone.length >= 3 && differenceD([toCP(ring)], toolZoneCP, FillRule.NonZero, 3).length === 0
+    // Each island grown by a radius, memoised. It is a function of the island alone, but the
+    // test below asks it for every ring of every OTHER island's family — 3·N·(N−1) Clipper
+    // offsets for N distinct answers, which is the whole cost of the split on an
+    // island-heavy pocket. Computed on demand, so an early overlap still costs nothing for
+    // the islands never reached.
+    const grownCache: (Pt2[][] | undefined)[] = new Array(islands.length)
+    const grownIsland = (j: number) =>
+      (grownCache[j] ??= growIslands([islands[j]], toolRadius, JoinType.Round))
+    const overlapsOther = (ring: Pt2[], self: number) => {
+      const ringCP = [toCP(ring)]
+      return islands.some((_other, j) =>
+        j !== self && grownIsland(j).some(g => intersectD(ringCP, [toCP(g)], FillRule.NonZero, 3).length > 0))
+    }
 
     // Contour families, outermost ring first — the order they must be cut in, since only
     // their outer side is cleared (see ContourOrder).
@@ -218,6 +236,39 @@ export const planHybridPocket: PocketPlanner = (boundary, islands, tool, params,
       return groupOutersAndHoles(intersectD(withHoles, pocketCP, FillRule.NonZero, 3).map(fromCP))
     }
 
+    // Drop what the tool cannot physically enter, before handing a region on.
+    //
+    // A passage narrower than the tool DIAMETER has no legal tool-centre position anywhere
+    // along it, so no strategy can remove that material — it is uncuttable, not merely
+    // awkward. Feeding one to a strategy is at best wasted work and at worst pathological:
+    // the adaptive march that used to take these regions would work a frontier it could
+    // never advance, showing up as MORE time for FEWER segments (on the dog's 22-island
+    // pocket a 1 mm finish allowance grew every island, pinched the gaps between them, took
+    // the unreachable share of the region from 0.9% to 5.5% and the march from 6.9 s to
+    // 152 s). Contour is far better behaved — an offset that collapses simply yields no
+    // ring — but the open still keeps it off geometry it cannot use.
+    //
+    // Erode by the radius and dilate back: a morphological open, which deletes features
+    // thinner than 2R — exactly the uncuttable ones — and leaves everything else in place,
+    // including the tool-diameter overlap `grow` just added between neighbouring sub-areas.
+    // The same reasoning already governs the raster areas above, at the diameter (a raster
+    // needs room to fill; this only needs room to fit).
+    //
+    // Erring the wrong way is cheap here: a round join can clip a corner that a real cutter
+    // would just reach, and restCleanupRings — which measures what was actually machined,
+    // not what a strategy meant to machine — picks up anything genuinely left behind.
+    // µm precision and a 0.05 mm arc tolerance, as restCleanupRings uses and for the same
+    // reason: the region runs to thousands of vertices and offsetting it twice at full arc
+    // refinement costs more than the open saves. The error is on the safe side — a coarser
+    // round join removes slightly LESS, so the worst case is the un-opened region.
+    const openForRest = (area: { outer: Pt2[]; holes: Pt2[][] }) => {
+      const cp = [toCP(ensureWinding(area.outer, true)), ...area.holes.map(h => toCP(ensureWinding(h, false)))]
+      const eroded = inflatePathsD(cp, -toolRadius, JoinType.Round, EndType.Polygon, 2, 3, 0.05)
+      if (eroded.length === 0) return []
+      return groupOutersAndHoles(
+        inflatePathsD(eroded, toolRadius, JoinType.Round, EndType.Polygon, 2, 3, 0.05).map(fromCP))
+    }
+
     // Each sub-area is roughed by the strategy that suits it. None of them emits a wall
     // pass — see the note at the top of this file.
     const subPlans: PocketPlan[] = []
@@ -243,16 +294,18 @@ export const planHybridPocket: PocketPlanner = (boundary, islands, tool, params,
     }
     for (const r of rest) {
       for (const g of grow(r)) {
-        const p = planAdaptive2Pocket(ensureWinding(g.outer, true), g.holes.map(h => ensureWinding(h, true)), tool, params)
-        if (p) subPlans.push(p)
+        for (const m of openForRest(g)) {
+          const p = planContourOutermost(ensureWinding(m.outer, true), m.holes.map(h => ensureWinding(h, true)), tool, params)
+          if (p) subPlans.push(p)
+        }
       }
     }
     return subPlans.length > 0 ? { subPlans, contoured } : null
   })
 
   if (!plan) {
-    // Nothing worth splitting — fall back to marching the whole pocket.
-    return planAdaptive2Pocket(boundary, islands, tool, params, onProgress)
+    // Nothing worth splitting — contour the whole pocket.
+    return planContourOutermost(boundary, islands, tool, params, onProgress)
   }
 
   const islandObstacles = growIslands(islands, toolRadius)

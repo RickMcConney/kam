@@ -6,19 +6,13 @@
 // remove. See toolpathAudit.ts for the scoring method.
 //
 // Regeneration normally runs in a Worker; under node we swap in an in-process worker that
-// calls the same handlers synchronously.
+// calls the very same handler table (workers/handlers.ts) synchronously.
 import { readFileSync } from 'node:fs'
 import { loadProject, type ProjectData } from '../io/projectLoad'
 import { regenerateOperation } from '../cam/regenerate'
 import { __setWorkerFactoryForTests } from '../workers/workerClient'
-import { generateProfile } from '../cam/profile'
-import { generatePocket } from '../cam/pocket'
-import { generateVCarve } from '../cam/vcarve'
-import { generateProfile3d } from '../cam/profile3d'
+import { handlers } from '../workers/handlers'
 import { resolveStartZ } from '../cam/startHeight'
-import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
-import { generateTrochoidal } from '../cam/trochoidal'
-import { generateSurface } from '../cam/surfacing'
 import { generateGcode } from '../cam/gcode'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -27,12 +21,6 @@ import { useWorkpieceStore } from '../store/workpieceStore'
 import { AUDIT_POST, auditGcode, offsetRegion, regionFromPaths, type AuditResult, type OpIntent } from './toolpathAudit'
 import type { AnyOperation } from '../store/toolpathStore'
 
-// Same handler table as workers/worker.ts, which can't be imported under node (it wires
-// itself to `self.onmessage` at module scope).
-const HANDLERS: Record<string, (...a: never[]) => unknown> = {
-  generateProfile, generatePocket, generateVCarve, generateProfile3d,
-  generateInlayFemale, generateInlayMale, generateTrochoidal, generateSurface,
-}
 
 function installInProcessWorker() {
   __setWorkerFactoryForTests(() => {
@@ -42,7 +30,7 @@ function installInProcessWorker() {
       postMessage(msg: { id: number; fn: string; args: unknown[] }) {
         let payload: unknown
         try {
-          payload = { id: msg.id, result: HANDLERS[msg.fn](...(msg.args as never[])) }
+          payload = { id: msg.id, result: (handlers as Record<string, (...a: never[]) => unknown>)[msg.fn](...(msg.args as never[])) }
         } catch (err) {
           payload = { id: msg.id, error: String(err) }
         }

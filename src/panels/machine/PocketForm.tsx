@@ -8,6 +8,7 @@ import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
 import { useToolpathStore, batchOf, type AnyOperation, type PocketOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
+import { useUIStore } from '../../store/uiStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
@@ -148,7 +149,13 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  async function handleGenerate() {
+  // Alt-click forces the chosen strategy onto a shape it would otherwise decline as a poor
+  // fit (see REDUNDANCY_LIMIT in cam/pocket/fieldSpiral). Deliberately a modifier and not a
+  // setting: it is an override of a measured verdict, and the path it produces is the one
+  // the verdict called not worth cutting. The status warning names the gesture, so it is
+  // discoverable exactly when it is relevant.
+  async function handleGenerate(e?: React.MouseEvent) {
+    const forceStrategy = e?.altKey === true
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
@@ -177,15 +184,18 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation>)
           try {
-            setSegments(op.id, await runInWorkerFor(op.id, 'generatePocket', boundary.d, tool, {
+            const pocket = await runInWorkerFor(op.id, 'generatePocket', boundary.d, tool, {
               strategy: form.strategy,
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
-              finishAllowanceMM: form.allowanceMM, startNear: hint,
+              finishAllowanceMM: form.allowanceMM, startNear: hint, forceStrategy,
               startZMM: startZFor(boundary.d, op.id),
               safeHeightMM,
-            }))
+            })
+            setSegments(op.id, pocket.segments)
+            // A strategy that declined the shape and fell back — say so, the user chose it.
+            for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
           } catch (err) {
             // A cancel abandons the whole Generate, not just this group — carrying on
             // would immediately queue the next one against the state the user just left.
@@ -251,15 +261,18 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
-            setSegments(opId, await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
+            const pocket = await runInWorkerFor(opId, 'generatePocket', boundary.d, tool, {
               strategy: form.strategy,
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               stepoverPercent: form.stepoverPercent, direction: form.direction,
               islandDs: islands.map((p) => p.d), angle: form.passAngleDeg, autoAngle: form.autoAngle, rampIn: form.rampIn,
-              finishAllowanceMM: form.allowanceMM, startNear: hint,
+              finishAllowanceMM: form.allowanceMM, startNear: hint, forceStrategy,
               startZMM: startZFor(boundary.d, opId),
               safeHeightMM,
-            }))
+            })
+            setSegments(opId, pocket.segments)
+            // A strategy that declined the shape and fell back — say so, the user chose it.
+            for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
           } catch (err) {
             if (isWorkCancelled(err)) break
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -361,6 +374,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         generating={generating}
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
+        title="Alt-click to force the selected strategy on shapes it would otherwise decline"
       />
       {/* Below the button — see PathListSection. Islands keep their label because that
           is a real distinction; nothing else needs one. */}

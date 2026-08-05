@@ -5,7 +5,7 @@ import { traceIsolines } from '../marchingSquares'
 import {  JoinType } from 'clipper2-ts'
 import {   stripClosingDuplicate, pointInPolygon } from '../geom'
 import type { MotionSegment } from '../../store/toolpathStore'
-import { type PocketPlan, type PocketPlanner, _timed, centroidOfRing, compoundFinishRings, emitRampDescent, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn, setGap } from './shared'
+import { type PocketPlan, type PocketPlanner, _timed, centroidOfRing, compoundFinishRings, emitRampDescent, emitSpiralHelixEntry, growIslands, growRing, insetRing, isTravelSafe, rampLeadIn, ringPerimeter, setGap } from './shared'
 
 // ─── Spiral geometry: loop forest, chains, region clamping ───────────────────────
 //
@@ -305,8 +305,27 @@ function loopMostlyInside(inner: Pt2[], outer: Pt2[]): boolean {
 // out. Spacing is then correct BY CONSTRUCTION, so the all-pairs cull is gone — only the
 // per-chain decimation stays, to thin lobes that came out over-dense because a different
 // lobe on the same level drove the step down.
+// How much more path than necessary this shape may force the spiral to cut before the
+// strategy declines it. Measured against area/stepover on the dog file: a simple blob
+// 1.35x, a plain outline 1.52x, a long slot 2.58x, the full 22-island dog 5.00x. Under 2x
+// the smoothness is worth the extra path (that dog's raster wants 1888 lifts against
+// morph's 226); at 5x it is not machining, it is polishing air.
+export const REDUNDANCY_LIMIT = 2.0
+
+// Set when the march gave up because the shape forces too much redundant path; read by
+// planFieldSpiralPocket, which turns it into the caller's fallback + message.
+export let lastUnsuitableRatio = 0
+export function takeUnsuitableRatio(): number { const r = lastUnsuitableRatio; lastUnsuitableRatio = 0; return r }
+
 function buildIsothermChains(
   g: FieldGrid, insetBoundary: Pt2[], holes: Pt2[][], stepoverMM: number, wantCCW: boolean,
+  /** Area the tool actually clears — the ORIGINAL pocket, not the inset tool-centre region.
+   *  Clearing area A at a given stepover needs at least A/stepover of path, and using the
+   *  inset area instead makes every small pocket look redundant: its inset is a fraction of
+   *  it, while the loops still have to run the full way round. */
+  clearedAreaMM2: number,
+  /** Infinity when the user has explicitly forced this strategy onto the shape. */
+  redundancyLimit: number,
   onProgress?: (frac: number) => void,
 ): SpiralChain[] {
   const wall = ensureWinding(stripClosingDuplicate(insetBoundary), wantCCW)
@@ -323,6 +342,20 @@ function buildIsothermChains(
   // under-covering if it runs out of tries.
   const GAP_MAX = stepoverMM
   const GAP_MIN = stepoverMM * 0.92
+
+  // How much more path than necessary this shape forces the spiral to cut, before giving up
+  // on it. A level is gated on its WORST-spaced point (that is what never under-covers), so
+  // wherever the field gradient varies along a loop everything but that point comes out
+  // over-dense — and one isotherm around a 22-island outline varies a lot. Measured against
+  // area/stepover on the dog file: a simple blob 1.35x, a plain outline 1.52x, a long slot
+  // 2.58x, the full 22-island dog 5.00x. Under 2x the smoothness is worth the extra path
+  // (the dog's raster wants 1888 lifts against morph's 226); at 5x it is not machining, it
+  // is polishing air.
+  //
+  // Checked from the mean gap, so it costs nothing extra and is known at the FIRST accepted
+  // level — the point of the gate is that the user does not wait out a 167 s generate for a
+  // strategy that was never going to suit the shape.
+
   const MAX_LEVELS = 400
   const MAX_RETRIES = 8
 
@@ -334,6 +367,8 @@ function buildIsothermChains(
   // and is legitimately half a pocket away from the outer wall, so its gap never comes
   // under a stepover no matter how small the temperature step gets.
   const domain: Pt2[][] = [wall, ...holes.filter(hh => hh.length >= 3)]
+  const idealLen = clearedAreaMM2 / stepoverMM
+  let tracedLen = 0
   let prev: Pt2[][] = domain
   let level = 0
   let dT = g.tMax / 40          // first guess; carried forward once the march finds its stride
@@ -380,9 +415,32 @@ function buildIsothermChains(
     // climbed toward tMax IS the fraction traced.
     onProgress?.(loAt / g.tMax)
     for (const lp of loCand) loops.push(lp)
+
+    // Bail the moment the verdict is already settled. Loop perimeter only accumulates, so
+    // once it passes the limit the final ratio cannot come back under it — this reaches the
+    // same answer as the check after the march, just without finishing a march whose result
+    // is going to be thrown away. That is the whole point of the gate: the user should not
+    // wait out a long generate for a strategy that was never going to suit the shape.
+    if (idealLen > 0) {
+      tracedLen += loCand.reduce((a, lp) => a + ringPerimeter(lp), 0)
+      if (tracedLen / idealLen > redundancyLimit) { lastUnsuitableRatio = tracedLen / idealLen; return [] }
+    }
+
+
     prev = [...domain, ...loCand]
     level = loAt
     dT = lo
+  }
+
+  // What this spiral will cost, against what the area needs — measured, not predicted.
+  // Every loop is cut once, so the path is their total perimeter; any stepover strategy
+  // needs at least area/stepover. The check sits HERE, after the march but before the
+  // morph/clamp stage that turns loops into a spiral, because the loops are what the
+  // verdict is about and the stages after this one are the expensive ones.
+  const spiralLen = loops.reduce((a, lp) => a + ringPerimeter(lp), 0)
+  if (idealLen > 0 && spiralLen / idealLen > redundancyLimit) {
+    lastUnsuitableRatio = spiralLen / idealLen
+    return []
   }
 
   const kept = loops
@@ -435,6 +493,8 @@ export const planFieldSpiralPocket: PocketPlanner = (boundary, islands, tool, pa
     // Round join, matching the island keep-out below: the clamped spiral is snapped
     // onto this ring, and a miter spike at a reflex corner is a tool-centre position
     // that gouges the corner (see insetRing).
+    const clearedArea = Math.abs(signedArea(boundary)) -
+      islands.reduce((a, i) => a + (i.length >= 3 ? Math.abs(signedArea(i)) : 0), 0)
     const inset = insetRing(boundary, toolRadius, JoinType.Round)
     if (inset.length < 3) return null
     // Round join: the tool-centre path around a convex island corner is an arc of
@@ -447,7 +507,8 @@ export const planFieldSpiralPocket: PocketPlanner = (boundary, islands, tool, pa
     if (g.tMax <= 0) return null
 
     // Isotherm loops → containment nesting → per-region chains (handles islands).
-    const chains = _timed('buildIsothermChains', () => buildIsothermChains(g, inset, holes, stepoverMM, wantCCW,
+    const chains = _timed('buildIsothermChains', () => buildIsothermChains(g, inset, holes, stepoverMM, wantCCW, clearedArea,
+      params.forceStrategy ? Infinity : REDUNDANCY_LIMIT,
       (f) => onProgress?.(0.55 + 0.35 * f, 'Tracing curves')))
     if (chains.length === 0) return null
     const islandCentroids = islands.map(centroidOfRing)
