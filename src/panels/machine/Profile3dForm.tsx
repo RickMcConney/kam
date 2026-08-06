@@ -1,5 +1,5 @@
 // ─── 3D Profile form ──────────────────────────────────────────────────────────
-import { FormShell, AutoStepField, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput } from './shared'
 import { useState, useEffect } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -8,7 +8,7 @@ import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type Profile3dOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM } from '../../cam/feeds'
 import { parseStlGeometry, base64ToArrayBuffer } from '../../importers/stlImporter'
@@ -32,14 +32,20 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const { paths } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, autoFeedEnabled, thicknessMM } = useWorkpieceStore()
+  const { safeHeightMM, autoFeedEnabled, thicknessMM, units } = useWorkpieceStore()
 
-  const ballNoseTools = tools.filter((t) => t.type === 'ballnose')
-  const defaultTool = ballNoseTools[0] ?? tools[0]
+  // Ball nose for BOTH slots, and no fall-back to the whole library. The finishing bit is
+  // gated on it by `canGenerate`; the roughing bit is ball-only by construction, since
+  // profile3d models the rougher as a sphere (`roughingBallRadius`) and skips the entire
+  // roughing pass when that is undefined — a flat rougher would silently become a
+  // single-pass finish rather than an error.
+  const ballNoseTools = toolsOfType(tools, ['ballnose'])
+  const defaultTool = ballNoseTools[0]
   const stlPaths = paths.filter((p) => !!p.stlSrc)
 
-  const [form, setForm] = useState<Profile3dFormState>(() => editOp ? {
-    toolId: editOp.toolId,
+  const [form, setForm] = useState<Profile3dFormState>(() => {
+    const base: Profile3dFormState = editOp ? {
+      toolId: editOp.toolId,
     stepoverPercent: editOp.stepoverPercent,
     rasterAngleDeg: editOp.rasterAngleDeg,
     maxDepthMM: editOp.maxDepthMM,
@@ -61,7 +67,12 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     roughingStepDownMM: 2,
     roughingStockAllowanceMM: 0.3,
     roughingRasterAngleDeg: '' as number | '',
-  }, tools))
+  }, tools)
+    return { ...base,
+      toolId: pickToolId(base.toolId, ballNoseTools),
+      // '' is "no roughing pass" — an explicit choice, not a stale id.
+      roughingToolId: base.roughingToolId === '' ? '' : pickToolId(base.roughingToolId, ballNoseTools) }
+  })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
@@ -104,7 +115,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         const indices = geo.index ? new Uint32Array(geo.index.array) : null
         geo.dispose()
         const cncBbox = getBBox(selectedPath.d)
-        if (!cncBbox) throw new Error('Could not compute bounding box')
+        if (!cncBbox) throw new Error('Could not read the STL outline — the model may be empty')
 
         const params = {
           stepoverPercent: form.stepoverPercent,
@@ -176,19 +187,19 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const canGenerate = !!selectedTool && selectedTool.type === 'ballnose' && !!selectedPath?.stlSrc && !generating && form.maxDepthMM > 0
 
   return (
-    <FormShell title={editOp ? 'Edit 3D Profile' : 'New 3D Profile Operation'} onClose={onClose}>
+    <FormShell title={editOp ? 'Edit 3D Profile' : 'New 3D Profile'} onClose={onClose}>
       {/* STL source path */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">STL Model</label>
         {stlPaths.length === 0 ? (
-          <p className="text-body text-amber-400 flex items-center gap-1">
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> Import an STL file first
           </p>
         ) : (
           <select
             value={form.pathId}
             onChange={(e) => up('pathId', e.target.value)}
-            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
           >
             {stlPaths.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
@@ -199,19 +210,19 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
       {/* Strategy */}
       {/* ── Roughing pass (optional) ─────────────────────────────────────────── */}
-      <div className="border border-gray-200 dark:border-neutral-700 rounded p-2 space-y-2">
+      <div className="border border-gray-400 dark:border-neutral-700 rounded p-2 space-y-2">
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            Roughing Bit <span className="normal-case text-gray-400 dark:text-neutral-600">(optional)</span>
+            Roughing Tool <span className="normal-case text-gray-400 dark:text-neutral-600">(optional)</span>
           </label>
           <select
             value={form.roughingToolId}
             onChange={(e) => up('roughingToolId', e.target.value)}
-            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
           >
             <option value="">— None (single-pass) —</option>
             {ballNoseTools.map((t) => (
-              <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+              <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
             ))}
           </select>
         </div>
@@ -227,32 +238,25 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                   value={form.roughingStepoverPercent}
                   min={5} max={100} step={5}
                   onChange={(v) => up('roughingStepoverPercent', v)}
-                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
                 <span className="text-label text-gray-400 dark:text-neutral-500">%</span>
                 {roughingTool && (
                   <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">
-                    ({(roughingTool.diameterMM * form.roughingStepoverPercent / 100).toFixed(2)} mm)
+                    ({fmtLen(roughingTool.diameterMM * form.roughingStepoverPercent / 100, units)})
                   </span>
                 )}
               </div>
             </div>
             {autoFeedEnabled && roughingTool ? (
-              <AutoStepField label="Roughing Step-Down" valueMM={effectiveStepDownMM(roughingTool, form.roughingStepDownMM, form.maxDepthMM)} />
+              <AutoStepField label="Roughing Step Down" valueMM={effectiveStepDownMM(roughingTool, form.roughingStepDownMM, form.maxDepthMM)} />
             ) : (
               <div>
                 <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-                  Roughing Step-Down
+                  Roughing Step Down
                 </label>
-                <div className="flex items-center gap-1">
-                  <NumericInput
-                    value={form.roughingStepDownMM}
-                    min={0.1} max={50} step={0.5}
-                    onChange={(v) => up('roughingStepDownMM', v)}
-                    className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-                  />
-                  <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-                </div>
+                <LengthInput valueMM={form.roughingStepDownMM} minMM={0.1} maxMM={50} stepMM={0.5}
+                  onChangeMM={(v) => up('roughingStepDownMM', v)} />
               </div>
             )}
             <div>
@@ -266,7 +270,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                   min={-180} max={180} step={15}
                   placeholder={`auto (${form.rasterAngleDeg + 90}°)`}
                   onChange={(e) => up('roughingRasterAngleDeg', e.target.value === '' ? '' : Number(e.target.value))}
-                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
                 <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
               </div>
@@ -275,15 +279,8 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
               <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
                 Stock Allowance
               </label>
-              <div className="flex items-center gap-1">
-                <NumericInput
-                  value={form.roughingStockAllowanceMM}
-                  min={0} max={2} step={0.1}
-                  onChange={(v) => up('roughingStockAllowanceMM', v)}
-                  className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-                />
-                <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-              </div>
+              <LengthInput valueMM={form.roughingStockAllowanceMM} minMM={0} maxMM={2} stepMM={0.1}
+                onChangeMM={(v) => up('roughingStockAllowanceMM', v)} />
             </div>
             <p className="text-label text-blue-400 dark:text-blue-500">
               Roughing makes multiple passes at increasing depth; finishing cleans up to final surface
@@ -295,20 +292,22 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
       {/* ── Finishing bit ────────────────────────────────────────────────────── */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          {hasRoughing ? 'Finishing Bit' : 'Tool'}
+          {hasRoughing ? 'Finishing Tool' : 'Tool'}
         </label>
         <select
           value={form.toolId}
           onChange={(e) => handleToolChange(e.target.value)}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+          disabled={ballNoseTools.length === 0}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 disabled:opacity-60"
         >
-          {(ballNoseTools.length > 0 ? ballNoseTools : tools).map((t) => (
-            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          {ballNoseTools.length === 0 && <option value="">No ball nose — add one in the Tool Library</option>}
+          {ballNoseTools.map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
           ))}
         </select>
       </div>
       {selectedTool && selectedTool.type !== 'ballnose' && (
-        <p className="text-label text-amber-400 flex items-center gap-1">
+        <p className="text-label text-amber-600 dark:text-amber-400 flex items-center gap-1">
           <AlertCircle size={ICON.xs} /> Ball nose tool recommended for 3D profiling
         </p>
       )}
@@ -323,12 +322,12 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
             value={form.stepoverPercent}
             min={1} max={100} step={5}
             onChange={(v) => up('stepoverPercent', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">%</span>
           {selectedTool && (
             <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">
-              ({(selectedTool.diameterMM * form.stepoverPercent / 100).toFixed(2)} mm)
+              ({fmtLen(selectedTool.diameterMM * form.stepoverPercent / 100, units)})
             </span>
           )}
         </div>
@@ -336,13 +335,13 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
       {/* Raster angle */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Raster Angle</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Angle</label>
         <div className="flex items-center gap-1">
           <NumericInput
             value={form.rasterAngleDeg}
             min={-90} max={90} step={15}
             onChange={(v) => up('rasterAngleDeg', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
           />
           <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
         </div>
@@ -351,25 +350,18 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
       {/* Max depth */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
-        <div className="flex items-center gap-1">
-          <NumericInput
-            value={form.maxDepthMM}
-            min={0.1} step={0.5}
-            onChange={(v) => up('maxDepthMM', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-        </div>
+        <LengthInput valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
+          onChangeMM={(v) => up('maxDepthMM', v)} />
         {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
-          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+          <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
-            Exceeds tool max ({selectedTool.maxDepthMM} mm)
+            Exceeds tool Max Z ({fmtLen(selectedTool.maxDepthMM, units)})
           </p>
         )}
       </div>
 
       {errorMsg && (
-        <p className="text-body text-red-400 flex items-start gap-1.5">
+        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
         </p>
       )}

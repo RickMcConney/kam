@@ -1,10 +1,10 @@
 // ─── Surface form ─────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId } from './shared'
 import { useState } from 'react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 
@@ -18,22 +18,27 @@ interface SurfaceFormState {
 
 export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?: SurfaceOperation }) {
   const { tools } = useToolStore()
-  const { widthMM, heightMM, safeHeightMM } = useWorkpieceStore()
+  const { widthMM, heightMM, safeHeightMM, units } = useWorkpieceStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
 
-  const endMills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
-  const defaultTool = endMills[0] ?? tools[0]
-  const [form, setForm] = useState<SurfaceFormState>(() => editOp ? {
-    toolId: editOp.toolId, depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
-    stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
-  } : mergeWithDefaults(load('surface'), {
-    toolId: defaultTool?.id ?? '',
-    depthMM: seedStepDownMM(defaultTool),
-    stepDownMM: seedStepDownMM(defaultTool),
-    stepoverPercent: 40,
-    passAngleDeg: 0,
-  }, tools))
+  // Surfacing has to leave a flat face across the whole slab, so it's end mills only:
+  // a ball nose leaves scallops between passes and a V-bit leaves ridges.
+  const endMills = toolsOfType(tools, ['endmill'])
+  const defaultTool = endMills[0]
+  const [form, setForm] = useState<SurfaceFormState>(() => {
+    const base = editOp ? {
+      toolId: editOp.toolId, depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+      stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
+    } : mergeWithDefaults(load('surface'), {
+      toolId: defaultTool?.id ?? '',
+      depthMM: seedStepDownMM(defaultTool),
+      stepDownMM: seedStepDownMM(defaultTool),
+      stepoverPercent: 40,
+      passAngleDeg: 0,
+    }, tools)
+    return { ...base, toolId: pickToolId(base.toolId, endMills) }
+  })
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
   const selectedTool = tools.find((t) => t.id === form.toolId)
@@ -105,15 +110,11 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
   }
 
   return (
-    <FormShell title={editOp ? 'Edit Surface' : 'New Surface Operation'} onClose={onClose}>
+    <FormShell title={editOp ? 'Edit Surface' : 'New Surface'} onClose={onClose}>
       <div className="text-label text-gray-400 dark:text-neutral-500 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1.5">
-        Covers workpiece: {widthMM} × {heightMM} mm
+        Covers stock: {fmtLen(widthMM, units)} × {fmtLen(heightMM, units)}
       </div>
-      <ToolSelector
-        tools={endMills.length > 0 ? endMills : tools}
-        value={form.toolId}
-        onChange={handleToolChange}
-      />
+      <ToolSelector tools={endMills} value={form.toolId} onChange={handleToolChange} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
           Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
@@ -127,7 +128,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
       </div>
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+          Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
         </label>
         <input
           type="range" min={0} max={180} step={5}

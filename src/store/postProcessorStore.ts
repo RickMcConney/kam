@@ -43,12 +43,12 @@ const GRBL_MM: PostProcessorProfile = {
   name: 'Grbl (mm)',
   unitMode: 'mm',
   commentStyle: 'parenthesis',
-  startGcode: 'G21\nG90\nG17',
+  startGcode: 'G90 (absolute positioning)\nG17 (XY plane)',
   // Grbl ignores M6. Stop the spindle and M0-pause so the operator can swap the
   // tool by hand (resume on cycle-start); the next op re-issues M3 with its own
   // RPM. Without the pause a multi-tool file would plough on with the wrong bit.
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nG0 Z10.000\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nG0 Z10.000 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -58,9 +58,9 @@ const GRBL_IN: PostProcessorProfile = {
   name: 'Grbl (inches)',
   unitMode: 'in',
   commentStyle: 'parenthesis',
-  startGcode: 'G20\nG90\nG17',
+  startGcode: 'G90 (absolute positioning)\nG17 (XY plane)',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nG0 Z0.400\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nG0 Z0.400 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -75,9 +75,9 @@ const GRBLHAL_MM: PostProcessorProfile = {
   name: 'grblHAL (mm)',
   unitMode: 'mm',
   commentStyle: 'parenthesis',
-  startGcode: 'G21\nG90\nG94\nG17',
+  startGcode: 'G90 (absolute positioning)\nG94 (feed in units per minute)\nG17 (XY plane)',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nG0 Z10.000\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nG0 Z10.000 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -89,9 +89,9 @@ const LINUXCNC_MM: PostProcessorProfile = {
   name: 'LinuxCNC (mm)',
   unitMode: 'mm',
   commentStyle: 'parenthesis',
-  startGcode: 'G21\nG90\nG94\nG17\nG54\nG64 P0.01',
+  startGcode: 'G90 (absolute positioning)\nG94 (feed in units per minute)\nG17 (XY plane)\nG54 (work offset 1)\nG64 P0.01 (path blending, 0.01 tolerance)',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nM9\nG0 Z10.000\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nM9 (coolant off)\nG0 Z10.000 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -103,9 +103,9 @@ const MACH3_MM: PostProcessorProfile = {
   name: 'Mach3 (mm)',
   unitMode: 'mm',
   commentStyle: 'parenthesis',
-  startGcode: 'G21\nG90\nG17\nG40\nG49\nG80',
+  startGcode: 'G90 (absolute positioning)\nG17 (XY plane)\nG40 (cancel cutter compensation)\nG49 (cancel tool length offset)\nG80 (cancel canned cycle)',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nM9\nG0 Z10.000\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nM9 (coolant off)\nG0 Z10.000 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -116,9 +116,9 @@ const UCCNC_MM: PostProcessorProfile = {
   name: 'UCCNC (mm)',
   unitMode: 'mm',
   commentStyle: 'parenthesis',
-  startGcode: 'G21\nG90\nG17\nG40\nG49\nG80',
+  startGcode: 'G90 (absolute positioning)\nG17 (XY plane)\nG40 (cancel cutter compensation)\nG49 (cancel tool length offset)\nG80 (cancel canned cycle)',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nG0 Z10.000\nG0 X0 Y0\nM30',
+  endGcode: 'M5 (spindle off)\nG0 Z10.000 (retract clear of the work)\nG0 X0 Y0 (return to origin)\nM30 (program end)',
   builtin: true,
   ...RS274_MOTION,
 }
@@ -129,9 +129,9 @@ const GENERIC_MM: PostProcessorProfile = {
   name: 'Generic (mm)',
   unitMode: 'mm',
   commentStyle: 'semicolon',
-  startGcode: 'G21\nG90',
+  startGcode: 'G90 ; absolute positioning',
   toolChangeGcode: 'M5\nM0',
-  endGcode: 'M5\nM30',
+  endGcode: 'M5 ; spindle off\nM30 ; program end',
   builtin: true,
   ...RS274_MOTION,
 }

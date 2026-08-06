@@ -72,7 +72,7 @@ export default function Sidebar() {
 
   return (
     <div
-      className="bg-gray-100 dark:bg-neutral-800 border-r border-gray-300 dark:border-neutral-700 flex flex-row flex-shrink-0 overflow-hidden"
+      className="bg-gray-200 dark:bg-neutral-800 border-r border-gray-300 dark:border-neutral-700 flex flex-row flex-shrink-0 overflow-hidden"
       style={{ width }}
     >
       {/* Content column — its scrollbar lands at this column's right edge, to the

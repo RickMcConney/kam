@@ -70,6 +70,10 @@ export function loadProject(data: ProjectData, fileName?: string) {
   // Same reason as newProject: this replaces the paths every in-flight generation was
   // computed from, and it ends by regenerating everything anyway.
   abortGeneration()
+  // Put the simulator away rather than letting the regenerate below invalidate it: a
+  // different project's program is not a change to this one, so it must not arm the
+  // auto-reload (sim/simAutoReload.ts).
+  useSimStore.getState().clearSim()
   const wp = data.workpiece ?? {}
   const wps = useWorkpieceStore.getState()
   wps.setWidth(wp.widthMM ?? 300)

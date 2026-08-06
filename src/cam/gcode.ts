@@ -181,7 +181,26 @@ export function generateGcode(
   c(`Post-processor: ${profile.name}`)
   c(`Origin: ${origin}  offset X${f(org.x)} Y${f(org.y)}`)
   c(`Z origin: ${zOrigin} of stock (Z0 = ${zOrigin === 'bottom' ? 'stock bottom' : 'top surface'})`)
-  if (profile.startGcode.trim()) lines.push(...profile.startGcode.split('\n'))
+  // The unit word is emitted from `profile.unitMode`, which is the ONLY thing that decides
+  // whether the coordinates below are inches or mm (see `fmtCoord`). It used to come from
+  // the start-block template, which every built-in gets right — but a user profile copied
+  // from the mm one and switched to inch output kept `G21`, so the file declared mm while
+  // carrying inch numbers. The machine reads that as a 25.4× move. So: emit the word that
+  // matches the numbers, and strip any contradicting one out of the template. A start block
+  // cannot express "inch output" on its own anyway, so nothing is lost by overriding it.
+  lines.push(profile.unitMode === 'in' ? 'G20' : 'G21')
+  if (profile.startGcode.trim()) {
+    const startLines = profile.startGcode.split('\n').flatMap((line) => {
+      if (!/\bG2[01]\b/.test(line)) return [line]   // nothing to do — leave it alone
+      const stripped = line.replace(/\bG2[01]\b\s*/g, '').trimEnd()
+      // If the unit word was the only code on the line, drop the line whole — otherwise
+      // `G21 (metric)` in an inch profile leaves the comment behind, still saying "metric"
+      // above inch coordinates. Lines the user wrote as pure comments never reach here.
+      const codeLeft = stripped.replace(/\([^)]*\)/g, '').replace(/;.*$/, '').trim()
+      return codeLeft === '' ? [] : [stripped]
+    })
+    lines.push(...startLines)
+  }
   lines.push('')
 
   const doneOps = operations.filter((o) => o.visible && o.status === 'done' && o.segments.length > 0 && o.type !== 'gcode')
@@ -235,7 +254,7 @@ export function generateGcode(
         lines.push(sub(profile.spindleOnTemplate, { s: firstFeeds.rpm }))
       }
       if (firstFeeds.rpmAdjusted) {
-        c(`NOTE: auto-feed set spindle to ${firstFeeds.rpm} RPM (tool stored ${firstTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
+        c(`NOTE: auto feeds & speeds set spindle to ${firstFeeds.rpm} RPM (tool stored ${firstTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
       }
       lastToolId = firstToolId
     }
@@ -275,7 +294,7 @@ export function generateGcode(
             lines.push(sub(profile.spindleOnTemplate, { s: newFeeds.rpm }))
           }
           if (newFeeds.rpmAdjusted) {
-            c(`NOTE: auto-feed set spindle to ${newFeeds.rpm} RPM (tool stored ${newTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
+            c(`NOTE: auto feeds & speeds set spindle to ${newFeeds.rpm} RPM (tool stored ${newTool.rpm}). If your machine has no spindle-speed control, set the speed by hand.`)
           }
           currentTool = newTool
           currentFeeds = newFeeds

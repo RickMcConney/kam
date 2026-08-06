@@ -140,7 +140,7 @@ type CanvasMode =
   | { type: 'idle' }
   | { type: 'pan' }
   | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox; snapTargets: SnapTargets }
-  | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean }
+  | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean; snapTargets: SnapTargets }
   | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
   | { type: 'dragbox'; startScreen: { x: number; y: number } }
   | { type: 'drawshape'; startCNC: { x: number; y: number }; currentCNC: { x: number; y: number } }
@@ -832,6 +832,10 @@ export default function CanvasStage() {
       l:  { x: minX, y: midY }, r:  { x: maxX, y: midY },
     }
 
+    const allPaths = usePathsStore.getState().paths
+    const { widthMM, heightMM } = useWorkpieceStore.getState()
+    const snapTargets = collectSnapTargets(allPaths.filter(p => onCanvas(p) && !ids.includes(p.id)), { widthMM, heightMM })
+
     didDragRef.current = false
     setMode2({
       type: 'resize',
@@ -841,6 +845,7 @@ export default function CanvasStage() {
       initHandle: handlePosMap[handle],
       initBbox: bbox,
       shiftHeld: e.evt.shiftKey,
+      snapTargets,
     })
   }, [setMode2])
 
@@ -989,18 +994,38 @@ export default function CanvasStage() {
     }
   }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
 
-  const onMoveResize = useCallback((m: Extract<CanvasMode, { type: 'resize' }>, cncMouse: { x: number; y: number }, e: Konva.KonvaEventObject<MouseEvent>) => {
+  const onMoveResize = useCallback((m: Extract<CanvasMode, { type: 'resize' }>, cncMouse: { x: number; y: number }, e: Konva.KonvaEventObject<MouseEvent>, vp: Viewport) => {
     didDragRef.current = true
     const { anchor, initHandle, pathIds, handle, shiftHeld } = m
-    const snappedMouse = snapCNC(cncMouse)
+    const isCorner = handle === 'tl' || handle === 'tr' || handle === 'bl' || handle === 'br'
+    const skewing = (altDownRef.current || e.evt.altKey) && isCorner
+
+    // The dragged handle IS the moving edge/corner of the bbox (the anchor is the
+    // opposite one and stays put), so object-snapping the handle position aligns
+    // those edges to other shapes' edges/centers — same targets and guides as a
+    // drag. Grid snap then applies only on the axes that didn't object-snap.
+    // Uniform (Shift) scaling and Alt-skew derive both axes from one combined
+    // gesture, so a per-axis snap would draw a guide the shape never lands on:
+    // those keep plain grid snap and no guides.
+    const snapOn = useUIStore.getState().snapEnabled && !skewing && !(shiftHeld && isCorner)
+    const tolMM = OBJECT_SNAP_PX / vp.scale
+    // Edge handles only move one axis; the other is the bbox mid-line and must not snap.
+    const ox = snapOn && handle !== 't' && handle !== 'b' ? snapAxisDelta([cncMouse.x], m.snapTargets.xs, tolMM) : null
+    const oy = snapOn && handle !== 'l' && handle !== 'r' ? snapAxisDelta([cncMouse.y], m.snapTargets.ys, tolMM) : null
+    const gridSnapped = snapCNC(cncMouse)
+    const snappedMouse = {
+      x: ox ? cncMouse.x + ox.correction : gridSnapped.x,
+      y: oy ? cncMouse.y + oy.correction : gridSnapped.y,
+    }
+    setSnapGuides(ox || oy ? { x: ox?.guide, y: oy?.guide } : null)
+
     const dhx = initHandle.x - anchor.x
     const dhy = initHandle.y - anchor.y
     const newHx = snappedMouse.x - anchor.x
     const newHy = snappedMouse.y - anchor.y
 
     // Alt + corner handle = skew (shear) instead of scale
-    const isCorner = handle === 'tl' || handle === 'tr' || handle === 'bl' || handle === 'br'
-    if ((altDownRef.current || e.evt.altKey) && isCorner) {
+    if (skewing) {
       const dx = newHx - dhx
       const dy = newHy - dhy
       const kx = Math.abs(dx) >= Math.abs(dy) && dhy !== 0 ? dx / dhy : 0
@@ -1231,7 +1256,7 @@ export default function CanvasStage() {
 
     // Modes that fully consume the move.
     if (m.type === 'move')   return onMoveTranslate(m, cncMouse, pointer, vp)
-    if (m.type === 'resize') return onMoveResize(m, cncMouse, e)
+    if (m.type === 'resize') return onMoveResize(m, cncMouse, e, vp)
     if (m.type === 'rotate') return onMoveRotate(m, cncMouse)
 
     // Modes that handle the move and then fall through to the shared checks.
@@ -1344,6 +1369,7 @@ export default function CanvasStage() {
       }
       setLiveTransform(null)
       setLiveBBox(null)
+      setSnapGuides(null)
       setMode2({ type: 'idle' })
       return
     }
@@ -1828,12 +1854,12 @@ export default function CanvasStage() {
       {nodeEditPathId && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-emerald-700/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           {connectSource !== null
-            ? 'Click any node to connect · Esc to cancel'
+            ? 'Click any point to connect · Esc to cancel'
             : hoveredEditNode !== null
               ? 'Delete key to remove point'
               : hoverSegIdx !== null
                 ? 'Click to insert point · Delete key to delete segment'
-              : 'Drag points or handles · Alt-click node to toggle curve · Click segment to insert · Esc to finish'}
+              : 'Drag points or handles · Alt-click point to toggle curve · Click segment to insert · Esc to finish'}
         </div>
       )}
 
@@ -1850,7 +1876,7 @@ export default function CanvasStage() {
             : penNodes.length === 0
               ? penCurveType === 'bezier'
                 ? 'Pen Tool — click for corner, drag to curve'
-                : 'Pen Tool — click to place nodes'
+                : 'Pen Tool — click to place points'
               : penCurveType === 'bezier'
                 ? 'Click to add point, drag to curve, Alt for straight segment, click first point to close, Esc to finish'
                 : 'Click to add point, Alt for straight segment, click first point to close, Esc to finish'}
@@ -1858,7 +1884,7 @@ export default function CanvasStage() {
       )}
       {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
-          Drawing {activeTool === 'roundrect' ? 'Rounded Rect' : activeTool.charAt(0).toUpperCase() + activeTool.slice(1)} — click to place, drag to size, Esc to cancel
+          Drawing {shapeDisplayName(activeTool as ShapeType)} — click to place, drag to size, Esc to cancel
         </div>
       )}
       {cornerPickPathId && !nodeEditPathId && (
@@ -1876,8 +1902,13 @@ export default function CanvasStage() {
 
       <button
         onClick={fitToWorkpiece}
-        title="Zoom to fit workpiece"
-        className="absolute bottom-3 right-3 bg-panel hover:bg-raised border border-ridge rounded p-1.5 text-norm transition-colors"
+        title="Zoom to fit stock"
+        // bg-panel/bg-raised/border-ridge/text-norm were never defined in the Tailwind
+        // config or any stylesheet, so this button had no fill and no border colour —
+        // just `border`'s default gray-200, which reads on a dark canvas and disappears
+        // on a light one. Same treatment as the simulator's floating controls, which
+        // sit over the same canvas.
+        className="absolute bottom-3 right-3 bg-gray-50/95 dark:bg-neutral-900/95 hover:bg-gray-200 dark:hover:bg-neutral-800 border border-gray-400 dark:border-neutral-700 rounded p-1.5 text-gray-600 dark:text-neutral-300 transition-colors"
       >
         <Maximize2 size={ICON.md} />
       </button>

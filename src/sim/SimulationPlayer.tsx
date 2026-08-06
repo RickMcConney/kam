@@ -30,12 +30,26 @@ function chipStatus(actual: number | null, target: number): keyof typeof CHIP_ST
 // Widest value each field ever holds, in monospace characters. The bars are centred
 // overlays, so a field that grows by one character slides the whole row sideways — and a
 // row of numbers that moves while it updates cannot be read at all.
-const W_Z = 8            // -999.999
-const W_FEED = 5         // 'rapid' / 99999
+const W_Z = 8            // -999.999 (mm) / -39.3701 (in)
 const W_RPM = 5          // 99999
 const W_DIAL = 11        // ' · dial 5.5' (dial tables top out at 6, rounded to half-detents)
-const W_FZ = 5           // 0.000
+const W_UNIT = 6         // 'mm/min' / 'in/min'
 const W_CHIP_LABEL = 17  // 'rubbing · too hot'
+
+// Read-outs are formatted in the units the PROGRAM declares, not the design-side mm/in
+// toggle: this bar sits above the G-code viewer and highlights a line in it, so a Z of
+// -0.1969 beside a line reading Z-5.000 would be its own kind of wrong. simStore holds
+// everything in mm (the parser converts an inch program on the way in — the heightfield
+// and cut trail depend on that), so the conversion belongs here, at the last step.
+const MM_PER_IN = 25.4
+const progLen = (mm: number, inch: boolean) => (inch ? (mm / MM_PER_IN).toFixed(4) : mm.toFixed(3))
+const progFeed = (mmMin: number, inch: boolean) => (inch ? (mmMin / MM_PER_IN).toFixed(1) : String(Math.round(mmMin)))
+const progFz = (mm: number, inch: boolean) => (inch ? (mm / MM_PER_IN).toFixed(4) : mm.toFixed(3))
+// Surface speed is quoted in the idiom of the program's units: SFM for an inch program,
+// m/min for a metric one. Same number, the name a machinist would reach for.
+const FT_PER_M = 3.28084
+const progSurf = (mMin: number, inch: boolean) =>
+  inch ? `${Math.round(mMin * FT_PER_M)} ft/min` : `${Math.round(mMin)} m/min`
 
 /**
  * A value in a status bar: fixed width, so the label beside it never moves.
@@ -70,6 +84,7 @@ export default function SimulationPlayer() {
   const toolStates = useSimStore((s) => s.toolStates)
   const gcode = useSimStore((s) => s.gcode)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
+  const programUnits = useSimStore((s) => s.programUnits)
   const material = useWorkpieceStore((s) => s.material)
   const machineRigidity = useWorkpieceStore((s) => s.machineRigidity)
   const minSpindleRpm = useWorkpieceStore((s) => s.minSpindleRpm)
@@ -98,6 +113,11 @@ export default function SimulationPlayer() {
   }, [playing])
 
   if (!gcode) return null
+
+  const inch = programUnits === 'in'
+  // Feed values are one char wider in inch (3937.0 vs 99999); 'rapid' fits either way.
+  const wFeed = inch ? 6 : 5
+  const wFz = inch ? 6 : 5
 
   const progress = totalTimeS > 0 ? elapsedTimeS / totalTimeS : 0
   const segIdx = getCurrentSegIdx(segments, elapsedTimeS)
@@ -130,8 +150,8 @@ export default function SimulationPlayer() {
   // current spindle & flute count, with the RPM direction as an alternative lever.
   const sweetFeed = ts ? Math.round(aimFz * spindleRpm * ts.fluteCount) : 0
   const suggestion =
-    status === 'rubbing' && sweetFeed > 0 ? `raise feed to ~${sweetFeed} mm/min (or lower RPM / fewer flutes)` :
-    status === 'heavy'   && sweetFeed > 0 ? `lower feed to ~${sweetFeed} mm/min (or raise RPM / more flutes)` : ''
+    status === 'rubbing' && sweetFeed > 0 ? `raise feed to ~${progFeed(sweetFeed, inch)} ${programUnits}/min (or lower RPM / fewer flutes)` :
+    status === 'heavy'   && sweetFeed > 0 ? `lower feed to ~${progFeed(sweetFeed, inch)} ${programUnits}/min (or raise RPM / more flutes)` : ''
 
   // Surface-speed (Vc) check: metals carry a safe cutting-speed ceiling. If the
   // programmed spindle drives the edge past it — typically because the machine's
@@ -152,8 +172,8 @@ export default function SimulationPlayer() {
   const maxBitMM = vcCeilingMMin && minSpindleRpm > 0 ? (vcCeilingMMin * 1000) / (Math.PI * minSpindleRpm) : 0
   const machineConstrained = spindleTooFast && safeRpm > 0 && safeRpm < minSpindleRpm
   const spindleHint = !spindleTooFast ? '' : machineConstrained
-    ? `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min, but a Ø${dia.toFixed(2)} mm bit reaches that at ${safeRpm} rpm — below your machine's ${minSpindleRpm} rpm minimum. The spindle can't slow down enough, so lowering RPM won't help: use a bit ≤ ${maxBitMM.toFixed(1)} mm, or fit a spindle that runs slower.`
-    : `${MATERIAL_INFO[material].label} should stay under ${vcCeilingMMin} m/min. Lower the spindle to ≤ ${safeRpm} rpm for this Ø${dia.toFixed(2)} mm bit (or turn on auto-feed to set it automatically).`
+    ? `${MATERIAL_INFO[material].label} should stay under ${progSurf(vcCeilingMMin!, inch)}, but a Ø${progLen(dia, inch)} ${programUnits} tool reaches that at ${safeRpm} RPM — below your machine's ${minSpindleRpm} RPM minimum. The spindle can't slow down enough, so lowering RPM won't help: use a tool ≤ ${progLen(maxBitMM, inch)} ${programUnits}, or fit a spindle that runs slower.`
+    : `${MATERIAL_INFO[material].label} should stay under ${progSurf(vcCeilingMMin!, inch)}. Lower the spindle to ≤ ${safeRpm} RPM for this Ø${progLen(dia, inch)} ${programUnits} tool (or turn on auto feeds & speeds to set it automatically).`
 
   // The elapsed clock never runs longer than the total, so the total's width sizes both.
   const totalTimeStr = formatSimTime(totalTimeS)
@@ -169,7 +189,7 @@ export default function SimulationPlayer() {
       {/* Surface-speed warning — explains the red spindle and how (or whether) to fix it */}
       {spindleTooFast && spindleHint && (
         <div className="max-w-md bg-red-50/95 dark:bg-red-950/90 border border-red-300 dark:border-red-800 rounded-md px-3 py-1.5 text-body text-red-700 dark:text-red-300 text-center whitespace-normal pointer-events-none">
-          ⚠ Spindle too fast ({Math.round(surfaceSpeedMMin)} m/min) — {spindleHint}
+          ⚠ Spindle too fast ({progSurf(surfaceSpeedMMin, inch)}) — {spindleHint}
         </div>
       )}
 
@@ -183,13 +203,16 @@ export default function SimulationPlayer() {
       {/* Stats bar */}
       <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex gap-3 whitespace-nowrap pointer-events-none">
         <span>Line: <Slot ch={wLine}>{currentLineNum || '—'}</Slot></span>
-        <span>Z: <Slot ch={W_Z}>{pos ? pos.z.toFixed(3) : '—'}</Slot></span>
+        <span>Z: <Slot ch={W_Z}>{pos ? progLen(pos.z, inch) : '—'}</Slot> {programUnits}</span>
         {/* 'rapid' is the feed's VALUE, not a replacement label — swapping the label out
             was half the flicker, and it moved the clock beside it. */}
         <span className={curSeg?.rapid ? 'text-gray-400 dark:text-neutral-500' : ''}>
-          F: <Slot ch={W_FEED}>
-            {!curSeg ? '—' : curSeg.rapid ? 'rapid' : Math.round(curSeg.feedRateMmMin)}
+          F: <Slot ch={wFeed}>
+            {!curSeg ? '—' : curSeg.rapid ? 'rapid' : progFeed(curSeg.feedRateMmMin, inch)}
           </Slot>
+          {/* Held in a fixed slot rather than dropped on a rapid — vanishing would move
+              the clock beside it, which is the flicker this bar is built to avoid. */}
+          <Slot ch={W_UNIT} align="left">{curSeg && !curSeg.rapid ? ` ${programUnits}/min` : ''}</Slot>
         </span>
         <span className="text-gray-500 dark:text-neutral-400">
           <Slot ch={totalTimeStr.length}>{formatSimTime(elapsedTimeS)}</Slot> / {totalTimeStr}
@@ -273,7 +296,7 @@ export default function SimulationPlayer() {
       {/* Spindle + chip-load feedback. Always mounted: it used to unmount between moves,
           which made the bar blink in and out and shifted the controls above it. */}
       <div className="bg-gray-50/95 dark:bg-neutral-900/95 border border-gray-300 dark:border-neutral-700 rounded-md px-3 py-1 text-body font-mono text-gray-700 dark:text-neutral-300 flex items-center gap-3 whitespace-nowrap pointer-events-none">
-        <span className={spindleTooFast ? 'text-red-500 font-semibold' : ''}>
+        <span className={spindleTooFast ? 'text-red-600 dark:text-red-500 font-semibold' : ''}>
           {/* The surface speed moved to the warning banner rather than being appended
               here — it only ever appeared when something was wrong, so it dragged the
               whole row sideways exactly when the numbers mattered most. */}
@@ -283,10 +306,10 @@ export default function SimulationPlayer() {
         <span className="flex items-center gap-1.5">
           Chip
           <span style={{ color: chip.color }}>●</span>
-          <Slot ch={W_FZ}>{actualFz !== null ? actualFz.toFixed(3) : '—'}</Slot>
+          <Slot ch={wFz}>{actualFz !== null ? progFz(actualFz, inch) : '—'}</Slot>
           /
-          <Slot ch={W_FZ}>{targetFz > 0 ? targetFz.toFixed(3) : '—'}</Slot>
-          mm
+          <Slot ch={wFz}>{targetFz > 0 ? progFz(targetFz, inch) : '—'}</Slot>
+          {programUnits}
         </span>
         {/* Holds its width whatever the band, and prints '—' rather than vanishing when
             the move isn't steady side-cutting and there is nothing to judge. */}

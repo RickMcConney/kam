@@ -26,7 +26,7 @@ export function BottomTabs() {
   )
 
   return (
-    <div className="flex items-center gap-0.5 p-0.5 rounded bg-gray-200 dark:bg-neutral-900 flex-shrink-0">
+    <div className="flex items-center gap-0.5 p-0.5 rounded bg-gray-300 dark:bg-neutral-900 flex-shrink-0">
       {tab('timeline', 'Timeline', 'History — every edit, in the order it happened')}
       {tab('operations', 'Ops', 'Program — every toolpath, in the order the machine runs it')}
     </div>

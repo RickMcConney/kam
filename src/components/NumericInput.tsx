@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { ChevronUp, ChevronDown } from 'lucide-react'
+import { parseNumeric, isPartialFraction } from './parseNumeric'
 
 interface NumericInputProps {
   value: number
@@ -8,11 +10,15 @@ interface NumericInputProps {
   integer?: boolean
   onChange: (v: number) => void
   className?: string
+  title?: string
+  /** Unit shown after the field ('mm', 'in', 'mm/min', 'RPM', '°'). Owned by this
+   *  component so the box and its unit can never drift apart between panels. */
+  unit?: string
 }
 
 // Numeric input that holds local text state while focused so intermediate
 // states like "-", "3.", or "" don't reset to the last valid value on every keystroke.
-export function NumericInput({ value, min, max, step, integer, onChange, className }: NumericInputProps) {
+export function NumericInput({ value, min, max, step, integer, onChange, className, title, unit }: NumericInputProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
 
@@ -21,59 +27,117 @@ export function NumericInput({ value, min, max, step, integer, onChange, classNa
   }
 
   function commit(raw: string) {
-    const v = parseFloat(raw)
-    if (isNaN(v)) return
+    const v = parseNumeric(raw)
+    if (v === null) return
     const clamped = min !== undefined
       ? (max !== undefined ? Math.min(max, Math.max(min, v)) : Math.max(min, v))
       : (max !== undefined ? Math.min(max, v) : v)
     onChange(integer ? Math.round(clamped) : clamped)
   }
 
-  return (
-    <input
-      type="text"
-      inputMode="decimal"
-      value={editing ? draft : fmt(value)}
-      step={step}
-      onChange={(e) => {
-        const raw = e.target.value
-        setDraft(raw)
-        // Fire live updates for valid intermediate values so sliders/previews stay responsive
-        const v = parseFloat(raw)
-        if (!isNaN(v)) {
-          const inRange = (min === undefined || v >= min) && (max === undefined || v <= max)
-          if (inRange) onChange(integer ? Math.round(v) : v)
-        }
-      }}
-      onFocus={(e) => {
-        setDraft(fmt(value))
-        e.target.select()
-      }}
-      onBlur={() => {
-        if (draft !== null) commit(draft)
-        setDraft(null)
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
+  // One nudge, shared by the arrow keys and the stepper buttons. Reads the draft when the
+  // user is mid-edit so clicking up after typing steps from what is on screen, not from the
+  // last committed value.
+  function bump(dir: 1 | -1) {
+    if (step === undefined) return
+    const current = draft !== null ? (parseNumeric(draft) ?? value) : value
+    const raw = fmt(current + dir * step)
+    if (draft !== null) setDraft(raw)
+    commit(raw)
+  }
+
+  // The caller's className styles the BOX (border, background, padding, width), so it moves
+  // to the wrapper and the input inside goes transparent — otherwise the stepper would sit
+  // outside the field's border. `focus:` becomes `focus-within:` so focusing the input still
+  // lights the box up.
+  const boxCls = (className ?? '').replace(/\bfocus:/g, 'focus-within:')
+
+  // The unit sits outside the box, so the box is no longer the outermost element. When the
+  // caller asks the field to fill its row, that has to apply to the whole thing — box plus
+  // unit — or the unit lands outside the width the layout reserved and the box no longer
+  // grows. The box keeps the class too, so it fills whatever the wrapper is given.
+  const grows = /\b(?:flex-1|w-full)\b/.test(className ?? '')
+
+  const box = (
+    <span className={`flex items-center ${boxCls}`}>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={editing ? draft : fmt(value)}
+        onChange={(e) => {
+          const raw = e.target.value
+          setDraft(raw)
+          // Fire live updates for valid intermediate values so sliders/previews stay
+          // responsive — but never mid-fraction: '1/' would publish 1 on the way to 1/8.
+          if (isPartialFraction(raw)) return
+          const v = parseNumeric(raw)
+          if (v !== null) {
+            const inRange = (min === undefined || v >= min) && (max === undefined || v <= max)
+            if (inRange) onChange(integer ? Math.round(v) : v)
+          }
+        }}
+        onFocus={(e) => {
+          setDraft(fmt(value))
+          e.target.select()
+        }}
+        onBlur={() => {
           if (draft !== null) commit(draft)
           setDraft(null)
-          ;(e.target as HTMLInputElement).blur()
-        }
-        if (e.key === 'Escape') {
-          setDraft(null)
-          ;(e.target as HTMLInputElement).blur()
-        }
-        // Arrow key stepping
-        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && step !== undefined) {
-          e.preventDefault()
-          const current = draft !== null ? (parseFloat(draft) ?? value) : value
-          const next = e.key === 'ArrowUp' ? current + step : current - step
-          const raw = fmt(next)
-          setDraft(raw)
-          commit(raw)
-        }
-      }}
-      className={className}
-    />
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            if (draft !== null) commit(draft)
+            setDraft(null)
+            ;(e.target as HTMLInputElement).blur()
+          }
+          if (e.key === 'Escape') {
+            setDraft(null)
+            ;(e.target as HTMLInputElement).blur()
+          }
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault()
+            bump(e.key === 'ArrowUp' ? 1 : -1)
+          }
+        }}
+        style={{ font: 'inherit', color: 'inherit', textAlign: 'inherit' }}
+        className="w-full min-w-0 flex-1 bg-transparent border-0 p-0 m-0 outline-none"
+      />
+      {step !== undefined && (
+        // Not tab stops: tabbing through a form should visit each field once, not three
+        // times. mousedown is swallowed so clicking a chevron never pulls focus out of the
+        // input the user is editing.
+        <span className="flex flex-col flex-shrink-0 ml-1 leading-none">
+          <button
+            type="button" tabIndex={-1} aria-label="Increase"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => bump(1)}
+            className="text-gray-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400"
+          >
+            <ChevronUp size={11} />
+          </button>
+          <button
+            type="button" tabIndex={-1} aria-label="Decrease"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => bump(-1)}
+            className="text-gray-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400"
+          >
+            <ChevronDown size={11} />
+          </button>
+        </span>
+      )}
+    </span>
+  )
+
+  // Box and unit are one entity — a caller cannot render one without the other, which is
+  // what let them drift before (most panels put the unit outside, Setup overlaid it inside
+  // the box with absolute positioning and a pr-8 gutter). A field with no unit stays a
+  // single element deep, exactly as it was.
+  const wrap = grows ? 'min-w-0 flex-1 w-full' : ''
+  if (!unit) return <span title={title} className={`flex ${wrap}`}>{box}</span>
+  return (
+    <span title={title} className={`flex items-center gap-1 ${wrap}`}>
+      {box}
+      <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{unit}</span>
+    </span>
   )
 }

@@ -29,7 +29,7 @@ const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Obj
   SHAPES.map((s) => [s.type, { label: s.label, icon: s.icon }])
 )
 
-const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
+const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
 const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-14 flex-shrink-0'
 
 function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }: {
@@ -47,10 +47,10 @@ function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }:
         min={min}
         step={s}
         integer={integer}
+        unit={integer ? undefined : units}
         onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
         className={inputCls}
       />
-      {!integer && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
     </div>
   )
 }
@@ -150,7 +150,7 @@ const toolBtnCls = (active: boolean) =>
     'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border',
     active
       ? 'border-blue-500 bg-blue-500/20'
-      : 'border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500',
+      : 'border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700',
   ].join(' ')
 
 

@@ -14,7 +14,7 @@ import { loadFont } from '../shapes/textGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
 
-const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
+const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
 const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-5 flex-shrink-0'
 
 function ReadField({ label, value, units }: { label: string; value: string; units?: string }) {
@@ -22,7 +22,7 @@ function ReadField({ label, value, units }: { label: string; value: string; unit
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
       <span className={fieldCls + ' tabular-nums'}>{value}</span>
-      {units && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
+      {units && <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>}
     </div>
   )
 }
@@ -53,10 +53,10 @@ function EditField({
         min={min}
         step={step}
         integer={integer}
+        unit={integer ? undefined : units}
         onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
         className={fieldCls}
       />
-      {!integer && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{units}</span>}
     </div>
   )
 }
@@ -75,8 +75,7 @@ function RawField({ label, value, onChange, suffix, step = 0.01, min, max }: {
   return (
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
-      <NumericInput value={value} min={min} max={max} step={step} onChange={onChange} className={fieldCls} />
-      {suffix && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{suffix}</span>}
+      <NumericInput value={value} min={min} max={max} step={step} unit={suffix} onChange={onChange} className={fieldCls} />
     </div>
   )
 }
@@ -495,14 +494,14 @@ export default function PropertiesPanel() {
           <button
             onClick={() => applyMirrorToChip('x')}
             title="Mirror horizontally (flip left/right)"
-            className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+            className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
           >
             <span className="inline-block">↔</span> Mirror X
           </button>
           <button
             onClick={() => applyMirrorToChip('y')}
             title="Mirror vertically (flip up/down)"
-            className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+            className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
           >
             <span className="inline-block rotate-90">↔</span> Mirror Y
           </button>
@@ -550,14 +549,14 @@ export default function PropertiesPanel() {
         <button
           onClick={() => applyMirror('x')}
           title="Mirror horizontally (flip left/right)"
-          className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+          className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
         >
           <span className="inline-block">↔</span> Mirror X
         </button>
         <button
           onClick={() => applyMirror('y')}
           title="Mirror vertically (flip up/down)"
-          className="flex-1 text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+          className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
         >
           <span className="inline-block rotate-90">↔</span> Mirror Y
         </button>
@@ -570,7 +569,7 @@ export default function PropertiesPanel() {
         return (
           <button
             onClick={() => usePathsStore.getState().splitPath(p.id, splitCompoundPath(p.d))}
-            className="mt-2 w-full text-label py-1 rounded border transition-colors border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+            className="mt-2 w-full text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
           >
             Split Paths
           </button>

@@ -1,8 +1,7 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
@@ -45,8 +44,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
-  const defaultTool = tools[0]
-  const [form, setForm] = useState<PocketFormState>(() => editOp ? {
+  // Clearing a pocket needs a side-cutting edge, so the same filter as the dropdown
+  // picks the default and vets a saved one.
+  const cutters = toolsOfType(tools, ['endmill', 'ballnose'])
+  const defaultTool = cutters[0]
+  const [form, setForm] = useState<PocketFormState>(() => {
+    const base = editOp ? {
     toolId: editOp.toolId, strategy: editOp.strategy ?? 'raster',
     depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
     stepoverPercent: editOp.stepoverPercent, passAngleDeg: editOp.passAngleDeg,
@@ -79,7 +82,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // the selection it was chosen for. Replaying an inverted pocket onto an un-nested
     // selection would silently produce no operations at all.
     invert: false,
-  }, tools), startFrom: { mode: 'auto' }, invert: false })
+  }, tools), startFrom: { mode: 'auto' } as StartFrom, invert: false }
+    return { ...base, toolId: pickToolId(base.toolId, cutters) }
+  })
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
@@ -126,7 +131,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   // "Update" as soon as this session owns anything in the selection, not only when every
   // current boundary has an op: after a toggle, none of them do yet.
   const updating = !editOp && groups.length > 0 && sessionOps.length > 0
-  const adaptiveStrategy = form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid'
+  // Only the adaptive engines call this number an engagement — there it is the arc of the
+  // cutter kept in the material, held constant by construction, and asking for more than
+  // 60% of it is asking the marcher for something it will not hold. Auto (hybrid) spends
+  // most of its path rastering and contouring, where the number simply IS the stepover: it
+  // takes the same name and the same 10–90% range as those two.
+  const adaptiveStrategy = form.strategy === 'adaptive' || form.strategy === 'adaptive2'
   const autoPassAngle = form.strategy === 'hybrid' && form.autoAngle
 
   function handleToolChange(toolId: string) {
@@ -135,7 +145,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   function handleStrategyChange(strategy: PocketStrategy) {
-    const adaptive = strategy === 'adaptive' || strategy === 'adaptive2' || strategy === 'hybrid'
+    const adaptive = strategy === 'adaptive' || strategy === 'adaptive2'
     setForm((f) => ({
       ...f,
       strategy,
@@ -286,11 +296,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   return (
-    <FormShell title={editOp ? `Edit Pocket${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New Pocket Operation'} onClose={onClose}>
+    <FormShell title={editOp ? `Edit Pocket${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New Pocket'} onClose={onClose}>
       {groups.length === 0 && (
-        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
+        <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
       )}
-      <ToolSelector tools={tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')} value={form.toolId} onChange={handleToolChange} />
+      <ToolSelector tools={cutters} value={form.toolId} onChange={handleToolChange} />
       {/* Nested outlines alternate solid/hole, so there are two valid readings of the same
           selection and only the user knows which one is the part. */}
       {!editOp && nested && (
@@ -311,7 +321,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       <ToggleRow label="Strategy" options={['hybrid', 'raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ hybrid: 'auto', adaptive2: 'adaptive' }} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          {form.strategy === 'adaptive' || form.strategy === 'adaptive2' || form.strategy === 'hybrid' ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
+          {adaptiveStrategy ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
         <input
           type="range" min={adaptiveStrategy ? 5 : 10} max={adaptiveStrategy ? 60 : 90} step={5}
@@ -326,7 +336,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       {(form.strategy === 'raster' || form.strategy === 'hybrid') && (
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            Pass Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{autoPassAngle ? 'auto' : `${form.passAngleDeg}°`}</span>
+            Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{autoPassAngle ? 'auto' : `${form.passAngleDeg}°`}</span>
           </label>
           {form.strategy === 'hybrid' && (
             <div className="flex items-center gap-2 mb-1">
@@ -352,14 +362,9 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Allowance</label>
-        <div className="flex items-center gap-1">
-          <NumericInput value={form.allowanceMM} min={-5} max={5} step={0.05}
-            onChange={(v) => up('allowanceMM', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-        </div>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Stock Allowance</label>
+        <LengthInput valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
+          onChangeMM={(v) => up('allowanceMM', v)} />
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Stock left on walls; negative grows the pocket.</p>
       </div>
       <div className="flex items-center gap-2">

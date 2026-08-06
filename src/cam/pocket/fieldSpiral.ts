@@ -317,7 +317,9 @@ export const REDUNDANCY_LIMIT = 2.0
 export let lastUnsuitableRatio = 0
 export function takeUnsuitableRatio(): number { const r = lastUnsuitableRatio; lastUnsuitableRatio = 0; return r }
 
-function buildIsothermChains(
+// Exported for scripts/morph-chains.mts, which dumps the chain structure this builds —
+// the chains are what a cut-order bug is about, and they are invisible in the segments.
+export function buildIsothermChains(
   g: FieldGrid, insetBoundary: Pt2[], holes: Pt2[][], stepoverMM: number, wantCCW: boolean,
   /** Area the tool actually clears — the ORIGINAL pocket, not the inset tool-centre region.
    *  Clearing area A at a given stepover needs at least A/stepover of path, and using the
@@ -454,6 +456,7 @@ function buildIsothermChains(
   const keptAreas = kept.map(l => Math.abs(signedArea(l)))
   const nodes: LoopNode[] = kept.map(l => ({ loop: l, centroid: centroidOfRing(l), children: [] }))
   const roots: LoopNode[] = []
+  const orphans: LoopNode[] = []
   for (let i = 0; i < nodes.length; i++) {
     let parent: LoopNode | null = null
     let parentArea = Infinity
@@ -463,18 +466,52 @@ function buildIsothermChains(
       }
     }
     if (parent) parent.children.push(nodes[i])
+    else if (i > 0) orphans.push(nodes[i])
     else roots.push(nodes[i])
   }
 
   // Belt-and-suspenders: merge any residual near-coincident sibling loops (same lobe)
   // so they don't each become a separate overlapping pass. Genuine lobes have
   // centroids far further apart than one stepover.
-  dedupeForestBranches(roots, stepoverMM)
+  dedupeForestBranches([...roots, ...orphans], stepoverMM)
+
+  // kept[0] is the WALL — the domain the field was solved in — so every isotherm is inside
+  // it by construction and this forest can only have ONE root. A loop the vote could not
+  // place rides the wall (the outermost level does, at small stepovers: it weaves in and
+  // out of the inset ring by a fraction of a millimetre, so most of its vertices sample as
+  // outside); it did not escape the pocket. Left as a second root it took the whole nest
+  // under it with it, and the wall was then childless — a one-loop chain, which reads as a
+  // leaf and therefore SEEDS A CENTRE FILL. That is what made a star bore its middle, drive
+  // straight out to the wall, cut a lap round it, and only then come back for the real
+  // spiral (fieldSpiral.test.ts pins it; scripts/morph-cut-order.mts finds it end-to-end).
+  //
+  // Adopted AFTER the dedupe above, and deduped as its own subtree: an orphan is the only
+  // record of its level, so it must never be dropped as a near-duplicate of the wall's
+  // other children — that would leave its ring of stock uncut.
+  for (const o of orphans) nodes[0].children.push(o)
 
   // Decimate each chain so consecutive kept loops are ≤ one stepover apart.
   return forestToChains(roots, stepoverMM)
     .filter(c => c.loopsOuterToInner.length > 0)
-    .map(c => ({ loopsOuterToInner: decimateChain(c.loopsOuterToInner, stepoverMM), innerIsLeaf: c.innerIsLeaf }))
+    .map(c => {
+      const loops = decimateChain(c.loopsOuterToInner, stepoverMM)
+      // The outermost level IS the wall, and the wall is exactly what the finishing pass
+      // cuts — `compoundFinishRings` insets the same boundary by the same tool radius — so
+      // leaving it in the chain machines it twice: the spiral's last lap, then the finish
+      // ring over the top of it. Contour drops its equivalent ring for the same reason
+      // (`levels.slice(1)`); this is morph's version of that.
+      //
+      // The band it used to cover is still covered: the outermost loop left in the chain is
+      // within one stepover S of the wall (decimateChain anchored it there) and reaches a
+      // tool radius R past itself, while the finishing pass reaches R inward from the wall —
+      // so the two meet for any S ≤ 2R, i.e. any stepover up to 100%.
+      //
+      // Only dropped when something remains to cut: a pocket small enough that the wall is
+      // the WHOLE chain is cleared by that lap plus its centre seed, and dropping it would
+      // leave the pocket to the finishing pass alone.
+      const trimmed = loops.length > 1 && loops[0] === wall ? loops.slice(1) : loops
+      return { loopsOuterToInner: trimmed, innerIsLeaf: c.innerIsLeaf }
+    })
 }
 
 type SpiralEntry = 'helix' | 'ramp' | 'travel'

@@ -67,6 +67,30 @@ export const toMM = (value: number, units: Units): number =>
 export const fromMM = (value: number, units: Units): number =>
   units === 'in' ? +(value / MM_PER_INCH).toFixed(4) : +value.toFixed(3)
 
+// `fromMM`/`toMM` move the number; these format it WITH its unit. Every length a form
+// prints read-only — a resolved start Z, a groove width, a tool diameter in a dropdown —
+// goes through `fmtLen`, so a figure the user can only read is written the same way as
+// one they can type into.
+// The number alone, at the right precision for its unit — for a field that puts its unit
+// in a separate element (every editable one does, so a read-only twin beside it must too).
+export const lenValue = (mm: number, units: Units, mmDigits = 2): string =>
+  units === 'in' ? (mm / MM_PER_INCH).toFixed(3) : mm.toFixed(mmDigits)
+
+export const fmtLen = (mm: number, units: Units, mmDigits = 2): string =>
+  units === 'in' ? `${lenValue(mm, units)}"` : `${lenValue(mm, units, mmDigits)} mm`
+
+export const fmtFeed = (mmPerMin: number, units: Units): string =>
+  units === 'in' ? `${(mmPerMin / MM_PER_INCH).toFixed(1)} in/min` : `${Math.round(mmPerMin)} mm/min`
+
+// Arrow-key step for a length field in inch mode. A converted mm step is an unusable
+// number to nudge by (0.5 mm = 0.0197"), so snap to the nearest 1-2-5 inch step instead —
+// the field still holds any value the user types, this only sizes the arrow keys.
+const INCH_STEPS = [0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25]
+export const inchStepFor = (stepMM: number): number => {
+  const target = stepMM / MM_PER_INCH
+  return INCH_STEPS.reduce((best, s) => (Math.abs(s - target) < Math.abs(best - target) ? s : best))
+}
+
 interface WorkpieceState {
   widthMM: number
   heightMM: number

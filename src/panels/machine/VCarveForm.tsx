@@ -1,8 +1,7 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore } from '../../store/toolStore'
@@ -10,7 +9,7 @@ import { useToolpathStore, batchOf, type AnyOperation, type VCarveOperation } fr
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { groupPathsByContainment } from './containment'
@@ -27,20 +26,25 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const selPaths = useSelectedPaths()
   const { addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
-  const vbits = tools.filter((t) => t.type === 'vbit')
-  const defaultTool = vbits[0] ?? tools[0]
-  const [form, setForm] = useState<VCarveFormState>(() => editOp
-    ? { toolId: editOp.toolId, maxDepthMM: editOp.maxDepthMM, startFrom: editOp.startFrom ?? { mode: 'stock' } }
-    : { ...mergeWithDefaults(load('vcarve'), {
-        toolId: defaultTool?.id ?? '',
-        // Default to the full stock thickness; the tool's max Z is only a warning.
-        maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-        // Deliberately not carried over from the saved defaults — see PocketForm.
-        startFrom: { mode: 'auto' } as StartFrom,
-      }, tools), startFrom: { mode: 'auto' as const } }
-  )
+  // Nothing but a V-bit carves a V: the cone angle IS the op, and Generate below is already
+  // gated on it. The list used to fall back to every tool when the library had no V-bit,
+  // which offered drills for a cut they can't make.
+  const vbits = toolsOfType(tools, ['vbit'])
+  const defaultTool = vbits[0]
+  const [form, setForm] = useState<VCarveFormState>(() => {
+    const base = editOp
+      ? { toolId: editOp.toolId, maxDepthMM: editOp.maxDepthMM, startFrom: editOp.startFrom ?? { mode: 'stock' as const } }
+      : { ...mergeWithDefaults(load('vcarve'), {
+          toolId: defaultTool?.id ?? '',
+          // Default to the full stock thickness; the tool's max Z is only a warning.
+          maxDepthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
+          // Deliberately not carried over from the saved defaults — see PocketForm.
+          startFrom: { mode: 'auto' } as StartFrom,
+        }, tools), startFrom: { mode: 'auto' as const } }
+    return { ...base, toolId: pickToolId(base.toolId, vbits) }
+  })
   const [generating, setGenerating] = useState(false)
   const session = useSessionOps()
 
@@ -158,14 +162,14 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   return (
-    <FormShell title={editOp ? `Edit V-Carve${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New V-Carve Operation'} onClose={onClose}>
+    <FormShell title={editOp ? `Edit V-Carve${groups.length > 1 ? ` — ${groups.length} paths` : ''}` : 'New V-Carve'} onClose={onClose}>
       {groups.length === 0 && (
-        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
+        <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
       )}
-      <ToolSelector tools={vbits.length > 0 ? vbits : tools} value={form.toolId} onChange={handleToolChange} />
+      <ToolSelector tools={vbits} value={form.toolId} onChange={handleToolChange} />
       {selectedTool?.type !== 'vbit' && (
-        <p className="text-label text-amber-400 flex items-center gap-1">
-          <AlertCircle size={ICON.xs} /> V-carve requires a V-bit tool.
+        <p className="text-label text-amber-600 dark:text-amber-400 flex items-center gap-1">
+          <AlertCircle size={ICON.xs} /> V-Carve requires a V-bit tool.
         </p>
       )}
       {selectedTool?.type === 'vbit' && (
@@ -176,22 +180,17 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
-        <div className="flex items-center gap-1">
-          <NumericInput value={form.maxDepthMM} min={0.1} step={0.5}
-            onChange={(v) => up('maxDepthMM', v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-        </div>
+        <LengthInput valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
+          onChangeMM={(v) => up('maxDepthMM', v)} />
         {/* Reach from stock top: starting on a pocket floor adds that much to the total. */}
         {selectedTool && form.maxDepthMM - startZ.zMM > selectedTool.maxDepthMM && (
-          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+          <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
-            Exceeds tool max ({selectedTool.maxDepthMM} mm)
+            Exceeds tool Max Z ({fmtLen(selectedTool.maxDepthMM, units)})
           </p>
         )}
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
-          Bit cuts at most {((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2).toFixed(2)} mm wide at full depth.
+          Cuts at most {fmtLen((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2, units)} wide at full depth.
         </p>
       </div>
       <GenerateBtn

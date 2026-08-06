@@ -61,6 +61,10 @@ export function buildExportPreflight(): ExportPreflight {
   } = wp
 
   const fmt = (mm: number) => (units === 'in' ? `${(mm / 25.4).toFixed(3)}"` : `${mm.toFixed(1)} mm`)
+  // These warnings are read while deciding whether to run a job, so the grammar has to
+  // hold at n = 1 rather than fall back to "operation(s)".
+  const nS = (n: number) => (n === 1 ? '' : 's')
+  const nIsAre = (n: number) => (n === 1 ? 'is' : 'are')
 
   const doneOps = operations.filter(
     (o) => o.visible && o.status === 'done' && o.segments.length > 0 && o.type !== 'gcode'
@@ -133,9 +137,9 @@ export function buildExportPreflight(): ExportPreflight {
     const reason = failed.find((o) => o.errorMessage)?.errorMessage
     warnings.push({
       level: 'warn',
-      text: `${failed.length} operation(s) failed to generate and are NOT in this file — ${named(failed)}.` +
+      text: `${failed.length} operation${nS(failed.length)} failed to generate and ${nIsAre(failed.length)} NOT in this file — ${named(failed)}.` +
         (reason ? ` First error: "${reason}".` : '') +
-        ` Whatever they were meant to cut will be left uncut.`,
+        ` Whatever ${failed.length === 1 ? 'it was' : 'they were'} meant to cut will be left uncut.`,
     })
   }
 
@@ -143,8 +147,8 @@ export function buildExportPreflight(): ExportPreflight {
   if (stale.length > 0) {
     warnings.push({
       level: 'warn',
-      text: `${stale.length} operation(s) need regenerating and are NOT in this file — ${named(stale)}. ` +
-        `Regenerate them before running this job.`,
+      text: `${stale.length} operation${nS(stale.length)} need${stale.length === 1 ? 's' : ''} regenerating and ${nIsAre(stale.length)} NOT in this file — ${named(stale)}. ` +
+        `Regenerate ${stale.length === 1 ? 'it' : 'them'} before running this job.`,
     })
   }
 
@@ -154,7 +158,7 @@ export function buildExportPreflight(): ExportPreflight {
   if (ungenerated.length > 0) {
     warnings.push({
       level: 'warn',
-      text: `${ungenerated.length} operation(s) have no toolpath and are NOT in this file — ${named(ungenerated)}.`,
+      text: `${ungenerated.length} operation${nS(ungenerated.length)} ${ungenerated.length === 1 ? 'has' : 'have'} no toolpath and ${nIsAre(ungenerated.length)} NOT in this file — ${named(ungenerated)}.`,
     })
   }
 
@@ -163,7 +167,7 @@ export function buildExportPreflight(): ExportPreflight {
     // Deliberate, so info rather than warn — but it still changes what gets cut.
     warnings.push({
       level: 'info',
-      text: `${hiddenOps.length} hidden operation(s) are excluded from this file — ${named(hiddenOps)}.`,
+      text: `${hiddenOps.length} hidden operation${nS(hiddenOps.length)} ${nIsAre(hiddenOps.length)} excluded from this file — ${named(hiddenOps)}.`,
     })
   }
 
@@ -172,7 +176,7 @@ export function buildExportPreflight(): ExportPreflight {
   if (hasExtents && (wpMinX < -tol || wpMinY < -tol || wpMaxX > widthMM + tol || wpMaxY > heightMM + tol)) {
     warnings.push({
       level: 'warn',
-      text: `Toolpath extends outside the workpiece bounds (${fmt(widthMM)} × ${fmt(heightMM)} stock). ` +
+      text: `Toolpath extends outside the stock (${fmt(widthMM)} × ${fmt(heightMM)}). ` +
         `The tool will cut beyond the stock — reposition the geometry or enlarge the workpiece.`,
     })
   }
@@ -188,7 +192,7 @@ export function buildExportPreflight(): ExportPreflight {
   if (toolList.length > 1) {
     warnings.push({
       level: 'info',
-      text: `This job uses ${toolList.length} tools — ${toolList.length - 1} tool change(s) required. ` +
+      text: `This job uses ${toolList.length} tools — ${toolList.length - 1} tool change${nS(toolList.length - 1)} required. ` +
         `Swap the tool and re-zero Z when the program pauses.`,
     })
   }
@@ -213,7 +217,7 @@ export function buildExportPreflight(): ExportPreflight {
   if (tooFastTools.length > 0) {
     warnings.push({
       level: 'warn',
-      text: `The spindle can't run slow enough for the material's safe surface speed on ${tooFastTools.length} tool(s) — ` +
+      text: `The spindle can't run slow enough for the material's safe surface speed on ${tooFastTools.length} tool${nS(tooFastTools.length)} — ` +
         `risk of overheating/built-up edge. Use a smaller bit or a slower spindle.`,
     })
   }
@@ -241,17 +245,17 @@ export function buildExportPreflight(): ExportPreflight {
   if (heavyTools.length > 0) {
     warnings.push({
       level: 'warn',
-      text: `Chip load is too high on ${heavyTools.length} tool(s) (${heavyTools.join(', ')}) — ` +
+      text: `Chip load is too high on ${heavyTools.length} tool${nS(heavyTools.length)} (${heavyTools.join(', ')}) — ` +
         `the chips are too large for the programmed feed and speed, risking tool breakage or a stalled spindle. ` +
-        `Lower the feed or raise the RPM${autoFeedEnabled ? '' : ' (or turn on auto-feed)'}.`,
+        `Lower the feed or raise the RPM${autoFeedEnabled ? '' : ' (or turn on auto feeds & speeds)'}.`,
     })
   }
   if (rubbingTools.length > 0) {
     warnings.push({
       level: 'warn',
-      text: `Chip load is too low on ${rubbingTools.length} tool(s) (${rubbingTools.join(', ')}) — ` +
-        `the bit will rub instead of cut and run hot. ` +
-        `Raise the feed or lower the RPM${autoFeedEnabled ? '' : ' (or turn on auto-feed)'}.`,
+      text: `Chip load is too low on ${rubbingTools.length} tool${nS(rubbingTools.length)} (${rubbingTools.join(', ')}) — ` +
+        `the tool will rub instead of cut and run hot. ` +
+        `Raise the feed or lower the RPM${autoFeedEnabled ? '' : ' (or turn on auto feeds & speeds)'}.`,
     })
   }
 

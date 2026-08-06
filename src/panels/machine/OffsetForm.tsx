@@ -1,7 +1,6 @@
 // ─── Offset form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, ToggleRow, GenerateBtn } from './shared'
+import { FormShell, PathChip, ToggleRow, GenerateBtn, LengthInput } from './shared'
 import { useState } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
@@ -10,7 +9,6 @@ import { useSelectedPaths } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
-import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import { applyOffset, type OffsetCornerStyle } from '../../tools/offsetOp'
 import { nextPathColor } from '../../importers/svgImporter'
 import { uid } from '../../uid'
@@ -33,7 +31,6 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
   const { paths, addPaths } = usePathsStore()
   const selPaths = useSelectedPaths()
   const { load, save } = useFormDefaultsStore()
-  const { units } = useWorkpieceStore()
 
   const [form, setForm] = useState<OffsetFormState>(() => {
     if (editCtx) return { distanceMM: editCtx.distanceMM, cornerStyle: editCtx.cornerStyle }
@@ -104,10 +101,10 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
     save('offset', form)
   }
 
-  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
 
   return (
-    <FormShell title={editCtx ? 'Edit Offset' : 'Offset Path'} onClose={onClose}>
+    <FormShell title={editCtx ? 'Edit Offset' : 'Offset'} onClose={onClose}>
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
           {editCtx ? 'Source paths' : 'Paths'}
@@ -117,26 +114,19 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
             {sourcePaths.map((p) => <PathChip key={p.id} path={p} label={editCtx ? 'source' : 'selected'} />)}
           </div>
         ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1">
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> {editCtx ? 'Source or result paths no longer exist' : 'Select a path first'}
           </p>
         )}
       </div>
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Distance</label>
-        <div className="flex items-center gap-1">
-          <NumericInput
-            value={fromMM(form.distanceMM, units as 'mm' | 'in')}
-            step={units === 'in' ? 0.0625 : 0.5}
-            onChange={(v) => up('distanceMM', toMM(v, units as 'mm' | 'in'))}
-            className={inputCls}
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">{units}</span>
-        </div>
+        <LengthInput valueMM={form.distanceMM} stepMM={0.5}
+          onChangeMM={(v) => up('distanceMM', v)} className={inputCls} />
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Positive = outset, negative = inset</p>
       </div>
       <ToggleRow label="Corner Style" options={['miter', 'round', 'square'] as OffsetCornerStyle[]} value={form.cornerStyle} onChange={(v) => up('cornerStyle', v)} />
-      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      {error && <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
       <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label={editCtx ? 'Update Offset' : 'Apply Offset'} />
     </FormShell>
   )

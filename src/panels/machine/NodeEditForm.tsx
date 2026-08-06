@@ -1,7 +1,6 @@
 // ─── Node Edit / Corner Treatment form ───────────────────────────────────────
-import { FormShell, PathChip } from './shared'
+import { FormShell, PathChip, LengthInput } from './shared'
 import { useState, useEffect, useRef } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
@@ -150,14 +149,14 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <FormShell title="Corner Treatment" onClose={onClose}>
+    <FormShell title="Corners" onClose={onClose}>
       {/* Selected path */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
         {activePath ? (
           <PathChip path={activePath} label="selected" />
         ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1">
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> Select exactly one path on canvas
           </p>
         )}
@@ -176,7 +175,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
                 'py-1.5 px-2 rounded border text-body text-left transition-colors',
                 form.treatmentType === type
                   ? 'border-blue-500 bg-blue-500/20 text-blue-300'
-                  : 'border-gray-200 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:border-gray-300 dark:hover:border-neutral-500',
+                  : 'border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:bg-gray-100 dark:hover:bg-neutral-700',
               ].join(' ')}
             >
               {label}
@@ -190,14 +189,14 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
         {form.treatmentType !== 'none' && (
           <>
             <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-              {form.treatmentType === 'dogbone' ? 'Tool Radius' : 'Radius'} (mm)
+              {form.treatmentType === 'dogbone' ? 'Tool Radius' : 'Radius'}
             </label>
-            <NumericInput
-              value={form.radiusMM}
-              min={0.01}
-              step={0.5}
-              onChange={(v) => up('radiusMM', v)}
-              className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-blue-500"
+            <LengthInput
+              valueMM={form.radiusMM}
+              minMM={0.01}
+              stepMM={0.5}
+              onChangeMM={(v) => up('radiusMM', v)}
+              className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-blue-500"
             />
           </>
         )}

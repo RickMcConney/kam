@@ -2,10 +2,11 @@
 // ─── Shared sub-components ───────────────────────────────────────────────────
 import { useMemo, useState } from 'react'
 import { NumericInput } from '../../components/NumericInput'
+import { FRACTION_HINT } from '../../components/parseNumeric'
 import { ICON } from '../../theme'
 import { AlertCircle, Loader2 } from 'lucide-react'
-import type { Tool } from '../../store/toolStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import type { Tool, ToolType } from '../../store/toolStore'
+import { useWorkpieceStore, fromMM, toMM, fmtLen, lenValue, inchStepFor } from '../../store/workpieceStore'
 import { useGenProgressStore } from '../../store/genProgressStore'
 import { useToolpathStore } from '../../store/toolpathStore'
 import { effectiveStepDownMM } from '../../cam/feeds'
@@ -52,8 +53,8 @@ export function useSessionOps() {
 
 export function FormShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="border border-gray-200 dark:border-neutral-600 rounded-lg mx-3 mt-3 mb-2 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 bg-gray-100 dark:bg-neutral-800 border-b border-gray-200 dark:border-neutral-600">
+    <div className="border border-gray-400 dark:border-neutral-600 rounded-lg mx-3 mt-3 mb-2 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-gray-200 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-600">
         <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{title}</span>
         <button onClick={onClose} className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none">✕</button>
       </div>
@@ -81,7 +82,7 @@ export function PathChip({ path, label }: { path: ImportedPath; label?: string }
 export function PathListSection({ count, children }: { count: number; children: React.ReactNode }) {
   if (count === 0) return null
   return (
-    <div className="pt-1 border-t border-gray-200 dark:border-neutral-700">
+    <div className="pt-1 border-t border-gray-300 dark:border-neutral-700">
       <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
         Paths{count > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400"> ({count})</span>}
       </label>
@@ -91,21 +92,39 @@ export function PathListSection({ count, children }: { count: number; children: 
 }
 
 
+// Which tool types an operation can physically be cut with. A drill only plunges —
+// it has no usable side-cutting edge — so it can never follow a profile or a
+// trochoid; surfacing wants a flat bottom across the whole face, which a ball nose
+// or V-bit can't leave. A form filters its dropdown with `toolsOfType` AND runs its
+// initial id through `pickToolId`: saved form defaults and older projects can name
+// a tool the op has no business using, and filtering alone would leave the select
+// blank while Generate quietly went ahead with that tool.
+export function toolsOfType(tools: Tool[], types: readonly ToolType[]): Tool[] {
+  return tools.filter((t) => types.includes(t.type))
+}
+
+export function pickToolId(preferred: string | undefined, allowed: Tool[]): string {
+  return allowed.some((t) => t.id === preferred) ? preferred! : (allowed[0]?.id ?? '')
+}
+
 export function ToolSelector({ tools, value, onChange }: {
   tools: Tool[]
   value: string
   onChange: (id: string) => void
 }) {
+  const units = useWorkpieceStore((s) => s.units)
   return (
     <div>
       <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Tool</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+        disabled={tools.length === 0}
+        className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 disabled:opacity-60"
       >
+        {tools.length === 0 && <option value="">No suitable tool — add one in the Tool Library</option>}
         {tools.map((t) => (
-          <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
         ))}
       </select>
     </div>
@@ -129,7 +148,7 @@ export function ToggleRow<T extends string>({ label, options, value, onChange, l
               'flex-1 py-1 text-body rounded border transition-colors capitalize',
               value === o
                 ? 'bg-blue-600 border-blue-500 text-white'
-                : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
+                : 'bg-gray-50 dark:bg-neutral-900 border-gray-400 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
             ].join(' ')}>
             {labels?.[o] ?? o}
           </button>
@@ -141,18 +160,53 @@ export function ToggleRow<T extends string>({ label, options, value, onChange, l
 
 
 
+// The class every numeric field in every operation form wears. Exported so a form that
+// lays its own field out still matches the ones built from LengthInput.
+export const FIELD_CLS = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+
+// A length field: held in mm, shown and typed in the user's chosen units.
+//
+// Bounds and step are given in MM and converted here, so no call site has to decide which
+// space its limits live in — the hand-rolled conversions elsewhere in the app get that
+// wrong (an inch-mode `min={0.1}` is a 2.54 mm floor, not 0.1 mm). Form state stays in mm
+// throughout; only the display changes, so saved defaults and generated toolpaths are
+// unaffected by the toggle.
+export function LengthInput({ valueMM, onChangeMM, minMM, maxMM, stepMM = 0.5, className }: {
+  valueMM: number
+  onChangeMM: (mm: number) => void
+  minMM?: number
+  maxMM?: number
+  stepMM?: number
+  className?: string
+}) {
+  const units = useWorkpieceStore((s) => s.units)
+  return (
+    <NumericInput
+      value={fromMM(valueMM, units)}
+      min={minMM === undefined ? undefined : fromMM(minMM, units)}
+      max={maxMM === undefined ? undefined : fromMM(maxMM, units)}
+      step={units === 'in' ? inchStepFor(stepMM) : stepMM}
+      unit={units}
+      onChange={(v) => onChangeMM(toMM(v, units))}
+      className={className ?? FIELD_CLS}
+      title={FRACTION_HINT}
+    />
+  )
+}
+
 // Read-only display for an auto-calculated step-down (shown when auto feed is on).
 export function AutoStepField({ label, valueMM }: { label: string; valueMM: number }) {
+  const units = useWorkpieceStore((s) => s.units)
   return (
     <div>
       <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
         {label} <span className="text-blue-500 dark:text-blue-400 normal-case">(auto)</span>
       </label>
       <div className="flex items-center gap-1">
-        <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
-          {valueMM.toFixed(2)}
+        <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
+          {lenValue(valueMM, units)}
         </div>
-        <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+        <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>
       </div>
     </div>
   )
@@ -188,6 +242,7 @@ export function StartRow({ value, onChange, resolved, opId }: {
   const paths = usePathsStore((s) => s.paths)
   const widthMM = useWorkpieceStore((s) => s.widthMM)
   const heightMM = useWorkpieceStore((s) => s.heightMM)
+  const units = useWorkpieceStore((s) => s.units)
   const candidates = useMemo(
     () => listFlatFloorOps(operations, paths, { widthMM, heightMM }, opId),
     [operations, paths, widthMM, heightMM, opId],
@@ -200,7 +255,7 @@ export function StartRow({ value, onChange, resolved, opId }: {
     <div>
       <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
         Start <span className={`normal-case ${resolved.zMM < 0 ? 'text-blue-500 dark:text-blue-400' : 'text-gray-500 dark:text-neutral-400'}`}>
-          Z {resolved.zMM.toFixed(2)} mm
+          Z {fmtLen(resolved.zMM, units)}
         </span>
       </label>
       <div className="flex items-center gap-1">
@@ -212,22 +267,21 @@ export function StartRow({ value, onChange, resolved, opId }: {
             else if (v === 'manual') onChange({ mode: 'manual', zMM: resolved.zMM })
             else onChange({ mode: v as 'auto' | 'stock' })
           }}
-          className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+          className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
         >
           <option value="auto">Auto (from earlier cuts)</option>
           <option value="stock">Stock top</option>
           {candidates.map((c) => (
-            <option key={c.opId} value={`op:${c.opId}`}>Floor of {c.name} ({c.zMM.toFixed(2)})</option>
+            <option key={c.opId} value={`op:${c.opId}`}>Floor of {c.name} ({fmtLen(c.zMM, units)})</option>
           ))}
           <option value="manual">Custom…</option>
         </select>
         {mode.mode === 'manual' && (
           <>
-            <NumericInput value={mode.zMM} max={0} step={0.5}
-              onChange={(v) => onChange({ mode: 'manual', zMM: Math.min(0, v) })}
-              className="w-20 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
+            <LengthInput valueMM={mode.zMM} maxMM={0} stepMM={0.5}
+              onChangeMM={(v) => onChange({ mode: 'manual', zMM: Math.min(0, v) })}
+              className="w-20 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
             />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
           </>
         )}
       </div>
@@ -239,7 +293,7 @@ export function StartRow({ value, onChange, resolved, opId }: {
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">{resolved.label}</p>
       )}
       {mode.mode === 'manual' && mode.zMM < 0 && (
-        <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+        <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
           <AlertCircle size={10} className="shrink-0" />
           Nothing checks this — over uncut stock the first pass cuts full depth.
         </p>
@@ -265,6 +319,7 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   // user changes rigidity / material / max feed.
   const autoFeedEnabled = useWorkpieceStore((s) => s.autoFeedEnabled)
   const thicknessMM = useWorkpieceStore((s) => s.thicknessMM)
+  const units = useWorkpieceStore((s) => s.units)
   const autoStepDownMM = autoFeedEnabled && tool ? effectiveStepDownMM(tool, stepDownMM, depthMM, engagementFraction) : null
   // Reach from the stock top: an op starting 2 mm down needs 2 mm more tool than its
   // depth field says, and gets 2 mm closer to the spoilboard.
@@ -277,23 +332,17 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
     <div className="grid grid-cols-2 gap-2">
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth</label>
-        <div className="flex items-center gap-1">
-          <NumericInput value={depthMM} min={0.01} step={0.5}
-            onChange={(v) => onDepth(v)}
-            className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-          />
-          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-        </div>
+        <LengthInput valueMM={depthMM} minMM={0.01} stepMM={0.5} onChangeMM={onDepth} />
         {depthExceeds && (
-          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+          <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
-            Exceeds tool max ({maxDepthMM} mm)
+            Exceeds tool Max Z ({fmtLen(maxDepthMM, units)})
           </p>
         )}
         {cutsPastStock && (
-          <p className="text-label text-amber-500 flex items-center gap-1 mt-0.5">
+          <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
-            {pastStockMM.toFixed(2)} mm past stock bottom ({thicknessMM} mm)
+            {fmtLen(pastStockMM, units)} past stock bottom ({fmtLen(thicknessMM, units)})
           </p>
         )}
       </div>
@@ -302,13 +351,7 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
       ) : (
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={stepDownMM} min={0.01} step={0.5}
-              onChange={(v) => onStep(v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={stepDownMM} minMM={0.01} stepMM={0.5} onChangeMM={onStep} />
         </div>
       )}
     </div>

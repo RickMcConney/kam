@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import { NumericInput } from '../components/NumericInput'
+import { FRACTION_HINT } from '../components/parseNumeric'
 import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react'
 import { ICON } from '../theme'
 import { useToolStore, type Tool, type ToolType, type ToolSortKey } from '../store/toolStore'
@@ -30,7 +32,7 @@ const COLUMNS: { key: keyof Omit<Tool, 'id'>; label: string; title: string; widt
   { key: 'rpm',         label: 'RPM',     title: 'Spindle speed (RPM)',       width: 'w-20', numeric: true },
   { key: 'xyFeedMmMin', label: 'XY Feed', title: 'XY feed rate (mm/min)',     width: 'w-20', numeric: true },
   { key: 'zFeedMmMin',  label: 'Z Feed',  title: 'Plunge feed rate (mm/min)', width: 'w-20', numeric: true },
-  { key: 'maxDepthMM',  label: 'Max Z',   title: 'Maximum cut depth (mm)',    width: 'w-18', numeric: true },
+  { key: 'maxDepthMM',  label: 'Max Z',   title: 'Maximum cut depth of this tool',    width: 'w-18', numeric: true },
 ]
 
 // Group tools the way the type dropdown is ordered rather than alphabetically —
@@ -68,12 +70,14 @@ function DimInput({ valueMM, onChangeMM, minMM, stepMM, kind, units }: {
 }) {
   const step = units === 'in' ? (kind === 'feed' ? 1 : 0.001) : stepMM
   return (
-    <input type="number" value={fromMM(valueMM, units)} min={fromMM(minMM, units)} step={step}
-      onChange={(e) => {
-        const v = parseFloat(e.target.value)
-        onChangeMM(toMM(Number.isFinite(v) ? v : 0, units))
-      }}
-      className={cellCls + ' text-right'} />
+    <NumericInput
+      value={fromMM(valueMM, units)}
+      min={fromMM(minMM, units)}
+      step={step}
+      onChange={(v) => onChangeMM(toMM(v, units))}
+      className={cellCls + ' text-right'}
+      title={FRACTION_HINT}
+    />
   )
 }
 
@@ -109,7 +113,7 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
           }} className={cellCls + ' bg-gray-100 dark:bg-neutral-800'}>
           <option value="endmill">End Mill</option>
           <option value="ballnose">Ball Nose</option>
-          <option value="vbit">V-Bit</option>
+          <option value="vbit">V-bit</option>
           <option value="drill">Drill</option>
         </select>
       </td>
@@ -174,7 +178,7 @@ export default function ToolLibraryPanel() {
   const units = useWorkpieceStore((s) => s.units)
   const spindleType = useWorkpieceStore((s) => s.spindleType)
   const lenUnit = units === 'in' ? 'in' : 'mm'
-  const feedUnit = units === 'in' ? 'in/m' : 'mm/m'
+  const feedUnit = units === 'in' ? 'in/min' : 'mm/min'
 
   // Display-only sort: `tools` keeps its own (creation) order, which is what
   // `addTool` appends to and what a third click returns the table to. The choice

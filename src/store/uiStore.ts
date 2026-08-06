@@ -208,7 +208,11 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'freazykam-ui',
-      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen, bottomTab: s.bottomTab }),
+      // Deliberate whitelist — most of this store is session state, and some of it is
+      // functions (the node-edit undo/redo callbacks) that must not be serialised.
+      // A preference the user sets explicitly belongs here; darkMode was missing, so
+      // every reload snapped back to the `darkMode: true` default.
+      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen, bottomTab: s.bottomTab, darkMode: s.darkMode }),
     }
   )
 )

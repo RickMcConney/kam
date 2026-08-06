@@ -565,7 +565,7 @@ export default function ThreeView() {
         {([
           ['Axes',        showAxes,      setShowAxes],
           ['Toolpaths',   showToolpaths, setShowToolpaths],
-          ['Workpiece',   showWorkpiece, setShowWorkpiece],
+          ['Stock',       showWorkpiece, setShowWorkpiece],
           ['Tool',        showTool,      setShowTool],
           ['Shapes',      showShapes,    setShowShapes],
           ['Follow Tool', followTool,    setFollowTool],

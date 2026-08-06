@@ -501,7 +501,7 @@ export async function generateVCarve(
   tool: Tool,
   params: VCarveParams,
 ): Promise<MotionSegment[]> {
-  if (tool.type !== 'vbit') throw new Error('V-carve requires a V-bit tool')
+  if (tool.type !== 'vbit') throw new Error('V-Carve requires a V-bit tool')
 
   const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
   const tanHalfAngle = Math.tan(halfAngle)
@@ -597,7 +597,7 @@ export async function generateVCarve(
     curSY = last.y
   }
 
-  if (!segs.length) throw new Error('Could not compute V-carve medial axis — check that the selected path is a closed shape')
+  if (!segs.length) throw new Error('Could not compute V-Carve medial axis — check that the selected path is a closed shape')
 
   return segs
 }

@@ -4,9 +4,7 @@ import { ICON } from '../theme'
 import { rigidityInfo } from '../rigidity'
 import { useProjectStore } from '../store/projectStore'
 import type { ExportPreflight } from '../cam/exportPreflight'
-
-const fmtMM = (mm: number, units: 'mm' | 'in') =>
-  units === 'in' ? `${(mm / 25.4).toFixed(3)}"` : `${mm.toFixed(1)} mm`
+import { fmtLen, fmtFeed } from '../store/workpieceStore'
 
 function fmtDuration(s: number): string {
   if (s <= 0) return '—'
@@ -119,25 +117,25 @@ export default function ExportPreflightDialog({
                     ? `Bottom of stock — set Z0 at the spoilboard/table surface`
                     : `Top of stock — set Z0 at the top surface`}
                 />
-                <Row label="Safe height" value={fmtMM(machine.safeHeightMM, units)} />
-                <Row label="Max feed" value={`${Math.round(machine.maxFeedMmMin)} mm/min`} />
+                <Row label="Safe height" value={fmtLen(machine.safeHeightMM, units, 1)} />
+                <Row label="Max feed" value={fmtFeed(machine.maxFeedMmMin, units)} />
                 <Row label="Spindle range" value={`${machine.minSpindleRpm}–${machine.maxSpindleRpm} RPM`} />
-                <Row label="Auto-feed" value={machine.autoFeed ? 'On' : 'Off'} />
+                <Row label="Auto feeds & speeds" value={machine.autoFeed ? 'On' : 'Off'} />
               </section>
 
               {/* Stock */}
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Stock</h3>
-                <Row label="Size" value={`${fmtMM(stock.widthMM, units)} × ${fmtMM(stock.heightMM, units)}`} />
-                <Row label="Thickness" value={fmtMM(stock.thicknessMM, units)} />
+                <Row label="Size" value={`${fmtLen(stock.widthMM, units, 1)} × ${fmtLen(stock.heightMM, units, 1)}`} />
+                <Row label="Thickness" value={fmtLen(stock.thicknessMM, units, 1)} />
               </section>
 
               {/* Job summary */}
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Job</h3>
                 <Row label="Operations" value={String(job.operationCount)} />
-                <Row label="Est. run time" value={fmtDuration(job.estimatedTimeS)} />
-                {ext && <Row label="Deepest cut" value={fmtMM(job.deepestCutMM, units)} />}
+                <Row label="Estimated run time" value={fmtDuration(job.estimatedTimeS)} />
+                {ext && <Row label="Deepest cut" value={fmtLen(job.deepestCutMM, units, 1)} />}
               </section>
 
               {/* Tools */}
@@ -150,7 +148,7 @@ export default function ExportPreflightDialog({
                     <div key={i} className="flex justify-between gap-4 py-0.5">
                       <span className="text-gray-800 dark:text-neutral-200">{i + 1}. {t.name}</span>
                       <span className="text-gray-500 dark:text-neutral-400 font-mono text-right">
-                        {fmtMM(t.diameterMM, units)} · {t.rpm} RPM
+                        {fmtLen(t.diameterMM, units, 1)} · {t.rpm} RPM
                       </span>
                     </div>
                   ))}

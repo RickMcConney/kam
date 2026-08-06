@@ -129,7 +129,7 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
     save('pattern', form)
   }
 
-  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
+  const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0'
   const u = units
 
   return (
@@ -143,7 +143,7 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
             {selectedPaths.map((p) => <PathChip key={p.id} path={p} label={editCtx ? 'source' : 'selected'} />)}
           </div>
         ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1">
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> {editCtx ? 'Source paths no longer exist' : 'Select a path first'}
           </p>
         )}
@@ -159,12 +159,9 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
           ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
             <div key={lbl}>
               <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
-              <div className="flex items-center gap-1">
-                <NumericInput value={val} min={min} step={step}
-                  onChange={fn}
-                  className={inputCls} />
-                {suffix && <span className="text-label text-gray-400 dark:text-neutral-500">{suffix}</span>}
-              </div>
+              <NumericInput value={val} min={min} step={step} unit={suffix || undefined}
+                onChange={fn}
+                className={inputCls} />
             </div>
           ))}
         </div>
@@ -179,12 +176,9 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
             ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
               <div key={lbl}>
                 <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
-                <div className="flex items-center gap-1">
-                  <NumericInput value={val} min={min} step={step}
-                    onChange={fn}
-                    className={inputCls} />
-                  {suffix && <span className="text-label text-gray-400 dark:text-neutral-500">{suffix}</span>}
-                </div>
+                <NumericInput value={val} min={min} step={step} unit={suffix || undefined}
+                  onChange={fn}
+                  className={inputCls} />
               </div>
             ))}
           </div>
@@ -195,7 +189,7 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
           </div>
         </div>
       )}
-      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      {error && <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
       <GenerateBtn disabled={!canApply} generating={false} onClick={handleApply} label={editCtx ? 'Update Pattern' : 'Apply Pattern'} />
     </FormShell>
   )

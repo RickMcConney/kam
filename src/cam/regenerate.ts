@@ -249,7 +249,7 @@ export function regenerateAffectedMany(pathIds: string[]): void {
   const { operations } = useToolpathStore.getState()
   const affected = operations.filter((op) => pathIds.some((id) => refsPathId(op, id)))
   if (affected.length > 0) {
-    if (useSimStore.getState().gcode) useSimStore.getState().clearSim()
+    useSimStore.getState().invalidateSim()
     for (const op of affected) regenerateOperation(op.id)
   }
   // Moving or reshaping a path moves the FLOOR of any pocket built on it, and the ops
@@ -265,6 +265,6 @@ export function regenerateAffected(pathId: string): void {
 
 export function regenerateAll(): void {
   const { operations } = useToolpathStore.getState()
-  if (operations.length > 0 && useSimStore.getState().gcode) useSimStore.getState().clearSim()
+  if (operations.length > 0) useSimStore.getState().invalidateSim()
   for (const op of operations) regenerateOperation(op.id)
 }

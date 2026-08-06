@@ -328,7 +328,7 @@ describe('generateVCarve — rejections', () => {
   it('rejects a non-V-bit tool', async () => {
     const endmill: Tool = { ...vbit(), type: 'endmill' }
     await expect(generateVCarve(RECT_40x10, endmill, { angleDeg: 90, maxDepthMM: 10, islandDs: [] }))
-      .rejects.toThrow('V-carve requires a V-bit tool')
+      .rejects.toThrow('V-Carve requires a V-bit tool')
   })
 
   it('rejects a degenerate V-bit angle', async () => {

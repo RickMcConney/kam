@@ -1,13 +1,13 @@
 // ─── Drill form ───────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps } from './shared'
-import { useState, useEffect } from 'react'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId } from './shared'
+import { useState, useEffect, useRef } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle, X } from 'lucide-react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type DrillOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { useUIStore } from '../../store/uiStore'
 import { generatePeckDrill, generateHelicalDrill } from '../../cam/drill'
@@ -27,7 +27,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const { addOperation, setSegments, setError, updateOperation, operations } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, units } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<DrillFormState>(() => editOp ? {
@@ -52,6 +52,32 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       setActiveTool('select')
       clearDrillPoints()
     }
+  }, [form.drillMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Peck plunges straight down the axis, so any tool that can plunge is fair game — a drill
+  // bit above all. Helical bores the hole with the SIDE of the tool while it ramps, which
+  // is an end mill's job: a drill bit has no side edge (the form already refused to
+  // generate one), and a V-bit or ball nose would cut a cone or a rounded bottom rather
+  // than a straight-walled hole.
+  const helicalTools = toolsOfType(tools, ['endmill'])
+  const drillTools = form.drillMode === 'helical' ? helicalTools : tools
+
+  // The two modes keep SEPARATE tool selections. Switching to helical with a drill bit
+  // selected would otherwise leave the dropdown pointing at a tool it no longer lists, so
+  // it re-points to an end mill — but the drill bit is the right answer for peck, and
+  // having to re-pick it on the way back is the same annoyance in reverse. So the peck
+  // choice is parked on the way out and restored on the way back. Step-down rides on the
+  // tool, so it is re-seeded with it. Runs on mount too, which covers an op loaded with a
+  // tool its mode doesn't accept.
+  const peckToolIdRef = useRef(form.toolId)
+  useEffect(() => {
+    const id = form.drillMode === 'helical'
+      ? pickToolId(form.toolId, helicalTools)
+      : (pickToolId(peckToolIdRef.current, tools) || form.toolId)
+    if (form.drillMode === 'helical') peckToolIdRef.current = form.toolId
+    if (id === form.toolId) return
+    const t = tools.find((x) => x.id === id)
+    setForm((f) => ({ ...f, toolId: id, ...(t ? { stepDownMM: seedStepDownMM(t) } : {}) }))
   }, [form.drillMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedTool = tools.find((t) => t.id === form.toolId)
@@ -210,7 +236,13 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     }, 0)
   }
 
-  const isNonDrillTool = !!selectedTool && selectedTool.type !== 'drill'
+  // Peck accepts anything that can plunge, but only a drill bit leaves a proper hole — so
+  // the warning names what the SELECTED tool will actually do rather than calling every
+  // non-drill an end mill.
+  const peckToolWarning = !selectedTool || selectedTool.type === 'drill' ? null
+    : selectedTool.type === 'endmill' ? 'Peck drilling with an end mill — it must be centre-cutting to plunge.'
+    : selectedTool.type === 'ballnose' ? 'Peck drilling with a ball nose — leaves a round-bottomed hole.'
+    : 'Peck drilling with a V-bit — cuts a cone, not a straight-walled hole.'
   const isDrillTool = selectedTool?.type === 'drill'
   const peckReady = editOp ? editOp.points.length > 0 : pendingDrillPoints.length > 0 || !!sessionPeckOp
   const helicalReady = editOp ? !!editHelicalInfo : selectedCircles.length > 0
@@ -221,7 +253,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     : selectedCircles.length > 0 && selectedCircles.every(({ path }) => session.liveOpId(path.id)))
 
   return (
-    <FormShell title={editOp ? 'Edit Drill' : 'New Drill Operation'} onClose={handleClose}>
+    <FormShell title={editOp ? 'Edit Drill' : 'New Drill'} onClose={handleClose}>
       {/* Mode toggle — read-only when editing */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Mode</label>
@@ -232,7 +264,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
                 'flex-1 py-1 text-body rounded border transition-colors capitalize',
                 form.drillMode === m
                   ? 'bg-blue-600 border-blue-500 text-white'
-                  : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
+                  : 'bg-gray-50 dark:bg-neutral-900 border-gray-400 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
                 editOp ? 'opacity-60 cursor-default' : '',
               ].join(' ')}>
               {m === 'peck' ? 'Peck at Points' : 'Helical (Circle)'}
@@ -265,9 +297,9 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           ) : (
             <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points.</p>
           )}
-          {isNonDrillTool && (
-            <p className="text-label text-amber-400 mt-1 flex items-center gap-1">
-              <AlertCircle size={ICON.xs} /> Peck drilling with an end mill — ensure the tool is suitable.
+          {peckToolWarning && (
+            <p className="text-label text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+              <AlertCircle size={ICON.xs} /> {peckToolWarning}
             </p>
           )}
         </div>
@@ -281,8 +313,8 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           </label>
           {editOp && editHelicalInfo ? (
             <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 space-y-0.5">
-              <div>Center: ({editHelicalInfo.cx.toFixed(1)}, {editHelicalInfo.cy.toFixed(1)}) mm</div>
-              <div>Tool path Ø: {(editHelicalInfo.radius * 2).toFixed(2)} mm</div>
+              <div>Center: ({fmtLen(editHelicalInfo.cx, units, 1)}, {fmtLen(editHelicalInfo.cy, units, 1)})</div>
+              <div>Toolpath Ø: {fmtLen(editHelicalInfo.radius * 2, units)}</div>
             </div>
           ) : selectedCircles.length > 0 ? (
             <div className="space-y-0.5">
@@ -295,27 +327,27 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
                       {path.name}
                     </div>
                     <div className="text-gray-500 dark:text-neutral-400 text-label mt-0.5">
-                      Hole Ø {(circle.radiusMM * 2).toFixed(2)} mm
-                      {r > 0 ? ` · Tool path Ø ${(r * 2).toFixed(2)} mm` : ' · center-drill (tool wider than hole)'}
+                      Hole Ø {fmtLen(circle.radiusMM * 2, units)}
+                      {r > 0 ? ` · Toolpath Ø ${fmtLen(r * 2, units)}` : ' · center-drill (tool wider than hole)'}
                     </div>
                   </div>
                 )
               })}
             </div>
           ) : (
-            <p className="text-body text-amber-400 flex items-center gap-1">
+            <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
               <AlertCircle size={ICON.sm} /> Select one or more circular paths first
             </p>
           )}
-          {isDrillTool && (
-            <p className="text-label text-amber-400 mt-1 flex items-center gap-1">
-              <AlertCircle size={ICON.xs} /> Drill bits cannot do helical drilling — use an end mill.
+          {helicalTools.length === 0 && (
+            <p className="text-label text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+              <AlertCircle size={ICON.xs} /> Helical drilling needs an end mill — add one in the Tool Library.
             </p>
           )}
         </div>
       )}
 
-      <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
+      <ToolSelector tools={drillTools} value={form.toolId} onChange={handleToolChange} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />

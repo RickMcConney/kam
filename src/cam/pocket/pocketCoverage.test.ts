@@ -164,7 +164,9 @@ describe('stepover above 50% is cleaned up, not left as slivers', () => {
 // The rest clean-up is shared by every offset/raster/spiral strategy, so every one of them is
 // held to the same standard at a stepover where it used to leave stock.
 describe('every strategy clears the whole reachable region', () => {
-  for (const strategy of ['raster', 'contour', 'morph'] as const) {
+  // 'hybrid' is the UI's Auto, and its stepover slider reaches 90% like raster's and
+  // contour's do — so it is held to the same standard at the same setting.
+  for (const strategy of ['raster', 'contour', 'morph', 'hybrid'] as const) {
     for (const stepoverPercent of [50, 90]) {
       it(`${strategy} at ${stepoverPercent}% stepover`, () => {
         const a = auditPocket({

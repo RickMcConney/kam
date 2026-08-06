@@ -58,7 +58,7 @@ export default function PathsPanel() {
                 <div
                   className={[
                     'flex items-center gap-1 px-1 py-1 rounded cursor-pointer group select-none',
-                    anySelected ? 'bg-blue-600/10' : 'hover:bg-gray-200/50 dark:hover:bg-neutral-700/50',
+                    anySelected ? 'bg-blue-600/10' : 'hover:bg-gray-300/50 dark:hover:bg-neutral-700/50',
                   ].join(' ')}
                   onClick={() => toggleGroupCollapsed(groupId)}
                 >
@@ -98,7 +98,7 @@ export default function PathsPanel() {
                         key={p.id}
                         className={[
                           'flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer group',
-                          selectedIds.includes(p.id) ? 'bg-blue-600/20 text-blue-300' : 'hover:bg-gray-200/50 dark:hover:bg-neutral-700/50',
+                          selectedIds.includes(p.id) ? 'bg-blue-600/20 text-blue-300' : 'hover:bg-gray-300/50 dark:hover:bg-neutral-700/50',
                         ].join(' ')}
                         onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
                       >
@@ -133,7 +133,7 @@ export default function PathsPanel() {
               className={[
                 'flex items-center gap-1.5 px-2 py-1.5 rounded cursor-pointer group',
                 p.hidden ? 'opacity-40' : '',
-                selectedIds.includes(p.id) ? 'bg-blue-600/20 text-blue-300' : 'hover:bg-gray-200/50 dark:hover:bg-neutral-700/50',
+                selectedIds.includes(p.id) ? 'bg-blue-600/20 text-blue-300' : 'hover:bg-gray-300/50 dark:hover:bg-neutral-700/50',
               ].join(' ')}
               onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
             >
@@ -148,7 +148,7 @@ export default function PathsPanel() {
                 <button
                   title="Restore (un-hide from boolean op)"
                   onClick={(e) => { e.stopPropagation(); showPath(p.id) }}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-amber-400 transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-neutral-600 text-amber-600 dark:text-amber-400 transition-opacity"
                 >
                   <Eye size={ICON.sm} />
                 </button>

@@ -39,14 +39,14 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-3 gap-3 items-end">
         <div className="col-span-1">
-          <Field label="Name">
+          <Field label="Name" hint="Written into the file header">
             <input type="text" value={profile.name} onChange={(e) => up({ name: e.target.value })} className={inputCls} />
           </Field>
         </div>
         <div>
-          <Field label="Unit mode">
+          <Field label="Unit mode" hint="Sets coordinates and emits G20/G21">
             <select value={profile.unitMode} onChange={(e) => up({ unitMode: e.target.value as 'mm' | 'in' })} className={inputCls}>
               <option value="mm">mm</option>
               <option value="in">inches</option>
@@ -54,7 +54,7 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
           </Field>
         </div>
         <div>
-          <Field label="Comment style">
+          <Field label="Comment style" hint="Style for generated comments">
             <select value={profile.commentStyle} onChange={(e) => up({ commentStyle: e.target.value as CommentStyle })} className={inputCls}>
               <option value="semicolon">; Semicolon</option>
               <option value="parenthesis">( Parenthesis )</option>
@@ -65,7 +65,7 @@ function ProfileEditor({ profile }: { profile: PostProcessorProfile }) {
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Start G-code" hint="Emitted once at job start">
+        <Field label="Start G-code" hint="Emitted once at job start, after G20/G21">
           <textarea value={profile.startGcode} onChange={(e) => up({ startGcode: e.target.value })} className={textareaCls} rows={8} />
         </Field>
         <Field label="End G-code" hint="Emitted once at job end">

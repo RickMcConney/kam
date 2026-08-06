@@ -1,15 +1,14 @@
 // ─── Photo V-Carve form ───────────────────────────────────────────────────────
-import { FormShell, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState, useEffect } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type PhotoVCarveOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen, lenValue } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { loadImageLuminance } from '../../io/imageLuminance'
 import { extractRectInfo } from '../../canvas/selectionUtils'
@@ -36,10 +35,12 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
   const { paths } = usePathsStore()
   const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, widthMM, heightMM } = useWorkpieceStore()
+  const { safeHeightMM, widthMM, heightMM, units } = useWorkpieceStore()
 
-  const vbits = tools.filter((t) => t.type === 'vbit')
-  const defaultTool = vbits[0] ?? tools[0]
+  // V-bits only — the groove width the line spacing is derived from is 2·d·tan(θ/2), which
+  // exists only for a cone. See VCarveForm on the dropped fall-back to every tool.
+  const vbits = toolsOfType(tools, ['vbit'])
+  const defaultTool = vbits[0]
   const imagePaths = paths.filter((p) => !!p.imageSrc)
 
   const [form, setForm] = useState<PhotoVCarveFormState>(() => {
@@ -65,6 +66,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
     // the slider's half turn rather than let the control clamp it to a different raster.
     return {
       ...init,
+      toolId: pickToolId(init.toolId, vbits),
       passAngleDeg: norm180(init.passAngleDeg),
       ...(editOp ? {} : { startFrom: { mode: 'auto' as const } }),
     }
@@ -114,7 +116,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
     setTimeout(async () => {
       try {
         const imgRect = extractRectInfo(selectedPath.d)
-        if (!imgRect) throw new Error('Image path is no longer a rectangle')
+        if (!imgRect) throw new Error('This image is no longer a rectangle — undo the edit that reshaped it, or re-import the image')
         const image = await loadImageLuminance(selectedPath.imageSrc!)
 
         // Resolved here, against the state as it is at Generate time, exactly as
@@ -181,19 +183,19 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
     && !generating && form.maxDepthMM > 0
 
   return (
-    <FormShell title={editOp ? 'Edit Photo V-Carve' : 'New Photo V-Carve Operation'} onClose={onClose}>
+    <FormShell title={editOp ? 'Edit Photo V-Carve' : 'New Photo V-Carve'} onClose={onClose}>
       {/* Source image */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Image</label>
         {imagePaths.length === 0 ? (
-          <p className="text-body text-amber-400 flex items-center gap-1">
-            <AlertCircle size={ICON.sm} /> Import a PNG or JPEG first
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <AlertCircle size={ICON.sm} /> Import a PNG, JPEG or WebP first
           </p>
         ) : (
           <select
             value={form.pathId}
             onChange={(e) => up('pathId', e.target.value)}
-            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
           >
             {imagePaths.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
@@ -202,15 +204,15 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         )}
         {rect && (
           <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
-            {rect.widthMM.toFixed(1)} × {rect.heightMM.toFixed(1)} mm on the workpiece — resize it on the canvas
+            {fmtLen(rect.widthMM, units, 1)} × {fmtLen(rect.heightMM, units, 1)} on the stock — resize it on the canvas
           </p>
         )}
       </div>
 
-      <ToolSelector tools={vbits.length > 0 ? vbits : tools} value={form.toolId} onChange={(id) => up('toolId', id)} />
+      <ToolSelector tools={vbits} value={form.toolId} onChange={(id) => up('toolId', id)} />
       {selectedTool && selectedTool.type !== 'vbit' && (
-        <p className="text-label text-amber-400 flex items-center gap-1">
-          <AlertCircle size={ICON.xs} /> Photo V-carve requires a V-bit tool.
+        <p className="text-label text-amber-600 dark:text-amber-400 flex items-center gap-1">
+          <AlertCircle size={ICON.xs} /> Photo V-Carve requires a V-bit tool.
         </p>
       )}
       {selectedTool?.type === 'vbit' && (
@@ -226,7 +228,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           every distinct raster orientation. */}
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-          Raster Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
+          Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
         </label>
         <input
           type="range" min={0} max={180} step={5}
@@ -240,23 +242,13 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth at White</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.minDepthMM} min={0} step={0.1}
-              onChange={(v) => up('minDepthMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.minDepthMM} minMM={0} stepMM={0.1}
+            onChangeMM={(v) => up('minDepthMM', v)} />
         </div>
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth at Black</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.maxDepthMM} min={0.05} step={0.1}
-              onChange={(v) => up('maxDepthMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.maxDepthMM} minMM={0.05} stepMM={0.1}
+            onChangeMM={(v) => up('maxDepthMM', v)} />
         </div>
       </div>
       {/* Line spacing is not a setting — it IS the width of the deepest groove, so the
@@ -267,29 +259,29 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           Line Spacing <span className="text-blue-500 dark:text-blue-400 normal-case">(from depth)</span>
         </label>
         <div className="flex items-center gap-1">
-          <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
-            {spacingMM.toFixed(2)}
+          <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
+            {lenValue(spacingMM, units)}
           </div>
-          <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
+          <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>
           {lineCount > 0 && (
             <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">({lineCount} lines)</span>
           )}
         </div>
         <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
-          Grooves run {grooveWidthMM(form.minDepthMM, angleDeg).toFixed(2)}–{spacingMM.toFixed(2)} mm wide, so a shallower
+          Grooves run {fmtLen(grooveWidthMM(form.minDepthMM, angleDeg), units)}–{fmtLen(spacingMM, units)} wide, so a shallower
           carve is a finer one. A deeper carve has more contrast and fewer, wider lines.
         </p>
       </div>
       {/* Reach from stock top: carving into a pocket floor adds that much to the total. */}
       {selectedTool && form.maxDepthMM - startZ.zMM > selectedTool.maxDepthMM && (
-        <p className="text-label text-amber-500 flex items-center gap-1">
+        <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1">
           <AlertCircle size={10} className="shrink-0" />
-          Exceeds tool max ({selectedTool.maxDepthMM} mm)
+          Exceeds tool Max Z ({fmtLen(selectedTool.maxDepthMM, units)})
         </p>
       )}
 
       {errorMsg && (
-        <p className="text-body text-red-400 flex items-start gap-1.5">
+        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
         </p>
       )}

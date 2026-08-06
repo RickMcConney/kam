@@ -23,7 +23,7 @@ export const InlayIcon = ({ size = 24 }: { size?: number }) => (
 type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'photovcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
 type FormState = null | 'menu' | OpType
 
-const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-200 dark:border-neutral-600 hover:border-gray-300 dark:hover:border-neutral-500'
+const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700'
 
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
   return (
@@ -35,7 +35,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['trochoidal', 'Trochoidal', 'Looping cuts along path — reduces engagement, ideal for hard materials', <RefreshCw size={ICON.md} />],
           ['pocket', 'Pocket', 'Clear inside boundary', <Target size={ICON.md} />],
           ['drill', 'Drill', 'Peck or helical drill', <CircleDot size={ICON.md} />],
-          ['surface', 'Surface', 'Flatten workpiece top', <Layers size={ICON.md} />],
+          ['surface', 'Surface', 'Flatten stock top', <Layers size={ICON.md} />],
           ['vcarve', 'V-Carve', 'V-bit depth-varying carve', <Star size={ICON.md} />],
           ['photovcarve', 'Photo V-Carve', 'Raster a photo as V-grooves — dark areas cut deeper', <ImageIcon size={ICON.md} />],
           ['inlay', 'Inlay', 'V-carved sloped walls with flat pocket bottom', <InlayIcon size={ICON.md} />],

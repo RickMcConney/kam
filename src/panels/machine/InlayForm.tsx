@@ -1,7 +1,6 @@
 // ─── Inlay form ───────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, AutoStepField, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, PathListSection, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput } from './shared'
 import { useState } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type Tool } from '../../store/toolStore'
@@ -9,7 +8,7 @@ import { useToolpathStore, INLAY_NO_FINISH, type AnyOperation, type InlayOperati
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
@@ -50,14 +49,22 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const selPaths = useSelectedPaths()
   const { addOperations, setSegments, setError, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, autoFeedEnabled } = useWorkpieceStore()
+  const { safeHeightMM, autoFeedEnabled, units } = useWorkpieceStore()
 
+  // An inlay only fits if both halves are cut with a known wall and a flat floor, so both
+  // lists are strict — no fallback to the whole library when one comes up empty. Roughing
+  // clears the socket / frees the plug: end mills only, since a ball nose leaves a
+  // scalloped floor for the plug to bottom on and a drill can't clear at all. The finish
+  // tool cuts the WALL, and there are exactly two wall shapes the fit maths knows: sloped
+  // (V-bit) and flat (end mill).
   const vbits = tools.filter((t) => t.type === 'vbit')
-  const endmills = tools.filter((t) => t.type === 'endmill' || t.type === 'ballnose')
-  const defaultVbit = vbits[0] ?? tools[0]
-  const defaultEndmill = endmills[0] ?? tools[0]
+  const endmills = toolsOfType(tools, ['endmill'])
+  const finishers = toolsOfType(tools, ['endmill', 'vbit'])
+  const defaultVbit = vbits[0] ?? finishers[0]
+  const defaultEndmill = endmills[0]
 
-  const [form, setForm] = useState<InlayFormState>(() => editOp ? {
+  const [form, setForm] = useState<InlayFormState>(() => {
+    const base = editOp ? {
     vbitToolId: editOp.vbitToolId, pocketToolId: editOp.pocketToolId,
     pocketDepthMM: editOp.pocketDepthMM,
     stepDownMM: editOp.stepDownMM, stepoverPercent: editOp.stepoverPercent,
@@ -80,7 +87,14 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     // Deliberately not restored from saved defaults: which half of a nested selection is
     // the part is a property of THAT selection, not a preference.
     invert: false,
-  }, tools), invert: false })
+  }, tools), invert: false }
+    // "None" is an explicit choice, not a stale id — never coerce it to a real tool.
+    return { ...base,
+      pocketToolId: pickToolId(base.pocketToolId, endmills),
+      vbitToolId: base.vbitToolId === INLAY_NO_FINISH
+        ? INLAY_NO_FINISH
+        : (pickToolId(base.vbitToolId, finishers) || INLAY_NO_FINISH) }
+  })
   const [generating, setGenerating] = useState(false)
 
   // Finish = "None": roughing tool only, no separate wall-finish pass. Female → flat-walled
@@ -399,13 +413,13 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const isMale = editOp ? editOp.role === 'male' : form.role === 'male'
 
   return (
-    <FormShell title={editOp ? `Edit Inlay (${editOp.role})` : 'New Inlay Operation'} onClose={onClose}>
+    <FormShell title={editOp ? `Edit Inlay (${editOp.role})` : 'New Inlay'} onClose={onClose}>
       {groups.length === 0 && (
-        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
+        <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> Select a closed path first</p>
       )}
       {/* Roughing tool */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">End Mill (Roughing / Profile)</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Roughing Tool (End Mill)</label>
         <select
           value={form.pocketToolId}
           onChange={(e) => {
@@ -413,35 +427,37 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
             if (t) up('stepDownMM', seedStepDownMM(t))
             up('pocketToolId', e.target.value)
           }}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+          disabled={endmills.length === 0}
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 disabled:opacity-60"
         >
-          {(endmills.length > 0 ? endmills : tools).map((t) => (
-            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          {endmills.length === 0 && <option value="">No end mill — add one in the Tool Library</option>}
+          {endmills.map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
           ))}
         </select>
       </div>
       {/* Finish tool */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finish Tool</label>
+        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finishing Tool</label>
         <select
           value={form.vbitToolId}
           onChange={(e) => up('vbitToolId', e.target.value)}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
         >
           {/* Skip the wall-finish pass — the roughing bit alone forms the socket / plug walls. */}
           <option value={INLAY_NO_FINISH}>None — roughing only</option>
-          {tools.map((t) => (
-            <option key={t.id} value={t.id}>{t.name} (Ø{t.diameterMM}mm)</option>
+          {finishers.map((t) => (
+            <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
           ))}
         </select>
         {finishIsNone && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">No finish pass — flat walls left by the roughing bit (corners at its radius).</p>
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">No finish pass — flat walls left by the roughing tool (corners at its radius).</p>
         )}
         {vbitTool?.type === 'vbit' && (
           <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">V-bit — sloped bevel walls</p>
         )}
         {vbitTool && vbitTool.type !== 'vbit' && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{vbitTool.diameterMM}mm</p>
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{fmtLen(vbitTool.diameterMM, units)}</p>
         )}
       </div>
       {vbitTool?.type === 'vbit' && (
@@ -453,26 +469,16 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Inlay Depth</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.pocketDepthMM} min={0.5} step={0.5}
-              onChange={(v) => up('pocketDepthMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.pocketDepthMM} minMM={0.5} stepMM={0.5}
+            onChangeMM={(v) => up('pocketDepthMM', v)} />
         </div>
         {autoFeedEnabled && pocketTool ? (
           <AutoStepField label="Step Down" valueMM={effectiveStepDownMM(pocketTool, form.stepDownMM, form.pocketDepthMM)} />
         ) : (
           <div>
             <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
-            <div className="flex items-center gap-1">
-              <NumericInput value={form.stepDownMM} min={0.1} step={0.5}
-                onChange={(v) => up('stepDownMM', v)}
-                className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-              />
-              <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-            </div>
+            <LengthInput valueMM={form.stepDownMM} minMM={0.1} stepMM={0.5}
+              onChangeMM={(v) => up('stepDownMM', v)} />
           </div>
         )}
       </div>
@@ -490,23 +496,13 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Glue Gap</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.glueLineMM} min={0} step={0.05}
-              onChange={(v) => up('glueLineMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.glueLineMM} minMM={0} stepMM={0.05}
+            onChangeMM={(v) => up('glueLineMM', v)} />
         </div>
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Clearance</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.clearanceMM} min={-1} max={1} step={0.05}
-              onChange={(v) => up('clearanceMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.clearanceMM} minMM={-1} maxMM={1} stepMM={0.05}
+            onChangeMM={(v) => up('clearanceMM', v)} />
         </div>
       </div>
       {!editOp && (
@@ -519,7 +515,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
                   'flex-1 py-1 text-body rounded border transition-colors capitalize',
                   form.role === r
                     ? 'bg-blue-600 border-blue-500 text-white'
-                    : 'bg-gray-50 dark:bg-neutral-900 border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
+                    : 'bg-gray-50 dark:bg-neutral-900 border-gray-400 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
                 ].join(' ')}>
                 {r === 'female' ? 'Female' : 'Male'}
               </button>
@@ -572,9 +568,10 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         </div>
       )}
       <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate}
+        title={groups.length > 1 ? `Creates ${groups.length * (finishIsNone ? 1 : 2)} operations` : undefined}
         label={editOp
-          ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'}`
-          : `${updating ? 'Update' : 'Generate'} ${form.role === 'female' ? 'Female' : 'Male'}${groups.length > 1 ? ` (${groups.length * (finishIsNone ? 1 : 2)} ops)` : ''}`} />
+          ? `Regenerate ${editOp.role === 'female' ? 'Female' : 'Male'} Toolpath`
+          : `${updating ? 'Update' : 'Generate'} ${form.role === 'female' ? 'Female' : 'Male'} Toolpath`} />
       {/* Below the button — see PathListSection. Islands keep their label because that
           is a real distinction; nothing else needs one. */}
       <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length + (isMale && g.field ? 1 : 0), 0)}>

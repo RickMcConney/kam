@@ -86,7 +86,7 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
   }
 
   return (
-    <FormShell title={editCtx ? 'Edit Boolean' : 'Boolean Operation'} onClose={onClose}>
+    <FormShell title={editCtx ? 'Edit Boolean' : 'Boolean'} onClose={onClose}>
       <div>
         <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
           {editCtx ? 'Source paths' : <>Paths {sourcePaths.length > 0 && <span className="normal-case text-gray-500 dark:text-neutral-400">({sourcePaths.length} selected)</span>}</>}
@@ -96,16 +96,16 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
             {sourcePaths.map((p, i) => <PathChip key={p.id} path={p} label={i === 0 ? 'primary' : 'operand'} />)}
           </div>
         ) : (
-          <p className="text-body text-amber-400 flex items-center gap-1">
-            <AlertCircle size={ICON.sm} /> {editCtx ? 'Source paths no longer exist' : 'Select 2+ paths on the canvas first'}
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <AlertCircle size={ICON.sm} /> {editCtx ? 'Source paths no longer exist' : 'Select 2 or more paths first'}
           </p>
         )}
         {editCtx && !resultExists && (
-          <p className="text-body text-amber-400 flex items-center gap-1 mt-1"><AlertCircle size={ICON.sm} /> Result path no longer exists</p>
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-1"><AlertCircle size={ICON.sm} /> Result path no longer exists</p>
         )}
       </div>
       <ToggleRow label="Operation" options={['union', 'intersect', 'subtract'] as BooleanOpType[]} value={form.opType} onChange={(v) => setForm((f) => ({ ...f, opType: v }))} />
-      {error && <p className="text-body text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
+      {error && <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}
       <GenerateBtn
         disabled={!canApply || (!!editCtx && !resultExists)}
         generating={false}

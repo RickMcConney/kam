@@ -15,12 +15,23 @@ interface SimState {
   speed: SimSpeed
   elapsedTimeS: number
   gcodeViewerOpen: boolean
+  // Units the loaded PROGRAM is written in (its own G20/G21). Everything in this store is
+  // mm; this is what the player formats its read-outs with, so they match the G-code lines
+  // rather than the design-side mm/in toggle.
+  programUnits: 'mm' | 'in'
   // Z datum offset that was in effect when this G-code was generated.
   // Stored here so normalization (segments → top-referenced) uses the correct
   // offset even if the user later changes zOrigin without regenerating.
   genZOff: number
+  // The simulator is on screen (or was, and is only waiting for a rebuild), so a change
+  // to the program should be re-simulated without the user pressing Simulate again.
+  // See sim/simAutoReload.ts — this flag is the "controls are showing" test, kept in the
+  // store because `invalidateSim` blanks `gcode` while the toolpaths regenerate.
+  autoReload: boolean
 
-  loadGcode: (text: string) => void
+  // `autoReload: false` marks a program the app did not generate (an imported .gcode
+  // file) — regenerating operations can't rebuild it, so it must not arm the auto-reload.
+  loadGcode: (text: string, opts?: { autoReload?: boolean }) => void
   play: () => void
   pause: () => void
   stop: () => void
@@ -29,8 +40,19 @@ interface SimState {
   advanceTime: (dtS: number) => void
   toggleGcodeViewer: () => void
   clearSim: () => void
+  // Drop the loaded program because the toolpaths it was built from are being
+  // regenerated — but stay armed, so simAutoReload rebuilds and reloads it once the
+  // regenerations settle. `clearSim` is the opposite: it puts the simulator away
+  // (the player's X, New/Open Project) and disarms the reload.
+  invalidateSim: () => void
   currentLineIdx: () => number
 }
+
+// Fresh arrays per call — the cleared state is handed to consumers, not shared.
+const emptyProgram = (): Partial<SimState> => ({
+  gcode: '', gcodeLines: [], segments: [], toolStates: [],
+  totalTimeS: 0, elapsedTimeS: 0, playing: false, genZOff: 0, programUnits: 'mm',
+})
 
 export const useSimStore = create<SimState>()((set, get) => ({
   gcode: '',
@@ -42,9 +64,11 @@ export const useSimStore = create<SimState>()((set, get) => ({
   speed: 20,
   elapsedTimeS: 0,
   gcodeViewerOpen: false,
+  programUnits: 'mm',
   genZOff: 0,
+  autoReload: false,
 
-  loadGcode: (text) => {
+  loadGcode: (text, opts) => {
     const { zOrigin, thicknessMM, safeHeightMM } = useWorkpieceStore.getState()
     const genZOff = zDatumOffsetMM(zOrigin, thicknessMM)
     // Parser's initial cz must match the machine-coord safe height so the tool
@@ -58,6 +82,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
       gcodeLines: parsed.lines,
       segments: parsed.segments,
       toolStates: parsed.toolStates,
+      programUnits: parsed.units,
       totalTimeS: parsed.totalTimeS,
       // A loaded program shows its RESULT: the finished part, every cut made. That is
       // what the user opened the simulator to see, and watching it happen is the second
@@ -68,6 +93,7 @@ export const useSimStore = create<SimState>()((set, get) => ({
       elapsedTimeS: parsed.totalTimeS,
       playing: false,
       genZOff,
+      autoReload: opts?.autoReload !== false,
     })
   },
 
@@ -96,8 +122,9 @@ export const useSimStore = create<SimState>()((set, get) => ({
 
   toggleGcodeViewer: () => set((s) => ({ gcodeViewerOpen: !s.gcodeViewerOpen })),
 
-  clearSim: () =>
-    set({ gcode: '', gcodeLines: [], segments: [], toolStates: [], totalTimeS: 0, elapsedTimeS: 0, playing: false, genZOff: 0 }),
+  clearSim: () => set({ ...emptyProgram(), autoReload: false }),
+
+  invalidateSim: () => set((s) => (s.gcode ? { ...emptyProgram(), autoReload: s.autoReload } : s)),
 
   currentLineIdx: () => {
     const { segments, elapsedTimeS } = get()

@@ -323,7 +323,7 @@ export default function TimelinePanel() {
 
   if (!timelineOpen) {
     return (
-      <div className="flex items-center h-[22px] px-2 gap-2 border-t border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0 select-none">
+      <div className="flex items-center h-[22px] px-2 gap-2 border-t border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0 select-none">
         <button
           onClick={() => setTimelineOpen(true)}
           className="flex items-center gap-1 text-[13px] text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
@@ -336,10 +336,10 @@ export default function TimelinePanel() {
     )
   }
 
-  const btnCls = 'p-1 rounded text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-200 dark:hover:bg-neutral-700 disabled:opacity-30 disabled:pointer-events-none'
+  const btnCls = 'p-1 rounded text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-700 disabled:opacity-30 disabled:pointer-events-none'
 
   return (
-    <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0 select-none">
+    <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0 select-none">
       <div className="flex items-center h-14 px-2 gap-1">
         <BottomTabs />
         {/* Transport */}
@@ -390,7 +390,7 @@ export default function TimelinePanel() {
         </span>
         <button
           className={confirmFlatten
-            ? 'p-1 rounded text-red-500 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20'
+            ? 'p-1 rounded text-red-600 dark:text-red-500 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20'
             : btnCls}
           title={confirmFlatten
             ? 'Click again to flatten — folds all events up to the cursor into one snapshot (cannot be undone)'

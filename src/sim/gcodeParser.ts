@@ -35,6 +35,12 @@ export interface ParsedGcode {
   // (non-XY arc planes, absolute arc centers, malformed arcs). Empty for
   // anything this app generates itself; imported external G-code may hit them.
   warnings: string[]
+  // Units the PROGRAM is written in, from its own G20/G21 — the first one wins, since
+  // that is the modal declaration every start block makes. Everything above is converted
+  // to mm regardless (the heightfield, the cut trail and the tool position all assume mm);
+  // this is only so the player can show its readouts back in the units of the file it is
+  // simulating, which is what the G-code viewer beside it displays.
+  units: 'mm' | 'in'
 }
 
 const RAPID_MM_PER_MIN = 5000
@@ -126,6 +132,8 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
   let cx = 0, cy = 0, cz = initialZMM
   let feedRate = 1000
   let unitScale = 1
+  let programUnits: 'mm' | 'in' = 'mm'
+  let unitsDeclared = false
   let motionMode = 0  // 0 = G0, 1 = G1, 2 = G2, 3 = G3
   let absolute = true // G90 (default) vs G91 incremental distance mode
   const warnings = new Set<string>()
@@ -192,8 +200,14 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     const get = (key: string) => pairs.find(([k]) => k === key)?.[1]
     const gWords = pairs.filter(([k]) => k === 'G').map(([, v]) => v)
 
-    if (gWords.some((v) => Math.abs(v - 20) < 0.001)) unitScale = MM_PER_INCH
-    if (gWords.some((v) => Math.abs(v - 21) < 0.001)) unitScale = 1
+    if (gWords.some((v) => Math.abs(v - 20) < 0.001)) {
+      unitScale = MM_PER_INCH
+      if (!unitsDeclared) { programUnits = 'in'; unitsDeclared = true }
+    }
+    if (gWords.some((v) => Math.abs(v - 21) < 0.001)) {
+      unitScale = 1
+      if (!unitsDeclared) { programUnits = 'mm'; unitsDeclared = true }
+    }
 
     // Distance mode. Note the tolerance: G90.1/G91.1 (arc-center distance
     // mode) must NOT match here — they're handled as a warning below.
@@ -305,7 +319,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     cx = nx; cy = ny; cz = nz
   }
 
-  return { lines: rawLines, segments: segs, totalTimeS: cumT, toolStates, warnings: [...warnings] }
+  return { lines: rawLines, segments: segs, totalTimeS: cumT, toolStates, warnings: [...warnings], units: programUnits }
 }
 
 export function getCurrentSegIdx(segments: SimSegment[], elapsedTimeS: number): number {

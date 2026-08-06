@@ -37,8 +37,8 @@ const SHORTCUTS: Section[] = [
     title: 'Point Edit',
     rows: [
       { keys: ['Double-click path'], desc: 'Enter point edit mode' },
-      { keys: ['Click segment'], desc: 'Insert node' },
-      { keys: ['Hover node + Delete'], desc: 'Remove node' },
+      { keys: ['Click segment'], desc: 'Insert point' },
+      { keys: ['Hover point + Delete'], desc: 'Remove point' },
       { keys: ['Escape'], desc: 'Commit and exit point edit' },
     ],
   },
@@ -51,15 +51,15 @@ const FEATURES = [
   },
   {
     title: 'Shape tools',
-    desc: 'Pick a shape from the Draw panel. Click the canvas to place it at the default size, or drag to size it interactively. Edit parameters in the Properties panel.',
+    desc: 'Pick a shape from the Draw tab. Click the canvas to place it at the default size, or drag to size it interactively. Edit parameters in the Properties panel.',
   },
   {
     title: 'Pen tool',
-    desc: 'Click to place nodes. In Bezier mode, drag to pull out curve handles. In all other modes curves are computed automatically from node positions. Hold Alt while clicking to make the incoming segment a straight line. Click near the first node to close the path, or press Escape to finish an open path (2+ nodes required). Ctrl+Z to undo the last placed node.',
+    desc: 'Click to place points. In Bezier mode, drag to pull out curve handles. In all other modes curves are computed automatically from point positions. Hold Alt while clicking to make the incoming segment a straight line. Click near the first point to close the path, or press Escape to finish an open path (2+ points required). Ctrl+Z to undo the last placed point.',
   },
   {
     title: 'Point edit',
-    desc: 'Double-click any path to edit its nodes directly. Drag anchors or handles to reshape. Click on a segment to insert a new node. Hover an anchor and press Delete to remove it.',
+    desc: 'Double-click any path to edit its points directly. Drag points or handles to reshape. Click on a segment to insert a new point. Hover a point and press Delete to remove it.',
   },
   {
     title: 'Import',
@@ -67,11 +67,15 @@ const FEATURES = [
   },
   {
     title: 'Toolpaths',
-    desc: 'Select paths, then open the Machine panel to add Profile, Pocket, Drill, Surfacing, or 3D Profile operations. Run Simulate to preview the motion, or Export G-code to download Grbl-compatible output.',
+    desc: 'Select paths, then pick from CAM Operations in the Draw tab: Profile, Trochoidal, Pocket, Drill, Surface, V-Carve, Photo V-Carve, Inlay or 3D Profile. Simulate G-code previews the motion; Export G-code downloads Grbl-compatible output.',
+  },
+  {
+    title: 'Path tools',
+    desc: 'Under CAM Operations, the Path Tools row reshapes geometry rather than cutting it: Boolean (union, intersect, subtract), Offset, Pattern (linear or circular array), Tabs (holding tabs) and Corners (round, chamfer, dogbone).',
   },
   {
     title: 'Timeline',
-    desc: 'The strip under the canvas records every action — shapes, edits, CAM operations, tabs, and workpiece changes — as chips. Click or drag across chips to travel to any point in time; the timeline is saved with the project. Undo (Ctrl+Z) steps back and discards the future when you make a new edit; clicking the timeline instead INSERTS new edits, keeping later events replayable on top. Hover a chip and click its ✕ to remove that action from history, or use the fold button to flatten old history into a snapshot. Both are permanent.',
+    desc: 'The strip under the canvas records every action — shapes, edits, CAM operations, tabs, and stock changes — as chips. Click or drag across chips to travel to any point in time; the timeline is saved with the project. Undo (Ctrl+Z) steps back and discards the future when you make a new edit; clicking the timeline instead INSERTS new edits, keeping later events replayable on top. Hover a chip and click its ✕ to remove that action from history, or use the fold button to flatten old history into a snapshot. Both are permanent.',
   },
 ]
 
@@ -98,7 +102,7 @@ export default function HelpPanel() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-neutral-700 flex-shrink-0">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-neutral-100">FreakyKam Help</h2>
+          <h2 className="text-base font-semibold text-gray-900 dark:text-neutral-100">FreazyKam Help</h2>
           <button
             onClick={() => setHelpOpen(false)}
             className="text-gray-400 hover:text-gray-600 dark:hover:text-neutral-200 transition-colors"
@@ -157,7 +161,7 @@ export default function HelpPanel() {
           <section className="bg-gray-50 dark:bg-neutral-700/40 rounded-md px-4 py-3">
             <div className="text-xs font-medium text-gray-600 dark:text-neutral-300 mb-1">Coordinate system</div>
             <p className="text-xs text-gray-500 dark:text-neutral-400 leading-relaxed">
-              All dimensions are in CNC space (mm, Y-up, origin at workpiece bottom-left by default).
+              All dimensions are in CNC space (mm, Y-up, origin at stock bottom-left by default).
               The canvas applies a Y-flip so positive Y appears upward on screen, matching conventional
               CAD orientation.
             </p>

@@ -15,6 +15,7 @@ import { useToolpathStore } from './store/toolpathStore'
 import { useTimelineStore } from './timeline/timelineStore'
 import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
+import { installSimAutoReload } from './sim/simAutoReload'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const ThreeView = lazy(() => import('./three/ThreeView'))
@@ -38,7 +39,7 @@ function MainWorkspace() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Tab bar */}
-      <div className="flex border-b border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0">
+      <div className="flex border-b border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0">
         {WORKSPACE_TABS.map((tab) => (
           <button
             key={tab.id}
@@ -47,7 +48,7 @@ function MainWorkspace() {
               'px-4 py-1.5 text-body border-r border-gray-300 dark:border-neutral-700 transition-colors',
               workspaceTab === tab.id
                 ? 'bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 border-b-2 border-b-blue-500 -mb-px'
-                : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-100 dark:hover:bg-neutral-800',
+                : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-800',
             ].join(' ')}
           >
             {tab.label}
@@ -154,6 +155,11 @@ function useSurfaceWorkpieceSync() {
   }, [])
 }
 
+// While the simulator is up, keep it in step with the program — see sim/simAutoReload.ts.
+function useSimAutoReload() {
+  useEffect(() => installSimAutoReload(), [])
+}
+
 function useDarkMode() {
   const darkMode = useUIStore((s) => s.darkMode)
   useEffect(() => {
@@ -164,6 +170,7 @@ function useDarkMode() {
 export default function App() {
   useKeyboardShortcuts()
   useSurfaceWorkpieceSync()
+  useSimAutoReload()
   useDarkMode()
   const activeTool = useUIStore(s => s.activeTool)
   useEffect(() => {

@@ -165,8 +165,8 @@ function OpChip({ op, dragging, compact, onGrab }: {
         {!compact && <>
           <span className="max-w-[130px] truncate text-gray-700 dark:text-neutral-300">{op.name}</span>
           {op.status === 'generating' && <Loader2 size={10} className="animate-spin text-blue-400" />}
-          {op.status === 'needs-update' && <AlertCircle size={10} className="text-amber-500" />}
-          {op.status === 'error' && <AlertCircle size={10} className="text-red-500" />}
+          {op.status === 'needs-update' && <AlertCircle size={10} className="text-amber-600 dark:text-amber-500" />}
+          {op.status === 'error' && <AlertCircle size={10} className="text-red-600 dark:text-red-500" />}
           {hidden && <EyeOff size={10} className="text-gray-400 dark:text-neutral-500" />}
         </>}
         {compact && op.status === 'generating' && <Loader2 size={10} className="animate-spin text-blue-400" />}
@@ -351,7 +351,7 @@ export default function OperationsPanel() {
 
   if (!timelineOpen) {
     return (
-      <div className="flex items-center h-[22px] px-2 gap-2 border-t border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0 select-none">
+      <div className="flex items-center h-[22px] px-2 gap-2 border-t border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0 select-none">
         <button
           onClick={() => setTimelineOpen(true)}
           className="flex items-center gap-1 text-[13px] text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
@@ -364,10 +364,10 @@ export default function OperationsPanel() {
     )
   }
 
-  const btnCls = 'p-1 rounded text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-200 dark:hover:bg-neutral-700'
+  const btnCls = 'p-1 rounded text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-700'
 
   return (
-    <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-100 dark:bg-neutral-800 flex-shrink-0 select-none">
+    <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0 select-none">
       <div className="flex items-center h-14 px-2 gap-2">
         <BottomTabs />
 
@@ -510,7 +510,7 @@ export default function OperationsPanel() {
           {operations.length} op{operations.length === 1 ? '' : 's'} · {toolChanges} TC
         </span>
         {staleCount > 0 && (
-          <span className="flex items-center gap-1 text-[13px] text-amber-500 flex-shrink-0"
+          <span className="flex items-center gap-1 text-[13px] text-amber-600 dark:text-amber-500 flex-shrink-0"
             title={`${staleCount} operation${staleCount === 1 ? '' : 's'} need regenerating`}>
             <AlertCircle size={12} />{staleCount}
           </span>

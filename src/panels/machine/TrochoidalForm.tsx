@@ -1,7 +1,6 @@
 // ─── Trochoidal form ──────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput } from './shared'
 import { useState } from 'react'
-import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore, type CuttingDirection } from '../../store/toolStore'
@@ -9,7 +8,7 @@ import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type Trocho
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM, trochoidalEngagementFraction, seedStepDownMM } from '../../cam/feeds'
@@ -32,26 +31,32 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   const selPaths = useSelectedPaths()
   const { addOperations, setSegments, setError, updateOperation, deleteOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, units } = useWorkpieceStore()
 
-  const defaultTool = tools[0]
-  const [form, setForm] = useState<TrochoidalFormState>(() => editOp ? {
-    toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM, direction: editOp.direction,
-    trochStepMM: editOp.trochStepMM, trochRadiusMM: editOp.trochRadiusMM,
-    finishingPass: editOp.finishingPass, rampIn: editOp.rampIn ?? false,
-  } : mergeWithDefaults(load('trochoidal'), {
-    toolId: defaultTool?.id ?? '',
-    side: 'outside' as CutSide,
-    // Default to the full stock thickness; the tool's max Z is only a warning.
-    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: seedStepDownMM(defaultTool),
-    direction: 'climb' as CuttingDirection,
-    trochStepMM: (defaultTool?.diameterMM ?? 6) * 0.15,
-    trochRadiusMM: (defaultTool?.diameterMM ?? 6) * 0.5,
-    finishingPass: true,
-    rampIn: false,
-  }, tools))
+  // Trochoidal cuts the whole width with the side of the tool — a drill can't, and a
+  // V-bit's width changes with depth, so the trochoid radius wouldn't mean anything.
+  const cutters = toolsOfType(tools, ['endmill', 'ballnose'])
+  const defaultTool = cutters[0]
+  const [form, setForm] = useState<TrochoidalFormState>(() => {
+    const base = editOp ? {
+      toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
+      stepDownMM: editOp.stepDownMM, direction: editOp.direction,
+      trochStepMM: editOp.trochStepMM, trochRadiusMM: editOp.trochRadiusMM,
+      finishingPass: editOp.finishingPass, rampIn: editOp.rampIn ?? false,
+    } : mergeWithDefaults(load('trochoidal'), {
+      toolId: defaultTool?.id ?? '',
+      side: 'outside' as CutSide,
+      // Default to the full stock thickness; the tool's max Z is only a warning.
+      depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
+      stepDownMM: seedStepDownMM(defaultTool),
+      direction: 'climb' as CuttingDirection,
+      trochStepMM: (defaultTool?.diameterMM ?? 6) * 0.15,
+      trochRadiusMM: (defaultTool?.diameterMM ?? 6) * 0.5,
+      finishingPass: true,
+      rampIn: false,
+    }, tools)
+    return { ...base, toolId: pickToolId(base.toolId, cutters) }
+  })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
@@ -179,11 +184,11 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
   }
 
   return (
-    <FormShell title={editOp ? `Edit Trochoidal${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Trochoidal Operation'} onClose={onClose}>
+    <FormShell title={editOp ? `Edit Trochoidal${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Trochoidal'} onClose={onClose}>
       {selectedPaths.length === 0 && (
-        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
+        <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path first'}</p>
       )}
-      <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
+      <ToolSelector tools={cutters} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
@@ -193,27 +198,17 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Loop Amplitude</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.trochRadiusMM} min={0.1} step={0.1}
-              onChange={(v) => up('trochRadiusMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.trochRadiusMM} minMM={0.1} stepMM={0.1}
+            onChangeMM={(v) => up('trochRadiusMM', v)} />
         </div>
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step / Loop</label>
-          <div className="flex items-center gap-1">
-            <NumericInput value={form.trochStepMM} min={0.01} step={0.05}
-              onChange={(v) => up('trochStepMM', v)}
-              className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-300 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
-            />
-            <span className="text-label text-gray-400 dark:text-neutral-500">mm</span>
-          </div>
+          <LengthInput valueMM={form.trochStepMM} minMM={0.01} stepMM={0.05}
+            onChangeMM={(v) => up('trochStepMM', v)} />
         </div>
       </div>
       <p className="text-label text-gray-400 dark:text-neutral-500 -mt-1">
-        Cuts {(form.trochRadiusMM * 2).toFixed(2)} mm wide · {selectedTool ? Math.round(form.trochStepMM / selectedTool.diameterMM * 100) : '—'}% tool dia per loop
+        Cuts {fmtLen(form.trochRadiusMM * 2, units)} wide · {selectedTool ? Math.round(form.trochStepMM / selectedTool.diameterMM * 100) : '—'}% tool dia per loop
       </p>
       <div className="flex items-center gap-2">
         <input type="checkbox" id="troch-ramp-in" checked={form.rampIn}
@@ -230,7 +225,7 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
         </label>
       </div>
       {errorMsg && (
-        <p className="text-body text-red-400 flex items-start gap-1.5">
+        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
         </p>
       )}

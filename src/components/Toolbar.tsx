@@ -62,7 +62,7 @@ function UnitToggle() {
     <div
       title={`Units: ${units} — click to switch`}
       onClick={() => setUnits(isIn ? 'mm' : 'in')}
-      className="relative flex items-center cursor-pointer select-none rounded-full h-7 w-14 bg-gray-200 dark:bg-neutral-700 flex-shrink-0"
+      className="relative flex items-center cursor-pointer select-none rounded-full h-7 w-14 bg-gray-300 dark:bg-neutral-700 flex-shrink-0"
     >
       <div
         className="absolute top-0.5 bottom-0.5 rounded-full bg-blue-600 transition-transform duration-150 ease-in-out"
@@ -113,7 +113,7 @@ function ProjectNameEditor() {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={onKeyDown}
-        className="ml-3 text-sm bg-gray-200 dark:bg-neutral-700 text-gray-900 dark:text-neutral-100 rounded px-2 py-0.5 w-52 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="ml-3 text-sm bg-gray-300 dark:bg-neutral-700 text-gray-900 dark:text-neutral-100 rounded px-2 py-0.5 w-52 focus:outline-none focus:ring-1 focus:ring-blue-500"
         autoFocus
       />
     )
@@ -167,7 +167,7 @@ export default function Toolbar() {
   const hasToolpaths = operations.some((o) => o.status === 'done' && o.visible)
 
   return (
-    <div className="h-10 bg-gray-100 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
+    <div className="h-10 bg-gray-200 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
 
 
       {/* File */}

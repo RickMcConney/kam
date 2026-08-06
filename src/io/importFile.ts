@@ -42,9 +42,9 @@ export function completeDxfImport(text: string, fileName: string, units?: DxfUni
     selectImported(result.paths)
     useUIStore.getState().setSidebarTab('draw')
   } else if (result.error) {
-    useUIStore.getState().showStatus(`DXF import failed: ${result.error}`, 'error')
+    useUIStore.getState().showStatus(`DXF import failed — ${result.error}`, 'error')
   } else if (!result.needsUnitsPrompt) {
-    useUIStore.getState().showStatus('DXF import: no supported geometry found in file', 'warn')
+    useUIStore.getState().showStatus('DXF import failed — no supported geometry in the file', 'warn')
   }
 }
 
@@ -54,12 +54,14 @@ export function importFile(file: File): void {
   // A file that can't be read at all (moved after drag, cloud placeholder,
   // permissions) must still surface in the status bar (bugs.md B7).
   const readFailed = () =>
-    useUIStore.getState().showStatus(`Could not read ${file.name}`, 'error')
+    useUIStore.getState().showStatus(`Import failed — could not read ${file.name}`, 'error')
 
   if (/\.(gcode|nc|ngc|tap)$/i.test(file.name)) {
     void file.text().then((text) => {
-      // Load into sim store for simulation playback
-      useSimStore.getState().loadGcode(text)
+      // Load into sim store for simulation playback. autoReload:false — this program came
+      // from a file, not from the operations, so regenerating them must not rebuild over
+      // it (generateGcode skips imported G-code ops entirely). See sim/simAutoReload.ts.
+      useSimStore.getState().loadGcode(text, { autoReload: false })
 
       // Convert parsed SimSegments (machine coords) → MotionSegments (workpiece coords)
       const { widthMM, heightMM, origin } = useWorkpieceStore.getState()
@@ -138,11 +140,11 @@ export function importFile(file: File): void {
           selectImported(result.paths)
           useUIStore.getState().setSidebarTab('draw')
         } else {
-          useUIStore.getState().showStatus('SVG import: no usable paths found in file', 'warn')
+          useUIStore.getState().showStatus('SVG import failed — no usable paths in the file', 'warn')
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'unknown error'
-        useUIStore.getState().showStatus(`SVG import failed: ${msg}`, 'error')
+        useUIStore.getState().showStatus(`SVG import failed — ${msg}`, 'error')
       }
     }
     reader.onerror = readFailed
@@ -180,7 +182,7 @@ export function importFile(file: File): void {
         useUIStore.getState().setSidebarTab('draw')
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'unknown error'
-        useUIStore.getState().showStatus(`STL import failed: ${msg}`, 'error')
+        useUIStore.getState().showStatus(`STL import failed — ${msg}`, 'error')
       }
     }
     reader.onerror = readFailed
@@ -217,7 +219,7 @@ export function importFile(file: File): void {
         useUIStore.getState().setSidebarTab('draw')
       }
       img.onerror = () =>
-        useUIStore.getState().showStatus(`Could not decode image ${file.name}`, 'error')
+        useUIStore.getState().showStatus(`Image import failed — could not decode ${file.name}`, 'error')
       img.src = src
     }
     reader.onerror = readFailed

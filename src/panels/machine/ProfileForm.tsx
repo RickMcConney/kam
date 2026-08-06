@@ -1,5 +1,5 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -9,7 +9,7 @@ import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type Profil
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
-import { useWorkpieceStore } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
@@ -31,26 +31,33 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const selPaths = useSelectedPaths()
   const { addOperations, setSegments, setError, updateOperation, deleteOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
-  const defaultTool = tools[0]
-  const [form, setForm] = useState<ProfileFormState>(() => editOp ? {
-    toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
-    stepDownMM: editOp.stepDownMM, direction: editOp.direction, rampIn: editOp.rampIn ?? false,
-    // Legacy ops stay on stock top — see PocketForm.
-    startFrom: editOp.startFrom ?? { mode: 'stock' },
-  } : { ...mergeWithDefaults(load('profile'), {
-    toolId: defaultTool?.id ?? '',
-    side: 'outside' as CutSide,
-    // A profile typically cuts the part free, so default to the full stock
-    // thickness rather than the tool's max flute depth.
-    depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
-    stepDownMM: seedStepDownMM(defaultTool),
-    direction: 'climb' as CuttingDirection,
-    rampIn: false,
-    // Deliberately not carried over from the saved defaults — see PocketForm.
-    startFrom: { mode: 'auto' } as StartFrom,
-  }, tools), startFrom: { mode: 'auto' } })
+  // A profile follows the path with the side of the tool, so it needs a side-cutting
+  // edge — a drill has none. Tapered tools stay: the taper hint below explains the
+  // wall a V-bit or ball nose leaves.
+  const cutters = toolsOfType(tools, ['endmill', 'ballnose', 'vbit'])
+  const defaultTool = cutters[0]
+  const [form, setForm] = useState<ProfileFormState>(() => {
+    const base = editOp ? {
+      toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
+      stepDownMM: editOp.stepDownMM, direction: editOp.direction, rampIn: editOp.rampIn ?? false,
+      // Legacy ops stay on stock top — see PocketForm.
+      startFrom: editOp.startFrom ?? { mode: 'stock' },
+    } : { ...mergeWithDefaults(load('profile'), {
+      toolId: defaultTool?.id ?? '',
+      side: 'outside' as CutSide,
+      // A profile typically cuts the part free, so default to the full stock
+      // thickness rather than the tool's max flute depth.
+      depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
+      stepDownMM: seedStepDownMM(defaultTool),
+      direction: 'climb' as CuttingDirection,
+      rampIn: false,
+      // Deliberately not carried over from the saved defaults — see PocketForm.
+      startFrom: { mode: 'auto' } as StartFrom,
+    }, tools), startFrom: { mode: 'auto' } as StartFrom }
+    return { ...base, toolId: pickToolId(base.toolId, cutters) }
+  })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const session = useSessionOps()
@@ -77,7 +84,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const cutRadiusMM = selectedTool ? toolRadiusAtHeight(selectedTool, form.depthMM) : 0
   const taperHint = selectedTool && form.side !== 'centerline'
     && cutRadiusMM < selectedTool.diameterMM / 2 - 1e-6
-    ? `Offset ${cutRadiusMM.toFixed(2)} mm — the ${selectedTool.type === 'vbit' ? 'V' : 'ball'} profile at ${form.depthMM} mm deep, so the cut meets the path at the start surface and the wall below is tapered.`
+    ? `Offset ${fmtLen(cutRadiusMM, units)} — the ${selectedTool.type === 'vbit' ? 'V' : 'ball'} profile at ${fmtLen(form.depthMM, units)} deep, so the cut meets the path at the start surface and the wall below is tapered.`
     : null
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
@@ -189,11 +196,11 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   }
 
   return (
-    <FormShell title={editOp ? `Edit Profile${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Profile Operation'} onClose={onClose}>
+    <FormShell title={editOp ? `Edit Profile${selectedPaths.length > 1 ? ` — ${selectedPaths.length} paths` : ''}` : 'New Profile'} onClose={onClose}>
       {selectedPaths.length === 0 && (
-        <p className="text-body text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path on the canvas first'}</p>
+        <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a path first'}</p>
       )}
-      <ToolSelector tools={tools} value={form.toolId} onChange={handleToolChange} />
+      <ToolSelector tools={cutters} value={form.toolId} onChange={handleToolChange} />
       <ToggleRow label="Cut Side" options={['inside', 'outside', 'centerline'] as CutSide[]} value={form.side} onChange={(v) => up('side', v)} />
       <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
@@ -211,7 +218,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         </label>
       </div>
       {errorMsg && (
-        <p className="text-body text-red-400 flex items-start gap-1.5">
+        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
         </p>
       )}

@@ -258,10 +258,10 @@ export function labelFor(ev: TimelineEventPayload): string {
     case 'shape.params': return shapeDisplayName(ev.params.type)
     case 'op.add': return opDisplayName(ev.op.type)
     case 'op.update': return opDisplayName(ev.opType)
-    case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} ops`
-    case 'op.reorder': return 'Reorder ops'
+    case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} Operations`
+    case 'op.reorder': return 'Reorder Operations'
     case 'op.setVisible': {
-      const what = ev.opIds.length === 1 ? opDisplayName(ev.opType) : `${ev.opIds.length} ops`
+      const what = ev.opIds.length === 1 ? opDisplayName(ev.opType) : `${ev.opIds.length} Operations`
       return ev.visible ? `Show ${what}` : `Hide ${what}`
     }
     case 'tabs.apply': return `Tabs ×${ev.tabs.length}`
@@ -277,7 +277,7 @@ export function labelFor(ev: TimelineEventPayload): string {
         if (keys[0] === 'zOrigin') return 'Z Origin'
         if (keys[0] === 'material') return 'Material'
       }
-      return 'Workpiece'
+      return 'Stock'
     }
     case 'snapshot': return ev.reason === 'compaction' ? 'History start (compacted)' : 'Project start'
   }

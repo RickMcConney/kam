@@ -13,6 +13,7 @@ import {
 } from '../store/workpieceStore'
 import { SPINDLE_INFO, type SpindleType } from '../store/spindle'
 import { NumericInput } from '../components/NumericInput'
+import { FRACTION_HINT } from '../components/parseNumeric'
 import { rigidityInfo } from '../rigidity'
 
 function DimInput({
@@ -34,18 +35,15 @@ function DimInput({
   return (
     <div className="flex items-center gap-2 mb-1.5">
       <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
-      <div className="relative flex-1">
-        <NumericInput
-          value={displayVal}
-          min={min}
-          step={step}
-          onChange={(v) => onChange(toMM(v, units))}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-8 font-mono"
-        />
-        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">
-          {units}
-        </span>
-      </div>
+      <NumericInput
+        value={displayVal}
+        min={min}
+        step={step}
+        title={FRACTION_HINT}
+        unit={units}
+        onChange={(v) => onChange(toMM(v, units))}
+        className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none font-mono"
+      />
     </div>
   )
 }
@@ -65,7 +63,7 @@ function OriginSelector({
 }) {
   return (
     <div className="flex flex-col items-center gap-2">
-      <div className="inline-grid grid-cols-3 gap-1 p-1.5 bg-gray-50 dark:bg-neutral-900 rounded border border-gray-300 dark:border-neutral-700 w-fit">
+      <div className="inline-grid grid-cols-3 gap-1 p-1.5 bg-gray-50 dark:bg-neutral-900 rounded border border-gray-400 dark:border-neutral-700 w-fit">
         {ORIGIN_GRID.map((row) =>
           row.map((pos) => {
             const active = value === pos
@@ -78,7 +76,7 @@ function OriginSelector({
                   'w-8 h-8 rounded flex items-center justify-center transition-colors border',
                   active
                     ? 'bg-blue-600 border-blue-400'
-                    : 'bg-gray-100 dark:bg-neutral-800 border-gray-200 dark:border-neutral-600 hover:bg-gray-200 dark:hover:bg-neutral-700',
+                    : 'bg-gray-100 dark:bg-neutral-800 border-gray-400 dark:border-neutral-600 hover:bg-gray-200 dark:hover:bg-neutral-700',
                 ].join(' ')}
               >
                 <div
@@ -195,7 +193,7 @@ export default function WorkpiecePanel() {
                     'px-2 py-1.5 rounded text-body transition-colors border',
                     active
                       ? 'bg-blue-600 border-blue-400 text-white'
-                      : 'bg-gray-100 dark:bg-neutral-800 border-gray-200 dark:border-neutral-600 text-gray-700 dark:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700',
+                      : 'bg-gray-100 dark:bg-neutral-800 border-gray-400 dark:border-neutral-600 text-gray-700 dark:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700',
                   ].join(' ')}
                 >
                   {label}
@@ -210,7 +208,7 @@ export default function WorkpiecePanel() {
         <select
           value={material}
           onChange={(e) => setMaterial(e.target.value as Material)}
-          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
+          className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
         >
           {MATERIALS.map((m) => (
             <option key={m.value} value={m.value}>
@@ -234,7 +232,7 @@ export default function WorkpiecePanel() {
               className="accent-blue-500"
             />
             <span className="text-body text-gray-700 dark:text-neutral-300">
-              Auto feed &amp; speeds
+              Auto Feeds &amp; Speeds
             </span>
           </label>
           <InfoPopover text={AUTO_FEED_HELP} />
@@ -256,7 +254,7 @@ export default function WorkpiecePanel() {
           <select
             value={machineRigidity}
             onChange={(e) => setMachineRigidity(parseInt(e.target.value))}
-            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
           >
             {[1, 2, 3, 4, 5].map((r) => (
               <option key={r} value={r}>
@@ -268,18 +266,14 @@ export default function WorkpiecePanel() {
 
         <div className="flex items-center gap-2">
           <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">Max Feed Rate</label>
-          <div className="relative flex-1">
-            <NumericInput
-              value={fromMM(maxFeedMmMin, units)}
-              min={1}
-              step={units === 'in' ? 1 : 50}
-              onChange={(v) => setMaxFeed(toMM(v, units))}
-              className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-14 font-mono"
-            />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">
-              {units}/min
-            </span>
-          </div>
+          <NumericInput
+            value={fromMM(maxFeedMmMin, units)}
+            min={1}
+            step={units === 'in' ? 1 : 50}
+            unit={`${units}/min`}
+            onChange={(v) => setMaxFeed(toMM(v, units))}
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none font-mono"
+          />
         </div>
         <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
           Hard ceiling — generated feeds never exceed this, even when auto is off.
@@ -290,7 +284,7 @@ export default function WorkpiecePanel() {
           <select
             value={spindleType}
             onChange={(e) => setSpindleType(e.target.value as SpindleType)}
-            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
+            className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
           >
             {(Object.keys(SPINDLE_INFO) as SpindleType[]).map((t) => (
               <option key={t} value={t}>{SPINDLE_INFO[t].label}</option>
@@ -309,24 +303,20 @@ export default function WorkpiecePanel() {
         ]).map(([label, value, onChange]) => (
           <div key={label} className="flex items-center gap-2 mt-3">
             <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
-            <div className="relative flex-1">
-              <NumericInput
-                value={value}
-                min={1000}
-                step={1000}
-                onChange={onChange}
-                className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none pr-12 font-mono"
-              />
-              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-body text-gray-400 dark:text-neutral-500 pointer-events-none">
-                rpm
-              </span>
-            </div>
+            <NumericInput
+              value={value}
+              min={1000}
+              step={1000}
+              unit="RPM"
+              onChange={onChange}
+              className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none font-mono"
+            />
             <InfoPopover text={SPINDLE_HELP} />
           </div>
         ))}
       </Section>
 
-      <Section title="Machine Travel Limits">
+      <Section title="Machine Limits">
         <p className="text-body text-gray-400 dark:text-neutral-500 mb-2">
           Maximum travel for pre-export validation.
         </p>
@@ -343,7 +333,7 @@ export default function WorkpiecePanel() {
           onChange={setTableLimitHeight}
         />
         <DimInput
-          label="Max Cut Depth"
+          label="Max Z Travel"
           valueMM={tableLimitDepthMM}
           units={units}
           onChange={setTableLimitDepth}

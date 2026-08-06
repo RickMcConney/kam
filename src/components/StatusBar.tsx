@@ -62,12 +62,12 @@ export default function StatusBar() {
   }, [statusMessage, clearStatus])
 
   const msgColor =
-    statusMessage?.kind === 'error' ? 'text-red-500 dark:text-red-400'
+    statusMessage?.kind === 'error' ? 'text-red-600 dark:text-red-500 dark:text-red-400'
     : statusMessage?.kind === 'warn' ? 'text-amber-600 dark:text-amber-400'
     : 'text-blue-500 dark:text-blue-400'
 
   return (
-    <div className="h-7 bg-gray-50 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-[15px] text-gray-500 dark:text-neutral-400 select-none flex-shrink-0">
+    <div className="h-7 bg-gray-100 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-[15px] text-gray-500 dark:text-neutral-400 select-none flex-shrink-0">
       {/* Left section */}
       <div className="flex-1 min-w-0 flex items-center gap-4">
         <span>Mode: {mode}</span>
@@ -95,7 +95,7 @@ export default function StatusBar() {
           3D) so the current setup is visible at a glance. */}
       <div className="flex items-center gap-3 px-4 flex-shrink-0">
         {/* Material + stock size; swatch matches the workpiece fill. */}
-        <span className="flex items-center gap-1.5" title="Workpiece material and stock size">
+        <span className="flex items-center gap-1.5" title="Stock material and size">
           <span
             className="inline-block w-3 h-3 rounded-sm border border-black/20 dark:border-white/25"
             style={{ backgroundColor: swatch }}
