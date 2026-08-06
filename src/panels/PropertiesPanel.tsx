@@ -207,6 +207,11 @@ function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApp
 function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params: ShapeParams; units: string; orgWorld: { x: number; y: number } }) {
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
   const update = (newParams: ShapeParams) => { updateShapeParams(id, newParams); regenerateAffected(id) }
+  // A slider fires on every pixel of the drag. The geometry update is cheap and
+  // has to be live to be worth dragging, but `regenerateAffected` queues a
+  // worker toolpath job per call — so the drag updates `d` only, and the
+  // regenerate waits for the release.
+  const updateLive = (newParams: ShapeParams) => updateShapeParams(id, newParams)
   const u = units
   const ox = orgWorld.x, oy = orgWorld.y
 
@@ -246,6 +251,27 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="W"  valueMM={params.w}  units={u} onChange={(w)  => update({ ...params, w })} />
         <EditField label="H"  valueMM={params.h}  units={u} onChange={(h)  => update({ ...params, h })} />
+      </>)
+    case 'spirograph':
+      return (<>
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
+        <EditField label="R"     valueMM={params.radius} units={u} onChange={(radius) => update({ ...params, radius })} />
+        <RawField  label="R/r"   value={params.ratio} min={1.01} max={50} step={0.05} onChange={(ratio) => update({ ...params, ratio, p: Math.min(params.p, ratio) })} />
+        {/* Pen position spans the grid — a slider reads the pattern's fill far
+            better than typing it, and p = ratio−1 (centre-filling) is a place
+            you find by dragging, not by knowing the number. */}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>p</span>
+          <input
+            type="range" min={0} max={params.ratio} step={0.01} value={params.p}
+            onChange={(e) => updateLive({ ...params, p: parseFloat(e.target.value) })}
+            onPointerUp={() => regenerateAffected(id)}
+            onKeyUp={() => regenerateAffected(id)}
+            className="flex-1 w-0 accent-blue-500"
+          />
+          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{params.p.toFixed(2)}</span>
+        </div>
       </>)
     case 'polygon':
       return (<>

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, ChevronDown } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, ChevronDown } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
-import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
-import type { ShapeType, ShapeToolConfig } from '../../shapes/shapeGenerators'
+import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
+import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { loadFont, isFontLoaded } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
@@ -23,6 +23,7 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'heart',     label: 'Heart',   icon: <Heart size={ICON.md} /> },
   { type: 'slot',      label: 'Slot',    icon: <Pill size={ICON.md} /> },
   { type: 'shield',    label: 'Shield',  icon: <Shield size={ICON.md} /> },
+  { type: 'spirograph', label: 'Spiro',  icon: <Orbit size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
@@ -123,6 +124,37 @@ function ShapeConfig({ type, config, onChange, units }: {
         <NumInput label="Width"  valueMM={c.shield.w} units={u} onChange={(w) => onChange({ ...c, shield: { ...c.shield, w } })} />
         <NumInput label="Height" valueMM={c.shield.h} units={u} onChange={(h) => onChange({ ...c, shield: { ...c.shield, h } })} />
       </div>)
+    case 'spirograph': {
+      const { radius, ratio, p } = c.spirograph
+      const { R, r } = spirographRadii(radius, ratio, p)
+      return (<div className="space-y-1">
+        <NumInput label="Radius" valueMM={radius} units={u}
+          onChange={(radius) => onChange({ ...c, spirograph: { ...c.spirograph, radius } })} />
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Ratio R/r</span>
+          <NumericInput value={ratio} min={1.01} max={50} step={0.05}
+            onChange={(ratio) => onChange({ ...c, spirograph: { ...c.spirograph, ratio, p: Math.min(p, ratio) } })}
+            className={inputCls} />
+        </div>
+        {/* max = ratio leaves headroom past spirographCentrePen(ratio) — where the
+            curve fills right to the middle — without much dead travel beyond it,
+            since the hole re-opens on the far side. */}
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Pen p</span>
+          <input
+            type="range" min={0} max={ratio} step={0.01} value={p}
+            onChange={(e) => onChange({ ...c, spirograph: { ...c.spirograph, p: parseFloat(e.target.value) } })}
+            className="flex-1 w-0 accent-blue-500"
+          />
+          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{p.toFixed(2)}</span>
+        </div>
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Ring {fmtLen(R, u as 'mm' | 'in')} / wheel {fmtLen(r, u as 'mm' | 'in')}
+          <br />
+          {spirographTurns(ratio)} turns · centre at p {spirographCentrePen(ratio).toFixed(2)}
+        </p>
+      </div>)
+    }
     case 'text':
       return (<div className="space-y-1">
         <div className="flex items-center gap-1.5">

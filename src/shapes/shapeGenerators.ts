@@ -1,6 +1,6 @@
 import { generateTextD } from './textGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -13,6 +13,7 @@ export type ShapeParams =
   | { type: 'heart'; cx: number; cy: number; curveRadius: number; angle: number }
   | { type: 'slot'; cx: number; cy: number; length: number; width: number }
   | { type: 'shield'; cx: number; cy: number; w: number; h: number }
+  | { type: 'spirograph'; cx: number; cy: number; radius: number; ratio: number; p: number }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
@@ -26,6 +27,7 @@ export interface ShapeToolConfig {
   heart: { curveRadius: number; angle: number }
   slot: { length: number; width: number }
   shield: { w: number; h: number }
+  spirograph: { radius: number; ratio: number; p: number }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -40,10 +42,121 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   heart: { curveRadius: 15, angle: 90 },
   slot: { length: 40, width: 15 },
   shield: { w: 40, h: 50 },
+  spirograph: { radius: 25, ratio: 3.0769, p: 2.0769 },  // 40/13 — a 13-turn rosette, pen on the centre
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
 function f(n: number): string { return String(+n.toFixed(4)) }
+
+// ─── Spirograph (hypotrochoid) ────────────────────────────────────────────────
+//
+// A wheel of radius r rolls inside a ring of radius R with the pen held at
+// fraction p of the way out to the wheel's rim:
+//
+//   x(θ) = (R−r)·cos θ + p·r·cos(((R−r)/r)·θ)
+//   y(θ) = (R−r)·sin θ − p·r·sin(((R−r)/r)·θ)
+//
+// p is NOT capped at 1 — the pen may sit on an arm out past the rim. A real
+// spirograph's holes are drilled inside the wheel, and that cap is exactly what
+// keeps the pattern out at the rim: the curve's inner radius is (R−r) − p·r, so
+// with p ≤ 1 it can only reach the middle when R ≤ 2r. Every ratio above 2 —
+// which is where the interesting rosettes are — would leave a hole. The pen
+// crosses the centre at p = ratio−1 (`spirographCentrePen`) and loops through it
+// beyond that.
+//
+// R and r are NOT the stored parameters, because they are not independent to
+// the eye: the pen never reaches the ring, so the drawn curve's outer radius is
+// R − r(1−p) and growing the wheel shrinks the shape while R sits still. What
+// the user picks instead is `radius` — the outer radius of the curve as drawn,
+// i.e. the size it occupies on the stock — and `ratio` = R/r, the gear ratio
+// that selects the pattern. R and r are derived from those, so size and pattern
+// move independently and canvas scaling only touches `radius`.
+//
+// Emitted as a polyline — there is no closed form in arcs/béziers, and the CAM
+// pipeline flattens everything to polylines anyway.
+
+const SPIRO_MAX_TURNS = 60
+const SPIRO_MAX_POINTS = 6000
+const SPIRO_MIN_RATIO = 1.001   // r < R, or the wheel doesn't roll
+
+// Best rational approximation of x, by continued fraction, stopping as soon as
+// it is within `tol` relative — NOT at a fixed denominator. A spirograph ratio
+// is a gear ratio, so the number the user means is a modest fraction (7/2, 40/13)
+// that a typed decimal only approximates; expanding to a fixed precision instead
+// would read 3.0769 as 10243/3329 rather than the 40/13 it stands for.
+function rationalize(x: number, tol = 1e-4): { num: number; den: number } {
+  let h0 = 0, h1 = 1, k0 = 1, k1 = 0, v = x
+  for (let i = 0; i < 24; i++) {
+    const a = Math.floor(v)
+    const h2 = a * h1 + h0, k2 = a * k1 + k0
+    if (!isFinite(h2) || !isFinite(k2)) break
+    h0 = h1; h1 = h2; k0 = k1; k1 = k2
+    if (Math.abs(h1 / k1 - x) <= tol * x) break
+    const frac = v - a
+    if (frac < 1e-12) break
+    v = 1 / frac
+  }
+  return { num: h1, den: k1 || 1 }
+}
+
+// θ closes the curve after r/gcd(R,r) turns — which for R/r = num/den in lowest
+// terms is just `den`. Capped, so a ratio that never truly closes (an irrational
+// one, or a fraction in absurdly low terms) gets a long-but-finite curve instead
+// of an infinite one.
+export function spirographTurns(ratio: number): number {
+  const { den } = rationalize(Math.max(ratio, SPIRO_MIN_RATIO))
+  return Math.max(1, Math.min(SPIRO_MAX_TURNS, den))
+}
+
+// Ring and wheel radii behind a given drawn size — shown in the panel so the
+// numbers a physical spirograph set is labelled with are still visible.
+export function spirographRadii(radius: number, ratio: number, p: number): { R: number; r: number } {
+  const k = 1 / Math.max(ratio, SPIRO_MIN_RATIO)   // r/R
+  // outer radius = (R−r) + p·r = R(1 − k(1−p)), solved for R. The bracket stays
+  // positive for every p ≥ 0, so an arm past the rim is well defined.
+  const R = Math.max(0.1, radius) / (1 - k * (1 - Math.max(0, p)))
+  return { R, r: k * R }
+}
+
+// The pen offset at which the curve passes exactly through the centre: the
+// inner radius (R−r) − p·r hits zero at p = (R−r)/r = ratio−1. Ratio-dependent,
+// so the panel shows it rather than making the user hunt for it.
+export function spirographCentrePen(ratio: number): number {
+  return Math.max(ratio, SPIRO_MIN_RATIO) - 1
+}
+
+function spirographD(cx: number, cy: number, radius: number, ratio: number, p0: number): string {
+  const p = Math.max(0, p0)
+  const { R, r } = spirographRadii(radius, ratio, p)
+  const A = R - r         // the wheel's centre orbits at this radius
+  const B = p * r         // pen offset from the wheel's centre
+  const freq = A / r      // wiggles per turn — i.e. ratio − 1
+  const thetaMax = spirographTurns(ratio) * 2 * Math.PI
+
+  const px = (t: number) => cx + A * Math.cos(t) + B * Math.cos(freq * t)
+  const py = (t: number) => cy + A * Math.sin(t) - B * Math.sin(freq * t)
+  // |dP/dθ|, which swings widely along the curve (to zero at a cusp) — stepping
+  // by it keeps the chord length roughly constant instead of the θ increment.
+  const speed = (t: number) => Math.hypot(
+    -A * Math.sin(t) - B * freq * Math.sin(freq * t),
+     A * Math.cos(t) - B * freq * Math.cos(freq * t)
+  )
+
+  // Coarse arc length first, so the chord tolerance can be sized to land under
+  // the point budget rather than blowing it on a 60-turn curve.
+  let len = 0
+  const N = 512
+  for (let i = 0; i < N; i++) len += speed(((i + 0.5) / N) * thetaMax) * (thetaMax / N)
+  const chord = Math.max(0.05, len / SPIRO_MAX_POINTS)
+  const minStep = thetaMax / (SPIRO_MAX_POINTS * 3)
+
+  const pts: string[] = []
+  for (let t = 0; t < thetaMax; ) {
+    pts.push(`${pts.length === 0 ? 'M' : 'L'}${f(px(t))},${f(py(t))}`)
+    t += Math.min(Math.max(chord / Math.max(speed(t), 1e-6), minStep), 0.1)
+  }
+  return pts.join(' ') + ' Z'
+}
 
 // All paths in CNC Y-up space. Arc sweep=0 matches what svgImporter produces after Y-flip.
 export function generateShapeD(p: ShapeParams): string {
@@ -184,6 +297,7 @@ export function generateShapeD(p: ShapeParams): string {
         'Z',
       ].join(' ')
     }
+    case 'spirograph': return spirographD(p.cx, p.cy, p.radius, p.ratio, p.p)
     case 'text': return generateTextD(p)
   }
 }
@@ -200,6 +314,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'heart': return 'Heart'
     case 'slot': return 'Slot'
     case 'shield': return 'Shield'
+    case 'spirograph': return 'Spirograph'
     case 'text': return 'Text'
   }
 }
@@ -250,6 +365,10 @@ export function shapeParamsFromDrag(
       return { type: 'slot', cx, cy, length: w, width: clampedWidth }
     }
     case 'shield': return { type: 'shield', cx, cy, w, h }
+    case 'spirograph':
+      // `radius` IS the drawn outer radius, so the drag box fits exactly;
+      // ratio and pen position (the pattern) come from the panel untouched.
+      return { type: 'spirograph', cx, cy, radius, ratio: config.spirograph.ratio, p: config.spirograph.p }
     case 'text': {
       // drag height → font size; left edge and lower y as baseline position
       const h = Math.abs(end.y - start.y)
@@ -286,6 +405,7 @@ export function shapeParamsFromConfig(
     case 'heart': return { type: 'heart', cx, cy, curveRadius: config.heart.curveRadius, angle: config.heart.angle }
     case 'slot': return { type: 'slot', cx, cy, length: config.slot.length, width: config.slot.width }
     case 'shield': return { type: 'shield', cx, cy, w: config.shield.w, h: config.shield.h }
+    case 'spirograph': return { type: 'spirograph', cx, cy, radius: config.spirograph.radius, ratio: config.spirograph.ratio, p: config.spirograph.p }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -303,6 +423,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'heart': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'slot': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'shield': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'spirograph': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -368,6 +489,11 @@ export function scaleShapeParams(
     case 'shield': {
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
       return { ...p, cx: ncx, cy: ncy, w: p.w * asx, h: p.h * asy }
+    }
+    case 'spirograph': {
+      if (Math.abs(asx - asy) > 0.001) return null // non-uniform isn't a spirograph any more
+      const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
+      return { ...p, cx: ncx, cy: ncy, radius: p.radius * asx } // ratio/pen fixed — scaling resizes, never re-patterns
     }
     case 'text': {
       if (Math.abs(asx - asy) > 0.001) return null
