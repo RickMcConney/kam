@@ -268,6 +268,41 @@ export function refsPathId(op: AnyOperation, pathId: string): boolean {
   return false
 }
 
+/**
+ * Rewrite the operation list when `oldId` is split into `newIds`.
+ *
+ * An ISLAND reference swaps the one id for all the sub-path ids: the combined
+ * island geometry is unchanged, so the toolpath is identical and the segments
+ * stay valid.
+ *
+ * Everything that used the path as its SOURCE is dropped, exactly as a delete
+ * would. That looks like lost work — profile a gear, split it to give the bore
+ * and spokes their own operations, and the outline's profile goes with it — and
+ * cloning the op onto each sub-path is the obvious repair. IT IS WRONG. A
+ * profile of a compound path treats it as one region: `side: 'outside'` cuts
+ * round the outer boundary only. Clone that onto seven sub-paths and the bore
+ * and every spoke get cut on their OUTSIDE too, so the tool takes the spokes
+ * off. Silently machining something else is worse than losing an operation the
+ * user can see is gone, and one undo of the paths.split event restores it.
+ *
+ * The fix for the lost work is upstream — emit the gear as separate paths so
+ * there is nothing to split — not here.
+ */
+export function remapOpsForSplit(
+  ops: AnyOperation[], oldId: string, newIds: string[],
+): { ops: AnyOperation[]; changed: boolean } {
+  let changed = false
+  const out = ops.flatMap((op): AnyOperation[] => {
+    if (!refsPathId(op, oldId)) return [op]
+    changed = true
+    if ((op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') && op.pathId !== oldId) {
+      return [{ ...op, islandIds: op.islandIds.flatMap((iid) => (iid === oldId ? newIds : [iid])) }]
+    }
+    return []
+  })
+  return { ops: out, changed }
+}
+
 // Every operation created by the same Generate click as `op` — itself included, in
 // program order. Unbatched ops (created alone) are just themselves. The type check keeps
 // a batch to one operation kind, so a form only ever edits ops it knows how to edit.

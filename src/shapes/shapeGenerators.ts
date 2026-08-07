@@ -1,6 +1,9 @@
 import { generateTextD } from './textGenerator'
+import { generateMazeD } from './mazeGenerator'
+import { generateCuttingBoardD, type BoardShape, type BoardHandle } from './cuttingBoardGenerator'
+import { generateGearD, generateGearParts, moduleForRadius } from './gearGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -14,6 +17,15 @@ export type ShapeParams =
   | { type: 'slot'; cx: number; cy: number; length: number; width: number }
   | { type: 'shield'; cx: number; cy: number; w: number; h: number }
   | { type: 'spirograph'; cx: number; cy: number; radius: number; ratio: number; p: number }
+  | { type: 'maze'; x: number; y: number; w: number; h: number; spacing: number; corner: number; seed: number; loops: number }
+  | {
+      type: 'board'; x: number; y: number; w: number; h: number
+      shape: BoardShape; corner: number
+      handle: BoardHandle; handleW: number; handleL: number; handleInset: number
+      hole: boolean; holeDia: number
+      groove: boolean; grooveInset: number
+    }
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; pitchCircle: boolean }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
@@ -28,6 +40,13 @@ export interface ShapeToolConfig {
   slot: { length: number; width: number }
   shield: { w: number; h: number }
   spirograph: { radius: number; ratio: number; p: number }
+  maze: { w: number; h: number; spacing: number; corner: number; seed: number; loops: number }
+  board: {
+    w: number; h: number; shape: BoardShape; corner: number
+    handle: BoardHandle; handleW: number; handleL: number; handleInset: number
+    hole: boolean; holeDia: number; groove: boolean; grooveInset: number
+  }
+  gear: { module: number; teeth: number; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; pitchCircle: boolean }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -43,6 +62,18 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   slot: { length: 40, width: 15 },
   shield: { w: 40, h: 50 },
   spirograph: { radius: 25, ratio: 3.0769, p: 2.0769 },  // 40/13 — a 13-turn rosette, pen on the centre
+  maze: { w: 150, h: 150, spacing: 12, corner: 4, seed: 1, loops: 0 },  // 12 mm pitch = 6 mm walls under a 6 mm ball
+  board: {
+    w: 350, h: 250, shape: 'rect', corner: 25,
+    handle: 'paddle', handleW: 60, handleL: 110, handleInset: 22,
+    hole: true, holeDia: 22, groove: true, grooveInset: 20,
+  },
+  // Module 4 because of the cutter, not the gear: the designed root fillet is
+  // 0.38·m — the standard rack tip radius — and at m4 that is 1.52 mm against a
+  // 1/8" end mill's 1.59 mm, so the bit cuts the root essentially as drawn. Below
+  // m3 it cannot reach into the root at all and leaves a fillet twice the size.
+  // hubDia follows: bore + 4·m is the least hub the axle wants, so 8 + 16 = 24.
+  gear: { module: 4, teeth: 24, pressureAngle: 20, bore: 8, hubDia: 24, spokes: 5, backlash: 0.3, pitchCircle: false },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
@@ -298,8 +329,45 @@ export function generateShapeD(p: ShapeParams): string {
       ].join(' ')
     }
     case 'spirograph': return spirographD(p.cx, p.cy, p.radius, p.ratio, p.p)
+    case 'maze': return generateMazeD(p)
+    case 'board': return generateCuttingBoardD(p)
+    case 'gear': return generateGearD(p)
     case 'text': return generateTextD(p)
   }
+}
+
+/**
+ * A shape that is really several paths, because its pieces want different
+ * operations. Null for every ordinary shape — one shape, one path.
+ *
+ * A gear is the case: its teeth are profiled OUTSIDE and its bore and spokes
+ * INSIDE, and one compound path cannot say that (a profile reads a compound path
+ * as a single region and follows the outer boundary only). Handing over one path
+ * means the bore and spokes go uncut, and splitting it afterwards to reach them
+ * drops the profile already set up on the teeth.
+ *
+ * Every part carries the SAME `shapeParams`, plus its own `part` key, so the set
+ * stays editable as one shape — see `updateShapeParams`, which regenerates the
+ * whole group and adds or removes parts as they appear and vanish.
+ */
+export interface ShapePart {
+  part: string
+  /** Suffix for the path name — "Gear Teeth". */
+  label: string
+  d: string
+}
+
+const GEAR_PART_LABELS: Record<string, string> = {
+  teeth: 'Teeth', spokes: 'Spokes', bore: 'Bore', pitch: 'Pitch Circle',
+}
+
+export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
+  if (p.type !== 'gear') return null
+  return generateGearParts(p).map((g) => ({
+    part: g.key,
+    label: GEAR_PART_LABELS[g.key] ?? g.key,
+    d: g.d,
+  }))
 }
 
 export function shapeDisplayName(type: ShapeType): string {
@@ -315,6 +383,9 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'slot': return 'Slot'
     case 'shield': return 'Shield'
     case 'spirograph': return 'Spirograph'
+    case 'maze': return 'Maze'
+    case 'board': return 'Cutting Board'
+    case 'gear': return 'Gear'
     case 'text': return 'Text'
   }
 }
@@ -369,6 +440,32 @@ export function shapeParamsFromDrag(
       // `radius` IS the drawn outer radius, so the drag box fits exactly;
       // ratio and pen position (the pattern) come from the panel untouched.
       return { type: 'spirograph', cx, cy, radius, ratio: config.spirograph.ratio, p: config.spirograph.p }
+    case 'maze':
+      // The drag box is the maze's outer extent; corridor spacing comes from
+      // the panel untouched, so the box decides how MANY cells fit, never how
+      // wide they are (see mazeGenerator.ts — spacing is a tool constraint).
+      return {
+        type: 'maze', x, y, w, h,
+        spacing: config.maze.spacing, corner: config.maze.corner,
+        seed: config.maze.seed, loops: config.maze.loops,
+      }
+    case 'board':
+      // The drag box is the board's OVERALL extent, so a paddle handle eats into
+      // it — and it reaches out the RIGHT end, so it comes off the width. `w`
+      // stays the cutting field, which is the number that means something
+      // ("a 350×250 board"), and the handle grows out past it.
+      return {
+        type: 'board', x, y, ...config.board, h,
+        w: Math.max(10, w - (config.board.handle === 'paddle' ? config.board.handleL : 0)),
+      }
+    case 'gear':
+      // The drag box sizes the gear's outside diameter; tooth count and pressure
+      // angle are the pattern and come from the panel, so `module` is what the
+      // drag actually sets (a gear's size IS module × teeth).
+      return {
+        type: 'gear', cx, cy, ...config.gear,
+        module: moduleForRadius(radius, config.gear.teeth),
+      }
     case 'text': {
       // drag height → font size; left edge and lower y as baseline position
       const h = Math.abs(end.y - start.y)
@@ -406,6 +503,15 @@ export function shapeParamsFromConfig(
     case 'slot': return { type: 'slot', cx, cy, length: config.slot.length, width: config.slot.width }
     case 'shield': return { type: 'shield', cx, cy, w: config.shield.w, h: config.shield.h }
     case 'spirograph': return { type: 'spirograph', cx, cy, radius: config.spirograph.radius, ratio: config.spirograph.ratio, p: config.spirograph.p }
+    case 'maze': {
+      const { w, h, spacing, corner, seed, loops } = config.maze
+      return { type: 'maze', x: cx - w / 2, y: cy - h / 2, w, h, spacing, corner, seed, loops }
+    }
+    case 'board': {
+      const { w, h } = config.board
+      return { type: 'board', ...config.board, x: cx - w / 2, y: cy - h / 2 }
+    }
+    case 'gear': return { type: 'gear', cx, cy, ...config.gear }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -424,6 +530,9 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'slot': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'shield': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'spirograph': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'maze': return { ...p, x: p.x + dx, y: p.y + dy }
+    case 'board': return { ...p, x: p.x + dx, y: p.y + dy }
+    case 'gear': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -494,6 +603,38 @@ export function scaleShapeParams(
       if (Math.abs(asx - asy) > 0.001) return null // non-uniform isn't a spirograph any more
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
       return { ...p, cx: ncx, cy: ncy, radius: p.radius * asx } // ratio/pen fixed — scaling resizes, never re-patterns
+    }
+    case 'maze': {
+      // Spacing and corner radius do NOT scale — both are set from the cutter,
+      // and stretching a maze to fit the stock must not thin its walls. A
+      // resized maze therefore holds its corridor width and re-lays itself with
+      // more (or fewer) cells; the seed keeps that deterministic.
+      const nx = ax + sx * (p.x - ax), ny = ay + sy * (p.y - ay)
+      return { ...p, x: Math.min(nx, nx + p.w * sx), y: Math.min(ny, ny + p.h * sy), w: p.w * asx, h: p.h * asy }
+    }
+    case 'board': {
+      // Unlike the maze, every feature here is a proportion of the design rather
+      // than a tool constraint, so they all ride along. Under a non-uniform
+      // scale the round ones follow the SMALLER factor — that keeps a handle,
+      // a hole and a groove that already fit still fitting.
+      const nx = ax + sx * (p.x - ax), ny = ay + sy * (p.y - ay)
+      const k = Math.min(asx, asy)
+      return {
+        ...p,
+        x: Math.min(nx, nx + p.w * sx), y: Math.min(ny, ny + p.h * sy),
+        w: p.w * asx, h: p.h * asy,
+        corner: p.corner * k, handleW: p.handleW * k, handleL: p.handleL * k,
+        handleInset: p.handleInset * k, holeDia: p.holeDia * k, grooveInset: p.grooveInset * k,
+      }
+    }
+    case 'gear': {
+      // A gear stretched on one axis is not a gear — the involute is defined off
+      // a circular base. Non-uniform therefore drops the params and leaves a
+      // plain path, the same answer polygon/star/spirograph give.
+      if (Math.abs(asx - asy) > 0.001) return null
+      const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
+      // Teeth and pressure angle are the pattern; module and bore are lengths.
+      return { ...p, cx: ncx, cy: ncy, module: p.module * asx, bore: p.bore * asx, hubDia: p.hubDia * asx, backlash: p.backlash * asx }
     }
     case 'text': {
       if (Math.abs(asx - asy) > 0.001) return null

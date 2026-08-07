@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, ChevronDown } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Dices, ChevronDown } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
 import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
+import { mazeGrid } from '../../shapes/mazeGenerator'
+import { gearDims, gearHub } from '../../shapes/gearGenerator'
+import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
 import { loadFont, isFontLoaded } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
@@ -24,6 +27,9 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'slot',      label: 'Slot',    icon: <Pill size={ICON.md} /> },
   { type: 'shield',    label: 'Shield',  icon: <Shield size={ICON.md} /> },
   { type: 'spirograph', label: 'Spiro',  icon: <Orbit size={ICON.md} /> },
+  { type: 'maze',      label: 'Maze',    icon: <Grid3x3 size={ICON.md} /> },
+  { type: 'board',     label: 'Board',   icon: <CookingPot size={ICON.md} /> },
+  { type: 'gear',      label: 'Gear',    icon: <Cog size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
@@ -53,6 +59,31 @@ function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }:
         className={inputCls}
       />
     </div>
+  )
+}
+
+const selectCls = inputCls + ' cursor-pointer'
+
+function Select<T extends string>({ label, value, options, onChange }: {
+  label: string; value: T; options: [T, string][]; onChange: (v: T) => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={labelCls}>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value as T)} className={selectCls}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </div>
+  )
+}
+
+function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 cursor-pointer">
+      <span className={labelCls}>{label}</span>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
+        className="accent-blue-500 w-3.5 h-3.5" />
+    </label>
   )
 }
 
@@ -153,6 +184,126 @@ function ShapeConfig({ type, config, onChange, units }: {
           <br />
           {spirographTurns(ratio)} turns · centre at p {spirographCentrePen(ratio).toFixed(2)}
         </p>
+      </div>)
+    }
+    case 'maze': {
+      const { w, h, spacing, corner, seed, loops } = c.maze
+      const g = mazeGrid(w, h, spacing)
+      const set = (patch: Partial<ShapeToolConfig['maze']>) => onChange({ ...c, maze: { ...c.maze, ...patch } })
+      return (<div className="space-y-1">
+        <NumInput label="Width"   valueMM={w} units={u} onChange={(w) => set({ w })} />
+        <NumInput label="Height"  valueMM={h} units={u} onChange={(h) => set({ h })} />
+        <NumInput label="Spacing" valueMM={spacing} units={u} onChange={(spacing) => set({ spacing })} />
+        <NumInput label="Corner"  valueMM={corner} units={u} min={0} onChange={(corner) => set({ corner })} />
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Seed</span>
+          <NumericInput value={seed} min={1} max={999999} step={1} integer
+            onChange={(seed) => set({ seed: Math.max(1, Math.round(seed)) })}
+            className={inputCls} />
+          <button
+            onClick={() => set({ seed: 1 + Math.floor(Math.random() * 999999) })}
+            title="New maze"
+            className="p-1 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
+          >
+            <Dices size={ICON.sm} />
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Loops</span>
+          <input type="range" min={0} max={1} step={0.05} value={loops}
+            onChange={(e) => set({ loops: parseFloat(e.target.value) })}
+            className="flex-1 w-0 accent-blue-500" />
+          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{Math.round(loops * 100)}%</span>
+        </div>
+        {/* The pitch is what the walls are actually left at — it rounds up from
+            Spacing to fit whole cells, so show it rather than the request. */}
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          {g.cols} × {g.rows} cells · pitch {fmtLen(g.dx, u as 'mm' | 'in')} × {fmtLen(g.dy, u as 'mm' | 'in')}
+          <br />
+          Wall = pitch − cutter Ø
+        </p>
+      </div>)
+    }
+    case 'board': {
+      const b = c.board
+      const set = (patch: Partial<ShapeToolConfig['board']>) => onChange({ ...c, board: { ...c.board, ...patch } })
+      const edgeLabel = BOARD_EDGE_LABEL[b.shape]
+      const handleLabels = BOARD_HANDLE_LABELS[b.handle]
+      return (<div className="space-y-1">
+        <Select label="Shape" value={b.shape}
+          options={[['rect', 'Rectangle'], ['oval', 'Oval'], ['barrel', 'Barrel']]}
+          onChange={(shape) => set({ shape })} />
+        <NumInput label="Width"  valueMM={b.w} units={u} onChange={(w) => set({ w })} />
+        <NumInput label="Height" valueMM={b.h} units={u} onChange={(h) => set({ h })} />
+        {edgeLabel && <NumInput label={edgeLabel} valueMM={b.corner} units={u} min={0} onChange={(corner) => set({ corner })} />}
+        <Select label="Handle" value={b.handle}
+          options={[['none', 'None'], ['paddle', 'Paddle'], ['grips', 'Side slots'], ['slot', 'End slot']]}
+          onChange={(handle) => set({ handle, ...BOARD_HANDLE_DEFAULTS[handle] })} />
+        {handleLabels && (<>
+          <NumInput label={handleLabels[0]} valueMM={b.handleW} units={u} onChange={(handleW) => set({ handleW })} />
+          <NumInput label={handleLabels[1]} valueMM={b.handleL} units={u} onChange={(handleL) => set({ handleL })} />
+        </>)}
+        {BOARD_HANDLE_HAS_INSET[b.handle] &&
+          <NumInput label="Edge gap" valueMM={b.handleInset} units={u} onChange={(handleInset) => set({ handleInset })} />}
+        {/* A hand slot IS the hole, so a hanging hole would just be a second one
+            competing for the same end of the board. */}
+        {!BOARD_HANDLE_HAS_INSET[b.handle] && (<>
+          <Check label="Hole" checked={b.hole} onChange={(hole) => set({ hole })} />
+          {b.hole && <NumInput label="Hole Ø" valueMM={b.holeDia} units={u} onChange={(holeDia) => set({ holeDia })} />}
+        </>)}
+        <Check label="Groove" checked={b.groove} onChange={(groove) => set({ groove })} />
+        {b.groove && <NumInput label="Inset" valueMM={b.grooveInset} units={u} onChange={(grooveInset) => set({ grooveInset })} />}
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Size is the cutting field; a paddle adds to it.
+          <br />
+          Double-click to split outline / groove / hole.
+        </p>
+      </div>)
+    }
+    case 'gear': {
+      const g = c.gear
+      const set = (patch: Partial<ShapeToolConfig['gear']>) => onChange({ ...c, gear: { ...c.gear, ...patch } })
+      const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash)
+      const hub = gearHub(g.module, g.teeth, g.bore, g.hubDia, g.spokes)
+      const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      return (<div className="space-y-1">
+        <NumInput label="Module"  valueMM={g.module} units={u} min={0.05} onChange={(module) => set({ module })} />
+        <NumInput label="Teeth"   valueMM={g.teeth} units="" min={4} integer onChange={(teeth) => set({ teeth: Math.max(4, Math.round(teeth)) })} />
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Pressure</span>
+          <NumericInput value={g.pressureAngle} min={5} max={35} step={0.5}
+            onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} />
+          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+        </div>
+        <NumInput label="Bore Ø"  valueMM={g.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
+        {/* A floor, not a fixed size — it grows to seat the spokes. */}
+        <NumInput label="Hub Ø"   valueMM={g.hubDia} units={u} min={0} onChange={(hubDia) => set({ hubDia })} />
+        <NumInput label="Spokes"  valueMM={g.spokes} units="" min={0} integer onChange={(spokes) => set({ spokes: Math.max(0, Math.round(spokes)) })} />
+        {/* Play at the MESH, so the same figure on both gears of a pair gives
+            exactly that much — each is thinned by half. */}
+        <NumInput label="Backlash" valueMM={g.backlash} units={u} min={0} step={0.05} onChange={(backlash) => set({ backlash })} />
+        <Check label="Pitch ○" checked={g.pitchCircle} onChange={(pitchCircle) => set({ pitchCircle })} />
+        {/* Base Ø is m·z·cos α — derived, never dialled in, so it is shown
+            rather than offered as a field. */}
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Pitch {L(d.pitchDia)} · Base {L(d.baseDia)}
+          <br />
+          Outside {L(d.outsideDia)} · Root {L(d.rootDia)}
+          <br />
+          Meshes at centre distance {L(d.pitchDia / 2)} + partner&apos;s pitch radius
+          <br />
+          Tooth {L(d.toothThickness)} at pitch{g.backlash > 0 ? ` (${L(Math.PI * g.module / 2)} nominal)` : ''}
+        </p>
+        {hub.grown && <p className="text-label text-blue-400">Hub grown to {L(hub.dia)} to seat {g.spokes} spokes.</p>}
+        {g.spokes >= 2 && !hub.spoked && (
+          <p className="text-label text-yellow-500">
+            {hub.maxSpokes >= 2 ? `No room for ${g.spokes} spokes — this gear takes ${hub.maxSpokes}. Cut solid.`
+                                : 'No room for a spoke web on this gear — cut solid.'}
+          </p>
+        )}
+        {g.pitchCircle && <p className="text-label text-yellow-500">Pitch circle is a reference — delete it before cutting.</p>}
+        {d.pointed && <p className="text-label text-yellow-500">Teeth come to a point — OD reduced.</p>}
+        {d.undercut && <p className="text-label text-yellow-500">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots cut radially, not undercut.</p>}
       </div>)
     }
     case 'text':

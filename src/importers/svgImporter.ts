@@ -18,6 +18,10 @@ export interface ImportedPath {
   hidden?: boolean // soft-hidden by boolean ops; shows in panel but not on canvas
   color: string
   shapeParams?: ShapeParams
+  // Which piece of a multi-part shape this is (see generateShapeParts). All the
+  // pieces carry the SAME shapeParams and share a groupId, so editing any one of
+  // them regenerates the whole set.
+  shapePart?: string
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
   imageSrc?: string  // base64 data URL — path acts as bounding box for this image

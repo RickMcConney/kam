@@ -2,8 +2,8 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ImportedPath } from '../importers/svgImporter'
 import { translateD, type TransformStep } from '../canvas/selectionUtils'
-import { generateShapeD, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
-import { useToolpathStore, type AnyOperation, refsPathId } from './toolpathStore'
+import { generateShapeD, generateShapeParts, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
+import { useToolpathStore, refsPathId, remapOpsForSplit } from './toolpathStore'
 import { useTabStore } from './tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { serializeOp, type PathsAddSource, type PathEditGesture, type OffsetEventMeta, type PatternEventMeta, type DuplicateEventMeta } from '../timeline/events'
@@ -229,6 +229,34 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   },
 
   updateShapeParams: (id, params) => {
+    const s0 = get()
+    const self = s0.paths.find((p) => p.id === id)
+    // A multi-part shape (a gear's teeth/bore/spokes) is several paths sharing
+    // one set of params, so editing any one of them has to regenerate all of
+    // them — and add or drop paths as parts appear and vanish, since turning the
+    // spokes to 0 or the bore to 0 removes a part outright.
+    const parts = self?.shapePart !== undefined ? generateShapeParts(params) : null
+    if (self && parts) {
+      const siblings = s0.paths.filter((p) => p.groupId === self.groupId && p.shapePart !== undefined)
+      const byPart = new Map(siblings.map((p) => [p.shapePart!, p]))
+      const updates: PathUpdate[] = []
+      const add: ImportedPath[] = []
+      for (const pt of parts) {
+        const existing = byPart.get(pt.part)
+        if (existing) updates.push({ id: existing.id, d: pt.d, shapeParams: params })
+        else add.push({
+          id: uid('shape'), name: `${self.groupName ?? self.name} ${pt.label}`, d: pt.d,
+          visible: true, color: self.color, shapeParams: params, shapePart: pt.part,
+          groupId: self.groupId, groupName: self.groupName,
+        })
+      }
+      const live = new Set(parts.map((pt) => pt.part))
+      const deleteIds = siblings.filter((p) => !live.has(p.shapePart!)).map((p) => p.id)
+      // One atomic edit: one timeline entry, and operations on a part that has
+      // gone away are cleaned up with it.
+      get().applyPathEdit({ updates, add, deleteIds, label: 'Shape' })
+      return
+    }
     const d = generateShapeD(params)
     set((s) => ({
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
@@ -270,21 +298,11 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     }))
     const opsBefore = useToolpathStore.getState().operations
     const tabsBefore = useTabStore.getState().tabs
-    // Operations that referenced the split path only as an ISLAND keep working:
-    // swap the old id for all sub-path ids — the combined island geometry is
-    // unchanged, so the generated toolpath is identical. Operations that used it
-    // as their source/boundary can't reference multiple paths — drop them, same
-    // as deletePath (fully restored by one undo of the paths.split event).
-    const newIslandIds = newPaths.map((p) => p.id)
-    let opsChanged = false
-    const newOps = opsBefore.flatMap((op): AnyOperation[] => {
-      if (!refsPathId(op, id)) return [op]
-      opsChanged = true
-      if ((op.type === 'pocket' || op.type === 'vcarve' || op.type === 'inlay') && op.pathId !== id) {
-        return [{ ...op, islandIds: op.islandIds.flatMap((iid) => (iid === id ? newIslandIds : [iid])) }]
-      }
-      return []
-    })
+    // How each operation follows the split — cloned, remapped or dropped — is
+    // decided by `remapOpsForSplit`, which is pure and tested. One undo of the
+    // paths.split event puts any of it back.
+    const { ops: newOps, changed: opsChanged } =
+      remapOpsForSplit(opsBefore, id, newPaths.map((p) => p.id))
     if (opsChanged) useToolpathStore.getState().replaceOperations(newOps)
     // Tab positions are arc-length fractions along the whole compound path — they
     // don't map onto the sub-paths, so drop them.

@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { X, Dices } from 'lucide-react'
 import { usePathsStore, useSelectedPaths } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { useTimelineStore, bboxBeforeEvent } from '../timeline/timelineStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
-import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
+import { regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox, applyTransformStep, type TransformStep } from '../canvas/selectionUtils'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont } from '../shapes/textGenerator'
+import { gearDims, gearHub } from '../shapes/gearGenerator'
+import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
 
@@ -206,7 +208,16 @@ function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApp
 
 function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params: ShapeParams; units: string; orgWorld: { x: number; y: number } }) {
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
-  const update = (newParams: ShapeParams) => { updateShapeParams(id, newParams); regenerateAffected(id) }
+  // A multi-part shape (a gear) regenerates every path in its group, so every
+  // one of their operations is stale — not just this path's. Read the paths back
+  // AFTER the edit so a part that just appeared is included.
+  const groupIds = () => {
+    const st = usePathsStore.getState()
+    const self = st.paths.find((p) => p.id === id)
+    if (!self || self.shapePart === undefined) return [id]
+    return st.paths.filter((p) => p.groupId === self.groupId && p.shapePart !== undefined).map((p) => p.id)
+  }
+  const update = (newParams: ShapeParams) => { updateShapeParams(id, newParams); regenerateAffectedMany(groupIds()) }
   // A slider fires on every pixel of the drag. The geometry update is cheap and
   // has to be live to be worth dragging, but `regenerateAffected` queues a
   // worker toolpath job per call — so the drag updates `d` only, and the
@@ -266,13 +277,153 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           <input
             type="range" min={0} max={params.ratio} step={0.01} value={params.p}
             onChange={(e) => updateLive({ ...params, p: parseFloat(e.target.value) })}
-            onPointerUp={() => regenerateAffected(id)}
-            onKeyUp={() => regenerateAffected(id)}
+            onPointerUp={() => regenerateAffectedMany(groupIds())}
+            onKeyUp={() => regenerateAffectedMany(groupIds())}
             className="flex-1 w-0 accent-blue-500"
           />
           <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{params.p.toFixed(2)}</span>
         </div>
       </>)
+    case 'maze':
+      return (<>
+        <EditField label="X"  valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
+        <EditField label="Y"  valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
+        <EditField label="W"  valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
+        <EditField label="H"  valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        {/* Corridor spacing, not corridor count — the wall left standing is
+            spacing − cutter diameter, so this is the field set from the bit. */}
+        <EditField label="Sp" valueMM={params.spacing} units={u} onChange={(spacing) => update({ ...params, spacing })} />
+        <EditField label="Cnr" valueMM={params.corner} units={u} min={0} onChange={(corner) => update({ ...params, corner })} />
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Sd</span>
+          <NumericInput value={params.seed} min={1} max={999999} step={1} integer
+            onChange={(seed) => update({ ...params, seed: Math.max(1, Math.round(seed)) })}
+            className={fieldCls} />
+          <button
+            onClick={() => update({ ...params, seed: 1 + Math.floor(Math.random() * 999999) })}
+            title="New maze"
+            className="p-1 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
+          >
+            <Dices size={14} />
+          </button>
+        </div>
+        {/* Braiding reopens dead ends into loops — a drag, like the spirograph
+            pen, because it is a look you find rather than a number you know. */}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Lp</span>
+          <input
+            type="range" min={0} max={1} step={0.05} value={params.loops}
+            onChange={(e) => updateLive({ ...params, loops: parseFloat(e.target.value) })}
+            onPointerUp={() => regenerateAffectedMany(groupIds())}
+            onKeyUp={() => regenerateAffectedMany(groupIds())}
+            className="flex-1 w-0 accent-blue-500"
+          />
+          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{Math.round(params.loops * 100)}%</span>
+        </div>
+      </>)
+    case 'board': {
+      const edgeLabel = BOARD_EDGE_LABEL[params.shape]
+      const handleLabels = BOARD_HANDLE_LABELS[params.handle]
+      return (<>
+        <EditField label="X" valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
+        <EditField label="Y" valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
+        <EditField label="W" valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
+        <EditField label="H" valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Sh</span>
+          <select value={params.shape} onChange={(e) => update({ ...params, shape: e.target.value as typeof params.shape })}
+            className={fieldCls + ' cursor-pointer'}>
+            <option value="rect">Rectangle</option>
+            <option value="oval">Oval</option>
+            <option value="barrel">Barrel</option>
+          </select>
+        </div>
+        {edgeLabel && <EditField label={edgeLabel === 'Bow' ? 'Bow' : 'Cnr'} valueMM={params.corner} units={u} min={0} onChange={(corner) => update({ ...params, corner })} />}
+        {edgeLabel && <span />}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Hdl</span>
+          <select
+            value={params.handle}
+            onChange={(e) => {
+              const handle = e.target.value as typeof params.handle
+              // Reseed the sizes — see BOARD_HANDLE_DEFAULTS; a paddle's neck
+              // read as a slot is not a handle at all.
+              update({ ...params, handle, ...BOARD_HANDLE_DEFAULTS[handle] })
+            }}
+            className={fieldCls + ' cursor-pointer'}>
+            <option value="none">None</option>
+            <option value="paddle">Paddle</option>
+            <option value="grips">Side slots</option>
+            <option value="slot">End slot</option>
+          </select>
+        </div>
+        {handleLabels && (<>
+          <EditField label="HW" valueMM={params.handleW} units={u} onChange={(handleW) => update({ ...params, handleW })} />
+          <EditField label="HL" valueMM={params.handleL} units={u} onChange={(handleL) => update({ ...params, handleL })} />
+        </>)}
+        {BOARD_HANDLE_HAS_INSET[params.handle] && (<>
+          <EditField label="Gap" valueMM={params.handleInset} units={u} onChange={(handleInset) => update({ ...params, handleInset })} />
+          <span />
+        </>)}
+        {!BOARD_HANDLE_HAS_INSET[params.handle] && (
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <span className={labelCls}>Hole</span>
+            <input type="checkbox" checked={params.hole} onChange={(e) => update({ ...params, hole: e.target.checked })}
+              className="accent-blue-500 w-3.5 h-3.5" />
+          </label>
+        )}
+        {!BOARD_HANDLE_HAS_INSET[params.handle] && params.hole
+          ? <EditField label="Ø" valueMM={params.holeDia} units={u} onChange={(holeDia) => update({ ...params, holeDia })} />
+          : <span />}
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>Grv</span>
+          <input type="checkbox" checked={params.groove} onChange={(e) => update({ ...params, groove: e.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
+        {params.groove
+          ? <EditField label="In" valueMM={params.grooveInset} units={u} onChange={(grooveInset) => update({ ...params, grooveInset })} />
+          : <span />}
+      </>)
+    }
+    case 'gear': {
+      const d = gearDims(params.module, params.teeth, params.pressureAngle, params.backlash)
+      const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes)
+      return (<>
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
+        <EditField label="Mod" valueMM={params.module} units={u} min={0.05} onChange={(module) => update({ ...params, module })} />
+        <EditField label="N"   valueMM={params.teeth} units="" min={4} integer onChange={(teeth) => update({ ...params, teeth: Math.max(4, Math.round(teeth)) })} />
+        <RawField  label="PA"  value={params.pressureAngle} min={5} max={35} step={0.5} suffix="°" onChange={(pressureAngle) => update({ ...params, pressureAngle })} />
+        <EditField label="Ø"   valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
+        <EditField label="Hub" valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => update({ ...params, hubDia })} />
+        <EditField label="Spk" valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => update({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
+        <EditField label="Lash" valueMM={params.backlash} units={u} min={0} onChange={(backlash) => update({ ...params, backlash })} />
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>P○</span>
+          <input type="checkbox" checked={params.pitchCircle}
+            onChange={(e) => update({ ...params, pitchCircle: e.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
+        {/* Base Ø is m·z·cos α — derived from the three above it, so it is a
+            readout, not a field. */}
+        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+          Pitch {fromMM(d.pitchDia, u as 'mm' | 'in').toFixed(2)} · Base {fromMM(d.baseDia, u as 'mm' | 'in').toFixed(2)}
+          <br />
+          OD {fromMM(d.outsideDia, u as 'mm' | 'in').toFixed(2)} · Root {fromMM(d.rootDia, u as 'mm' | 'in').toFixed(2)} {u}
+          <br />
+          Meshes at {fromMM(d.pitchDia / 2, u as 'mm' | 'in').toFixed(2)} + partner pitch radius
+          <br />
+          Tooth {fromMM(d.toothThickness, u as 'mm' | 'in').toFixed(2)} at pitch
+          {hub.grown && <><br /><span className="text-blue-400">Hub grown to {fromMM(hub.dia, u as 'mm' | 'in').toFixed(2)} for {params.spokes} spokes.</span></>}
+          {params.spokes >= 2 && !hub.spoked && <><br /><span className="text-yellow-500">
+            {hub.maxSpokes >= 2 ? `Max ${hub.maxSpokes} spokes here — cut solid.` : 'No room for spokes — cut solid.'}
+          </span></>}
+          {params.pitchCircle && <><br /><span className="text-yellow-500">Pitch circle is a reference — delete before cutting.</span></>}
+          {d.pointed && <><br /><span className="text-yellow-500">Teeth pointed — OD reduced.</span></>}
+          {d.undercut && <><br /><span className="text-yellow-500">Undercut range — roots cut radially.</span></>}
+        </div>
+      </>)
+    }
     case 'polygon':
       return (<>
         <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />

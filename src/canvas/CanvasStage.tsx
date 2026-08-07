@@ -40,6 +40,7 @@ import { getMultiBBox, applyTransformStep, type TransformStep } from './selectio
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
+  generateShapeParts,
   shapeParamsFromDrag,
   shapeParamsFromConfig,
   shapeDisplayName,
@@ -1455,10 +1456,28 @@ export default function CanvasStage() {
           : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
 
         const id = uid('shape')
-        const { addPaths: add, selectPath: sel } = usePathsStore.getState()
+        const { addPaths: add, selectPath: sel, setSelectedIds } = usePathsStore.getState()
         const d = generateShapeD(params)
-        add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }], { source: shapeType === 'text' ? 'text' : 'shape' })
-        sel(id)
+        // A multi-part shape lands as one path per part (a gear's teeth, bore and
+        // spokes each want their own operation — see generateShapeParts). They
+        // share a groupId so the paths list keeps them together, and each carries
+        // the same shapeParams so the set stays editable as one shape.
+        const parts = generateShapeParts(params)
+        if (parts && parts.length > 1) {
+          const groupId = uid('shape-group')
+          const name = shapeDisplayName(shapeType)
+          const color = nextPathColor()
+          const made = parts.map((pt) => ({
+            id: uid('shape'), name: `${name} ${pt.label}`, d: pt.d,
+            visible: true, color, shapeParams: params, shapePart: pt.part,
+            groupId, groupName: name,
+          }))
+          add(made, { source: 'shape' })
+          setSelectedIds(made.map((p) => p.id))
+        } else {
+          add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }], { source: shapeType === 'text' ? 'text' : 'shape' })
+          sel(id)
+        }
 
         // If text font wasn't loaded yet, update d once it loads — via
         // updateShapeParams so the fix amends the Text chip in place rather
