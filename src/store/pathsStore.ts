@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ImportedPath } from '../importers/svgImporter'
 import { translateD, type TransformStep } from '../canvas/selectionUtils'
-import { generateShapeD, generateShapeParts, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
+import { generateShapeD, generateShapeParts, shapeDisplayName, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, refsPathId, remapOpsForSplit } from './toolpathStore'
 import { useTabStore } from './tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
@@ -61,7 +61,7 @@ interface PathsState {
   // Raw, NON-recording bulk update+add+delete (Offset/Pattern chip edit —
   // pattern cardinality changes add/remove result paths). Cleans up ops, tabs,
   // and selection for deleted ids like applyPathEdit, but records nothing.
-  rewriteGeneratedRaw: (edit: { updates?: { id: string; d: string; name?: string }[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
+  rewriteGeneratedRaw: (edit: { updates?: { id: string; d: string; name?: string; shapeParams?: ShapeParams | null }[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
@@ -165,7 +165,11 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       .map((p) => {
         const upd = map.get(p.id)
         if (!upd) return p
-        return { ...p, d: upd.d, ...(upd.name !== undefined ? { name: upd.name } : {}) }
+        return {
+          ...p, d: upd.d,
+          ...(upd.name !== undefined ? { name: upd.name } : {}),
+          ...(upd.shapeParams !== undefined ? { shapeParams: upd.shapeParams ?? undefined } : {}),
+        }
       })
     set({
       paths: add.length > 0 ? [...paths, ...add] : paths,
@@ -252,9 +256,40 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       }
       const live = new Set(parts.map((pt) => pt.part))
       const deleteIds = siblings.filter((p) => !live.has(p.shapePart!)).map((p) => p.id)
-      // One atomic edit: one timeline entry, and operations on a part that has
-      // gone away are cleaned up with it.
-      get().applyPathEdit({ updates, add, deleteIds, label: 'Shape' })
+      // A params edit is an argument edit to the call that created the shape, so it
+      // AMENDS that chip rather than appending one — stepping a gear's bore must not
+      // leave a chip per keystroke, the same rule single-path shapes already follow
+      // through amendPathDefinition. The amend needs the group as it will BE, since
+      // it rewrites the chip's path list wholesale; the live paths then move without
+      // recording. Falling back to applyPathEdit keeps one atomic entry (and its op
+      // cleanup) when there is no chip to amend.
+      const nextGroup = parts.map((pt) => {
+        const existing = byPart.get(pt.part)
+        return existing
+          ? { ...existing, d: pt.d, shapeParams: params }
+          : add.find((a) => a.shapePart === pt.part)!
+      })
+      // `amendShapeGroup` takes the dropped ids too: it can fold a vanishing part
+      // into an existing group edit (whose deleteIds replay the op/tab cleanup),
+      // and refuses when the only chip is the placement — which is the one case
+      // that has to record, and which then becomes the chip every later edit
+      // amends.
+      const tl = useTimelineStore.getState()
+      if (self.groupId && tl.amendShapeGroup(self.groupId, nextGroup, deleteIds)) {
+        // The chip now holds the whole group, so the live paths move without
+        // recording — and rewriteGeneratedRaw's ops/tabs cleanup for a dropped
+        // part is exactly what that chip's deleteIds replay.
+        get().rewriteGeneratedRaw({
+          updates: updates.map((u) => ({ id: u.id, d: u.d!, shapeParams: params })),
+          add, deleteIds,
+        })
+      } else {
+        // One atomic edit: one timeline entry, and operations on a part that has
+        // gone away are cleaned up with it. Named for the THING, like every other
+        // chip — and this entry is what later edits amend, so it is the one the
+        // user will keep seeing.
+        get().applyPathEdit({ updates, add, deleteIds, label: shapeDisplayName(params.type) })
+      }
       return
     }
     const d = generateShapeD(params)

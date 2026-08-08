@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ChevronDown, ChevronLeft, ChevronRight, ChevronUp, SkipBack, SkipForward,
   Shapes, Wrench, Package, Square, Squircle, Signpost, Circle, Ellipse, Hexagon,
-  Star, Heart, Pill, Shield, Orbit, Grid3x3, CookingPot, Cog, Type, PenTool, Copy, Import, SquaresUnite,
+  Star, Heart, Pill, Shield, Orbit, Grid3x3, CookingPot, Cog, Snail, Type, PenTool, Copy, Import, SquaresUnite,
   SquareSquare, LayoutGrid, Scissors, Pencil, Trash2, Eye, EyeOff,
   RectangleEllipsis, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   ArrowUpDown, Move, RotateCw, Scaling, Spline, Combine, FlipHorizontal2,
@@ -35,7 +35,7 @@ type ChipIcon = React.ComponentType<{ size?: number; style?: React.CSSProperties
 const SHAPE_ICONS: Record<string, ChipIcon> = {
   rectangle: Square, roundrect: Squircle, inroundrect: Signpost, circle: Circle,
   ellipse: Ellipse, polygon: Hexagon, star: Star, heart: Heart, slot: Pill,
-  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, text: Type,
+  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, cam: Snail, text: Type,
 }
 
 // … and the CAM operations menu (MachinePanel AddOperationMenu)

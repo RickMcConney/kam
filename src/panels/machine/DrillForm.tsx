@@ -10,9 +10,9 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { useUIStore } from '../../store/uiStore'
-import { generatePeckDrill, generateHelicalDrill } from '../../cam/drill'
+import { generatePeckDrill, generateHelicalDrills } from '../../cam/drill'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
-import { extractCircle } from '../../canvas/selectionUtils'
+import { extractCircles } from '../../canvas/selectionUtils'
 
 interface DrillFormState {
   toolId: string
@@ -82,20 +82,28 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
 
   const selectedTool = tools.find((t) => t.id === form.toolId)
 
-  // For helical: all selected circular paths
-  const selectedCircles = editOp ? [] : paths
+  // Every circle in every selected path, kept grouped BY path: one operation per
+  // path, boring all of that path's holes. A path is not one hole — a pinion's pin
+  // ring is eight circles under one id — and the op stays tied to its path so a hole
+  // that moves takes its drilling with it.
+  const selectedHoles = editOp ? [] : paths
     .filter((p) => selectedIds.includes(p.id))
     .flatMap((p) => {
-      const circle = extractCircle(p)
-      return circle ? [{ path: p, circle }] : []
+      const holes = extractCircles(p)
+      return holes.length > 0 ? [{ path: p, holes }] : []
     })
+  const holeCount = selectedHoles.reduce((n, g) => n + g.holes.length, 0)
 
-  // For edit mode: reconstruct helical info from stored op params
-  const editHelicalInfo = editOp?.drillMode === 'helical' && editOp.helicalCenterX !== undefined ? {
-    cx: editOp.helicalCenterX!,
-    cy: editOp.helicalCenterY!,
-    radius: editOp.helicalRadius ?? 0,
-  } : null
+  // For edit mode: the holes the op stored. `helicalHoles` is the list; the singular
+  // fields are what an op saved before this carries.
+  const editHoles: { cx: number; cy: number; radiusMM: number }[] | null =
+    editOp?.drillMode !== 'helical' ? null
+    : editOp.helicalHoles?.length ? editOp.helicalHoles
+    : editOp.helicalCenterX !== undefined ? [{
+        cx: editOp.helicalCenterX, cy: editOp.helicalCenterY ?? 0,
+        radiusMM: (editOp.helicalRadius ?? 0) + (tools.find((t) => t.id === editOp.toolId)?.diameterMM ?? 0) / 2,
+      }]
+    : null
 
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
@@ -134,9 +142,10 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       setTimeout(() => {
         try {
           let segs
-          if (editOp.drillMode === 'helical' && editHelicalInfo) {
-            segs = generateHelicalDrill(editHelicalInfo.cx, editHelicalInfo.cy, editHelicalInfo.radius, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+          if (editOp.drillMode === 'helical' && editHoles) {
+            segs = generateHelicalDrills(editHoles, selectedTool, {
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+              startNear: hint, safeHeightMM,
             })
           } else {
             segs = generatePeckDrill(editOp.points, selectedTool, {
@@ -154,16 +163,17 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       return
     }
 
-    if (form.drillMode === 'peck' && pendingDrillPoints.length === 0 && !sessionPeckOp) { setGenerating(false); return }
-    if (form.drillMode === 'helical' && selectedCircles.length === 0) { setGenerating(false); return }
+    if (form.drillMode === 'peck' && pendingDrillPoints.length === 0 && !sessionPeckOp
+      && selectedHoles.length === 0) { setGenerating(false); return }
+    if (form.drillMode === 'helical' && selectedHoles.length === 0) { setGenerating(false); return }
 
     setTimeout(() => {
       if (form.drillMode === 'helical') {
-        for (const { path, circle } of selectedCircles) {
-          const r = Math.max(0, circle.radiusMM - selectedTool.diameterMM / 2)
-          // Re-Generate on a circle this form already generated for updates that op in place.
+        for (const { path, holes } of selectedHoles) {
+          const suffix = holes.length > 1 ? ` ×${holes.length}` : ''
+          // Re-Generate on a path this form already generated updates that op in place.
           const existingId = session.liveOpId(path.id)
-          const name = `Helical Drill: ${path.name} (${selectedTool.name})`
+          const name = `Helical Drill: ${path.name} (${selectedTool.name})${suffix}`
           const opId = existingId ?? addOperation({
             name,
             type: 'drill',
@@ -171,9 +181,10 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             drillMode: 'helical',
             points: [],
             pathId: path.id,
-            helicalCenterX: circle.cx,
-            helicalCenterY: circle.cy,
-            helicalRadius: r,
+            helicalHoles: holes,
+            helicalCenterX: holes[0].cx,
+            helicalCenterY: holes[0].cy,
+            helicalRadius: Math.max(0, holes[0].radiusMM - selectedTool.diameterMM / 2),
             depthMM: form.depthMM,
             stepDownMM: form.stepDownMM,
           })
@@ -182,12 +193,48 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           updateOperation(opId, existingId ? {
             entryHint: hint,
             name, toolId: form.toolId,
-            helicalCenterX: circle.cx, helicalCenterY: circle.cy, helicalRadius: r,
+            helicalHoles: holes,
+            helicalCenterX: holes[0].cx, helicalCenterY: holes[0].cy,
+            helicalRadius: Math.max(0, holes[0].radiusMM - selectedTool.diameterMM / 2),
             depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
-            setSegments(opId, generateHelicalDrill(circle.cx, circle.cy, r, selectedTool, {
-              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM), safeHeightMM,
+            setSegments(opId, generateHelicalDrills(holes, selectedTool, {
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+              startNear: hint, safeHeightMM,
+            }))
+          } catch (err) {
+            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+          }
+        }
+      } else if (pendingDrillPoints.length === 0 && !sessionPeckOp && selectedHoles.length > 0) {
+        // Peck at the centre of every circle in the selection — the same reading of a
+        // path as helical: one operation per path, tied to it by `pathId`, so holes
+        // that move take their drilling with them.
+        for (const { path, holes } of selectedHoles) {
+          const points = holes.map((h) => ({ x: h.cx, y: h.cy }))
+          const existingId = session.liveOpId(path.id)
+          const name = `Peck Drill: ${path.name} (${selectedTool.name}) ×${points.length}`
+          const opId = existingId ?? addOperation({
+            name,
+            type: 'drill',
+            toolId: form.toolId,
+            drillMode: 'peck',
+            points,
+            pathId: path.id,
+            depthMM: form.depthMM,
+            stepDownMM: form.stepDownMM,
+          })
+          if (!existingId) session.remember(path.id, opId)
+          const hint = entryHintAt(opId)
+          updateOperation(opId, existingId ? {
+            entryHint: hint, name, toolId: form.toolId, points,
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+          } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
+          try {
+            setSegments(opId, generatePeckDrill(points, selectedTool, {
+              depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
+              startNear: hint, safeHeightMM,
             }))
           } catch (err) {
             setError(opId, err instanceof Error ? err.message : 'Generation failed')
@@ -244,13 +291,16 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     : selectedTool.type === 'ballnose' ? 'Peck drilling with a ball nose — leaves a round-bottomed hole.'
     : 'Peck drilling with a V-bit — cuts a cone, not a straight-walled hole.'
   const isDrillTool = selectedTool?.type === 'drill'
-  const peckReady = editOp ? editOp.points.length > 0 : pendingDrillPoints.length > 0 || !!sessionPeckOp
-  const helicalReady = editOp ? !!editHelicalInfo : selectedCircles.length > 0
+  const peckReady = editOp ? editOp.points.length > 0
+    : pendingDrillPoints.length > 0 || !!sessionPeckOp || selectedHoles.length > 0
+  const helicalReady = editOp ? !!editHoles : selectedHoles.length > 0
   const canGenerate = !!selectedTool && !generating && form.depthMM > 0 &&
     ((form.drillMode === 'peck' && peckReady) || (form.drillMode === 'helical' && helicalReady && !isDrillTool))
+  const peckFromCircles = form.drillMode === 'peck' && !editOp
+    && pendingDrillPoints.length === 0 && !sessionPeckOp && selectedHoles.length > 0
   const updating = !editOp && (form.drillMode === 'peck'
-    ? !!sessionPeckOp
-    : selectedCircles.length > 0 && selectedCircles.every(({ path }) => session.liveOpId(path.id)))
+    ? !!sessionPeckOp || (peckFromCircles && selectedHoles.every(({ path }) => session.liveOpId(path.id)))
+    : selectedHoles.length > 0 && selectedHoles.every(({ path }) => session.liveOpId(path.id)))
 
   return (
     <FormShell title={editOp ? 'Edit Drill' : 'New Drill'} onClose={handleClose}>
@@ -294,8 +344,12 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             <p className="text-label text-gray-400 dark:text-neutral-500">
               {sessionPeckOp.points.length} point{sessionPeckOp.points.length !== 1 ? 's' : ''} in the generated operation — Update regenerates them, or click the canvas to start a new set.
             </p>
+          ) : peckFromCircles ? (
+            <p className="text-label text-gray-400 dark:text-neutral-500">
+              {holeCount} hole centre{holeCount !== 1 ? 's' : ''} from {selectedHoles.length === 1 ? selectedHoles[0].path.name : `${selectedHoles.length} selected paths`} — or click the canvas to place points instead.
+            </p>
           ) : (
-            <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points.</p>
+            <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points, or select circular paths.</p>
           )}
           {peckToolWarning && (
             <p className="text-label text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
@@ -309,26 +363,34 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       {form.drillMode === 'helical' && (
         <div>
           <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            Source Circles {!editOp && selectedCircles.length > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400">({selectedCircles.length} selected — one operation each)</span>}
+            Source Circles {!editOp && holeCount > 0 && <span className="normal-case text-gray-500 dark:text-neutral-400">
+              ({holeCount} hole{holeCount !== 1 ? 's' : ''}{selectedHoles.length > 1 ? ` on ${selectedHoles.length} paths — one operation each` : ''})
+            </span>}
           </label>
-          {editOp && editHelicalInfo ? (
+          {editOp && editHoles ? (
             <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 space-y-0.5">
-              <div>Center: ({fmtLen(editHelicalInfo.cx, units, 1)}, {fmtLen(editHelicalInfo.cy, units, 1)})</div>
-              <div>Toolpath Ø: {fmtLen(editHelicalInfo.radius * 2, units)}</div>
+              <div>{editHoles.length} hole{editHoles.length !== 1 ? 's' : ''}, Ø{fmtLen(editHoles[0].radiusMM * 2, units)}</div>
+              {editHoles.length === 1
+                ? <div>Center: ({fmtLen(editHoles[0].cx, units, 1)}, {fmtLen(editHoles[0].cy, units, 1)})</div>
+                : <div className="text-gray-500 dark:text-neutral-400 text-label">Re-read from the source path on every regenerate.</div>}
             </div>
-          ) : selectedCircles.length > 0 ? (
+          ) : selectedHoles.length > 0 ? (
             <div className="space-y-0.5">
-              {selectedCircles.map(({ path, circle }) => {
-                const r = Math.max(0, circle.radiusMM - (selectedTool?.diameterMM ?? 0) / 2)
+              {selectedHoles.map(({ path, holes }) => {
+                // Every subpath of one path is one operation, so the sizes it spans
+                // matter: a set that mixes diameters bores each at its own radius.
+                const dias = [...new Set(holes.map((h) => +(h.radiusMM * 2).toFixed(2)))]
+                const r0 = Math.max(0, holes[0].radiusMM - (selectedTool?.diameterMM ?? 0) / 2)
                 return (
                   <div key={path.id} className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1">
                     <div className="flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
                       {path.name}
+                      {holes.length > 1 && <span className="text-gray-500 dark:text-neutral-400 text-label">×{holes.length}</span>}
                     </div>
                     <div className="text-gray-500 dark:text-neutral-400 text-label mt-0.5">
-                      Hole Ø {fmtLen(circle.radiusMM * 2, units)}
-                      {r > 0 ? ` · Toolpath Ø ${fmtLen(r * 2, units)}` : ' · center-drill (tool wider than hole)'}
+                      Hole Ø {dias.length === 1 ? fmtLen(holes[0].radiusMM * 2, units) : dias.map((v) => fmtLen(v, units)).join(', ')}
+                      {r0 > 0 ? ` · Toolpath Ø ${fmtLen(r0 * 2, units)}` : ' · center-drill (tool wider than hole)'}
                     </div>
                   </div>
                 )

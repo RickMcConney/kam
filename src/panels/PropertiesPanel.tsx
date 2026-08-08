@@ -10,8 +10,9 @@ import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox, applyTransformStep, type TransformStep } from '../canvas/selectionUtils'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { ShapeParams } from '../shapes/shapeGenerators'
-import { loadFont } from '../shapes/textGenerator'
-import { gearDims, gearHub } from '../shapes/gearGenerator'
+import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
+import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { camDims } from '../shapes/camGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
@@ -386,28 +387,77 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       </>)
     }
     case 'gear': {
-      const d = gearDims(params.module, params.teeth, params.pressureAngle, params.backlash)
+      const cyc = params.toothProfile === 'cycloidal'
+        ? { mateTeeth: params.mateTeeth, pinDia: params.pinDia } : undefined
+      const d = gearDims(params.module, params.teeth, params.pressureAngle, params.backlash, cyc)
       const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes)
+      const lab = gearLabel(params)
+      const pinFits = !cyc || params.pinDia < d.spaceAtPitch - 0.05
+      const pin = pinionDims(params)
+      const pinLab = pinionLabel(params)
+      const rootDeepened = !!cyc && d.rootDia < params.module * (params.teeth - 2.5) - 0.01
+      const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
+      // Regenerating a gear REPLACES its paths, so an edit made before the
+      // single-stroke face has loaded would drop the number the gear already
+      // carries (generateGearParts cannot emit what it cannot set). Wait for the
+      // font — a no-op once it is cached, which is the same thing the text shape
+      // does for the same reason.
+      const updateGear = (p: ShapeParams) => {
+        if (p.type === 'gear' && p.toothLabel) loadFont(SINGLE_LINE_FONT_FAMILY).then(() => update(p))
+        else update(p)
+      }
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
-        <EditField label="Mod" valueMM={params.module} units={u} min={0.05} onChange={(module) => update({ ...params, module })} />
-        <EditField label="N"   valueMM={params.teeth} units="" min={4} integer onChange={(teeth) => update({ ...params, teeth: Math.max(4, Math.round(teeth)) })} />
-        <RawField  label="PA"  value={params.pressureAngle} min={5} max={35} step={0.5} suffix="°" onChange={(pressureAngle) => update({ ...params, pressureAngle })} />
-        <EditField label="Ø"   valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
-        <EditField label="Hub" valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => update({ ...params, hubDia })} />
-        <EditField label="Spk" valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => update({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
-        <EditField label="Lash" valueMM={params.backlash} units={u} min={0} onChange={(backlash) => update({ ...params, backlash })} />
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => updateGear({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => updateGear({ ...params, cy: cy + oy })} min={-10000} />
+        <EditField label="Mod" valueMM={params.module} units={u} min={0.05} onChange={(module) => updateGear({ ...params, module })} />
+        <EditField label="N"   valueMM={params.teeth} units="" min={4} integer onChange={(teeth) => updateGear({ ...params, teeth: Math.max(4, Math.round(teeth)) })} />
+        {/* Involute or cycloidal. A cycloidal face is cut for ONE mate, so the
+            pinion is a parameter of the wheel; pressure angle has no meaning in a
+            cycloidal mesh and its field goes away with the profile. */}
+        <label className="flex items-center gap-1.5 col-span-2">
+          <span className={labelCls}>Prf</span>
+          <select value={params.toothProfile ?? 'involute'} className={fieldCls}
+            onChange={(e) => updateGear({ ...params, toothProfile: e.target.value as 'involute' | 'cycloidal' })}>
+            <option value="involute">Involute</option>
+            <option value="cycloidal">Cycloidal (clock)</option>
+          </select>
+        </label>
+        {/* Cycloidal takes the lantern it is cut for — pin count and pin diameter
+            — in place of a pressure angle, which a cycloidal mesh does not have. */}
+        {cyc
+          ? <EditField label="Pin" valueMM={params.mateTeeth} units="" min={2} integer onChange={(mateTeeth) => updateGear({ ...params, mateTeeth: Math.max(2, Math.round(mateTeeth)) })} />
+          : <RawField  label="PA"  value={params.pressureAngle} min={5} max={35} step={0.5} suffix="°" onChange={(pressureAngle) => updateGear({ ...params, pressureAngle })} />}
+        {cyc && <EditField label="PØ" valueMM={params.pinDia} units={u} min={0.1} onChange={(pinDia) => updateGear({ ...params, pinDia })} />}
+        {/* Spelt out rather than abbreviated: a tick called "Pnn" would be the "Ltn"
+            mistake again. */}
+        {cyc && <label className="flex items-center gap-1.5 col-span-2 cursor-pointer">
+          <input type="checkbox" checked={!!params.emitPinion}
+            onChange={(e) => updateGear({ ...params, emitPinion: e.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+          <span className="text-label text-gray-400 dark:text-neutral-500">Emit the lantern pinion</span>
+        </label>}
+        <EditField label="Ø"   valueMM={params.bore} units={u} min={0} onChange={(bore) => updateGear({ ...params, bore })} />
+        <EditField label="Hub" valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => updateGear({ ...params, hubDia })} />
+        <EditField label="Spk" valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => updateGear({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
+        <EditField label="Lash" valueMM={params.backlash} units={u} min={0} onChange={(backlash) => updateGear({ ...params, backlash })} />
+        {/* Engraved, not cut: its own path, deleted or given an engrave op on
+            its own. */}
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>#</span>
+          <input type="checkbox" checked={!!params.toothLabel}
+            onChange={(e) => updateGear({ ...params, toothLabel: e.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
         <label className="flex items-center gap-1.5 cursor-pointer">
           <span className={labelCls}>P○</span>
           <input type="checkbox" checked={params.pitchCircle}
-            onChange={(e) => update({ ...params, pitchCircle: e.target.checked })}
+            onChange={(e) => updateGear({ ...params, pitchCircle: e.target.checked })}
             className="accent-blue-500 w-3.5 h-3.5" />
         </label>
         {/* Base Ø is m·z·cos α — derived from the three above it, so it is a
             readout, not a field. */}
         <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
-          Pitch {fromMM(d.pitchDia, u as 'mm' | 'in').toFixed(2)} · Base {fromMM(d.baseDia, u as 'mm' | 'in').toFixed(2)}
+          {cyc ? <>Pitch {N(d.pitchDia)} · Describing {N(d.describingDia)}</> : <>Pitch {N(d.pitchDia)} · Base {N(d.baseDia)}</>}
           <br />
           OD {fromMM(d.outsideDia, u as 'mm' | 'in').toFixed(2)} · Root {fromMM(d.rootDia, u as 'mm' | 'in').toFixed(2)} {u}
           <br />
@@ -418,9 +468,51 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           {params.spokes >= 2 && !hub.spoked && <><br /><span className="text-yellow-500">
             {hub.maxSpokes >= 2 ? `Max ${hub.maxSpokes} spokes here — cut solid.` : 'No room for spokes — cut solid.'}
           </span></>}
+          {params.toothLabel && lab && <><br />Engraves &ldquo;{lab.text}&rdquo;{lab.sizeMM < TOOTH_LABEL_SIZE - 0.05 && <span className="text-blue-400"> at {fromMM(lab.sizeMM, u as 'mm' | 'in').toFixed(2)} — all the spoke takes</span>}</>}
+          {params.toothLabel && !lab && isFontLoaded(SINGLE_LINE_FONT_FAMILY) && <><br /><span className="text-yellow-500">No room beside the bore for a legible marking — none engraved.</span></>}
           {params.pitchCircle && <><br /><span className="text-yellow-500">Pitch circle is a reference — delete before cutting.</span></>}
           {d.pointed && <><br /><span className="text-yellow-500">Teeth pointed — OD reduced.</span></>}
-          {d.undercut && <><br /><span className="text-yellow-500">Undercut range — roots cut radially.</span></>}
+          {!cyc && d.undercut && <><br /><span className="text-yellow-500">Undercut range — roots cut radially.</span></>}
+          {cyc && !pinFits && <><br /><span className="text-red-400">
+            Ø{N(params.pinDia)} pins will not pass a {N(d.spaceAtPitch)} tooth space — this pair cannot turn.
+          </span></>}
+          {rootDeepened && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} to clear the pins.</span></>}
+          {cyc && <><br />Cut for a {params.mateTeeth}-pin lantern at Ø{N(params.pinDia)}.</>}
+          {cyc && params.emitPinion && pin && <>
+            <br />Pinion cheek {N(pin.cheekDia)}, pins on {N(pin.pinCircleDia)} — cut TWO, the wheel runs between them.
+            <br />Arbors {N(pin.centreDistance)} apart = {N(d.pitchDia / 2)} wheel pitch radius + {N(pin.pinCircleDia / 2)} arbor to pin centre. Drawn clear, not at that spacing.
+            {params.toothLabel && pinLab && <><br />Cheek engraves &ldquo;{pinLab.text}&rdquo; — add to the wheel&apos;s.</>}
+            {pin.pinGap < 1 && <><br /><span className="text-yellow-500">
+              Only {N(Math.max(0, pin.pinGap))} between pin holes — fewer or thinner pins.
+            </span></>}
+          </>}
+        </div>
+      </>)
+    }
+    case 'cam': {
+      const dm = camDims(params)
+      const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
+      return (<>
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
+        <EditField label="Base" valueMM={params.baseDia} units={u} min={1} onChange={(baseDia) => update({ ...params, baseDia })} />
+        <EditField label="Rise" valueMM={params.riseMM} units={u} min={0.1} onChange={(riseMM) => update({ ...params, riseMM })} />
+        <RawField  label="Swp"  value={params.sweepDeg} min={5} max={360} step={5} suffix="°" onChange={(sweepDeg) => update({ ...params, sweepDeg })} />
+        <EditField label="Ø"    valueMM={params.boreDia} units={u} min={0} onChange={(boreDia) => update({ ...params, boreDia })} />
+        <EditField label="Lvr"  valueMM={params.handleLength} units={u} min={1} onChange={(handleLength) => update({ ...params, handleLength })} />
+        <EditField label="LvrW" valueMM={params.handleWidth} units={u} min={0.5} onChange={(handleWidth) => update({ ...params, handleWidth })} />
+        {/* Rise is per REVOLUTION — the spiral's slope. What it lifts is that over
+            its own sweep, which is the number worth reading back. */}
+        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+          Stroke {N(dm.usableStroke)} over {params.sweepDeg}° · {N(dm.liftPerDeg)} {u}/°
+          <br />
+          Base {N(dm.baseDia)} → crest {N(dm.maxDia)}
+          <br />
+          Pressure angle {dm.pressureAngleDeg.toFixed(1)}° base / {dm.pressureAngleAtCrestDeg.toFixed(1)}° crest
+          {dm.wontHold && <><br /><span className="text-yellow-500">
+            Friction may not hold {dm.pressureAngleDeg.toFixed(1)}° — bigger base, or less rise.
+          </span></>}
+          {dm.handleTooShort && <><br /><span className="text-yellow-500">Lever inside the crest — no leverage.</span></>}
         </div>
       </>)
     }
@@ -543,7 +635,17 @@ export default function PropertiesPanel() {
   if (!bbox) return null
 
   const fmt = (n: number) => n.toFixed(2)
-  const singleShape = selectedPaths.length === 1 && selectedPaths[0].shapeParams ? selectedPaths[0] : null
+  // A multi-part shape (a gear) IS one shape — its parts share one set of params
+  // and editing any of them regenerates the whole group. So a selection sitting
+  // entirely inside one group is that shape, not a multi-select: without this,
+  // clicking a gear's timeline chip (which selects every part) showed the generic
+  // multi-path panel instead of the gear's parameters.
+  const groupShape = selectedPaths.length > 1 && selectedPaths[0].groupId
+    && selectedPaths.every((p) =>
+      p.groupId === selectedPaths[0].groupId && p.shapePart !== undefined && p.shapeParams)
+    ? selectedPaths[0] : null
+  const singleShape = (selectedPaths.length === 1 && selectedPaths[0].shapeParams ? selectedPaths[0] : null)
+    ?? groupShape
 
   // During a drag, compute the live bbox for display:
   // - translate/scale: CanvasStage pushes the exact bbox into the store

@@ -1,9 +1,10 @@
 import { generateTextD } from './textGenerator'
 import { generateMazeD } from './mazeGenerator'
 import { generateCuttingBoardD, type BoardShape, type BoardHandle } from './cuttingBoardGenerator'
-import { generateGearD, generateGearParts, moduleForRadius } from './gearGenerator'
+import { generateGearD, generateGearParts, moduleForRadius, type ToothProfile } from './gearGenerator'
+import { generateCamD, generateCamParts, baseDiaForRadius } from './camGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -25,7 +26,8 @@ export type ShapeParams =
       hole: boolean; holeDia: number
       groove: boolean; grooveInset: number
     }
-  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; pitchCircle: boolean }
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
+  | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
@@ -46,7 +48,8 @@ export interface ShapeToolConfig {
     handle: BoardHandle; handleW: number; handleL: number; handleInset: number
     hole: boolean; holeDia: number; groove: boolean; grooveInset: number
   }
-  gear: { module: number; teeth: number; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; pitchCircle: boolean }
+  gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
+  cam: { baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -73,7 +76,17 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   // 1/8" end mill's 1.59 mm, so the bit cuts the root essentially as drawn. Below
   // m3 it cannot reach into the root at all and leaves a fillet twice the size.
   // hubDia follows: bore + 4·m is the least hub the axle wants, so 8 + 16 = 24.
-  gear: { module: 4, teeth: 24, pressureAngle: 20, bore: 8, hubDia: 24, spokes: 5, backlash: 0.3, pitchCircle: false },
+  // Cycloidal defaults are a clock train, not machinery: 8 pins is a common wooden-
+  // clock lantern pinion, and a 5 mm pin (1.25·m here) is a dowel that fits the
+  // 6.3 mm tooth space with room to pass. Inert until the profile is switched.
+  gear: {
+    module: 4, teeth: 24, toothProfile: 'involute', mateTeeth: 8, pinDia: 5, emitPinion: false,
+    pressureAngle: 20, bore: 8, hubDia: 24, spokes: 5, backlash: 0.3, toothLabel: true, pitchCircle: false,
+  },
+  // A workbench cam clamp: Ø40 base with 12 mm of rise gives a 5.5° pressure angle
+  // at the base circle — well inside what wood-on-wood friction holds — and a 100 mm
+  // lever on a Ø32 crest is a lever rather than a lump.
+  cam: { baseDia: 40, riseMM: 12, sweepDeg: 360, boreDia: 8, handleLength: 100, handleWidth: 18 },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
@@ -332,6 +345,7 @@ export function generateShapeD(p: ShapeParams): string {
     case 'maze': return generateMazeD(p)
     case 'board': return generateCuttingBoardD(p)
     case 'gear': return generateGearD(p)
+    case 'cam': return generateCamD(p)
     case 'text': return generateTextD(p)
   }
 }
@@ -357,17 +371,30 @@ export interface ShapePart {
   d: string
 }
 
+const CAM_PART_LABELS: Record<string, string> = { cam: 'Outline', bore: 'Bore' }
+
 const GEAR_PART_LABELS: Record<string, string> = {
-  teeth: 'Teeth', spokes: 'Spokes', bore: 'Bore', pitch: 'Pitch Circle',
+  teeth: 'Teeth', spokes: 'Spokes', bore: 'Bore', label: 'Marking', pitch: 'Pitch Circle',
+  pinion: 'Pinion Cheek', pinholes: 'Pin Holes', pinionbore: 'Pinion Bore',
+  pinionpitch: 'Pinion Pitch Circle', pinionlabel: 'Pinion Marking',
 }
 
 export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
-  if (p.type !== 'gear') return null
-  return generateGearParts(p).map((g) => ({
-    part: g.key,
-    label: GEAR_PART_LABELS[g.key] ?? g.key,
-    d: g.d,
-  }))
+  if (p.type === 'gear') {
+    return generateGearParts(p).map((g) => ({
+      part: g.key,
+      label: GEAR_PART_LABELS[g.key] ?? g.key,
+      d: g.d,
+    }))
+  }
+  if (p.type === 'cam') {
+    return generateCamParts(p).map((g) => ({
+      part: g.key,
+      label: CAM_PART_LABELS[g.key] ?? g.key,
+      d: g.d,
+    }))
+  }
+  return null
 }
 
 export function shapeDisplayName(type: ShapeType): string {
@@ -386,6 +413,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'maze': return 'Maze'
     case 'board': return 'Cutting Board'
     case 'gear': return 'Gear'
+    case 'cam': return 'Cam'
     case 'text': return 'Text'
   }
 }
@@ -458,6 +486,18 @@ export function shapeParamsFromDrag(
         type: 'board', x, y, ...config.board, h,
         w: Math.max(10, w - (config.board.handle === 'paddle' ? config.board.handleL : 0)),
       }
+    case 'cam':
+      // The drag box sizes the cam's CREST — its largest radius — and the base
+      // circle is what gives way, since rise is a mechanism figure the panel sets
+      // and the crest is base + stroke. The lever scales with it, so a dragged cam
+      // stays a lever and not a lump.
+      return {
+        type: 'cam', cx, cy,
+        baseDia: baseDiaForRadius(radius, config.cam.riseMM, config.cam.sweepDeg),
+        riseMM: config.cam.riseMM, sweepDeg: config.cam.sweepDeg, boreDia: config.cam.boreDia,
+        handleLength: config.cam.handleLength * (radius / Math.max(0.5, config.cam.baseDia / 2 + (config.cam.riseMM * config.cam.sweepDeg) / 360)),
+        handleWidth: config.cam.handleWidth,
+      }
     case 'gear':
       // The drag box sizes the gear's outside diameter; tooth count and pressure
       // angle are the pattern and come from the panel, so `module` is what the
@@ -512,6 +552,7 @@ export function shapeParamsFromConfig(
       return { type: 'board', ...config.board, x: cx - w / 2, y: cy - h / 2 }
     }
     case 'gear': return { type: 'gear', cx, cy, ...config.gear }
+    case 'cam': return { type: 'cam', cx, cy, ...config.cam }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -533,6 +574,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'maze': return { ...p, x: p.x + dx, y: p.y + dy }
     case 'board': return { ...p, x: p.x + dx, y: p.y + dy }
     case 'gear': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'cam': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -634,7 +676,19 @@ export function scaleShapeParams(
       if (Math.abs(asx - asy) > 0.001) return null
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
       // Teeth and pressure angle are the pattern; module and bore are lengths.
-      return { ...p, cx: ncx, cy: ncy, module: p.module * asx, bore: p.bore * asx, hubDia: p.hubDia * asx, backlash: p.backlash * asx }
+      return { ...p, cx: ncx, cy: ncy, module: p.module * asx, bore: p.bore * asx, hubDia: p.hubDia * asx, backlash: p.backlash * asx, pinDia: p.pinDia * asx }
+    }
+    case 'cam': {
+      // A cam stretched on one axis is not an Archimedean spiral — the lift stops
+      // being linear in the angle, which is the only reason to use one. Same answer
+      // as the gear gives.
+      if (Math.abs(asx - asy) > 0.001) return null
+      const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
+      return {
+        ...p, cx: ncx, cy: ncy,
+        baseDia: p.baseDia * asx, riseMM: p.riseMM * asx, boreDia: p.boreDia * asx,
+        handleLength: p.handleLength * asx, handleWidth: p.handleWidth * asx,
+      }
     }
     case 'text': {
       if (Math.abs(asx - asy) > 0.001) return null

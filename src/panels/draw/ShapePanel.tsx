@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Dices, ChevronDown } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Dices, ChevronDown } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
 import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
-import { gearDims, gearHub } from '../../shapes/gearGenerator'
+import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
+import { camDims } from '../../shapes/camGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
-import { loadFont, isFontLoaded } from '../../shapes/textGenerator'
+import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
@@ -30,6 +31,7 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'maze',      label: 'Maze',    icon: <Grid3x3 size={ICON.md} /> },
   { type: 'board',     label: 'Board',   icon: <CookingPot size={ICON.md} /> },
   { type: 'gear',      label: 'Gear',    icon: <Cog size={ICON.md} /> },
+  { type: 'cam',       label: 'Cam',     icon: <Cloud size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
@@ -263,18 +265,44 @@ function ShapeConfig({ type, config, onChange, units }: {
     case 'gear': {
       const g = c.gear
       const set = (patch: Partial<ShapeToolConfig['gear']>) => onChange({ ...c, gear: { ...c.gear, ...patch } })
-      const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash)
+      const cyc = g.toothProfile === 'cycloidal' ? { mateTeeth: g.mateTeeth, pinDia: g.pinDia } : undefined
+      const pin = pinionDims({ ...g, cx: 0, cy: 0 })
+      const pinLab = pinionLabel({ ...g, cx: 0, cy: 0 })
+      const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, cyc)
       const hub = gearHub(g.module, g.teeth, g.bore, g.hubDia, g.spokes)
+      // A pin has to pass through the tooth space, or the pair cannot turn at all.
+      const pinFits = !cyc || g.pinDia < d.spaceAtPitch - 0.05
+      // The root was driven below the ISO dedendum to clear a fat pin.
+      const rootDeepened = !!cyc && d.rootDia < g.module * (g.teeth - 2.5) - 0.01
       const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      // The marking runs out along the right-hand spoke at whatever size that
+      // takes — ask the generator rather than restating its rules. Position is
+      // irrelevant to the fit.
+      const lab = gearLabel({ ...g, cx: 0, cy: 0 })
+      const labFontReady = isFontLoaded(SINGLE_LINE_FONT_FAMILY)
       return (<div className="space-y-1">
         <NumInput label="Module"  valueMM={g.module} units={u} min={0.05} onChange={(module) => set({ module })} />
         <NumInput label="Teeth"   valueMM={g.teeth} units="" min={4} integer onChange={(teeth) => set({ teeth: Math.max(4, Math.round(teeth)) })} />
-        <div className="flex items-center gap-1.5">
-          <span className={labelCls}>Pressure</span>
-          <NumericInput value={g.pressureAngle} min={5} max={35} step={0.5}
-            onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} />
-          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
-        </div>
+        <Select label="Profile" value={g.toothProfile}
+          options={[['involute', 'Involute'], ['cycloidal', 'Cycloidal (clock)']]}
+          onChange={(toothProfile) => set({ toothProfile })} />
+        {/* A cycloidal face is cut for ONE mate — the describing circle comes from
+            the pinion's pitch circle — so the pinion is a parameter of the wheel,
+            not a separate design. Pressure angle has no meaning here: it varies
+            through a cycloidal mesh, so the field goes away with the profile. */}
+        {cyc ? (<>
+          <NumInput label="Pins"   valueMM={g.mateTeeth} units="" min={2} integer onChange={(mateTeeth) => set({ mateTeeth: Math.max(2, Math.round(mateTeeth)) })} />
+          <NumInput label="Pin Ø"  valueMM={g.pinDia} units={u} min={0.1} onChange={(pinDia) => set({ pinDia })} />
+          {/* The mate, drawn from these same numbers — cheek, pin holes, arbor. */}
+          <Check label="Pinion" checked={g.emitPinion} onChange={(emitPinion) => set({ emitPinion })} />
+        </>) : (
+          <div className="flex items-center gap-1.5">
+            <span className={labelCls}>Pressure</span>
+            <NumericInput value={g.pressureAngle} min={5} max={35} step={0.5}
+              onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} />
+            <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+          </div>
+        )}
         <NumInput label="Bore Ø"  valueMM={g.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
         {/* A floor, not a fixed size — it grows to seat the spokes. */}
         <NumInput label="Hub Ø"   valueMM={g.hubDia} units={u} min={0} onChange={(hubDia) => set({ hubDia })} />
@@ -282,11 +310,16 @@ function ShapeConfig({ type, config, onChange, units }: {
         {/* Play at the MESH, so the same figure on both gears of a pair gives
             exactly that much — each is thinned by half. */}
         <NumInput label="Backlash" valueMM={g.backlash} units={u} min={0} step={0.05} onChange={(backlash) => set({ backlash })} />
+        {/* Engraved, not cut — its own path, so it takes an engrave op or gets
+            deleted without touching the gear. */}
+        <Check label="Count #" checked={g.toothLabel} onChange={(toothLabel) => set({ toothLabel })} />
         <Check label="Pitch ○" checked={g.pitchCircle} onChange={(pitchCircle) => set({ pitchCircle })} />
         {/* Base Ø is m·z·cos α — derived, never dialled in, so it is shown
             rather than offered as a field. */}
         <p className="text-label text-gray-400 dark:text-neutral-500">
-          Pitch {L(d.pitchDia)} · Base {L(d.baseDia)}
+          {cyc
+            ? <>Pitch {L(d.pitchDia)} · Describing {L(d.describingDia)}</>
+            : <>Pitch {L(d.pitchDia)} · Base {L(d.baseDia)}</>}
           <br />
           Outside {L(d.outsideDia)} · Root {L(d.rootDia)}
           <br />
@@ -301,9 +334,75 @@ function ShapeConfig({ type, config, onChange, units }: {
                                 : 'No room for a spoke web on this gear — cut solid.'}
           </p>
         )}
-        {g.pitchCircle && <p className="text-label text-yellow-500">Pitch circle is a reference — delete it before cutting.</p>}
+        {g.toothLabel && lab && (lab.sizeMM < TOOTH_LABEL_SIZE - 0.05
+          ? <p className="text-label text-blue-400">Engraves &ldquo;{lab.text}&rdquo; at {L(lab.sizeMM)} — all the spoke will take.</p>
+          : <p className="text-label text-gray-400 dark:text-neutral-500">Engraves &ldquo;{lab.text}&rdquo; along the right-hand spoke.</p>)}
+        {g.toothLabel && !lab && labFontReady &&
+          <p className="text-label text-yellow-500">No room beside the bore for a legible marking — none engraved.</p>}
+        {g.pitchCircle && <p className="text-label text-yellow-500">
+          Pitch circle{cyc && g.emitPinion ? 's are references' : ' is a reference'} — delete {cyc && g.emitPinion ? 'them' : 'it'} before cutting.
+          {cyc && g.emitPinion ? ' They run through the pin centres and are tangent at the right spacing.' : ''}
+        </p>}
         {d.pointed && <p className="text-label text-yellow-500">Teeth come to a point — OD reduced.</p>}
-        {d.undercut && <p className="text-label text-yellow-500">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots cut radially, not undercut.</p>}
+        {!cyc && d.undercut && <p className="text-label text-yellow-500">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots cut radially, not undercut.</p>}
+        {cyc && !pinFits && <p className="text-label text-red-400">
+          Ø{L(g.pinDia)} pins cannot pass a {L(d.spaceAtPitch)} tooth space — this pair will not turn. Smaller pins, or more module.
+        </p>}
+        {rootDeepened && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} to clear the pins.</p>}
+        {cyc && <p className="text-label text-gray-400 dark:text-neutral-500">
+          Faces cut for this {g.mateTeeth}-pin lantern pinion at Ø{L(g.pinDia)} — another pinion wants another wheel.
+        </p>}
+        {cyc && g.emitPinion && pin && <p className="text-label text-gray-400 dark:text-neutral-500">
+          Pinion: cheek {L(pin.cheekDia)} · pins on {L(pin.pinCircleDia)}
+          <br />
+          Cut TWO cheeks — the wheel runs between them, so it must be thinner than their gap.
+          <br />
+          {/* The question this answers: the pinion's own radius for layout is arbor
+              to pin CENTRE, i.e. half the pin circle — not the cheek. */}
+          Arbors sit {L(pin.centreDistance)} apart: {L(d.pitchDia / 2)} wheel pitch radius + {L(pin.pinCircleDia / 2)} arbor-to-pin-centre. Drawn clear, not at that spacing.
+          {g.toothLabel && pinLab && <><br />Cheek engraves &ldquo;{pinLab.text}&rdquo; — add it to the wheel&apos;s to get that spacing.</>}
+        </p>}
+        {cyc && g.emitPinion && pin && pin.pinGap < 1 && <p className="text-label text-yellow-500">
+          Only {L(Math.max(0, pin.pinGap))} of wood between pin holes — fewer pins, or thinner ones.
+        </p>}
+      </div>)
+    }
+    case 'cam': {
+      const m = c.cam
+      const set = (patch: Partial<ShapeToolConfig['cam']>) => onChange({ ...c, cam: { ...c.cam, ...patch } })
+      const dm = camDims({ ...m, cx: 0, cy: 0 })
+      const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      return (<div className="space-y-1">
+        <NumInput label="Base Ø"  valueMM={m.baseDia} units={u} min={1} onChange={(baseDia) => set({ baseDia })} />
+        {/* The rise per REVOLUTION sets the spiral's slope; what this cam can
+            actually lift is that × sweep/360, which the readout gives. */}
+        <NumInput label="Rise/rev" valueMM={m.riseMM} units={u} min={0.1} onChange={(riseMM) => set({ riseMM })} />
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>Sweep</span>
+          <NumericInput value={m.sweepDeg} min={5} max={360} step={5}
+            onChange={(sweepDeg) => set({ sweepDeg })} className={inputCls} />
+          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+        </div>
+        <NumInput label="Bore Ø"  valueMM={m.boreDia} units={u} min={0} onChange={(boreDia) => set({ boreDia })} />
+        <NumInput label="Lever"   valueMM={m.handleLength} units={u} min={1} onChange={(handleLength) => set({ handleLength })} />
+        <NumInput label="Lever W" valueMM={m.handleWidth} units={u} min={0.5} onChange={(handleWidth) => set({ handleWidth })} />
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Stroke {L(dm.usableStroke)} over {m.sweepDeg}° · {L(dm.liftPerDeg)}/°
+          <br />
+          Base {L(dm.baseDia)} → crest {L(dm.maxDia)}
+          <br />
+          Pressure angle {dm.pressureAngleDeg.toFixed(1)}° at the base, {dm.pressureAngleAtCrestDeg.toFixed(1)}° at the crest
+          <br />
+          Double-click to split outline / bore.
+        </p>
+        {/* Friction is what holds a cam: tan φ under µ, and wood on wood is µ≈0.3
+            (17°). Past 10° there is no margin left for a clamp. */}
+        {dm.wontHold && <p className="text-label text-yellow-500">
+          {dm.pressureAngleDeg.toFixed(1)}° at the base circle — friction may not hold it. Bigger base Ø, or less rise.
+        </p>}
+        {dm.handleTooShort && <p className="text-label text-yellow-500">
+          Lever is inside the crest ({L(dm.maxDia / 2)}) — no leverage. Make it longer.
+        </p>}
       </div>)
     }
     case 'text':
@@ -356,6 +455,15 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
   }, [activeTool, shapeToolConfig.text.fontFamily])
 
   useEffect(() => { loadFont(shapeToolConfig.text.fontFamily) }, [shapeToolConfig.text.fontFamily])
+
+  // A gear's tooth-count number is set in the single-stroke face, so it has to be
+  // in hand before one is drawn — and this panel's fit readout needs a re-render
+  // once it is.
+  const [countFontReady, setCountFontReady] = useState(() => isFontLoaded(SINGLE_LINE_FONT_FAMILY))
+  useEffect(() => {
+    if (activeTool !== 'gear' || countFontReady) return
+    loadFont(SINGLE_LINE_FONT_FAMILY).then(() => setCountFontReady(true))
+  }, [activeTool, countFontReady])
 
   // Load saved text config on mount
   useEffect(() => {

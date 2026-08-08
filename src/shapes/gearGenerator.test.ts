@@ -4,7 +4,14 @@ import { generateShapeD } from './shapeGenerators'
 import { flattenPath, signedArea } from '../cam/pathFlattener'
 import { pointInPolygon, ptSegDistSq } from '../cam/geom'
 
-const base: GearSpec = { cx: 0, cy: 0, module: 2, teeth: 24, pressureAngle: 20, bore: 8, hubDia: 16, spokes: 5, backlash: 0, pitchCircle: false }
+// No tooth-count label: these tests measure the cut geometry, and the label is
+// engraved text that would only add an open subpath to walk past. (It is null in
+// node anyway — the single-stroke font is fetched in the browser.)
+const base: GearSpec = {
+  cx: 0, cy: 0, module: 2, teeth: 24, pressureAngle: 20, bore: 8, hubDia: 16, spokes: 5, backlash: 0,
+  toothProfile: 'involute', mateTeeth: 8, pinDia: 2.5, emitPinion: false,
+  toothLabel: false, pitchCircle: false,
+}
 
 // [module, teeth, pressure angle]
 const CASES: [number, number, number][] = [

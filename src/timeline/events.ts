@@ -37,7 +37,7 @@ export function hydrateOp(sop: SerializedOperation): AnyOperation {
 // outside any user action (entryHint is rewritten on EVERY sim run / G-code
 // export). They are stripped from op.update event payloads and ignored by the
 // replay diff — post-scrub regeneration recomputes them.
-export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint', 'generatedWith'] as const
+export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalHoles', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint', 'generatedWith'] as const
 
 // An op reduced to the fields replay can actually reproduce. Live ops carry
 // state that no event ever recorded, so comparing raw ops against replayed
@@ -48,7 +48,8 @@ export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalCe
 //   explicitly instead.
 // - entryHint/generatedWith: written by optimizeStartPoints before a sim run or
 //   G-code export
-// - helicalCenterX/Y/helicalRadius: written back by regenerate with { record: false }
+// - helicalHoles + helicalCenterX/Y/helicalRadius: written back by regenerate with
+//   { record: false } — they are DERIVED from the source path's circles
 //
 // Used both by the replay oracle (replayCheck) and by scrubbing's
 // segment-preservation check — the latter has to ignore these or every undo

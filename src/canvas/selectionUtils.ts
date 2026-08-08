@@ -1,5 +1,6 @@
 import { flattenPath } from '../cam/pathFlattener'
 import { parseD, stringifyD, applyMat, type Mat6, type ImportedPath } from '../importers/svgImporter'
+import { splitCompoundPath } from './nodeUtils'
 import { generateShapeD, translateShapeParams, scaleShapeParams, shapeDisplayName, type ShapeParams } from '../shapes/shapeGenerators'
 import type { PathEditGesture } from '../timeline/events'
 
@@ -335,17 +336,11 @@ export function extractRectInfo(d: string): RectInfo | null {
   return { p0: pts[0], widthMM, heightMM, rotationDeg }
 }
 
-export function extractCircle(path: ImportedPath): { cx: number; cy: number; radiusMM: number } | null {
-  if (path.shapeParams?.type === 'circle') {
-    return { cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }
-  }
-  if (path.shapeParams?.type === 'ellipse') {
-    const { cx, cy, rx, ry } = path.shapeParams
-    if (Math.abs(rx - ry) / Math.max(rx, ry, 0.001) < 0.05) {
-      return { cx, cy, radiusMM: (rx + ry) / 2 }
-    }
-  }
-  const bb = getBBox(path.d)
+export interface CircleInfo { cx: number; cy: number; radiusMM: number }
+
+/** One subpath's circle, from its bounding box. Null unless it is round. */
+function circleFromD(d: string): CircleInfo | null {
+  const bb = getBBox(d)
   if (!bb) return null
   const rx = (bb.maxX - bb.minX) / 2
   const ry = (bb.maxY - bb.minY) / 2
@@ -354,5 +349,35 @@ export function extractCircle(path: ImportedPath): { cx: number; cy: number; rad
     return { cx: bb.cx, cy: bb.cy, radiusMM: (rx + ry) / 2 }
   }
   return null
+}
+
+/**
+ * EVERY circle in a path — one per subpath.
+ *
+ * A path is not one hole. A gear's pin holes, a bolt circle, an SVG whose circles
+ * came in as a single compound path: all of them are N round subpaths under one id,
+ * and the drill modes want each. Deriving the circle from the WHOLE path's bounding
+ * box instead is not a near miss, it is a hole the size of the whole ring drilled at
+ * its centre — which is exactly what a pinion's eight pin holes came out as.
+ *
+ * `shapeParams` is trusted only when the path really is one subpath: a gear's parts
+ * all carry the gear's params, so a params check alone would call the pin-hole ring
+ * a circle.
+ */
+export function extractCircles(path: ImportedPath): CircleInfo[] {
+  const subDs = splitCompoundPath(path.d)
+  if (subDs.length <= 1) {
+    if (path.shapeParams?.type === 'circle') {
+      return [{ cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }]
+    }
+    if (path.shapeParams?.type === 'ellipse') {
+      const { cx, cy, rx, ry } = path.shapeParams
+      if (Math.abs(rx - ry) / Math.max(rx, ry, 0.001) < 0.05) return [{ cx, cy, radiusMM: (rx + ry) / 2 }]
+    }
+  }
+  return subDs.flatMap((d) => {
+    const c = circleFromD(d)
+    return c ? [c] : []
+  })
 }
 

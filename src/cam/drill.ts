@@ -14,9 +14,16 @@ export interface DrillParams {
   safeHeightMM?: number
 }
 
-function nearestNeighbourOrder(pts: DrillPoint[], startX: number, startY: number): DrillPoint[] {
+/** A hole to bore: where it is and how big it is. */
+export interface HoleSpec {
+  cx: number
+  cy: number
+  radiusMM: number
+}
+
+function nearestNeighbourOrder<T extends DrillPoint>(pts: T[], startX: number, startY: number): T[] {
   const remaining = [...pts]
-  const ordered: DrillPoint[] = []
+  const ordered: T[] = []
   let cx = startX, cy = startY
   while (remaining.length > 0) {
     let bestIdx = 0, bestDist = Infinity
@@ -138,5 +145,37 @@ export function generateHelicalDrill(
   // Retract from the wall
   segs.push({ x: centerX + helicalRadius, y: centerY, z: safeZ, rapid: true })
 
+  return segs
+}
+
+/**
+ * Bore SEVERAL holes in one operation.
+ *
+ * One path is not one hole — a pinion's pin holes, a bolt circle, an SVG's circles
+ * that came in as a single compound path are all N round subpaths under one id. So
+ * the op holds a list, exactly as peck drilling holds a list of points, and each
+ * hole gets its own complete helical bore.
+ *
+ * Ordered nearest-neighbour from `startNear`, the same as peck: the rapids between
+ * holes are the only free choice here, and walking a bolt circle in emission order
+ * is a needless trip across the part.
+ *
+ * A hole smaller than the tool falls back to a peck at its centre (see
+ * `generateHelicalDrill`), so a mixed set still comes out drilled.
+ */
+export function generateHelicalDrills(
+  holes: HoleSpec[],
+  tool: Tool,
+  params: DrillParams
+): MotionSegment[] {
+  if (holes.length === 0) throw new Error('No holes specified')
+  const ordered = params.startNear
+    ? nearestNeighbourOrder(holes.map((h) => ({ ...h, x: h.cx, y: h.cy })), params.startNear.x, params.startNear.y)
+    : holes.map((h) => ({ ...h, x: h.cx, y: h.cy }))
+
+  const segs: MotionSegment[] = []
+  for (const h of ordered) {
+    segs.push(...generateHelicalDrill(h.cx, h.cy, h.radiusMM - tool.diameterMM / 2, tool, params))
+  }
   return segs
 }

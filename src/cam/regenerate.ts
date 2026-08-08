@@ -1,4 +1,4 @@
-import { generatePeckDrill, generateHelicalDrill } from './drill'
+import { generatePeckDrill, generateHelicalDrills, type HoleSpec } from './drill'
 import { perfLog } from '../debug'
 import { runInWorkerFor, isWorkCancelled } from '../workers/workerClient'
 import { useToolpathStore, refsPathId } from '../store/toolpathStore'
@@ -8,7 +8,7 @@ import { useWorkpieceStore } from '../store/workpieceStore'
 import { useTabStore } from '../store/tabStore'
 import { useSimStore } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
-import { getBBox, extractCircle, extractRectInfo } from '../canvas/selectionUtils'
+import { getBBox, extractCircles, extractRectInfo } from '../canvas/selectionUtils'
 import { loadImageLuminance } from '../io/imageLuminance'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import { effectiveStepDownMM, trochoidalEngagementFraction } from './feeds'
@@ -70,31 +70,43 @@ export async function regenerateOperation(opId: string): Promise<void> {
       for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
 
     } else if (op.type === 'drill') {
+      // Both modes re-read their holes from the source path when they have one, so a
+      // hole that moves takes its drilling with it. `extractCircles` returns one per
+      // SUBPATH: a pinion's pin ring is eight holes under one id, not one hole the
+      // size of the ring.
+      const srcPath = op.pathId ? paths.find((p) => p.id === op.pathId) : undefined
+      const circles = srcPath ? extractCircles(srcPath) : []
       if (op.drillMode === 'helical') {
-        let cx = op.helicalCenterX ?? 0
-        let cy = op.helicalCenterY ?? 0
-        let r = op.helicalRadius ?? 0
-        if (op.pathId) {
-          const path = paths.find((p) => p.id === op.pathId)
-          if (path) {
-            const circle = extractCircle(path)
-            if (circle) {
-              cx = circle.cx
-              cy = circle.cy
-              r = Math.max(0, circle.radiusMM - tool.diameterMM / 2)
-              // Persist the derived center/radius (yes, regenerate writes op
-              // params here): DrillForm's edit view displays them, and the ??
-              // fallbacks above keep the op regenerable if the source circle
-              // is later deleted or edited into a non-circle.
-              updateOperation(opId, { helicalCenterX: cx, helicalCenterY: cy, helicalRadius: r } as Parameters<typeof updateOperation>[1], { record: false })
-            }
-          }
+        let holes: HoleSpec[] = circles
+        if (holes.length === 0) {
+          // No source (deleted, or edited into something that is not round): fall back
+          // to what the op stored — the list, or the single hole of an older op.
+          holes = op.helicalHoles?.length
+            ? op.helicalHoles
+            : [{ cx: op.helicalCenterX ?? 0, cy: op.helicalCenterY ?? 0, radiusMM: (op.helicalRadius ?? 0) + tool.diameterMM / 2 }]
+        } else {
+          // Persist what was derived (yes, regenerate writes op params here): the edit
+          // view displays it, and it is the fallback above once the source is gone.
+          // Singular fields stay in step for the first hole so an older reader still
+          // sees something sane.
+          updateOperation(opId, {
+            helicalHoles: holes,
+            helicalCenterX: holes[0].cx, helicalCenterY: holes[0].cy,
+            helicalRadius: Math.max(0, holes[0].radiusMM - tool.diameterMM / 2),
+          } as Parameters<typeof updateOperation>[1], { record: false })
         }
-        setSegments(opId, generateHelicalDrill(cx, cy, r, tool, {
-          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), safeHeightMM,
+        setSegments(opId, generateHelicalDrills(holes, tool, {
+          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
+          startNear: op.entryHint, safeHeightMM,
         }))
       } else {
-        setSegments(opId, generatePeckDrill(op.points, tool, {
+        // Derived, but NOT written back: `points` is the recorded payload of a
+        // clicked-points peck op, so it stays out of DERIVED_OP_KEYS and writing it
+        // here without recording would make the live op differ from its replay.
+        // Nothing else reads it — segments are what cut — so recomputing each time is
+        // enough.
+        const points = circles.length > 0 ? circles.map((c) => ({ x: c.cx, y: c.cy })) : op.points
+        setSegments(opId, generatePeckDrill(points, tool, {
           depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), startNear: op.entryHint, safeHeightMM,
         }))
       }

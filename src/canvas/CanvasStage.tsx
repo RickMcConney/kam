@@ -1463,6 +1463,10 @@ export default function CanvasStage() {
         // share a groupId so the paths list keeps them together, and each carries
         // the same shapeParams so the set stays editable as one shape.
         const parts = generateShapeParts(params)
+        // The id to regenerate this shape through if a font has to arrive first —
+        // any member of a group works, since updateShapeParams regenerates all of
+        // it.
+        let regenId = id
         if (parts && parts.length > 1) {
           const groupId = uid('shape-group')
           const name = shapeDisplayName(shapeType)
@@ -1474,6 +1478,7 @@ export default function CanvasStage() {
           }))
           add(made, { source: 'shape' })
           setSelectedIds(made.map((p) => p.id))
+          regenId = made[0].id
         } else {
           add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }], { source: shapeType === 'text' ? 'text' : 'shape' })
           sel(id)
@@ -1487,6 +1492,17 @@ export default function CanvasStage() {
             loadFont(params.fontFamily).then(() => {
               const newD = generateShapeD(params)
               if (newD) usePathsStore.getState().updateShapeParams(id, params)
+            })
+          })
+        }
+
+        // Same story for a gear's tooth-count number: the single-stroke font is
+        // fetched on demand, so a gear drawn before it lands has every part but
+        // that one. Regenerating the group once it is here adds the part.
+        if (params.type === 'gear' && params.toothLabel && !parts?.some((pt) => pt.part === 'label')) {
+          import('../shapes/textGenerator').then(({ loadFont, SINGLE_LINE_FONT_FAMILY }) => {
+            loadFont(SINGLE_LINE_FONT_FAMILY).then(() => {
+              usePathsStore.getState().updateShapeParams(regenId, params)
             })
           })
         }

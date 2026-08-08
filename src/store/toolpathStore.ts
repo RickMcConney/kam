@@ -87,8 +87,14 @@ export interface PocketOperation extends BaseOperation {
 export interface DrillOperation extends BaseOperation {
   type: 'drill'
   drillMode: 'peck' | 'helical'
+  /** Peck: where to plunge. Derived from `pathId`'s circles when it has one. */
   points: DrillPoint[]
   pathId?: string
+  /** Helical: every hole this op bores. One path is not one hole — a pinion's pin
+   *  ring is eight — so this is a list, like `points`. Derived from `pathId` at
+   *  generation. The three singular fields below are what ops saved before this
+   *  carry; they are the fallback, never the source when this is set. */
+  helicalHoles?: { cx: number; cy: number; radiusMM: number }[]
   helicalCenterX?: number
   helicalCenterY?: number
   helicalRadius?: number

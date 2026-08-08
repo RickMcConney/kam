@@ -17,6 +17,11 @@ const BASE = import.meta.env.BASE_URL
 // getPath() interface as the TTF/WOFF outline fonts loaded from `url`.
 export interface FontDef { label: string; family: string; url?: string; svg?: string }
 
+// The single-stroke face, named so anything that needs engravable text for its
+// own reasons (the gear's tooth-count number) asks for it by this constant rather
+// than by a string literal that can drift from the AVAILABLE_FONTS entry.
+export const SINGLE_LINE_FONT_FAMILY = 'Relief SingleLine'
+
 export const AVAILABLE_FONTS: FontDef[] = [
   { label: 'Roboto', family: 'Roboto', url: `${BASE}fonts/Roboto-Regular.ttf` },
   { label: 'AV Hershey Complex Heavy', family: 'AV Hershey Complex Heavy', url: `${BASE}fonts/AVHersheyComplexHeavy.ttf` },
@@ -27,7 +32,7 @@ export const AVAILABLE_FONTS: FontDef[] = [
   { label: 'Roboto Mono', family: 'Roboto Mono', url: `${BASE}fonts/roboto-mono-regular.woff` },
   { label: 'Open Sans', family: 'Open Sans', url: `${BASE}fonts/open-sans-regular.woff` },
   // Single-stroke engraving font (Relief SingleLine, OFL) — open strokes ideal for V-bit/engrave
-  { label: 'Relief SingleLine (single-line)', family: 'Relief SingleLine', svg: `${BASE}fonts/ReliefSingleLineSVG-Regular.svg` },
+  { label: 'Relief SingleLine (single-line)', family: SINGLE_LINE_FONT_FAMILY, svg: `${BASE}fonts/ReliefSingleLineSVG-Regular.svg` },
 ]
 
 /** True for single-stroke faces (SVG-stroke) — text renders as open strokes. */

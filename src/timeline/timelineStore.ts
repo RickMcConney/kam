@@ -170,6 +170,21 @@ interface TimelineState {
   // Returns false when no defining event exists (caller falls back to
   // recording a normal event). NOT undoable — the chip IS the record.
   amendPathDefinition: (pathId: string, upd: { d: string; shapeParams?: ShapeParams | null; name?: string }) => boolean
+  // Same idea for a MULTI-PART shape (a gear): its parts are one shape sharing one
+  // set of params, so a params edit rewrites the chip that last DEFINED the group
+  // — wholesale, because parts appear and vanish with the parameters (spokes → 0,
+  // a marking that no longer fits) and a per-path merge cannot express that.
+  //
+  // That chip is either the `paths.add` that placed the shape or a later group
+  // `paths.edit`; `removedIds` names the parts this edit drops, and it is the
+  // reason both kinds are handled. Their operations and tabs die with them, and
+  // that cleanup only replays from a paths.edit's `deleteIds` — so a drop is
+  // FOLDED INTO an existing group paths.edit, and refused against a bare
+  // paths.add (the caller then records one, which becomes the definer from then
+  // on, so the chip count stops growing after that one). Also refused when an
+  // update in the way carries a transform/corner recipe, since replay recomposes
+  // from the recipe and would discard a stamped `d`.
+  amendShapeGroup: (groupId: string, paths: ImportedPath[], removedIds?: string[]) => boolean
   amendOpSettings: (opId: string, updates: Partial<SerializedOperation>) => boolean
   // Re-Generate that changes WHICH operations a form produced, not just their settings:
   // PocketForm's Invert Pocket toggle re-reads the same selection into a different set of
@@ -773,6 +788,114 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       invalidateCheckpointsFrom(1)
       checkpoints.set(0, amended)
       set({ savedSeq: -1 }) // genesis is part of the saved file
+      return true
+    }
+    return false
+  },
+
+  amendShapeGroup: (groupId, groupPaths, removedIds = []) => {
+    const s = get()
+    const live = new Map(groupPaths.map((p) => [p.id, p]))
+    const gone = new Set(removedIds)
+    // A group path by id (its parts all carry the groupId) or by having just been
+    // dropped — `gone` ids are no longer anywhere in the store to be looked up.
+    const mineId = (id: string) => live.has(id) || gone.has(id)
+    const mine = (p: ImportedPath) => p.groupId === groupId || mineId(p.id)
+
+    // The group's entries go back where the first of them sat, so an edit that
+    // adds a part does not shuffle the paths list.
+    const replace = (list: ImportedPath[]): ImportedPath[] => {
+      const out: ImportedPath[] = []
+      let placed = false
+      for (const p of list) {
+        if (!mine(p)) { out.push(p); continue }
+        if (!placed) { out.push(...groupPaths); placed = true }
+      }
+      if (!placed) out.push(...groupPaths)
+      return out
+    }
+    // Scrubbing to an add-event selects what it created, so a part that has just
+    // appeared or gone has to be reflected there too.
+    const reselect = (ev: TimelineEvent, before: ImportedPath[]): string[] => {
+      const was = new Set(before.filter(mine).map((p) => p.id))
+      if (!ev.selectionAfter.some((id) => was.has(id))) return ev.selectionAfter
+      return [...ev.selectionAfter.filter((id) => !was.has(id)), ...groupPaths.map((p) => p.id)]
+    }
+
+    const commit = (idx: number, amended: TimelineEvent) => {
+      const events = [...s.events]
+      events[idx] = amended
+      invalidateCheckpointsFrom(amended.seq)
+      set({ events, ...(s.savedSeq >= amended.seq ? { savedSeq: -1 } : {}) })
+    }
+
+    for (let i = s.cursor - 1; i >= 0; i--) {
+      const ev = s.events[i]
+
+      if (ev.kind === 'paths.add' && ev.paths.some(mine)) {
+        // Nothing here can carry a deletion's op/tab cleanup — see the interface.
+        if (gone.size > 0) return false
+        commit(i, { ...ev, paths: replace(ev.paths), selectionAfter: reselect(ev, ev.paths) })
+        return true
+      }
+
+      if (ev.kind === 'paths.edit' && (
+        ev.updates.some((u) => mineId(u.id))
+        || ev.add?.some(mine)
+        || ev.deleteIds?.some(mineId)
+      )) {
+        // Recipes recompose on replay and would ignore a stamped d.
+        if (ev.updates.some((u) => mineId(u.id) && (u.transforms?.length || u.corner?.length))) return false
+        // Every part this event already knew keeps its slot, updated to its
+        // current geometry — or leaves, taking its operations with it.
+        const knew = new Set([...ev.updates.map((u) => u.id), ...(ev.add ?? []).map((p) => p.id)])
+        const updates = ev.updates.flatMap((u) => {
+          if (!mineId(u.id)) return [u]
+          const p = live.get(u.id)
+          return p ? [{ ...u, d: p.d, shapeParams: p.shapeParams ?? null }] : []
+        })
+        const add = (ev.add ?? []).flatMap((p) => {
+          if (!mine(p)) return [p]
+          const cur = live.get(p.id)
+          return cur ? [cur] : []
+        })
+        // Parts that appeared since this event join its add list.
+        for (const p of groupPaths) if (!knew.has(p.id)) add.push(p)
+        const deleteIds = [...new Set([...(ev.deleteIds ?? []), ...removedIds])]
+        commit(i, {
+          ...ev,
+          updates,
+          ...(add.length > 0 ? { add } : {}),
+          ...(deleteIds.length > 0 ? { deleteIds } : {}),
+          selectionAfter: [...ev.selectionAfter.filter((id) => !gone.has(id))],
+        })
+        return true
+      }
+
+      if (ev.kind === 'snapshot' && ev.state.paths.some(mine)) {
+        if (gone.size > 0) return false
+        commit(i, {
+          ...ev,
+          state: { ...ev.state, paths: replace(ev.state.paths) },
+          selectionAfter: reselect(ev, ev.state.paths),
+        })
+        return true
+      }
+
+      // Anything else that writes this group's geometry would override an amend
+      // made beneath it, so stop and let the caller record a normal event.
+      if (ev.kind === 'paths.split' && (mineId(ev.pathId) || ev.subPaths.some(mine))) return false
+      if (ev.kind === 'shape.params' && mineId(ev.pathId)) return false
+    }
+
+    // The group predates recorded history (loaded or compacted project) — amend
+    // genesis, exactly as amendPathDefinition does.
+    const g = checkpoints.get(0)
+    if (g && g.paths.some(mine)) {
+      if (gone.size > 0) return false
+      invalidateCheckpointsFrom(1)
+      checkpoints.set(0, { ...g, paths: replace(g.paths) })
+      set({ savedSeq: -1 })
       return true
     }
     return false

@@ -1,5 +1,5 @@
 import { useEffect, lazy, Suspense } from 'react'
-import { preloadFonts } from './shapes/textGenerator'
+import { preloadFonts, loadFont, SINGLE_LINE_FONT_FAMILY } from './shapes/textGenerator'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
@@ -175,6 +175,10 @@ export default function App() {
   const activeTool = useUIStore(s => s.activeTool)
   useEffect(() => {
     if (activeTool === 'text') preloadFonts()
+    // A gear carries its tooth count in the single-stroke face, so fetch just
+    // that one when the gear tool is picked — it is needed before the first gear
+    // is drawn, not after.
+    if (activeTool === 'gear') loadFont(SINGLE_LINE_FONT_FAMILY)
   }, [activeTool])
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 overflow-hidden">
