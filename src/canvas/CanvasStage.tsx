@@ -29,6 +29,7 @@ import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
 import { SnapGuideLayer, type SnapGuides } from './layers/SnapGuideLayer'
 import { collectSnapTargets, snapAxisDelta, type SnapTargets } from './objectSnap'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
+import { EscapementAnimLayer } from './layers/EscapementAnimLayer'
 import { CornerPickLayer } from './layers/CornerPickLayer'
 import { PenLayer } from './layers/PenLayer'
 import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
@@ -353,6 +354,11 @@ export default function CanvasStage() {
   const penNodes = useUIStore((s) => s.penNodes)
   const penCurveType = useUIStore((s) => s.penCurveType)
   const nodeEditPathId = useUIStore((s) => s.nodeEditPathId)
+  // A running escapement animation draws the whole group itself, in mesh, so the
+  // group's own paths step aside for it.
+  const escapementAnimPathId = useUIStore((s) => s.escapementAnimPathId)
+  const escapementAnimGroupId = usePathsStore((s) =>
+    s.paths.find((p) => p.id === escapementAnimPathId)?.groupId ?? null)
   const cornerPickPathId = useUIStore((s) => s.cornerPickPathId)
   const effectiveCurveType: PenCurveType = altDown
     ? (penCurveType === 'linear' ? 'catmull-rom' : 'linear')
@@ -1790,6 +1796,7 @@ export default function CanvasStage() {
             viewport={viewport}
             liveTransform={liveTransform}
             excludePathId={nodeEditPathId}
+            excludeGroupId={escapementAnimGroupId}
           />
           {nodeEditPathId && (
             <NodeEditLayer
@@ -1813,6 +1820,7 @@ export default function CanvasStage() {
           <TabLayer viewport={viewport} />
           <SimulationLayer viewport={viewport} />
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
+          <EscapementAnimLayer viewport={viewport} />
           <CornerPickLayer viewport={viewport} />
           {activeTool === 'pen' && (
             <PenLayer

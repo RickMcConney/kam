@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Dices, ChevronDown } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
 import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
 import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
+import { escapementDims } from '../../shapes/escapementGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
@@ -32,6 +33,7 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'board',     label: 'Board',   icon: <CookingPot size={ICON.md} /> },
   { type: 'gear',      label: 'Gear',    icon: <Cog size={ICON.md} /> },
   { type: 'cam',       label: 'Cam',     icon: <Cloud size={ICON.md} /> },
+  { type: 'escapement', label: 'Escape', icon: <Anchor size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
@@ -364,6 +366,102 @@ function ShapeConfig({ type, config, onChange, units }: {
         </p>}
         {cyc && g.emitPinion && pin && pin.pinGap < 1 && <p className="text-label text-yellow-500">
           Only {L(Math.max(0, pin.pinGap))} of wood between pin holes — fewer pins, or thinner ones.
+        </p>}
+      </div>)
+    }
+    case 'escapement': {
+      const e = c.escapement
+      const set = (patch: Partial<ShapeToolConfig['escapement']>) => onChange({ ...c, escapement: { ...c.escapement, ...patch } })
+      const dm = escapementDims({ ...e, cx: 0, cy: 0 })
+      const dead = e.escType === 'deadbeat'
+      const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      const Ang = ({ label, value, min, max, step, onChange: oc }: {
+        label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void
+      }) => (
+        <div className="flex items-center gap-1.5">
+          <span className={labelCls}>{label}</span>
+          <NumericInput value={value} min={min} max={max} step={step} onChange={oc} className={inputCls} />
+          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+        </div>
+      )
+      return (<div className="space-y-1">
+        <Select label="Type" value={e.escType}
+          options={[['deadbeat', 'Deadbeat (Graham)'], ['recoil', 'Recoil (anchor)']]}
+          onChange={(escType) => set({ escType })} />
+        <NumInput label="Teeth"   valueMM={e.teeth} units="" min={6} integer onChange={(teeth) => set({ teeth: Math.max(6, Math.round(teeth)) })} />
+        <NumInput label="Wheel Ø" valueMM={e.wheelDia} units={u} min={4} onChange={(wheelDia) => set({ wheelDia })} />
+        {/* Half-integer or the pallets cannot alternate — the wheel gives up half
+            a tooth per beat, so they must stand an odd number of half pitches
+            apart. Stepped by 0.5 for that reason. */}
+        <NumInput label="Span"    valueMM={e.span} units="" min={0.5} step={0.5} onChange={(span) => set({ span })} />
+        <NumInput label="Tooth H" valueMM={e.toothDepth} units={u} min={0.5} onChange={(toothDepth) => set({ toothDepth })} />
+        <Ang label="Undercut" value={e.undercut} min={0} max={60} step={1} onChange={(undercut) => set({ undercut })} />
+        {/* Drop is at the WHEEL and lift at the ANCHOR — they are not the same
+            angle measured twice, and the impulse is what is left of the beat. */}
+        <Ang label="Drop"   value={e.drop} min={0.2} max={10} step={0.25} onChange={(drop) => set({ drop })} />
+        <Ang label="Lift"   value={e.lift} min={0.5} max={12} step={0.25} onChange={(lift) => set({ lift })} />
+        {dead ? (<>
+          <Ang label="Lock" value={e.lock} min={0} max={10} step={0.25} onChange={(lock) => set({ lock })} />
+          <Ang label="Draw" value={e.draw} min={0} max={10} step={0.5} onChange={(draw) => set({ draw })} />
+        </>) : (
+          <Ang label="Recoil" value={e.recoilArc} min={0.5} max={20} step={0.5} onChange={(recoilArc) => set({ recoilArc })} />
+        )}
+        {/* Straight flanks leave a tooth weak across the grain — see
+            EscapementSpec.toothCurve. */}
+        <NumInput label="Curve"   valueMM={e.toothCurve} units="" min={0} step={0.1} onChange={(toothCurve) => set({ toothCurve: Math.max(0, Math.min(1, toothCurve)) })} />
+        {/* Backlash, in effect — see EscapementSpec.clearance. */}
+        <NumInput label="Clear"   valueMM={e.clearance} units={u} min={0} step={0.05} onChange={(clearance) => set({ clearance })} />
+        <NumInput label="Arm W"   valueMM={e.armWidth} units={u} min={1} onChange={(armWidth) => set({ armWidth })} />
+        <NumInput label="Tail"    valueMM={e.tailLength} units={u} min={0} onChange={(tailLength) => set({ tailLength })} />
+        <NumInput label="Bore Ø"  valueMM={e.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
+        <NumInput label="Hub Ø"   valueMM={e.hubDia} units={u} min={0} onChange={(hubDia) => set({ hubDia })} />
+        <NumInput label="Spokes"  valueMM={e.spokes} units="" min={0} integer onChange={(spokes) => set({ spokes: Math.max(0, Math.round(spokes)) })} />
+        <NumInput label="Arbor Ø" valueMM={e.anchorBore} units={u} min={0} onChange={(anchorBore) => set({ anchorBore })} />
+        {/* The teeth lean the way the wheel runs, so this is geometry, not a view
+            option — a wheel cut the wrong way round will not lock. */}
+        <Check label="Clockwise" checked={e.clockwise} onChange={(clockwise) => set({ clockwise })} />
+        <Check label="Refs ○" checked={e.refCircles} onChange={(refCircles) => set({ refCircles })} />
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Arbors {L(dm.centreDistance)} apart · pallets {L(dm.palletRadius)} from the arbor
+          <br />
+          Beat {dm.beatDeg.toFixed(2)}° = {dm.wheelImpulseDeg.toFixed(2)}° impulse + {e.drop}° drop
+          <br />
+          Pendulum must swing past {dm.minHalfSwingDeg.toFixed(2)}° each way · faces {L(dm.faceWidth)} at {dm.impulseAngleDeg.toFixed(0)}°
+          <br />
+          Pallets dive {L(dm.palletDive)} past the tips, into {L(e.toothDepth)} of tooth
+          <br />
+          Locks {L(dm.lockDepth)} deep, after {L(e.clearance)} of clearance
+          <br />
+          Tooth {L(dm.toothBase)} thick at the root
+
+
+          {!dead && <><br />Recoils {dm.recoilRatio.toFixed(2)}° of wheel per 1° of overswing</>}
+          <br />
+          Drawn clear of each other — cut both, then set the arbors at that spacing.
+        </p>
+        {dm.spanUneven && <p className="text-label text-red-400">
+          Span must be a whole number of teeth plus a half (7.5, 8.5 …). The wheel gives up half a tooth per beat, so at {e.span} the pallets cannot alternate and it will not run.
+        </p>}
+        {dm.noImpulse && <p className="text-label text-red-400">
+          {e.drop}° of drop uses up the whole {dm.beatDeg.toFixed(2)}° beat — no impulse left.
+        </p>}
+        {dm.noLock && <p className="text-label text-red-400">
+          {L(e.clearance)} of clearance uses up the whole lock — a tooth never reaches the locking face and the wheel will run straight through. Less clearance, or more lock.
+        </p>}
+        {dm.divesTooDeep && <p className="text-label text-red-400">
+          Pallets dive {L(dm.palletDive)} into {L(e.toothDepth)} of tooth — the impulse face reaches the tooth it just locked and the pair will bind. Deeper teeth, or less lock/lift/span.
+        </p>}
+        {dm.hubFouls && <p className="text-label text-yellow-500">Pallet hub reaches into the wheel — smaller arbor, or more span.</p>}
+        {dm.faceTooSteep && <p className="text-label text-yellow-500">
+          Impulse faces at {dm.impulseAngleDeg.toFixed(0)}° are steep — less lift, or more drop.
+        </p>}
+        {dm.hub.grown && <p className="text-label text-blue-400">Hub grown to {L(dm.hub.dia)} to seat {e.spokes} spokes.</p>}
+        {e.spokes >= 2 && !dm.hub.spoked && <p className="text-label text-yellow-500">
+          {dm.hub.maxSpokes >= 2 ? `No room for ${e.spokes} spokes — this wheel takes ${dm.hub.maxSpokes}. Cut solid.`
+                                 : 'No room for a spoke web on this wheel — cut solid.'}
+        </p>}
+        {e.refCircles && <p className="text-label text-yellow-500">
+          Reference circles are not cuts — delete them before generating. They are tangent when the arbors are right.
         </p>}
       </div>)
     }

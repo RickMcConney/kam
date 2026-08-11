@@ -14,6 +14,10 @@ interface Props {
   viewport: Viewport
   liveTransform: LiveTransform | null
   excludePathId?: string | null
+  /** Hide a whole shape group — the escapement animation draws its own copy at
+   *  the real centre distance, and a static wheel under the turning one is
+   *  unreadable. */
+  excludeGroupId?: string | null
 }
 
 // ── Live-transform → Konva node attrs ─────────────────────────────────────────
@@ -251,7 +255,7 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
 })
 
 // ── Main layer ────────────────────────────────────────────────────────────────
-export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
+export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGroupId }: Props) {
   // Individual selectors — whole-store destructuring re-rendered this layer on
   // every store change, including pure undo-stack pushes (tofix.md H3).
   const paths = usePathsStore((s) => s.paths)
@@ -262,7 +266,8 @@ export function DesignLayer({ viewport, liveTransform, excludePathId }: Props) {
 
   return (
     <Group listening={false}>
-      {paths.filter((p) => p.visible && !p.hidden && p.id !== excludePathId).map((p) => {
+      {paths.filter((p) => p.visible && !p.hidden && p.id !== excludePathId
+        && !(excludeGroupId && p.groupId === excludeGroupId)).map((p) => {
         const isSelected = selectedIds.includes(p.id)
 
         // Image-backed paths get special rendering

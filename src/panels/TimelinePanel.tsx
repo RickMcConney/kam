@@ -6,8 +6,7 @@ import {
   SquareSquare, LayoutGrid, Scissors, Pencil, Trash2, Eye, EyeOff,
   RectangleEllipsis, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   ArrowUpDown, Move, RotateCw, Scaling, Spline, Combine, FlipHorizontal2,
-  VectorSquare, X, FoldHorizontal, Wand2, Image as ImageIcon,
-} from 'lucide-react'
+  VectorSquare, X, FoldHorizontal, Wand2, Image as ImageIcon, Anchor,} from 'lucide-react'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useTabStore } from '../store/tabStore'
@@ -35,7 +34,7 @@ type ChipIcon = React.ComponentType<{ size?: number; style?: React.CSSProperties
 const SHAPE_ICONS: Record<string, ChipIcon> = {
   rectangle: Square, roundrect: Squircle, inroundrect: Signpost, circle: Circle,
   ellipse: Ellipse, polygon: Hexagon, star: Star, heart: Heart, slot: Pill,
-  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, cam: Snail, text: Type,
+  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, cam: Snail, escapement: Anchor, text: Type,
 }
 
 // … and the CAM operations menu (MachinePanel AddOperationMenu)

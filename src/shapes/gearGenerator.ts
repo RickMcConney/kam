@@ -45,8 +45,9 @@
 
 import {
   type Pt, clamp, arcInto, ellipseRing,
-  roundConcave, roundConvex, ringToD,
+  roundConcave, ringToD,
 } from './polyOps'
+import { seatHub, spokeWindows, type HubFit } from './spokedWheel'
 import { generateTextD, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from './textGenerator'
 import { flattenPath } from '../cam/pathFlattener'
 
@@ -120,9 +121,7 @@ const ADDENDUM = 1.0        // × module
 const DEDENDUM = 1.25       // × module
 const ROOT_FILLET = 0.38    // × module — the standard rack tip radius
 const RIM = 2.5             // × module — stock left under the root circle
-const HUB = 2.0             // × module — least stock left around the bore
 const SPOKE = 2.5           // × module — spoke width
-const SPOKE_GAP = 0.15      // rad — daylight left between two spokes at the hub
 // Chord tolerance on the involute flank, mm. This is a wooden gear cut on a
 // router: it will be sanded, it will move with the seasons, and it is running
 // tenths of a millimetre of backlash — so a profile held to 0.02 mm is already
@@ -136,67 +135,25 @@ const SPOKE_GAP = 0.15      // rad — daylight left between two spokes at the h
 // microns of extra backlash instead of as interference, which is the direction
 // you want to err in when the part is going to be sanded anyway.
 export const FLANK_TOL = 0.02
-const WEB = 1.5             // × module — least radial room a window needs
 
 const inv = (a: number) => Math.tan(a) - a
 
-export interface GearHub {
-  /** The diameter actually used. */
-  dia: number
-  /** It had to be grown past what was asked for, to seat the spokes. */
-  grown: boolean
-  /** Windows will really be cut — false means the web has no room and the gear
-   *  comes out solid. */
-  spoked: boolean
-  /** Most spokes this gear can take at ANY hub diameter, before the hub runs
-   *  into the rim. */
-  maxSpokes: number
-}
+export type GearHub = HubFit
 
 /**
  * Resolve the hub.
  *
- * Spokes are a fixed `SPOKE·m` wide, so what limits their number is the
- * circumference they have to land on — which is why the answer is to grow the
- * hub rather than to refuse the count or, worse, to drop every window and hand
- * back a solid gear with no explanation. Seating `n` spokes with `SPOKE_GAP` of
- * daylight between them needs
- *
- *     hubR ≥ (SPOKE·m/2) / sin(π/n − SPOKE_GAP/2)
- *
- * so `hubDia` is treated as a FLOOR and raised to that when it falls short. The
- * hub can only grow until it meets the rim, which is the real ceiling on the
- * count (`maxSpokes`); past 2π/SPOKE_GAP spokes no hub is big enough at all.
+ * The rules live in `spokedWheel.ts`, stated in terms of the spoke width so the
+ * escape wheel can use the same ones; this only says what a gear's spoke width
+ * and rim are. `SPOKE·m` wide spokes, `WEB·m` of web and `HUB·m` of stock round
+ * the bore come out as 1, 0.6 and 0.8 times that width, which is exactly what
+ * `seatHub` applies.
  */
 export function gearHub(module: number, teeth: number, bore: number, hubDia: number, spokes: number): GearHub {
   const m = Math.max(0.05, module)
   const z = Math.max(4, Math.round(teeth))
   const rf = Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
-  const rimInner = rf - RIM * m
-  const boreR = clamp(bore / 2, 0, rf - 1)
-  const minR = boreR + HUB * m               // stock the axle needs round it
-  const ceiling = rimInner - WEB * m         // past this there is no web left
-  const hw = (SPOKE * m) / 2
-
-  // Smallest hub that seats n spokes; Infinity when no hub can.
-  const seat = (n: number) => {
-    const room = Math.PI / n - SPOKE_GAP / 2
-    return room <= 1e-6 ? Infinity : hw / Math.sin(room)
-  }
-  let maxSpokes = 0
-  for (let n = 2; n <= Math.floor((2 * Math.PI) / SPOKE_GAP); n++) {
-    if (Math.max(minR, seat(n)) <= ceiling) maxSpokes = n
-  }
-
-  const asked = Math.max(minR, hubDia / 2)
-  const n = Math.round(spokes)
-  if (n < 2) return { dia: 2 * asked, grown: false, spoked: false, maxSpokes }
-
-  const need = seat(n)
-  const r = Math.max(asked, isFinite(need) ? need : asked)
-  // 0.05 mm, not an epsilon: growing the hub by a few microns to seat the last
-  // spoke is true but not worth telling anyone about.
-  return { dia: 2 * r, grown: r > asked + 0.025, spoked: isFinite(need) && r <= ceiling, maxSpokes }
+  return seatHub(rf - RIM * m, clamp(bore / 2, 0, rf - 1), hubDia, spokes, SPOKE * m)
 }
 
 /**
@@ -609,40 +566,6 @@ function cycloidalTip(spec: CycloidalSpec): number {
   const meet = face.find((q) => q.a >= psi)
   if (!meet) return nominal
   return Math.max(rp + 0.05 * m, meet.r)
-}
-
-/** The windows between the spokes, as CW holes. `gearHub` has already sized the
- *  hub so they fit, so this only has to draw them. */
-function spokeWindows(n: number, rimInner: number, hubOuter: number, m: number): Pt[][] {
-  if (n < 2 || rimInner - hubOuter < WEB * m) return []
-  const hw = Math.min((SPOKE * m) / 2, hubOuter * 0.9)   // half the spoke width
-  // Angular half-width of a straight-sided spoke, which is widest at the hub.
-  const halfAt = (r: number) => Math.asin(clamp(hw / r, -1, 1))
-  const step = (2 * Math.PI) / n
-  if (step - 2 * halfAt(hubOuter) < SPOKE_GAP * 0.5) return []   // belt and braces
-  const fillet = Math.min(1.5 * m, (rimInner - hubOuter) * 0.25, hw * 0.9)
-
-  const out: Pt[][] = []
-  for (let i = 0; i < n; i++) {
-    const a0 = i * step, a1 = a0 + step
-    const ring: Pt[] = []
-    const radial = (from: number, to: number, side: 1 | -1, centre: number) => {
-      const steps = 24
-      for (let k = 0; k <= steps; k++) {
-        const r = from + ((to - from) * k) / steps
-        const a = centre + side * halfAt(r)
-        ring.push([r * Math.cos(a), r * Math.sin(a)])
-      }
-    }
-    radial(hubOuter, rimInner, 1, a0)                     // up this spoke's + side
-    arcInto(ring, 0, 0, rimInner, rimInner, a0 + halfAt(rimInner), a1 - halfAt(rimInner))
-    radial(rimInner, hubOuter, -1, a1)                    // down the next spoke's − side
-    arcInto(ring, 0, 0, hubOuter, hubOuter, a1 - halfAt(hubOuter), a0 + halfAt(hubOuter))
-    // The window's convex corners are the WEB's concave ones — the stress
-    // risers where a spoke meets the hub and the rim.
-    for (const r of roundConvex([ring], fillet)) out.push(r)
-  }
-  return out
 }
 
 // ─── Toothed-outline cache ────────────────────────────────────────────────────
@@ -1061,7 +984,7 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
   // Windings stay as they were: these are holes in the blank, so CW, which is
   // what anything reading them as regions expects.
   const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes)
-  const windows = spokeWindows(Math.round(spec.spokes), rf - RIM * m, hub.dia / 2, m)
+  const windows = spokeWindows(Math.round(spec.spokes), rf - RIM * m, hub.dia / 2, SPOKE * m)
   if (windows.length > 0) {
     out.push({ key: 'spokes', d: windows.map((r) => ringToD(place(r), false)).join(' ') })
   }

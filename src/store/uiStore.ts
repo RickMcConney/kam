@@ -37,6 +37,12 @@ interface UIState {
   penNodes: PenNode[]
   penCurveType: PenCurveType
   nodeEditPathId: string | null
+  // While non-null, the escapement whose path this is runs in the canvas: the
+  // anchor is moved onto the true centre distance and the pair is animated, so
+  // the question the drawing cannot answer — do they bind — can be watched. The
+  // group's own paths are hidden meanwhile, or a static wheel would sit under
+  // the turning one. Nothing is written to the document; it is a preview.
+  escapementAnimPathId: string | null
   // Corner-pick mode for the Corner Treatment form: while non-null, treatable
   // corners render as clickable markers; selectedCorners holds the node indices
   // the treatment applies to (empty = all corners). Markers come from
@@ -116,6 +122,7 @@ interface UIState {
   setPenNodes: (nodes: PenNode[]) => void
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
+  setEscapementAnim: (id: string | null) => void
   setCornerPickSession: (id: string | null, baseD: string | null) => void
   setTreatedCorners: (idxs: number[]) => void
   toggleCorner: (idx: number) => void
@@ -147,6 +154,7 @@ export const useUIStore = create<UIState>()(
   tabsFormActive: false,
   shapesPanelOpen: false,
   setupPanelOpen: false,
+  escapementAnimPathId: null,
   helpOpen: false,
   timelineOpen: true,
   bottomTab: 'timeline' as const,
@@ -183,6 +191,7 @@ export const useUIStore = create<UIState>()(
   setSnap: (enabled) => set({ snapEnabled: enabled }),
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
+  setEscapementAnim: (id) => set({ escapementAnimPathId: id }),
   setLastShapeType: (type) => set({ lastShapeType: type }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),

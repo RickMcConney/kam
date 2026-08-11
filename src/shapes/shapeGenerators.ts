@@ -3,8 +3,11 @@ import { generateMazeD } from './mazeGenerator'
 import { generateCuttingBoardD, type BoardShape, type BoardHandle } from './cuttingBoardGenerator'
 import { generateGearD, generateGearParts, moduleForRadius, type ToothProfile } from './gearGenerator'
 import { generateCamD, generateCamParts, baseDiaForRadius } from './camGenerator'
+import {
+  generateEscapementD, generateEscapementParts, wheelDiaForRadius, type EscapementType,
+} from './escapementGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -28,6 +31,16 @@ export type ShapeParams =
     }
   | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
+  | {
+      type: 'escapement'; cx: number; cy: number
+      escType: EscapementType; teeth: number; wheelDia: number; span: number
+      toothDepth: number; undercut: number; drop: number; lift: number
+      lock: number; draw: number; recoilArc: number
+      toothCurve: number; clearance: number
+      armWidth: number; tailLength: number
+      bore: number; hubDia: number; spokes: number; anchorBore: number
+      clockwise: boolean; refCircles: boolean
+    }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
@@ -50,6 +63,15 @@ export interface ShapeToolConfig {
   }
   gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
   cam: { baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
+  escapement: {
+    escType: EscapementType; teeth: number; wheelDia: number; span: number
+    toothDepth: number; undercut: number; drop: number; lift: number
+    lock: number; draw: number; recoilArc: number
+    toothCurve: number; clearance: number
+    armWidth: number; tailLength: number
+    bore: number; hubDia: number; spokes: number; anchorBore: number
+    clockwise: boolean; refCircles: boolean
+  }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -87,6 +109,19 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   // at the base circle — well inside what wood-on-wood friction holds — and a 100 mm
   // lever on a Ø32 crest is a lever rather than a lump.
   cam: { baseDia: 40, riseMM: 12, sweepDeg: 360, boreDia: 8, handleLength: 100, handleWidth: 18 },
+  // A 30-tooth Graham deadbeat on a Ø100 wheel: the standard seconds-pendulum
+  // escape wheel, and 7.5 teeth is N/4 landing on a half tooth, which is what
+  // makes the pallets alternate. 2° of drop out of the 6° beat leaves 4° of
+  // impulse at the wheel for 3° of lift at the anchor.
+  escapement: {
+    escType: 'deadbeat', teeth: 30, wheelDia: 100, span: 7.5,
+    toothDepth: 6, undercut: 20, drop: 2, lift: 3, lock: 1.5, draw: 2, recoilArc: 1.5,
+    // 0.3 mm of running clearance off a 1.31 mm lock — a fit a wooden movement
+    // can live with through a season, and still a mm of lock left.
+    toothCurve: 0.6, clearance: 0.3,
+    armWidth: 8, tailLength: 0, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
+    clockwise: false, refCircles: false,
+  },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
@@ -346,6 +381,7 @@ export function generateShapeD(p: ShapeParams): string {
     case 'board': return generateCuttingBoardD(p)
     case 'gear': return generateGearD(p)
     case 'cam': return generateCamD(p)
+    case 'escapement': return generateEscapementD(p)
     case 'text': return generateTextD(p)
   }
 }
@@ -373,6 +409,11 @@ export interface ShapePart {
 
 const CAM_PART_LABELS: Record<string, string> = { cam: 'Outline', bore: 'Bore' }
 
+const ESCAPEMENT_PART_LABELS: Record<string, string> = {
+  wheel: 'Escape Wheel', spokes: 'Spokes', bore: 'Bore',
+  anchor: 'Pallets', anchorbore: 'Pallet Arbor', ref: 'Reference Circles',
+}
+
 const GEAR_PART_LABELS: Record<string, string> = {
   teeth: 'Teeth', spokes: 'Spokes', bore: 'Bore', label: 'Marking', pitch: 'Pitch Circle',
   pinion: 'Pinion Cheek', pinholes: 'Pin Holes', pinionbore: 'Pinion Bore',
@@ -384,6 +425,13 @@ export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
     return generateGearParts(p).map((g) => ({
       part: g.key,
       label: GEAR_PART_LABELS[g.key] ?? g.key,
+      d: g.d,
+    }))
+  }
+  if (p.type === 'escapement') {
+    return generateEscapementParts(p).map((g) => ({
+      part: g.key,
+      label: ESCAPEMENT_PART_LABELS[g.key] ?? g.key,
       d: g.d,
     }))
   }
@@ -414,6 +462,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'board': return 'Cutting Board'
     case 'gear': return 'Gear'
     case 'cam': return 'Cam'
+    case 'escapement': return 'Escapement'
     case 'text': return 'Text'
   }
 }
@@ -498,6 +547,11 @@ export function shapeParamsFromDrag(
         handleLength: config.cam.handleLength * (radius / Math.max(0.5, config.cam.baseDia / 2 + (config.cam.riseMM * config.cam.sweepDeg) / 360)),
         handleWidth: config.cam.handleWidth,
       }
+    case 'escapement':
+      // The drag box sizes the WHEEL, which is what a user is thinking about.
+      // Everything else is the mechanism and comes from the panel untouched —
+      // the anchor is drawn from those same numbers and follows along above it.
+      return { type: 'escapement', cx, cy, ...config.escapement, wheelDia: wheelDiaForRadius(radius) }
     case 'gear':
       // The drag box sizes the gear's outside diameter; tooth count and pressure
       // angle are the pattern and come from the panel, so `module` is what the
@@ -553,6 +607,7 @@ export function shapeParamsFromConfig(
     }
     case 'gear': return { type: 'gear', cx, cy, ...config.gear }
     case 'cam': return { type: 'cam', cx, cy, ...config.cam }
+    case 'escapement': return { type: 'escapement', cx, cy, ...config.escapement }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -575,6 +630,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'board': return { ...p, x: p.x + dx, y: p.y + dy }
     case 'gear': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'cam': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'escapement': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -688,6 +744,21 @@ export function scaleShapeParams(
         ...p, cx: ncx, cy: ncy,
         baseDia: p.baseDia * asx, riseMM: p.riseMM * asx, boreDia: p.boreDia * asx,
         handleLength: p.handleLength * asx, handleWidth: p.handleWidth * asx,
+      }
+    }
+    case 'escapement': {
+      // Stretched on one axis the pallets no longer stand on tangents to the tip
+      // circle, which is the one thing the whole construction rests on — so the
+      // params go and a plain path is left, as the gear and cam do.
+      if (Math.abs(asx - asy) > 0.001) return null
+      const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
+      // Teeth, span and every angle are the mechanism; only lengths scale.
+      return {
+        ...p, cx: ncx, cy: ncy,
+        wheelDia: p.wheelDia * asx, toothDepth: p.toothDepth * asx,
+        clearance: p.clearance * asx,
+        armWidth: p.armWidth * asx, tailLength: p.tailLength * asx,
+        bore: p.bore * asx, hubDia: p.hubDia * asx, anchorBore: p.anchorBore * asx,
       }
     }
     case 'text': {

@@ -13,6 +13,7 @@ import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
 import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
+import { escapementDims } from '../shapes/escapementGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
@@ -209,6 +210,9 @@ function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApp
 
 function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params: ShapeParams; units: string; orgWorld: { x: number; y: number } }) {
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
+  // Subscribed rather than read once, so the escapement's Animate button knows
+  // to say Stop. Hooks cannot live inside the switch below.
+  const escapementAnimPathId = useUIStore((s) => s.escapementAnimPathId)
   // A multi-part shape (a gear) regenerates every path in its group, so every
   // one of their operations is stale — not just this path's. Read the paths back
   // AFTER the edit so a part that just appeared is included.
@@ -487,6 +491,99 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             </span></>}
           </>}
         </div>
+      </>)
+    }
+    case 'escapement': {
+      const dm = escapementDims(params)
+      const dead = params.escType === 'deadbeat'
+      const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
+      const running = escapementAnimPathId === id
+      return (<>
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
+        <label className="flex items-center gap-1.5 col-span-2">
+          <span className={labelCls}>Type</span>
+          <select value={params.escType} className={fieldCls}
+            onChange={(ev) => update({ ...params, escType: ev.target.value as 'deadbeat' | 'recoil' })}>
+            <option value="deadbeat">Deadbeat (Graham)</option>
+            <option value="recoil">Recoil (anchor)</option>
+          </select>
+        </label>
+        <EditField label="N"    valueMM={params.teeth} units="" min={6} integer onChange={(teeth) => update({ ...params, teeth: Math.max(6, Math.round(teeth)) })} />
+        <EditField label="Wh Ø" valueMM={params.wheelDia} units={u} min={4} onChange={(wheelDia) => update({ ...params, wheelDia })} />
+        {/* Half-integer or the pallets cannot alternate — see the readout. */}
+        <EditField label="Span" valueMM={params.span} units="" min={0.5} onChange={(span) => update({ ...params, span })} />
+        <EditField label="Th H" valueMM={params.toothDepth} units={u} min={0.5} onChange={(toothDepth) => update({ ...params, toothDepth })} />
+        <RawField label="Und"  value={params.undercut} min={0} max={60} step={1} suffix="°" onChange={(undercut) => update({ ...params, undercut })} />
+        {/* Drop is at the WHEEL, lift at the ANCHOR. */}
+        <RawField label="Drop" value={params.drop} min={0.2} max={10} step={0.25} suffix="°" onChange={(drop) => update({ ...params, drop })} />
+        <RawField label="Lift" value={params.lift} min={0.5} max={12} step={0.25} suffix="°" onChange={(lift) => update({ ...params, lift })} />
+        {dead
+          ? <RawField label="Lock" value={params.lock} min={0} max={10} step={0.25} suffix="°" onChange={(lock) => update({ ...params, lock })} />
+          : <RawField label="Rcl"  value={params.recoilArc} min={0.5} max={20} step={0.5} suffix="°" onChange={(recoilArc) => update({ ...params, recoilArc })} />}
+        {dead && <RawField label="Draw" value={params.draw} min={0} max={10} step={0.5} suffix="°" onChange={(draw) => update({ ...params, draw })} />}
+        <EditField label="Bow"  valueMM={params.toothCurve} units="" min={0} onChange={(toothCurve) => update({ ...params, toothCurve: Math.max(0, Math.min(1, toothCurve)) })} />
+        <EditField label="Clr"  valueMM={params.clearance} units={u} min={0} onChange={(clearance) => update({ ...params, clearance })} />
+        <EditField label="ArmW" valueMM={params.armWidth} units={u} min={1} onChange={(armWidth) => update({ ...params, armWidth })} />
+        <EditField label="Tail" valueMM={params.tailLength} units={u} min={0} onChange={(tailLength) => update({ ...params, tailLength })} />
+        <EditField label="Ø"    valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
+        <EditField label="Hub"  valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => update({ ...params, hubDia })} />
+        <EditField label="Spk"  valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => update({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
+        <EditField label="Arb"  valueMM={params.anchorBore} units={u} min={0} onChange={(anchorBore) => update({ ...params, anchorBore })} />
+        {/* Geometry, not a view option: the teeth lean the way the wheel runs. */}
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>CW</span>
+          <input type="checkbox" checked={params.clockwise}
+            onChange={(ev) => update({ ...params, clockwise: ev.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>R○</span>
+          <input type="checkbox" checked={params.refCircles}
+            onChange={(ev) => update({ ...params, refCircles: ev.target.checked })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
+        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+          Arbors {N(dm.centreDistance)} apart · pallets {N(dm.palletRadius)} out
+          <br />
+          Beat {dm.beatDeg.toFixed(2)}° = {dm.wheelImpulseDeg.toFixed(2)}° impulse + {params.drop}° drop
+          <br />
+          Swing past {dm.minHalfSwingDeg.toFixed(2)}° each way · faces {N(dm.faceWidth)} at {dm.impulseAngleDeg.toFixed(0)}°
+          <br />Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth
+          <br />Locks {N(dm.lockDepth)} deep, after {N(params.clearance)} of clearance
+          <br />Tooth {N(dm.toothBase)} thick at the root
+          {!dead && <><br />Recoils {dm.recoilRatio.toFixed(2)}° of wheel per 1° of overswing</>}
+          <br />Drawn clear — set the arbors at that spacing.
+          {dm.spanUneven && <><br /><span className="text-red-400">
+            Span must be whole teeth + a half (7.5, 8.5 …), or the pallets cannot alternate.
+          </span></>}
+          {dm.noImpulse && <><br /><span className="text-red-400">Drop uses the whole beat — no impulse left.</span></>}
+          {dm.noLock && <><br /><span className="text-red-400">
+            Clearance uses up the whole lock — the wheel will run straight through. Less clearance, or more lock.
+          </span></>}
+          {dm.divesTooDeep && <><br /><span className="text-red-400">
+            Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth — they will bind. Deeper teeth, or less lock/lift/span.
+          </span></>}
+          {dm.hubFouls && <><br /><span className="text-yellow-500">Pallet hub reaches into the wheel.</span></>}
+          {dm.faceTooSteep && <><br /><span className="text-yellow-500">Impulse faces steep at {dm.impulseAngleDeg.toFixed(0)}° — less lift, or more drop.</span></>}
+          {dm.hub.grown && <><br /><span className="text-blue-400">Hub grown to {N(dm.hub.dia)} for {params.spokes} spokes.</span></>}
+          {params.spokes >= 2 && !dm.hub.spoked && <><br /><span className="text-yellow-500">
+            {dm.hub.maxSpokes >= 2 ? `Max ${dm.hub.maxSpokes} spokes here — cut solid.` : 'No room for spokes — cut solid.'}
+          </span></>}
+          {params.refCircles && <><br /><span className="text-yellow-500">Reference circles are not cuts — delete before generating.</span></>}
+        </div>
+        {/* The parts are drawn clear of each other, so the one thing the drawing
+            cannot show is whether they bind. This puts them at the real centre
+            distance and runs them. A preview only — nothing is written. */}
+        <button
+          type="button"
+          onClick={() => useUIStore.getState().setEscapementAnim(running ? null : id)}
+          className={`col-span-2 rounded px-2 py-1 text-label ${running
+            ? 'bg-red-500/80 hover:bg-red-500 text-white'
+            : 'bg-blue-500/80 hover:bg-blue-500 text-white'}`}
+        >
+          {running ? 'Stop' : 'Animate in mesh'}
+        </button>
       </>)
     }
     case 'cam': {

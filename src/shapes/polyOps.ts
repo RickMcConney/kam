@@ -84,13 +84,31 @@ export function inflateRings(rings: Pt[][], delta: number): Pt[][] {
     .filter((r) => r.length >= 3 && signedArea(r) > 1e-6)
 }
 
+/** Mean width of a ring, mm — 2·area/perimeter, which for a long thin sliver is
+ *  the thickness and for anything real is a working dimension. */
+function meanWidth(ring: Pt[]): number {
+  let per = 0
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    per += Math.hypot(ring[i][0] - ring[j][0], ring[i][1] - ring[j][1])
+  }
+  return per < 1e-12 ? 0 : (2 * Math.abs(signedArea(ring))) / per
+}
+
 export function boolRings(op: 'union' | 'difference', a: Pt[][], b: Pt[][]): Pt[][] {
   if (a.length === 0) return []
   if (b.length === 0) return a
   const A = a.map((r) => [r]) as never
   const B = b.map((r) => [r]) as never
   const out = op === 'union' ? polygonClipping.union(A, B) : polygonClipping.difference(A, B)
-  return out.map((poly) => ccw(poly[0] as Pt[])).filter((r) => r.length >= 3)
+  // Drop the slivers clipper leaves along a coincident edge. They carry seven or
+  // eight points, so a point count cannot see them, and they survive all the way
+  // to the canvas — where a ring with no width still draws, as a stray line
+  // lying across the part. The test is WIDTH, not area: 2·area/perimeter is the
+  // mean width of a long thin ring, and these come out around half a micron
+  // against millimetres for anything real.
+  return out
+    .map((poly) => ccw(poly[0] as Pt[]))
+    .filter((r) => r.length >= 3 && signedArea(r) > 1e-6 && meanWidth(r) > 1e-3)
 }
 
 /** Morphological closing — fills concave corners with a tangent arc of radius f,
