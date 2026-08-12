@@ -33,7 +33,7 @@ interface Props {
 }
 
 export function EscapementAnimLayer({ viewport }: Props) {
-  const pathId = useUIStore((s) => s.escapementAnimPathId)
+  const pathId = useUIStore((s) => s.meshAnimPathId)
   const paths = usePathsStore((s) => s.paths)
   const [phase, setPhase] = useState(0)
   const startRef = useRef(0)

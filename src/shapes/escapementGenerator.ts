@@ -48,6 +48,27 @@
 //
 // which is why `drop` is an input and the wheel's share of the impulse is not.
 //
+// DROP LOCK. A tooth arrives by falling, and it has to fall onto DEAD FACE. Lay
+// the two loci out as above and it does not: each pallet's impulse begins at the
+// exact anchor angle at which the other one releases, so the arriving tooth
+// meets the corner where the locking face turns into the impulse face — and the
+// running clearance then carries it a few tenths PAST that corner, onto a face
+// lying some 50° off the wheel's radius. It does not lock there; it slides, and
+// the escapement trips through every beat. The drawing shows nothing wrong.
+//
+// The fix is not to extend the dead face past the corner. That is the obvious
+// move and it cannot work: past the corner is where the impulse face goes, so
+// the extension is buried by the boolean and the pallet comes out exactly as it
+// was. What has to move is the corner. Each pallet's whole profile is turned
+// about the arbor — the entry by +D/2, the exit by −D/2 — so the two embrace
+// D more of the anchor's travel than the bare loci do, and a tooth released by
+// one lands D deep on the other's dead face. That D is the DROP LOCK: the lock
+// the escapement has at the instant of the drop, as against the lock it runs to
+// once the pendulum has carried the pallet the rest of the way in.
+//
+// It costs D/2 of extra swing before either pallet will unlock, which is what a
+// real escapement pays for it too.
+//
 // THE ANCHOR CLEARS THE WHEEL BY WHERE IT IS PUT, not by being cut back. Each arm
 // runs along its tangent line, rotated off it by the half swing so it lands ON
 // the tangent at the extreme and outside it everywhere else; only the pallets go
@@ -176,11 +197,18 @@ export interface EscapementDims {
   /** Tooth thickness at the root, mm — what has to carry the drive across the
    *  grain, and what the flank bow is for. */
   toothBase: number
-  /** What a tooth locks by once the running clearance is taken off, mm — the
-   *  lock the escapement really has, as against the one that was asked for. */
+  /** What a tooth locks by at the extreme of the swing, once the running
+   *  clearance is taken off, mm — the lock the escapement really runs to, as
+   *  against the one that was asked for. */
   lockDepth: number
-  /** The clearance has used up the lock: a tooth never reaches the locking face
-   *  and the wheel runs straight through. */
+  /** What it is already locked by at the instant it LANDS, mm — the drop lock.
+   *  The one that decides whether the escapement is a deadbeat at all: land on
+   *  no dead face and the tooth arrives on the impulse face and trips. Zero for
+   *  a recoil anchor, which is meant to land on its impulse face. */
+  dropLockDepth: number
+  /** Nothing for the arriving tooth to land on. A deadbeat wants dead face
+   *  there and has none; a recoil wants face of any kind and its own does not
+   *  reach past the clearance. Either way the wheel runs straight through. */
   noLock: boolean
 }
 
@@ -214,9 +242,18 @@ const BOW_KEEP = 0.08
  *  zero interference and at 0.51 the recoil is into the tooth by half a
  *  millimetre. See the sweep in `scripts/escapement-check.mts`. */
 const DIVE_LIMIT = 0.45
-/** Extra locking face beyond the nominal lock, as a fraction of it — see
- *  `actingProfile`. */
-const LANDING = 0.5
+/** Dead face wanted at each end of the lock, mm — under the tooth where it
+ *  lands, and above it for the pendulum's supplementary arc to run through. See
+ *  `dropLock`, which splits the lock between the two. What the pallets must
+ *  embrace to deliver the first is this PLUS the running clearance, since
+ *  cutting the teeth short carries the landing that much further along. */
+const LANDING_MARGIN = 0.5
+/** A standard 1/8" end mill. The exit pallet's deep-lock corner is relieved to
+ *  its radius at the one corner that would otherwise put that radius on an
+ *  acting face — see `lockCorner`. */
+const LOCK_RELIEF_BIT_DIA = 3.175
+/** How much clear face is left beyond the fillet at that corner, mm. */
+const LOCK_LAND = 0.4
 
 const rad = (deg: number) => (deg * Math.PI) / 180
 const rot = (p: Pt, a: number): Pt => {
@@ -252,6 +289,40 @@ function frame(spec: EscapementSpec) {
 type Side = 'entry' | 'exit'
 
 /**
+ * The DROP LOCK, in anchor radians — how deep a tooth is already locked at the
+ * instant it lands, before the pendulum's supplementary arc drives it deeper.
+ *
+ * Without it a tooth lands exactly on the corner where the locking face turns
+ * into the impulse face, because the bare loci give each pallet an impulse
+ * starting at the very anchor angle at which the other releases. That is a
+ * knife edge: the running clearance is enough to carry the landing past the
+ * corner and onto the impulse face, where nothing locks.
+ *
+ * So the amount is not a taste. A tooth cut `clearance` short has to travel
+ * that much further along the face before it is caught, so the pallets must
+ * embrace the clearance PLUS the dead face we actually want under the tooth —
+ * a LENGTH, turned into an angle at the pallet radius. Given the room it comes
+ * out at exactly `LANDING_MARGIN` of real dead face however the teeth are cut.
+ *
+ * It is spent OUT of the lock, so the lock is shared: the tooth lands on the
+ * drop lock and the supplementary arc runs it through what is left. Both ends
+ * want the same `LANDING_MARGIN` of face, and the clearance is charged to the
+ * landing's end, which is the end it actually eats. A lock too small to seat
+ * both is what `noLock` reports.
+ *
+ * Zero for a recoil anchor, which has no dead face to land on and is not
+ * supposed to have one — its tooth lands on the impulse face and drives the
+ * wheel back, which is the whole of what a recoil escapement does.
+ */
+function dropLock(spec: EscapementSpec): number {
+  if (spec.escType !== 'deadbeat') return 0
+  const { rho } = frame(spec)
+  const want = (Math.max(0, spec.clearance || 0) + LANDING_MARGIN) / rho
+  const room = rad(Math.max(0, spec.lock)) - LANDING_MARGIN / rho
+  return Math.max(0, Math.min(want, room))
+}
+
+/**
  * The tooth tip's path in the anchor's own frame — the pallet face.
  *
  * `t` runs −0.5 → +0.5 across the impulse: the wheel turns −μ·t (it always runs
@@ -263,6 +334,11 @@ type Side = 'entry' | 'exit'
  *
  * `freezeWheel` holds the wheel at the start of impulse, which turns the same
  * expression into the deadbeat's concentric lock.
+ *
+ * The extra half drop lock is a CONSTANT in `t`, so it is a rigid turn of the
+ * whole face about the arbor — lock arc and impulse face together, in the
+ * direction that buries this pallet deeper. Both pallets get it, in opposite
+ * senses, which is what widens the embrace without moving the anchor's neutral.
  */
 function locus(
   spec: EscapementSpec, side: Side, t: number, freezeWheel: boolean,
@@ -273,7 +349,36 @@ function locus(
   const P0: Pt = [sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2)]
   const T = rot(P0, -mu * (freezeWheel ? -0.5 : t))
   const V: Pt = [T[0], T[1] - L]                 // anchor-local, anchor at neutral
-  return rot(V, -anchorDir * lam * t)
+  return rot(V, -anchorDir * (lam * t + dropLock(spec) / 2))
+}
+
+/**
+ * One point of the deadbeat's dead arc, at anchor depth `a` past the start of
+ * impulse. Its own function because the LOCKING FACE and the run-out past it
+ * are one curve — see `faceBeyond` — and two copies of this law would drift.
+ *
+ * `draw` leans the arc off concentric so the drive tightens the lock instead of
+ * picking it. WHICH WAY IT LEANS IS PER PALLET, and taking it as "shrink the
+ * radius" for both is the one mistake here that looks right on the drawing. The
+ * two pallets keep their stock on OPPOSITE sides of their faces — the entry's
+ * lies towards the arbor, the exit's away from it — so the same radial lean
+ * buries one face in its own material (a lock that tightens) and drives the
+ * other out through its face into the tooth (a lock that trips, and that shows
+ * up as the exit tooth embedded in the pallet while the entry stands off by the
+ * same amount). Lean it towards the STOCK on each, which is what `anchorDir`
+ * says here, and both draw.
+ *
+ * The test of it is not the outline but the wheel: with the lock deepening, a
+ * drawing face lets the wheel creep FORWARD to stay in touch — the drive is
+ * doing the work of pulling the pallet in, which is what draw means. Push the
+ * wheel back instead and the drive is resisting, which is a repel.
+ */
+function deadArc(spec: EscapementSpec, side: Side, B: Pt, a: number): Pt {
+  const anchorDir = side === 'entry' ? -1 : 1
+  const drawT = Math.tan(rad(clamp(spec.draw, 0, 15)))
+  const p = rot(B, anchorDir * a)
+  const k = clamp(1 + anchorDir * a * drawT, 0.5, 1.5)
+  return [p[0] * k, p[1] * k]
 }
 
 /**
@@ -283,32 +388,34 @@ function locus(
  * the release end outside it, where the tooth gets away. Both come out of the
  * same locus; only what happens before impulse differs between the two
  * escapements.
+ *
+ * ACTING is the word: it ends where the tooth's reach ends. The pallet carries
+ * on past both ends — a tip land at one, the run-out into the arm at the other
+ * — and neither belongs here, because `faceWidth` and the mesh check's "is this
+ * contact on an acting face?" both read this and would quietly count them.
  */
 function actingProfile(spec: EscapementSpec, side: Side): Pt[] {
   const { lam } = frame(spec)
-  const anchorDir = side === 'entry' ? -1 : 1
   const out: Pt[] = []
 
   if (spec.escType === 'deadbeat') {
     // Dead lock: the wheel is held, so the locus degenerates to an arc about the
-    // arbor. `draw` shrinks its radius as it deepens — the face then leans into
-    // the tooth, and the drive tightens the lock instead of picking it.
+    // arbor — see `deadArc`, which is that arc and its lean.
     const B = locus(spec, side, -0.5, true)
     const lock = rad(Math.max(0, spec.lock))
-    const drawT = Math.tan(rad(clamp(spec.draw, 0, 15)))
-    // The arc runs on PAST the start of impulse by a landing allowance. It has
-    // to: a tooth arrives here by dropping, and it lands wherever the drop puts
-    // it — a hair late and it lands on the impulse face instead, which is not a
-    // lock at all but a recoil, and the "deadbeat" quietly recoils through every
-    // beat. The allowance costs a sliver of impulse and buys the lock.
+    // The arc runs from the deep end down to the start of impulse and STOPS
+    // there. Running it on past that point is the tempting way to give a
+    // late-landing tooth somewhere dead to arrive — and it does nothing: past
+    // that point is the impulse face's own ground, so the extension doubles
+    // back over it, the boolean drops the resulting zero-width spur, and the
+    // pallet comes out with the same bare corner it had before. Where the tooth
+    // lands is fixed by the EMBRACE instead; see `dropLock`.
+    //
+    // So it stops one step short of a = 0, because that point IS the start of
+    // impulse and the shared loop below opens with it. Emitting it here as well
+    // would leave a duplicated vertex in the middle of the acting face.
     const steps = 20
-    const lo = -LANDING * lock
-    for (let i = steps; i >= 1; i--) {
-      const a = lo + ((lock - lo) * i) / steps
-      const p = rot(B, anchorDir * a)
-      const k = Math.max(0.5, 1 - a * drawT)
-      out.push([p[0] * k, p[1] * k])
-    }
+    for (let i = steps - 1; i >= 1; i--) out.push(deadArc(spec, side, B, (lock * i) / (steps - 1)))
   } else {
     // Recoil: nothing is held, so the same locus simply continues. Every degree
     // of supplementary swing drives the wheel back the way it came.
@@ -355,7 +462,7 @@ function actingProfile(spec: EscapementSpec, side: Side): Pt[] {
  * past the arm and a step where the wedge crosses it — geometry that says
  * "mortise" to anyone reading the drawing, and means nothing to the escapement.)
  */
-function palletNib(spec: EscapementSpec, side: Side, depth: number): Pt[][] {
+function nibFrame(spec: EscapementSpec, side: Side, depth: number) {
   const { R, beta, L } = frame(spec)
   const sgn = side === 'entry' ? -1 : 1
   const P: Pt = [sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2) - L]
@@ -397,34 +504,170 @@ function palletNib(spec: EscapementSpec, side: Side, depth: number): Pt[][] {
   // 0.3149 against 0.3168 mm at 20° — so it stays square.
   const heel: Pt = [inner[0] + depth * m[0], inner[1] + depth * m[1]]
   const far = 2 * (ARM_CLEAR + Math.max(1, spec.armWidth)) + depth
+  // THE WEDGE'S LEADING EDGE CARRIES ON ALONG THE FACE, and this is the
+  // direction it leaves in: the acting face's own, taken from its last step.
+  //
+  // Not the wheel's radial, which is what it used to be. The two are the same
+  // only at the tangency point the whole construction is built on, and the deep
+  // lock is a lock's worth of arc past that — 6° of it by the far end of the
+  // entry pallet. Leaving along the radial breaks off the face by that 6° at
+  // exactly the point the face ends, and the drawing shows the pallet swinging
+  // away from the arbor there for no reason a reader can see. Along the face
+  // there is no break at all: face and run-out are one straight run to the top
+  // of the arm, which is also how a pallet's locking face is actually cut.
+  //
+  // Straight, rather than the locking arc genuinely continued, because both
+  // ends of this edge get filleted — the deep-lock corner to the cutter's radius
+  // and the arm's toe to its own — and a fillet needs millimetres of clean run
+  // to sit on. Sampled as an arc it has none, and both fillets silently do
+  // nothing (which is what `leaves no sharp node at either corner it rounds`
+  // caught). Over the 5 mm to the arm the arc leaves its tangent by 0.29 mm, on
+  // a face that is itself straight to four microns over its own length.
+  const lead = norm([line[line.length - 1][0] - line[line.length - 2][0],
+                     line[line.length - 1][1] - line[line.length - 2][1]])
+  return { m, away, lead, rel, inner, outer, heel, line, far }
+}
 
+/** The nib as a ring: the acting face in front, the relieved back behind, run out
+ *  far enough to bury itself in the arm and cut off flush with the arm's outer
+ *  edge — so the wedge disappears into the arm rather than sprouting out of the
+ *  far side of it. */
+function palletNib(spec: EscapementSpec, side: Side, depth: number): Pt[][] {
+  const { lead, rel, outer, heel, line, far } = nibFrame(spec, side, depth)
   const ring: Pt[] = [
-    ...line,                                                        // the acting face
-    [outer[0] + far * away[0], outer[1] + far * away[1]],           // straight out, past the arm
-    [heel[0] + far * rel[0], heel[1] + far * rel[1]],               // and back down the relief
+    ...line,                                             // the acting face
+    [outer[0] + far * lead[0], outer[1] + far * lead[1]], // on along it, past the arm
+    [heel[0] + far * rel[0], heel[1] + far * rel[1]],    // and back down the relief
     heel,
   ]
-  // Cut flush with the arm's outer edge, so the wedge disappears into the arm
-  // instead of sprouting out of the far side of it.
   return boolRings('difference', [ring], [beyondArm(spec, side)])
 }
 
 
-/** Everything past the outer edge of one arm — the wedge's stop. */
-function beyondArm(spec: EscapementSpec, side: Side): Pt[] {
-  const { R, beta, L, rho } = frame(spec)
+/**
+ * One arm's flank, as a line in the anchor's frame. `n` is the offset in the
+ * arm's own frame, so the arm runs from `ARM_CLEAR` (the flank facing the wheel)
+ * to `ARM_CLEAR + width` (its outer edge). `p` is a point on that line, `dir` the
+ * unit direction along it pointing AWAY from the arbor, and `out` the unit normal
+ * across the arm, from the wheel-side flank towards the outer edge.
+ *
+ * One definition, because two things have to agree with where the arm actually
+ * is: the wedge's stop (`beyondArm`, the outer edge) and the corner the exit
+ * pallet's face makes with the arm (`lockCorner`, the wheel-side flank).
+ */
+function armFlank(spec: EscapementSpec, side: Side, n: number): { p: Pt; dir: Pt; out: Pt } {
+  const { R, beta, L } = frame(spec)
   const sgn = side === 'entry' ? -1 : 1
   const dir = side === 'entry' ? -1 : 1
   const P: Pt = [sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2) - L]
   const u = norm(P)
-  const n = norm([sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2)])
-  const edge = ARM_CLEAR + Math.max(1, spec.armWidth)
+  const across = norm([sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2)])
+  const sw = dir * halfSwing(spec)
+  return { p: rot([across[0] * n, across[1] * n], sw), dir: rot(u, sw), out: rot(across, sw) }
+}
+
+/** Everything past the outer edge of one arm — the wedge's stop. */
+function beyondArm(spec: EscapementSpec, side: Side): Pt[] {
+  const { R, L } = frame(spec)
+  const { p, dir, out } = armFlank(spec, side, ARM_CLEAR + Math.max(1, spec.armWidth))
   const big = 4 * (L + R)
-  // The half plane n > edge, in the arm's own frame, carried round by the same
-  // rotation the arm gets.
-  const box: Pt[] = [[-big, edge], [big, edge], [big, edge + big], [-big, edge + big]]
-  void rho
-  return box.map(([s, t]) => rot([u[0] * s + n[0] * t, u[1] * s + n[1] * t], dir * halfSwing(spec)))
+  // The half plane beyond the edge, as a box far larger than the anchor.
+  return ([[-big, 0], [big, 0], [big, big], [-big, big]] as Pt[])
+    .map(([s, t]) => [p[0] + dir[0] * s + out[0] * t, p[1] + dir[1] * s + out[1] * t] as Pt)
+}
+
+/**
+ * Where the exit pallet's face runs into its own arm — the corner that has to be
+ * moved — and how far the arm's wheel-side flank must be SET BACK to move it.
+ *
+ * The two pallets end differently, and that is the whole of this. The entry nib
+ * is the end of its own arm, so its deep-lock end stands in open air. The exit
+ * nib hangs off the SIDE of its arm, and at the lock the face is RADIAL to the
+ * wheel while the arm lies along the tangent (AP ⟂ OP), so the arm's flank
+ * crosses the face's own line barely two tenths past the end of the face.
+ *
+ * That is an inside corner, and no cutter cuts an inside corner: a 1/8" bit
+ * leaves 1.6 mm of radius in it whatever the drawing says. Which would not
+ * matter, except for WHERE it is — the whole locking face is barely 1.3 mm, and
+ * a tooth lands part way down it, so the radius lands on working face and the
+ * tooth rides a lump instead of the curve the escapement was drawn from.
+ *
+ * So move the corner AWAY FROM THE WHEEL, by taking the flank back, until the
+ * corner stands a whole fillet clear of the end of the face. Then the fillet has
+ * room and the landing keeps every millimetre. The set-back is a TAPER — nothing
+ * at the hub, everything at the pallet — which is where an arm can spare it: the
+ * bending it carries is largest at the hub, and this is the far end.
+ *
+ * What must NOT be done instead is to cut the relief out of the corner itself.
+ * That is the obvious move and it is a gouge: it takes its bite out of the arm
+ * right behind the landing, exactly where the pallet needs to be solid.
+ */
+function lockCorner(spec: EscapementSpec, side: Side): { taper: number; at: Pt } | null {
+  if (side !== 'exit') return null
+  const r = LOCK_RELIEF_BIT_DIA / 2
+  const w = Math.max(1, spec.armWidth)
+  const reach = armReach(spec, side, w)
+  const A = actingProfile(spec, side)[0]                  // the deep-lock end
+  // The line the corner slides along is the nib's OWN leading edge, which is the
+  // acting face continued (`faceBeyond`) — taken as its tangent here, since the
+  // corner sits a couple of millimetres along it and the arc leaves the tangent
+  // by four hundredths in that distance.
+  const t = nibFrame(spec, side, nibDepth(spec)).lead
+  const { p, dir, out } = armFlank(spec, side, ARM_CLEAR)
+
+  // Where the face's line crosses the flank, as a function of the set-back —
+  // linear in it, so two evaluations solve it exactly.
+  const cross = (taper: number): number | null => {
+    const near: Pt = [p[0] - dir[0] * w / 2, p[1] - dir[1] * w / 2]
+    const far: Pt = [
+      p[0] + dir[0] * (reach + w / 2) + out[0] * taper,
+      p[1] + dir[1] * (reach + w / 2) + out[1] * taper,
+    ]
+    const e = norm([far[0] - near[0], far[1] - near[1]])
+    const den = t[0] * e[1] - t[1] * e[0]
+    if (Math.abs(den) < 1e-6) return null
+    return ((near[0] - A[0]) * e[1] - (near[1] - A[1]) * e[0]) / den
+  }
+
+  const s0 = cross(0), s1 = cross(1)
+  if (s0 === null || s1 === null || Math.abs(s1 - s0) < 1e-6) return null
+  // The corner has to clear the end of the face by the fillet's own set-back,
+  // plus a hair so the fillet's near end lands past it rather than on it.
+  const want = r + LOCK_LAND
+  const taper = Math.max(0, Math.min(w / 2, (want - s0) / (s1 - s0)))
+  const s = cross(taper)
+  if (s === null) return null
+  return { taper, at: [A[0] + t[0] * s, A[1] + t[1] * s] }
+}
+
+/**
+ * Where the pallet's relieved BACK runs into its own arm — the other inside
+ * corner, on the entry pallet, and the other one no cutter can cut sharp.
+ *
+ * It needs nothing like the trouble the deep-lock corner does. Nothing acts on
+ * the back of a pallet, and the corner has a whole arm along one side of it and
+ * most of the relief along the other, so there is room for the fillet exactly
+ * where it stands: no point has to move, only the corner has to be rounded to
+ * the bit that will cut it. `filletToes` does that.
+ *
+ * Null when the back does not reach that flank at all, which is the exit pallet:
+ * its stock lies on the far side of its arm, so its back runs out through the
+ * OUTER edge and is cut off there by `beyondArm` instead.
+ */
+function backCorner(spec: EscapementSpec, side: Side): Pt | null {
+  const w = Math.max(1, spec.armWidth)
+  const { heel, rel, far } = nibFrame(spec, side, nibDepth(spec))
+  const { p, dir } = armFlank(spec, side, ARM_CLEAR)
+  const den = rel[0] * dir[1] - rel[1] * dir[0]
+  if (Math.abs(den) < 1e-6) return null
+  const s = ((p[0] - heel[0]) * dir[1] - (p[1] - heel[1]) * dir[0]) / den
+  if (!(s > 0.05 && s < far)) return null
+  const at: Pt = [heel[0] + rel[0] * s, heel[1] + rel[1] * s]
+  // Two infinite lines always cross. It is only a corner of the anchor if the
+  // crossing lands on the arm that is actually there — which on the exit side it
+  // does not: that one is out past the end of its own arm.
+  const along = (at[0] - p[0]) * dir[0] + (at[1] - p[1]) * dir[1]
+  return along > -w / 2 && along < armReach(spec, side, w) + w / 2 ? at : null
 }
 
 /** How thick a pallet may be around the wheel — a fraction of the tooth pitch at
@@ -435,10 +678,25 @@ function nibDepth(spec: EscapementSpec): number {
 }
 
 /** Half the swing the faces are drawn for — the anchor never goes outside it,
- *  and everything that must stay clear of the wheel is set back by it. */
+ *  and everything that must stay clear of the wheel is set back by it.
+ *
+ *  The drop lock comes OUT of it: a tooth lands D deep and only the rest of the
+ *  lock is left for the supplementary arc to run through, so the anchor reaches
+ *  the deep end of the dead face half a drop lock sooner than it used to. */
 function halfSwing(spec: EscapementSpec): number {
   const { lam } = frame(spec)
-  return lam / 2 + rad(Math.max(0, spec.escType === 'deadbeat' ? spec.lock : spec.recoilArc))
+  return lam / 2 - dropLock(spec) / 2
+    + rad(Math.max(0, spec.escType === 'deadbeat' ? spec.lock : spec.recoilArc))
+}
+
+/** How far each arm reaches from the arbor. The entry arm stops at the pallet
+ *  circle and its nib is the last of it; the exit arm has to reach PAST that
+ *  circle, because its nib's stock lies on the far side of the face — which is
+ *  where the tooth pushes it. Each stops short of the face by its own cap
+ *  radius, so no arm end can stand in front of a pallet. */
+function armReach(spec: EscapementSpec, side: Side, width: number): number {
+  const { rho } = frame(spec)
+  return side === 'entry' ? rho - nibDepth(spec) - width / 2 : rho + nibDepth(spec) - width / 2
 }
 
 /**
@@ -452,8 +710,22 @@ function halfSwing(spec: EscapementSpec): number {
  * of the swing and outside it everywhere else, so the clearance scales with the
  * arm instead of being a number someone guessed. Only the pallets go inside,
  * which is what pallets are for.
+ *
+ * `taper` takes the WHEEL-SIDE flank back at the far end, nothing at the hub —
+ * the set-back that moves the exit pallet's deep-lock corner out of the way of
+ * its own fillet. See `lockCorner`.
+ *
+ * The arms are STRAIGHT, and bowing them is a change that has been tried and
+ * rejected. It is tempting — a straight bar is the weakest arm that fits between
+ * the two things that fix its ends, and swelling it through the middle would
+ * both strengthen it and hand the wheel some clearance back. It does not look
+ * like an anchor afterwards. There is also a mechanical cost to know about
+ * before trying again: `beyondArm`, `lockCorner` and `backCorner` all read this
+ * arm as a straight LINE, and all three work at the pallet end, so a bow that
+ * reaches them puts the wedge's flush cut off the edge it is flush with and the
+ * two inside corners off the outline their fillets are meant to round.
  */
-function palletArm(spec: EscapementSpec, side: Side, reach: number, width: number): Pt[] {
+function palletArm(spec: EscapementSpec, side: Side, reach: number, width: number, taper = 0): Pt[] {
   const { R, beta, L } = frame(spec)
   const sgn = side === 'entry' ? -1 : 1
   const dir = side === 'entry' ? -1 : 1
@@ -467,7 +739,10 @@ function palletArm(spec: EscapementSpec, side: Side, reach: number, width: numbe
   // arm's OUTER edge, and a rounded end curves away from that line and leaves a
   // step sticking out of the silhouette. The corner it makes with the wedge is
   // rounded later, on the assembled anchor — see `anchorRings`.
-  const bar = roundRectRing(-width / 2, -width / 2, reach + width, width, 0)
+  const bar: Pt[] = taper > 0
+    ? [[-width / 2, -width / 2], [reach + width / 2, -width / 2 + taper],
+       [reach + width / 2, width / 2], [-width / 2, width / 2]]
+    : roundRectRing(-width / 2, -width / 2, reach + width, width, 0)
   const a = Math.atan2(u[1], u[0])
   return bar.map(([x, y]) => {
     const p = rot([x, y], a)
@@ -499,14 +774,8 @@ function anchorRings(spec: EscapementSpec): Pt[][] {
 
   const body: Pt[][] = [ellipseRing(0, 0, hubR, hubR)]
   const add = (r: Pt[]) => { for (const p of boolRings('union', body.splice(0), [r])) body.push(p) }
-  // The entry arm stops at the pallet circle and its nib is the last of it; the
-  // exit arm has to reach PAST that circle, because its nib's stock lies on the
-  // far side of the face — which is where the tooth pushes it.
-  // Each arm stops short of the face by its own cap radius, so no arm end can
-  // stand in front of a pallet — the wedge below supplies everything from there
-  // to the acting face.
-  add(palletArm(spec, 'entry', rho - nibDepth(spec) - w / 2, w))
-  add(palletArm(spec, 'exit', rho + nibDepth(spec) - w / 2, w))
+  add(palletArm(spec, 'entry', armReach(spec, 'entry', w), w))
+  add(palletArm(spec, 'exit', armReach(spec, 'exit', w), w, lockCorner(spec, 'exit')?.taper ?? 0))
   if (spec.tailLength > 0.5) {
     add(roundRectRing(-w / 2, -w / 2, w, spec.tailLength + w, w / 2))
   }
@@ -529,32 +798,33 @@ function anchorRings(spec: EscapementSpec): Pt[][] {
  *  harness has to tell those apart: which one a tooth is riding is the whole
  *  difference between a deadbeat and a recoil. */
 export function __escFaces(spec: EscapementSpec, side: Side): Pt[] { return actingProfile(spec, side) }
+/** Test hooks — the two corners rounded to the cutter's radius: the one the
+ *  exit pallet's face makes with its arm (with the set-back that put it where it
+ *  is), and the one the entry pallet's back makes with its own. Each is null on
+ *  the side that has no such corner. */
+export function __escLockCorner(spec: EscapementSpec, side: Side): { taper: number; at: Pt } | null {
+  return lockCorner(spec, side)
+}
+export function __escBackCorner(spec: EscapementSpec, side: Side): Pt | null { return backCorner(spec, side) }
 /** Test hook — the toothed ring BEFORE the root-fillet closing, so a test can
  *  tell a break in the profile from the resampling clipper does to the whole
  *  outline on its way through. */
 export function __escToothRing(spec: EscapementSpec): Pt[] { return toothedRing(spec) }
 export function __escLockPoints(spec: EscapementSpec): number { return spec.escType === 'deadbeat' ? 20 : 24 }
+/** The pallet's inner (lock-side) face point and its TIP LAND — the short face
+ *  closing the pallet beyond the release corner, `nibDepth` back from `inner`
+ *  along the stock side of the face. Shared by the test hook below and by
+ *  `filletToes`, which rounds the heel for clearance — see `HEEL_ROUND`. */
+function tipLandPts(spec: EscapementSpec, side: Side): [Pt, Pt] {
+  const { inner, heel } = nibFrame(spec, side, nibDepth(spec))
+  return [inner, heel]
+}
+
 /** Test hook — the pallet's TIP LAND, the short face closing it beyond the
  *  release corner. A tooth must drop CLEAR of this at release; measuring that is
  *  the only way to see the relief is doing its job, since grazing it is not
  *  interference and the outline just shows a small bevel. */
-export function __escTipLand(spec: EscapementSpec, side: Side): [Pt, Pt] {
-  const { R, beta, L } = frame(spec)
-  const sgn = side === 'entry' ? -1 : 1
-  const P: Pt = [sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2) - L]
-  const u = norm(P)
-  const m: Pt = side === 'entry' ? [-u[0], -u[1]] : u
-  const O: Pt = [0, -L]
-  const face = actingProfile(spec, side)
-  const distO = (p: Pt) => Math.hypot(p[0] - O[0], p[1] - O[1])
-  const outerFirst = distO(face[0]) > distO(face[face.length - 1])
-  const inner = outerFirst ? face[face.length - 1] : face[0]
-  const outer = outerFirst ? face[0] : face[face.length - 1]
-  const away = norm([outer[0] - O[0], outer[1] - O[1]])
-  void away
-  const d = nibDepth(spec)
-  return [inner, [inner[0] + d * m[0], inner[1] + d * m[1]]]
-}
+export function __escTipLand(spec: EscapementSpec, side: Side): [Pt, Pt] { return tipLandPts(spec, side) }
 
 // ─── The escape wheel ─────────────────────────────────────────────────────────
 
@@ -694,9 +964,12 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
   const landD = (pitchR - backSpanD + uD) * rRootD
   const toothBase = (backSpanD - uD) * rRootD + 2 * clamp(spec.toothCurve || 0, 0, 1) * BOW_SHARE * landD
   // The lock actually left: what the anchor's swing buries the pallet by, less
-  // the clearance the teeth were cut short by.
+  // the clearance the teeth were cut short by. And the part of it that is there
+  // the moment the tooth lands, which is what the pallets' embrace buys.
   const lockDepth = rho * rad(Math.max(0, spec.escType === 'deadbeat' ? spec.lock : spec.recoilArc))
     - Math.max(0, spec.clearance || 0)
+  const dead = spec.escType === 'deadbeat'
+  const dropLockDepth = dead ? rho * dropLock(spec) - Math.max(0, spec.clearance || 0) : 0
   const half = spec.span * 2
   const w = Math.max(1, spec.armWidth)
   const hubR = Math.max(w * 0.75, spec.anchorBore / 2 + Math.max(1.5, w * 0.4))
@@ -706,7 +979,10 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
     toothPitchDeg: 360 / N,
     beatDeg: 180 / N,
     wheelImpulseDeg: ((beat - rad(Math.max(0, spec.drop))) * 180) / Math.PI,
-    minHalfSwingDeg: ((lam / 2 + rad(spec.escType === 'deadbeat' ? Math.max(0, spec.lock) : 0)) * 180) / Math.PI,
+    // What the pendulum has to beat to UNLOCK: half the lift to run the impulse
+    // out, plus the half drop lock that the embrace puts in front of it. Any
+    // swing past that is run to lock, which the escapement does not need.
+    minHalfSwingDeg: ((lam / 2 + dropLock(spec) / 2) * 180) / Math.PI,
     impulseAngleDeg,
     faceWidth,
     recoilRatio: mu / lam,
@@ -723,7 +999,12 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
     palletDive: dive,
     toothBase,
     lockDepth,
-    noLock: lockDepth <= 0.02,
+    dropLockDepth,
+    // A deadbeat is judged on the DROP lock — it is never more than the total,
+    // so this catches the clearance eating the whole lock as well as the
+    // narrower case of it eating only what was there at the landing. A recoil
+    // has no drop lock to judge and is asked the older question instead.
+    noLock: (dead ? dropLockDepth : lockDepth) <= 0.02,
     // Measured against the mesh: past about half the tooth depth the impulse
     // face starts to reach the tooth it has just locked. See the sweep in
     // `scripts/escapement-check.mts`.
@@ -766,13 +1047,20 @@ export interface EscapementPose {
  * Within a beat the anchor rocks φ = Φ·cos, and the wheel is carried by whichever
  * pallet has hold of it:
  *
- *   IMPULSE, φ within ±λ/2 — the tooth is on the impulse face and the wheel turns
- *   μ for the anchor's λ, which is the ratio the faces were generated from.
+ *   IMPULSE, φ within the pallet's own λ-wide window — the tooth is on the impulse
+ *   face and the wheel turns μ for the anchor's λ, which is the ratio the faces
+ *   were generated from.
  *   LOCKED, outside it — a deadbeat holds the wheel dead still; a recoil has no
  *   dead face, so the same straight-line relation carries on and drives the wheel
  *   BACKWARDS through the supplementary arc.
- *   RELEASE, at φ = −λ/2 — the tooth drops off, the wheel runs free by `drop`, and
- *   the other pallet catches the next tooth.
+ *   RELEASE, at the low end of that window — the tooth drops off, the wheel runs
+ *   free by `drop`, and the other pallet catches the next tooth.
+ *
+ * The two windows are not the same window: the drop lock slides the entry's down
+ * by D/2 and the exit's up by D/2 (see `dropLock`), so one pallet releases D of
+ * anchor travel BEFORE the other's impulse could begin — which is exactly the
+ * dead face the arriving tooth lands on. The pair stays symmetric about the
+ * anchor's neutral, so a pendulum still swings evenly.
  *
  * Which comes out at exactly half a tooth per beat, as it must.
  */
@@ -781,6 +1069,7 @@ export function escapementPose(spec: EscapementSpec, phase: number): EscapementP
   const Phi = halfSwing(spec)
   const drop = Math.max(0, rad(spec.drop))
   const half = lam / 2
+  const shift = dropLock(spec) / 2
   const dead = spec.escType === 'deadbeat'
 
   const cycles = Math.floor(phase)
@@ -789,10 +1078,13 @@ export function escapementPose(spec: EscapementSpec, phase: number): EscapementP
   const falling = tau < 0.5
 
   // What one pallet has moved the wheel by at anchor angle φ. Outside the
-  // impulse a dead face holds it; a recoil face does not.
+  // impulse a dead face holds it; a recoil face does not. Each pallet reads φ
+  // through its own half of the embrace.
   const lim = (v: number) => (dead ? clamp(v, -mu / 2, mu / 2) : v)
-  const entry = (p: number) => lim((-mu * p) / lam)
-  const exit = (p: number) => lim((mu * p) / lam)
+  const entry = (p: number) => lim((-mu * (p + shift)) / lam)
+  const exit = (p: number) => lim((mu * (p - shift)) / lam)
+  const eRel = -half - shift          // where the entry lets go, falling
+  const xRel = half + shift           // where the exit lets go, rising
 
   // Each pallet's own law, used DIRECTLY — no re-zeroing at the extreme of the
   // swing. A deadbeat is unaffected either way (its law is flat out there), but
@@ -800,15 +1092,16 @@ export function escapementPose(spec: EscapementSpec, phase: number): EscapementP
   // and the pair reads as binding through the whole supplementary arc.
   let adv: number
   if (falling) {
-    // The entry works and lets go at −λ/2; the exit takes the next tooth, one
-    // free `drop` further on.
-    if (phi >= -half) adv = entry(phi)
-    else adv = entry(-half) + drop + exit(phi) - exit(-half)
+    // The entry works and lets go at eRel; the exit takes the next tooth, one
+    // free `drop` further on — and takes it a drop lock deep, since its own
+    // impulse cannot start until φ has climbed back to −λ/2 + D/2.
+    if (phi >= eRel) adv = entry(phi)
+    else adv = entry(eRel) + drop + exit(phi) - exit(eRel)
   } else {
-    // Coming back: the exit is still on until +λ/2, then the entry catches.
-    const handover = entry(-half) + drop - exit(-half)
-    if (phi <= half) adv = handover + exit(phi)
-    else adv = handover + exit(half) + drop + entry(phi) - entry(half)
+    // Coming back: the exit is still on until xRel, then the entry catches.
+    const handover = entry(eRel) + drop - exit(eRel)
+    if (phi <= xRel) adv = handover + exit(phi)
+    else adv = handover + exit(xRel) + drop + entry(phi) - entry(xRel)
   }
   adv += cycles * pitch
 
@@ -870,6 +1163,7 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
       anchorRings(spec).map((r) => ringToD(place(r, yA), true)).join(' '),
       [spec.cx, spec.cy + yA],
       ARM_TOE * Math.max(1, spec.armWidth),
+      spec, mir,
     ),
   })
   if (anchorBoreR > 0.25) {
@@ -905,8 +1199,27 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
  * them the extreme point is the arm's own end rather than where the stem crosses
  * its edge, and a calculation for the latter misses by the better part of a
  * centimetre. Distance from the arbor is true of both, and of a mirrored wheel.
+ *
+ * Two more corners are rounded here, found the opposite way: by GEOMETRY rather
+ * than by rule, because each is a specific named point the rest of this file
+ * already computes. Each pallet's TIP LAND has its own far corner
+ * (`tipLandPts`'s `heel`) a few mm short of the toe, on the wheel side of it —
+ * that one nothing touches either, but it sits closer to the wheel than the toe
+ * does, so it is the one that actually tightens clearance. They are matched by
+ * nearest coordinate in the PLACED (mirrored) outline, not by index — the raw
+ * ring can come out with its winding reversed by the mirror (`ringToD`'s
+ * CCW-forcing `reverse()`), which renumbers every vertex, so an index computed
+ * before placement would not point at the same corner after it.
+ *
+ * Two more are rounded to the BIT rather than to the toe radius, because they
+ * are tight for the cutter rather than for the tooth: the deep-lock corner
+ * (`lockCorner`) and the one the pallet's back makes with its arm
+ * (`backCorner`). The first only works because `lockCorner` has already moved
+ * that corner away from the wheel — rounded where it sits naturally, the
+ * set-back would run back along the acting face and take the lock with it. The
+ * second needs no such help; there is room where it stands.
  */
-function filletToes(d: string, arbor: Pt, r: number): string {
+function filletToes(d: string, arbor: Pt, r: number, spec: EscapementSpec, mir: number): string {
   if (r < 0.05) return d
   const corners = getTreatableCorners(d)
   if (corners.length === 0) return d
@@ -937,6 +1250,34 @@ function filletToes(d: string, arbor: Pt, r: number): string {
     }
     if (at >= 0) pick.set(at, { type: 'outerRound', radiusMM: r })
   }
+
+  const place = (p: Pt): Pt => [arbor[0] + mir * p[0], arbor[1] + p[1]]
+  const nearestCorner = (target: Pt, tol = 0.2): number => {
+    let best = Infinity, at = -1
+    for (const c of corners) {
+      const dd = Math.hypot(c.x - target[0], c.y - target[1])
+      if (dd < best) { best = dd; at = c.idx }
+    }
+    return best <= tol ? at : -1
+  }
+
+  for (const side of ['entry', 'exit'] as const) {
+    const heel = nearestCorner(place(tipLandPts(spec, side)[1]))
+    if (heel >= 0) pick.set(heel, { type: 'outerRound', radiusMM: r })
+    // The two corners that are tight for the CUTTER rather than for the tooth,
+    // so both are rounded to the bit rather than to the arm's toe radius: where
+    // the face runs into the arm at the deep lock (`lockCorner` has already
+    // taken the arm back far enough that this radius lands clear of the face),
+    // and where the pallet's back does (`backCorner`, which needs no such room
+    // made for it). Either can be absent, and then nothing is picked.
+    for (const target of [lockCorner(spec, side)?.at, backCorner(spec, side)]) {
+      const at = target && nearestCorner(place(target), 0.3)
+      if (at !== undefined && at !== null && at >= 0) {
+        pick.set(at, { type: 'outerRound', radiusMM: LOCK_RELIEF_BIT_DIA / 2 })
+      }
+    }
+  }
+
   return pick.size === 0 ? d : applyCornerTreatments(d, pick)
 }
 

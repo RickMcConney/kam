@@ -37,12 +37,16 @@ interface UIState {
   penNodes: PenNode[]
   penCurveType: PenCurveType
   nodeEditPathId: string | null
-  // While non-null, the escapement whose path this is runs in the canvas: the
-  // anchor is moved onto the true centre distance and the pair is animated, so
-  // the question the drawing cannot answer — do they bind — can be watched. The
-  // group's own paths are hidden meanwhile, or a static wheel would sit under
-  // the turning one. Nothing is written to the document; it is a preview.
-  escapementAnimPathId: string | null
+  // While non-null, the shape whose path this is runs IN MESH in the canvas: its
+  // mate is moved onto the true centre distance and the pair animated, so the
+  // question a drawing cannot answer — do they actually run together — can be
+  // watched. An escapement runs against its anchor and a gear against its mate
+  // (a second gear, or the lantern a cycloidal wheel was cut for); one field
+  // rather than one per shape, because only one can run at a time and the
+  // canvas has to hide exactly one group. Each layer takes the ones it knows and
+  // ignores the rest. The group's own paths are hidden meanwhile, or a static
+  // copy would sit under the turning one. Nothing is written to the document.
+  meshAnimPathId: string | null
   // Corner-pick mode for the Corner Treatment form: while non-null, treatable
   // corners render as clickable markers; selectedCorners holds the node indices
   // the treatment applies to (empty = all corners). Markers come from
@@ -122,7 +126,7 @@ interface UIState {
   setPenNodes: (nodes: PenNode[]) => void
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
-  setEscapementAnim: (id: string | null) => void
+  setMeshAnim: (id: string | null) => void
   setCornerPickSession: (id: string | null, baseD: string | null) => void
   setTreatedCorners: (idxs: number[]) => void
   toggleCorner: (idx: number) => void
@@ -154,7 +158,7 @@ export const useUIStore = create<UIState>()(
   tabsFormActive: false,
   shapesPanelOpen: false,
   setupPanelOpen: false,
-  escapementAnimPathId: null,
+  meshAnimPathId: null,
   helpOpen: false,
   timelineOpen: true,
   bottomTab: 'timeline' as const,
@@ -191,7 +195,7 @@ export const useUIStore = create<UIState>()(
   setSnap: (enabled) => set({ snapEnabled: enabled }),
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
-  setEscapementAnim: (id) => set({ escapementAnimPathId: id }),
+  setMeshAnim: (id) => set({ meshAnimPathId: id }),
   setLastShapeType: (type) => set({ lastShapeType: type }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),

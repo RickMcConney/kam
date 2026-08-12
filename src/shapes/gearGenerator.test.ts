@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { generateGearD, gearDims, gearHub, moduleForRadius, FLANK_TOL, type GearSpec } from './gearGenerator'
+import {
+  generateGearD, gearDims, gearHub, gearMesh, gearMateParts, gearMeshRefD, gearPose,
+  moduleForRadius, FLANK_TOL, type GearSpec,
+} from './gearGenerator'
 import { generateShapeD } from './shapeGenerators'
 import { flattenPath, signedArea } from '../cam/pathFlattener'
 import { pointInPolygon, ptSegDistSq } from '../cam/geom'
@@ -332,5 +335,139 @@ describe('generateGearD', () => {
 
   it('is reachable through generateShapeD', () => {
     expect(generateShapeD({ type: 'gear', ...base })).toBe(generateGearD(base))
+  })
+})
+
+describe('gear — running the pair', () => {
+  // What the Animate button shows. A gear is drawn alone and its lantern is drawn
+  // clear of it, so whether the two actually run together is the one question the
+  // drawing cannot answer — and the way to get it wrong is PHASE, which fails
+  // silently: the preview just draws two solids through each other. The mesh
+  // itself is measured against the emitted outlines by
+  // `scripts/gear-mesh-check.mts`; what is pinned here is the arithmetic it rests
+  // on.
+
+  it('spaces the pair by the sum of the pitch radii', () => {
+    // Gears mesh when their pitch circles are TANGENT. This is the number a plate
+    // is drilled from, and the whole reason the preview is worth trusting.
+    for (const mateTeeth of [8, 13, 24, 40]) {
+      const mesh = gearMesh({ ...base, mateTeeth })
+      expect(mesh.centreDistance).toBeCloseTo((base.module * (base.teeth + mateTeeth)) / 2, 9)
+      expect(mesh.centreDistance).toBeCloseTo(mesh.pitchRadius + mesh.matePitchRadius, 9)
+      expect(mesh.ratio).toBeCloseTo(base.teeth / mateTeeth, 9)
+    }
+    // A cycloidal wheel runs against the lantern it was CUT for, and the pin
+    // circle is the pinion's own pitch circle — so the same rule holds.
+    const cyc = gearMesh({ ...base, toothProfile: 'cycloidal', mateTeeth: 8, pinDia: 2 })
+    expect(cyc.kind).toBe('lantern')
+    expect(cyc.centreDistance).toBeCloseTo(cyc.pitchRadius + cyc.matePitchRadius, 9)
+  })
+
+  it('turns the mate the other way, at the ratio', () => {
+    const spec = { ...base, mateTeeth: 12 }
+    const mesh = gearMesh(spec)
+    const a = gearPose(spec, 0), b = gearPose(spec, 1)
+    // One unit of phase is one TOOTH of the gear — that is what makes the preview
+    // watchable at any tooth count.
+    expect(b.gearDeg - a.gearDeg).toBeCloseTo(360 / spec.teeth, 9)
+    expect(b.mateDeg - a.mateDeg).toBeCloseTo(-(360 / spec.teeth) * mesh.ratio, 9)
+    // And the mate gives up exactly one of ITS teeth in the same time.
+    expect(a.mateDeg - b.mateDeg).toBeCloseTo(360 / mesh.mateTeeth, 9)
+  })
+
+  it('puts a space on the line of centres, not a tooth', () => {
+    // Tooth 0 of the gear is centred on angle 0 and the mate sits along +x, so
+    // the gear points a tooth straight at it. The mate must answer with a space
+    // or the two are drawn one inside the other — and it is a half pitch of the
+    // MATE, which is the easy thing to get wrong on a pair of different sizes.
+    for (const mateTeeth of [8, 13, 24]) {
+      const mesh = gearMesh({ ...base, mateTeeth })
+      // Undo the settle onto the driving flank to get the centred phase back.
+      const centred = mesh.matePhaseDeg - (mesh.playAtPitch / 2 / mesh.matePitchRadius) * (180 / Math.PI)
+      expect(centred).toBeCloseTo(180 - 180 / mateTeeth, 6)
+    }
+    for (const pins of [6, 8, 10]) {
+      const mesh = gearMesh({ ...base, toothProfile: 'cycloidal', mateTeeth: pins, pinDia: 2 })
+      const centred = mesh.matePhaseDeg - (mesh.playAtPitch / 2 / mesh.matePitchRadius) * (180 / Math.PI)
+      expect(centred).toBeCloseTo(180 + 180 / pins, 6)
+    }
+  })
+
+  it('reports the play, and it is the backlash for two gears', () => {
+    // Both halves of a pair are thinned by half the backlash, so a pair cut to
+    // the same figure has exactly that much play — which is the definition the
+    // backlash field is documented by, checked end to end.
+    for (const backlash of [0, 0.2, 0.5]) {
+      for (const mateTeeth of [8, 24]) {
+        expect(gearMesh({ ...base, backlash, mateTeeth }).playAtPitch).toBeCloseTo(backlash, 9)
+      }
+    }
+  })
+
+  it('gives a lantern pair the backlash it asked for and no more', () => {
+    // A LANTERN TOOTH IS NOT HALF THE PITCH. That is the involute rule, where the
+    // mate presents a tooth of the same thickness and the two split the pitch. A
+    // pin is much thinner than half a pitch, so the wheel's tooth has to fill the
+    // whole of what the pin leaves — and cut to half the pitch instead it simply
+    // rattles: Ø3 pins on an m4 wheel had 3.4 mm of play against a 0.3 mm
+    // backlash. Every surface was where it should be and the pair still turned,
+    // which is why only running it in the canvas found it.
+    const m = 4, pins = 8
+    for (const pinDia of [2, 3, 5]) {
+      for (const backlash of [0, 0.3]) {
+        const spec = { ...base, module: m, teeth: 48, toothProfile: 'cycloidal' as const, mateTeeth: pins, pinDia, backlash }
+        const d = gearDims(m, 48, base.pressureAngle, backlash, { mateTeeth: pins, pinDia })
+        expect(d.toothThickness).toBeCloseTo(Math.PI * m - pinDia - backlash, 9)
+        // Which is the same as saying the pin fills the tooth space exactly.
+        expect(d.spaceAtPitch).toBeCloseTo(pinDia + backlash, 9)
+        expect(gearMesh(spec).playAtPitch).toBeCloseTo(backlash, 9)
+      }
+    }
+  })
+
+  it('says when the pin has eaten the tooth', () => {
+    // The fat-pin failure moved. It used to be "the pin cannot pass the tooth
+    // space", which was an artefact of cutting the tooth to half the pitch
+    // whatever the pin — sized FOR the pin, the space always admits it. What can
+    // still go wrong is the other end: a pin approaching the circular pitch
+    // leaves nothing to drive with.
+    const m = 4, pins = 8
+    const dims = (pinDia: number) => gearDims(m, 24, base.pressureAngle, 0.3, { mateTeeth: pins, pinDia })
+    expect(dims(3).pinTooFat).toBe(false)
+    expect(dims(7).pinTooFat).toBe(false)         // thin tooth, but a tooth
+    expect(dims(12.4).pinTooFat).toBe(true)       // circular pitch is 12.566
+    // A Ø7 pin used to be reported as unable to turn at all. It runs.
+    expect(dims(7).toothThickness).toBeGreaterThan(0)
+    expect(dims(7).spaceAtPitch).toBeGreaterThan(7)
+    expect(gearDims(m, 24, base.pressureAngle, 0.3).pinTooFat).toBe(false)
+  })
+
+  it('draws a lantern as pins, with the cheek only as a ghost', () => {
+    // The cheek is wider than the pin circle and the wheel's teeth reach INSIDE
+    // that circle, so in plan view it really does cover them — the wheel runs
+    // between two cheeks, axially. Solid, it reads as a crash.
+    const spec = { ...base, toothProfile: 'cycloidal' as const, mateTeeth: 8, pinDia: 2 }
+    const { solid, ghost } = gearMateParts(spec)
+    expect((solid.match(/M/g) || []).length).toBe(8)     // one subpath per pin
+    expect(ghost.length).toBeGreaterThan(0)
+    // A mate GEAR is all solid — there is nothing on another plane.
+    const g = gearMateParts({ ...base, mateTeeth: 12 })
+    expect(g.ghost).toBe('')
+    expect(g.solid.length).toBeGreaterThan(0)
+  })
+
+  it('draws both pitch circles, tangent at the mesh', () => {
+    // The proof that the pair is spaced right, which is why they are drawn here
+    // whatever the shape's own pitch-circle setting says.
+    const spec = { ...base, cx: 5, cy: -3, mateTeeth: 12 }
+    const mesh = gearMesh(spec)
+    const xs = (gearMeshRefD(spec).match(/-?\d+(\.\d+)?/g) || []).map(Number)
+      .filter((_, i) => i % 2 === 0)
+    // Rightmost point of the gear's circle meets the leftmost of the mate's.
+    // One decimal, not three: these are sampled rings, so an extreme vertex sits
+    // a chord's sagitta inside the true circle — tightening it would only pin
+    // `ellipseRing`'s step.
+    expect(Math.max(...xs)).toBeCloseTo(spec.cx + mesh.centreDistance + mesh.matePitchRadius, 1)
+    expect(Math.min(...xs)).toBeCloseTo(spec.cx - mesh.pitchRadius, 1)
   })
 })

@@ -5,7 +5,7 @@ import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
 import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
-import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
+import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
 import { escapementDims } from '../../shapes/escapementGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
@@ -271,9 +271,9 @@ function ShapeConfig({ type, config, onChange, units }: {
       const pin = pinionDims({ ...g, cx: 0, cy: 0 })
       const pinLab = pinionLabel({ ...g, cx: 0, cy: 0 })
       const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, cyc)
+      const mesh = gearMesh({ ...g, cx: 0, cy: 0 })
       const hub = gearHub(g.module, g.teeth, g.bore, g.hubDia, g.spokes)
       // A pin has to pass through the tooth space, or the pair cannot turn at all.
-      const pinFits = !cyc || g.pinDia < d.spaceAtPitch - 0.05
       // The root was driven below the ISO dedendum to clear a fat pin.
       const rootDeepened = !!cyc && d.rootDia < g.module * (g.teeth - 2.5) - 0.01
       const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
@@ -328,7 +328,16 @@ function ShapeConfig({ type, config, onChange, units }: {
           Meshes at centre distance {L(d.pitchDia / 2)} + partner&apos;s pitch radius
           <br />
           Tooth {L(d.toothThickness)} at pitch{g.backlash > 0 ? ` (${L(Math.PI * g.module / 2)} nominal)` : ''}
+          {/* The play the pair will really have. Two gears come out at the
+              backlash; a lantern comes out at whatever the pin leaves, which is
+              the one thing about a lantern mesh no drawing shows. */}
+          <br />
+          Play at the mesh {L(mesh.playAtPitch)}
         </p>
+        {cyc && d.pinTooFat && <p className="text-label text-red-400">
+          Ø{L(g.pinDia)} pins take the whole {L(d.circularPitch)} circular pitch — there is no tooth left to drive with.
+          Thinner pins, or a bigger module.
+        </p>}
         {hub.grown && <p className="text-label text-blue-400">Hub grown to {L(hub.dia)} to seat {g.spokes} spokes.</p>}
         {g.spokes >= 2 && !hub.spoked && (
           <p className="text-label text-yellow-500">
@@ -347,9 +356,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         </p>}
         {d.pointed && <p className="text-label text-yellow-500">Teeth come to a point — OD reduced.</p>}
         {!cyc && d.undercut && <p className="text-label text-yellow-500">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots cut radially, not undercut.</p>}
-        {cyc && !pinFits && <p className="text-label text-red-400">
-          Ø{L(g.pinDia)} pins cannot pass a {L(d.spaceAtPitch)} tooth space — this pair will not turn. Smaller pins, or more module.
-        </p>}
+
         {rootDeepened && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} to clear the pins.</p>}
         {cyc && <p className="text-label text-gray-400 dark:text-neutral-500">
           Faces cut for this {g.mateTeeth}-pin lantern pinion at Ø{L(g.pinDia)} — another pinion wants another wheel.
@@ -430,7 +437,11 @@ function ShapeConfig({ type, config, onChange, units }: {
           <br />
           Pallets dive {L(dm.palletDive)} past the tips, into {L(e.toothDepth)} of tooth
           <br />
-          Locks {L(dm.lockDepth)} deep, after {L(e.clearance)} of clearance
+          {/* Drop lock first: it is what a tooth actually lands on, and the one
+              that decides whether the escapement is dead or trips. */}
+          {dead
+            ? <>Lands on {L(dm.dropLockDepth)} of lock, runs to {L(dm.lockDepth)}</>
+            : <>Locks {L(dm.lockDepth)} deep</>}, after {L(e.clearance)} of clearance
           <br />
           Tooth {L(dm.toothBase)} thick at the root
 
@@ -446,7 +457,9 @@ function ShapeConfig({ type, config, onChange, units }: {
           {e.drop}° of drop uses up the whole {dm.beatDeg.toFixed(2)}° beat — no impulse left.
         </p>}
         {dm.noLock && <p className="text-label text-red-400">
-          {L(e.clearance)} of clearance uses up the whole lock — a tooth never reaches the locking face and the wheel will run straight through. Less clearance, or more lock.
+          {dead
+            ? `${L(e.clearance)} of clearance leaves nothing dead under the landing tooth — it arrives on the impulse face, which does not lock it, and the wheel runs straight through. Less clearance, or more lock.`
+            : `${L(e.clearance)} of clearance uses up the whole recoil arc — a tooth never reaches the face and the wheel will run straight through.`}
         </p>}
         {dm.divesTooDeep && <p className="text-label text-red-400">
           Pallets dive {L(dm.palletDive)} into {L(e.toothDepth)} of tooth — the impulse face reaches the tooth it just locked and the pair will bind. Deeper teeth, or less lock/lift/span.

@@ -11,7 +11,7 @@ import { getMultiBBox, applyTransformStep, type TransformStep } from '../canvas/
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
-import { gearDims, gearHub, gearLabel, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
 import { escapementDims } from '../shapes/escapementGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
@@ -212,7 +212,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
   // Subscribed rather than read once, so the escapement's Animate button knows
   // to say Stop. Hooks cannot live inside the switch below.
-  const escapementAnimPathId = useUIStore((s) => s.escapementAnimPathId)
+  const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
   // A multi-part shape (a gear) regenerates every path in its group, so every
   // one of their operations is stale — not just this path's. Read the paths back
   // AFTER the edit so a part that just appeared is included.
@@ -396,9 +396,14 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const d = gearDims(params.module, params.teeth, params.pressureAngle, params.backlash, cyc)
       const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes)
       const lab = gearLabel(params)
-      const pinFits = !cyc || params.pinDia < d.spaceAtPitch - 0.05
       const pin = pinionDims(params)
       const pinLab = pinionLabel(params)
+      const mesh = gearMesh(params)
+      const running = meshAnimPathId === id
+      // A mate below the undercut limit has radial roots (this generator does not
+      // hob), and radial roots do not clear the driver's tooth tips — the pair
+      // fouls, which the preview shows and nothing else does.
+      const mateUndercut = !cyc && mesh.mateTeeth < 2 / Math.sin((params.pressureAngle * Math.PI) / 180) ** 2
       const rootDeepened = !!cyc && d.rootDia < params.module * (params.teeth - 2.5) - 0.01
       const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
       // Regenerating a gear REPLACES its paths, so an edit made before the
@@ -432,6 +437,12 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           ? <EditField label="Pin" valueMM={params.mateTeeth} units="" min={2} integer onChange={(mateTeeth) => updateGear({ ...params, mateTeeth: Math.max(2, Math.round(mateTeeth)) })} />
           : <RawField  label="PA"  value={params.pressureAngle} min={5} max={35} step={0.5} suffix="°" onChange={(pressureAngle) => updateGear({ ...params, pressureAngle })} />}
         {cyc && <EditField label="PØ" valueMM={params.pinDia} units={u} min={0.1} onChange={(pinDia) => updateGear({ ...params, pinDia })} />}
+        {/* The same field, and it means two different things. On a cycloidal
+            wheel the mate SHAPES the teeth — the face is conjugate to one
+            particular lantern. On an involute gear it changes nothing that gets
+            cut; it only says what to run the preview against, which is the one
+            way to see whether the pair the gear is for actually meshes. */}
+        {!cyc && <EditField label="Mate" valueMM={params.mateTeeth} units="" min={4} integer onChange={(mateTeeth) => updateGear({ ...params, mateTeeth: Math.max(4, Math.round(mateTeeth)) })} />}
         {/* Spelt out rather than abbreviated: a tick called "Pnn" would be the "Ltn"
             mistake again. */}
         {cyc && <label className="flex items-center gap-1.5 col-span-2 cursor-pointer">
@@ -477,8 +488,8 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           {params.pitchCircle && <><br /><span className="text-yellow-500">Pitch circle is a reference — delete before cutting.</span></>}
           {d.pointed && <><br /><span className="text-yellow-500">Teeth pointed — OD reduced.</span></>}
           {!cyc && d.undercut && <><br /><span className="text-yellow-500">Undercut range — roots cut radially.</span></>}
-          {cyc && !pinFits && <><br /><span className="text-red-400">
-            Ø{N(params.pinDia)} pins will not pass a {N(d.spaceAtPitch)} tooth space — this pair cannot turn.
+          {cyc && d.pinTooFat && <><br /><span className="text-red-400">
+            Ø{N(params.pinDia)} pins take the whole {N(d.circularPitch)} pitch — no tooth left to drive with. Thinner pins, or a bigger module.
           </span></>}
           {rootDeepened && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} to clear the pins.</span></>}
           {cyc && <><br />Cut for a {params.mateTeeth}-pin lantern at Ø{N(params.pinDia)}.</>}
@@ -490,14 +501,38 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
               Only {N(Math.max(0, pin.pinGap))} between pin holes — fewer or thinner pins.
             </span></>}
           </>}
+          {/* What the Animate button will show, and the one number it makes
+              visible: the play the pair has before the drive takes up. */}
+          <br />Runs {mesh.ratio.toFixed(3)}:1 against {cyc
+            ? `its ${mesh.mateTeeth}-pin lantern`
+            : `a ${mesh.mateTeeth}-tooth gear`} at {N(mesh.centreDistance)} centres
+          <br />Play at the mesh {N(mesh.playAtPitch)}
+
+          {mateUndercut && <><br /><span className="text-yellow-500">
+            A {mesh.mateTeeth}-tooth mate is under the {Math.ceil(2 / Math.sin((params.pressureAngle * Math.PI) / 180) ** 2)}-tooth
+            undercut limit at {params.pressureAngle}° — its roots are cut radially, which do not clear these tips. The preview will show the pair fouling.
+          </span></>}
         </div>
+        {/* A gear is drawn alone and its lantern is drawn clear of it, so the one
+            thing the drawing cannot show is whether they run together. This puts
+            the mate at the real centre distance and turns the pair. A preview
+            only — nothing is written. */}
+        <button
+          type="button"
+          onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
+          className={`col-span-2 rounded px-2 py-1 text-label ${running
+            ? 'bg-red-500/80 hover:bg-red-500 text-white'
+            : 'bg-blue-500/80 hover:bg-blue-500 text-white'}`}
+        >
+          {running ? 'Stop' : 'Animate in mesh'}
+        </button>
       </>)
     }
     case 'escapement': {
       const dm = escapementDims(params)
       const dead = params.escType === 'deadbeat'
       const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
-      const running = escapementAnimPathId === id
+      const running = meshAnimPathId === id
       return (<>
         <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
         <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
@@ -550,7 +585,12 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           <br />
           Swing past {dm.minHalfSwingDeg.toFixed(2)}° each way · faces {N(dm.faceWidth)} at {dm.impulseAngleDeg.toFixed(0)}°
           <br />Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth
-          <br />Locks {N(dm.lockDepth)} deep, after {N(params.clearance)} of clearance
+          {/* The drop lock is the one that decides whether it is a deadbeat at
+              all — a tooth that lands on no dead face lands on the impulse face
+              and trips. The total is what the supplementary arc runs it to. */}
+          <br />{dead
+            ? <>Lands on {N(dm.dropLockDepth)} of lock, runs to {N(dm.lockDepth)}</>
+            : <>Locks {N(dm.lockDepth)} deep</>}, after {N(params.clearance)} of clearance
           <br />Tooth {N(dm.toothBase)} thick at the root
           {!dead && <><br />Recoils {dm.recoilRatio.toFixed(2)}° of wheel per 1° of overswing</>}
           <br />Drawn clear — set the arbors at that spacing.
@@ -559,7 +599,9 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           </span></>}
           {dm.noImpulse && <><br /><span className="text-red-400">Drop uses the whole beat — no impulse left.</span></>}
           {dm.noLock && <><br /><span className="text-red-400">
-            Clearance uses up the whole lock — the wheel will run straight through. Less clearance, or more lock.
+            {dead
+              ? 'Nothing dead under the landing tooth — it arrives on the impulse face and the wheel runs through. Less clearance, or more lock.'
+              : 'Clearance uses up the whole recoil arc — the wheel will run straight through.'}
           </span></>}
           {dm.divesTooDeep && <><br /><span className="text-red-400">
             Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth — they will bind. Deeper teeth, or less lock/lift/span.
@@ -577,7 +619,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             distance and runs them. A preview only — nothing is written. */}
         <button
           type="button"
-          onClick={() => useUIStore.getState().setEscapementAnim(running ? null : id)}
+          onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
           className={`col-span-2 rounded px-2 py-1 text-label ${running
             ? 'bg-red-500/80 hover:bg-red-500 text-white'
             : 'bg-blue-500/80 hover:bg-blue-500 text-white'}`}
