@@ -7,6 +7,7 @@ import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpiec
 import type { BooleanOpType } from '../tools/booleanOps'
 import type { OffsetCornerStyle } from '../tools/offsetOp'
 import type { PatternParams } from '../tools/patternOp'
+import type { ClockSpec } from '../shapes/clockTrain'
 
 // Omit distributed over a union (plain Omit collapses AnyOperation to common keys)
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never
@@ -174,6 +175,18 @@ export type TimelineEventPayload =
   | { kind: 'paths.split'; pathId: string; subPaths: ImportedPath[]; opsAfter: SerializedOperation[] | null }
   | { kind: 'paths.setHidden'; ids: string[]; hidden: boolean }
   | { kind: 'shape.params'; pathId: string; params: ShapeParams }
+  // The clock designer's own chip, recorded BEFORE the parts it produced. It
+  // creates nothing — replay is a no-op — and that is the point: it is the
+  // DESIGN, the spec the five wheels and the pendulum after it were worked out
+  // from, so clicking it reopens ClockPanel on that spec instead of making the
+  // user start a project over to try a different beat. Re-running amends this
+  // chip and the part chips in place (`amendClockSpec`, then updateShapeParams
+  // per part), so iterating on a clock never piles chips up.
+  //
+  // A no-op chip is only tolerable because it sits FIRST: by the time undo
+  // reaches it every part it led to is already gone, so there is nothing left
+  // for it to have undone.
+  | { kind: 'clock.design'; clockId: string; spec: ClockSpec }
   // ---- CAM operations ----
   // opType on update/delete is display metadata (chip icon/label survives the
   // op being gone) — replay ignores it.
@@ -203,6 +216,7 @@ export type TimelineEvent = TimelineEventBase & TimelineEventPayload
 // rather than replaying it incorrectly.
 export const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set([
   'paths.add', 'paths.edit', 'paths.split', 'paths.setHidden', 'shape.params',
+  'clock.design',
   'op.add', 'op.update', 'op.delete', 'op.reorder', 'op.setVisible',
   'tabs.apply', 'tabs.delete', 'tabs.moveT',
   'workpiece.set', 'snapshot',
@@ -257,6 +271,7 @@ export function labelFor(ev: TimelineEventPayload): string {
     case 'paths.split': return 'Split path'
     case 'paths.setHidden': return ev.hidden ? 'Hide paths' : 'Show path'
     case 'shape.params': return shapeDisplayName(ev.params.type)
+    case 'clock.design': return 'Clock'
     case 'op.add': return opDisplayName(ev.op.type)
     case 'op.update': return opDisplayName(ev.opType)
     case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} Operations`
@@ -288,7 +303,7 @@ export function labelFor(ev: TimelineEventPayload): string {
 export type EventFamily = 'path' | 'op' | 'tab' | 'project'
 
 export function familyOf(kind: TimelineEvent['kind']): EventFamily {
-  if (kind.startsWith('paths.') || kind === 'shape.params') return 'path'
+  if (kind.startsWith('paths.') || kind === 'shape.params' || kind === 'clock.design') return 'path'
   if (kind.startsWith('op.')) return 'op'
   if (kind.startsWith('tabs.')) return 'tab'
   return 'project'

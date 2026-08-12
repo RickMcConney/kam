@@ -252,6 +252,10 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
           id: uid('shape'), name: `${self.groupName ?? self.name} ${pt.label}`, d: pt.d,
           visible: true, color: self.color, shapeParams: params, shapePart: pt.part,
           groupId: self.groupId, groupName: self.groupName,
+          // A part that appears mid-edit (spokes turned back on) belongs to the
+          // same clock wheel as its siblings — without this the link is on some
+          // of a group's paths and not others.
+          clockId: self.clockId, clockPart: self.clockPart,
         })
       }
       const live = new Set(parts.map((pt) => pt.part))

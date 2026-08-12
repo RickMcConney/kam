@@ -21,6 +21,11 @@ const refsPath = (op: SerializedOperation, pathId: string) =>
 
 export function applyEvent(state: ReplayState, ev: TimelineEvent): ReplayState {
   switch (ev.kind) {
+    // The clock designer's chip carries the SPEC, not geometry — the parts it
+    // produced were recorded as their own paths.add events right after it. So
+    // there is nothing to replay, and that is deliberate: see 'clock.design' in
+    // events.ts.
+    case 'clock.design': return state
     case 'paths.add': {
       // Offset/pattern results recompute from their source(s)' CURRENT d (as
       // already folded into state.paths by prior events) rather than

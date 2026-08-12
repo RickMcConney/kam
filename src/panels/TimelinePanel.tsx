@@ -6,7 +6,7 @@ import {
   SquareSquare, LayoutGrid, Scissors, Pencil, Trash2, Eye, EyeOff,
   RectangleEllipsis, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   ArrowUpDown, Move, RotateCw, Scaling, Spline, Combine, FlipHorizontal2,
-  VectorSquare, X, FoldHorizontal, Wand2, Image as ImageIcon, Anchor,} from 'lucide-react'
+  VectorSquare, X, FoldHorizontal, Wand2, Image as ImageIcon, Anchor, Weight, Clock,} from 'lucide-react'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useTabStore } from '../store/tabStore'
@@ -34,7 +34,7 @@ type ChipIcon = React.ComponentType<{ size?: number; style?: React.CSSProperties
 const SHAPE_ICONS: Record<string, ChipIcon> = {
   rectangle: Square, roundrect: Squircle, inroundrect: Signpost, circle: Circle,
   ellipse: Ellipse, polygon: Hexagon, star: Star, heart: Heart, slot: Pill,
-  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, cam: Snail, escapement: Anchor, text: Type,
+  shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog, cam: Snail, escapement: Anchor, pendulum: Weight, text: Type,
 }
 
 // … and the CAM operations menu (MachinePanel AddOperationMenu)
@@ -79,6 +79,8 @@ function chipVisual(ev: TimelineEvent): { Icon: ChipIcon; color?: string } {
       return { Icon: delOnly ? Trash2 : Pencil }
     }
     case 'paths.split': return { Icon: Scissors }
+    // The design, not a drawing — clicking it reopens the clock designer.
+    case 'clock.design': return { Icon: Clock }
     case 'paths.setHidden': return { Icon: ev.hidden ? EyeOff : Eye }
     case 'shape.params': return { Icon: SHAPE_ICONS[ev.params.type] ?? Shapes }
     case 'op.add': return { Icon: OP_ICONS[ev.op.type] ?? Wrench, color: OP_TYPE_COLORS[ev.op.type] }
@@ -228,13 +230,29 @@ export default function TimelinePanel() {
     draggingRef.current = true
     const seq = seqAtX(e.clientX)
     if (seq === null) return
-    scrubTo(seq)
+    // A clock chip is recorded BEFORE the parts it produced (and replays to
+    // nothing), so scrubbing TO it would undo the very clock it is about to
+    // reopen for editing — the designer would then find no parts and emit a
+    // fresh set instead of rewriting them. Land past the last of its parts
+    // instead, and never move backwards to get there.
+    let target = seq
+    const clicked = seq > 0 ? events[seq - 1] : undefined
+    if (clicked?.kind === 'clock.design') {
+      for (let i = events.length - 1; i >= seq; i--) {
+        const e2 = events[i]
+        if (e2.kind === 'paths.add' && e2.paths.some((p) => p.clockId === clicked.clockId)) {
+          target = Math.max(cursor, i + 1)
+          break
+        }
+      }
+    }
+    scrubTo(target)
     // Clicking a chip also surfaces the matching editor so its parameters can
     // be amended in place: op chips open the operation's edit form, path-
     // creating chips open the properties panel (selection is already restored
     // by the scrub), workpiece chips open the Setup panel. Deliberate clicks
     // only — drag-scrubs passing over chips don't flip panels.
-    const ev = seq > 0 ? events[seq - 1] : undefined
+    const ev = clicked
     if (!ev) return
     const ui = useUIStore.getState()
     const opId = ev.kind === 'op.add' ? ev.op.id : ev.kind === 'op.update' ? ev.opId : null
@@ -268,6 +286,16 @@ export default function TimelinePanel() {
       ui.setShapesPanelOpen(false)
       ui.setSidebarTab('draw')
       ui.setRequestMachineForm('nodeedit')
+    } else if (ev.kind === 'clock.design') {
+      // The clock chip reopens its designer on the spec it was built from, so a
+      // different beat or tooth count can be tried on the SAME clock — the parts
+      // are rewritten in place and every chip amended, not added to.
+      ui.setSetupPanelOpen(false)
+      ui.setMachineFormActive(false)
+      ui.setShapesPanelOpen(false)
+      ui.setSidebarTab('draw')
+      ui.setClockEdit(ev.clockId)
+      ui.setClockPanelOpen(true)
     } else if (
       (ev.kind === 'paths.edit' && ev.gesture === 'boolean') ||
       (ev.kind === 'paths.add' && (ev.offset || ev.pattern))

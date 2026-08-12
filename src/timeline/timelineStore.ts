@@ -5,6 +5,7 @@ import { replay } from './applyEvent'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import { usePathsStore } from '../store/pathsStore'
 import type { ShapeParams } from '../shapes/shapeGenerators'
+import type { ClockSpec } from '../shapes/clockTrain'
 import { useToolpathStore, pathIdsOf, type AnyOperation } from '../store/toolpathStore'
 import { abortGeneration } from '../workers/abortGeneration'
 import { useTabStore, type Tab } from '../store/tabStore'
@@ -185,6 +186,14 @@ interface TimelineState {
   // update in the way carries a transform/corner recipe, since replay recomposes
   // from the recipe and would discard a stamped `d`.
   amendShapeGroup: (groupId: string, paths: ImportedPath[], removedIds?: string[]) => boolean
+  // Re-running the clock designer on an existing clock: its chip carries the
+  // SPEC, so a new spec replaces it in place. Same rule as every other form —
+  // re-running over the same thing amends the chip that created it — and it is
+  // what keeps a session of trying beats from leaving a chip per attempt. The
+  // parts are rewritten by the caller through updateShapeParams, which amends
+  // their own chips. Returns false when no clock.design chip exists (loaded or
+  // compacted project), and the caller records one.
+  amendClockSpec: (clockId: string, spec: ClockSpec) => boolean
   amendOpSettings: (opId: string, updates: Partial<SerializedOperation>) => boolean
   // Re-Generate that changes WHICH operations a form produced, not just their settings:
   // PocketForm's Invert Pocket toggle re-reads the same selection into a different set of
@@ -791,6 +800,20 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       return true
     }
     return false
+  },
+
+  amendClockSpec: (clockId, spec) => {
+    const s = get()
+    let i = -1
+    for (let k = s.events.length - 1; k >= 0; k--) {
+      const e = s.events[k]
+      if (e.kind === 'clock.design' && e.clockId === clockId) { i = k; break }
+    }
+    if (i < 0) return false
+    const events = s.events.slice()
+    events[i] = { ...events[i], spec } as TimelineEvent
+    set({ events })
+    return true
   },
 
   amendShapeGroup: (groupId, groupPaths, removedIds = []) => {

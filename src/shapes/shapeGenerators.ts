@@ -6,8 +6,9 @@ import { generateCamD, generateCamParts, baseDiaForRadius } from './camGenerator
 import {
   generateEscapementD, generateEscapementParts, wheelDiaForRadius, type EscapementType,
 } from './escapementGenerator'
+import { generatePendulumD, generatePendulumParts, lengthForHeight } from './pendulumGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'pendulum' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -41,6 +42,8 @@ export type ShapeParams =
       bore: number; hubDia: number; spokes: number; anchorBore: number
       clockwise: boolean; refCircles: boolean
     }
+  // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
+  | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 
 export interface ShapeToolConfig {
@@ -72,6 +75,7 @@ export interface ShapeToolConfig {
     bore: number; hubDia: number; spokes: number; anchorBore: number
     clockwise: boolean; refCircles: boolean
   }
+  pendulum: { length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -122,6 +126,13 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
     armWidth: 8, tailLength: 0, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
     clockwise: false, refCircles: false,
   },
+  // THE seconds pendulum — 993.6 mm beats exactly one second, which is the
+  // length every clock book quotes and the one a 30-tooth escape wheel is sized
+  // around. The panel shows the beat, so any other length explains itself.
+  // The bob's MAJOR AXIS LIES ACROSS the rod — a pendulum bob is a lens seen
+  // edge-on, so it is wider than it is tall. Both radii stay editable; this is
+  // only which way round the default lies.
+  pendulum: { length: 993.62, rodWidth: 12, bobRx: 60, bobRy: 45, bore: 5 },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
@@ -382,6 +393,7 @@ export function generateShapeD(p: ShapeParams): string {
     case 'gear': return generateGearD(p)
     case 'cam': return generateCamD(p)
     case 'escapement': return generateEscapementD(p)
+    case 'pendulum': return generatePendulumD(p)
     case 'text': return generateTextD(p)
   }
 }
@@ -408,6 +420,8 @@ export interface ShapePart {
 }
 
 const CAM_PART_LABELS: Record<string, string> = { cam: 'Outline', bore: 'Bore' }
+
+const PENDULUM_PART_LABELS: Record<string, string> = { rod: 'Rod', bore: 'Suspension Hole', bob: 'Bob' }
 
 const ESCAPEMENT_PART_LABELS: Record<string, string> = {
   wheel: 'Escape Wheel', spokes: 'Spokes', bore: 'Bore',
@@ -442,6 +456,13 @@ export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
       d: g.d,
     }))
   }
+  if (p.type === 'pendulum') {
+    return generatePendulumParts(p).map((g) => ({
+      part: g.key,
+      label: PENDULUM_PART_LABELS[g.key] ?? g.key,
+      d: g.d,
+    }))
+  }
   return null
 }
 
@@ -463,6 +484,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'gear': return 'Gear'
     case 'cam': return 'Cam'
     case 'escapement': return 'Escapement'
+    case 'pendulum': return 'Pendulum'
     case 'text': return 'Text'
   }
 }
@@ -552,6 +574,15 @@ export function shapeParamsFromDrag(
       // Everything else is the mechanism and comes from the panel untouched —
       // the anchor is drawn from those same numbers and follows along above it.
       return { type: 'escapement', cx, cy, ...config.escapement, wheelDia: wheelDiaForRadius(radius) }
+    case 'pendulum':
+      // The drag box is the whole ROD, hung from its top edge — a pendulum is
+      // placed by where it hangs from, not by its middle. Length is solved back
+      // out of that height, since length is what sets the beat and the rest of
+      // the drawing hangs off it.
+      return {
+        type: 'pendulum', cx, cy: y + h, ...config.pendulum,
+        length: lengthForHeight(h, config.pendulum.rodWidth, config.pendulum.bobRy),
+      }
     case 'gear':
       // The drag box sizes the gear's outside diameter; tooth count and pressure
       // angle are the pattern and come from the panel, so `module` is what the
@@ -608,6 +639,7 @@ export function shapeParamsFromConfig(
     case 'gear': return { type: 'gear', cx, cy, ...config.gear }
     case 'cam': return { type: 'cam', cx, cy, ...config.cam }
     case 'escapement': return { type: 'escapement', cx, cy, ...config.escapement }
+    case 'pendulum': return { type: 'pendulum', cx, cy, ...config.pendulum }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -631,6 +663,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'gear': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'cam': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'escapement': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'pendulum': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -759,6 +792,18 @@ export function scaleShapeParams(
         clearance: p.clearance * asx,
         armWidth: p.armWidth * asx, tailLength: p.tailLength * asx,
         bore: p.bore * asx, hubDia: p.hubDia * asx, anchorBore: p.anchorBore * asx,
+      }
+    }
+    case 'pendulum': {
+      // Non-uniform would stretch the rod against the bob and, worse, change the
+      // length by a different factor from everything else — the rate would move
+      // for a reason the drawing does not show. Same answer as the gear's.
+      if (Math.abs(asx - asy) > 0.001) return null
+      const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
+      return {
+        ...p, cx: ncx, cy: ncy,
+        length: p.length * asx, rodWidth: p.rodWidth * asx,
+        bobRx: p.bobRx * asx, bobRy: p.bobRy * asx, bore: p.bore * asx,
       }
     }
     case 'text': {

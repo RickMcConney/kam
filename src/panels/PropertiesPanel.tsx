@@ -14,6 +14,7 @@ import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textG
 import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
 import { escapementDims } from '../shapes/escapementGenerator'
+import { pendulumDims } from '../shapes/pendulumGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
@@ -213,6 +214,19 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   // Subscribed rather than read once, so the escapement's Animate button knows
   // to say Stop. Hooks cannot live inside the switch below.
   const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
+  // Which clock this wheel belongs to, if any, and which one is running. Both
+  // selectors return a PRIMITIVE deliberately — a fresh object from a zustand
+  // selector compares unequal every time and re-renders this panel on every
+  // store write.
+  const clockAnimPathId = useUIStore((s) => s.clockAnimPathId)
+  const clockId = usePathsStore((s) => s.paths.find((p) => p.id === id)?.clockId ?? null)
+  // Keyed on the CLOCK, not the path: selecting a different wheel of a running
+  // clock must still offer Stop rather than a second Animate.
+  const animClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockAnimPathId)?.clockId ?? null)
+  const clockRunning = !!clockId && animClockId === clockId
+  const clockLinkPathId = useUIStore((s) => s.clockLinkPathId)
+  const linkClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockLinkPathId)?.clockId ?? null)
+  const clockArranging = !!clockId && linkClockId === clockId
   // A multi-part shape (a gear) regenerates every path in its group, so every
   // one of their operations is stale — not just this path's. Read the paths back
   // AFTER the edit so a part that just appeared is included.
@@ -230,6 +244,35 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   const updateLive = (newParams: ShapeParams) => updateShapeParams(id, newParams)
   const u = units
   const ox = orgWorld.x, oy = orgWorld.y
+
+  // Offered on any wheel of a clock: the five parts are cut flat and laid out
+  // clear of each other, so whether the TRAIN runs is the one thing none of
+  // their drawings shows. The per-shape "Animate in mesh" below it answers a
+  // narrower question (this wheel against its own pinion) and stays; the two are
+  // mutually exclusive, which the store setters enforce.
+  const clockAnimBtn = clockId ? (<>
+    {/* The arbor spacings are forced by the meshes but their DIRECTIONS are the
+        plate designer's, so this is where a train gets folded to fit a case.
+        Rooted at the escapement, which never moves. */}
+    <button
+      type="button"
+      onClick={() => useUIStore.getState().setClockLink(clockArranging ? null : id)}
+      className={`col-span-2 rounded px-2 py-1 text-label ${clockArranging
+        ? 'bg-red-500/80 hover:bg-red-500 text-white'
+        : 'bg-amber-600/80 hover:bg-amber-600 text-white'}`}
+    >
+      {clockArranging ? 'Done arranging' : 'Arrange linkage'}
+    </button>
+    <button
+      type="button"
+      onClick={() => useUIStore.getState().setClockAnim(clockRunning ? null : id)}
+      className={`col-span-2 rounded px-2 py-1 text-label ${clockRunning
+        ? 'bg-red-500/80 hover:bg-red-500 text-white'
+        : 'bg-emerald-600/80 hover:bg-emerald-600 text-white'}`}
+    >
+      {clockRunning ? 'Stop clock' : 'Animate whole clock'}
+    </button>
+  </>) : null
 
   switch (params.type) {
     case 'rectangle':
@@ -517,6 +560,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             thing the drawing cannot show is whether they run together. This puts
             the mate at the real centre distance and turns the pair. A preview
             only — nothing is written. */}
+        {clockAnimBtn}
         <button
           type="button"
           onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
@@ -617,6 +661,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         {/* The parts are drawn clear of each other, so the one thing the drawing
             cannot show is whether they bind. This puts them at the real centre
             distance and runs them. A preview only — nothing is written. */}
+        {clockAnimBtn}
         <button
           type="button"
           onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
@@ -626,6 +671,31 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         >
           {running ? 'Stop' : 'Animate in mesh'}
         </button>
+      </>)
+    }
+    case 'pendulum': {
+      const dm = pendulumDims(params)
+      const L = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
+      return (<>
+        {/* CX/CY is the SUSPENSION POINT, not the middle of the drawing — a
+            pendulum is placed by where it hangs from. */}
+        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
+        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
+        <EditField label="Len"   valueMM={params.length} units={u} min={1} onChange={(length) => update({ ...params, length })} />
+        <EditField label="Rod W" valueMM={params.rodWidth} units={u} min={0.5} onChange={(rodWidth) => update({ ...params, rodWidth })} />
+        <EditField label="Bob W" valueMM={params.bobRx * 2} units={u} min={1} onChange={(w) => update({ ...params, bobRx: w / 2 })} />
+        <EditField label="Bob H" valueMM={params.bobRy * 2} units={u} min={1} onChange={(h) => update({ ...params, bobRy: h / 2 })} />
+        <EditField label="Hole"  valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
+        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-snug">
+          Beats {dm.beatSeconds.toFixed(4)} s · period {dm.periodSeconds.toFixed(4)} s
+          <br />
+          Rod {L(dm.rodLength)} {u} overall · Len is the hole to the BOB CENTRE
+          <br />
+          A real rod runs a little fast — regulate by raising the bob.
+          {dm.boreTooBig && <><br /><span className="text-yellow-500">Hole clamped to leave a shoulder on the rod.</span></>}
+          {dm.bobTooSmall && <><br /><span className="text-yellow-500">Bob is no wider than the rod.</span></>}
+        </div>
+        {clockAnimBtn}
       </>)
     }
     case 'cam': {

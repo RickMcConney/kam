@@ -18,6 +18,9 @@ interface Props {
    *  the real centre distance, and a static wheel under the turning one is
    *  unreadable. */
   excludeGroupId?: string | null
+  /** Every path of this clock stands aside — ClockAnimLayer is drawing all five
+   *  of its wheels itself, assembled and turning. */
+  excludeClockId?: string | null
 }
 
 // ── Live-transform → Konva node attrs ─────────────────────────────────────────
@@ -255,7 +258,7 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
 })
 
 // ── Main layer ────────────────────────────────────────────────────────────────
-export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGroupId }: Props) {
+export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGroupId, excludeClockId }: Props) {
   // Individual selectors — whole-store destructuring re-rendered this layer on
   // every store change, including pure undo-stack pushes (tofix.md H3).
   const paths = usePathsStore((s) => s.paths)
@@ -267,7 +270,8 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGro
   return (
     <Group listening={false}>
       {paths.filter((p) => p.visible && !p.hidden && p.id !== excludePathId
-        && !(excludeGroupId && p.groupId === excludeGroupId)).map((p) => {
+        && !(excludeGroupId && p.groupId === excludeGroupId)
+        && !(excludeClockId && p.clockId === excludeClockId)).map((p) => {
         const isSelected = selectedIds.includes(p.id)
 
         // Image-backed paths get special rendering

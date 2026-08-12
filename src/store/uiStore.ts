@@ -47,6 +47,16 @@ interface UIState {
   // ignores the rest. The group's own paths are hidden meanwhile, or a static
   // copy would sit under the turning one. Nothing is written to the document.
   meshAnimPathId: string | null
+  // The whole-clock preview (canvas/layers/ClockAnimLayer). Its own field rather
+  // than another meshAnimPathId user: that one names ONE group to stand aside,
+  // and a clock is five. Only one animation runs at a time, so the two setters
+  // clear each other.
+  clockAnimPathId: string | null
+  // While non-null, the clock this path belongs to is being ARRANGED: the going
+  // train is drawn as a 4-bar chain rooted at the escapement, and dragging a
+  // joint sets that link's angle. The link LENGTHS are the centre distances and
+  // are not negotiable, so the angles are the whole of what a user may change.
+  clockLinkPathId: string | null
   // Corner-pick mode for the Corner Treatment form: while non-null, treatable
   // corners render as clickable markers; selectedCorners holds the node indices
   // the treatment applies to (empty = all corners). Markers come from
@@ -61,6 +71,14 @@ interface UIState {
   machineFormActive: boolean
   tabsFormActive: boolean
   shapesPanelOpen: boolean
+  // The clock designer (panels/draw/ClockPanel). Its own flag rather than an
+  // activeTool, because a clock is not one shape placed by a click — it works
+  // out a whole train and emits five independent shapes, one chip each.
+  clockPanelOpen: boolean
+  // Which clock the designer is EDITING, or null for a fresh one. Set by a
+  // clock chip click; the panel then rewrites that clock's parts in place
+  // rather than emitting a second clock.
+  clockEditId: string | null
   setupPanelOpen: boolean
   helpOpen: boolean
   timelineOpen: boolean
@@ -102,6 +120,8 @@ interface UIState {
   setMachineFormActive: (active: boolean) => void
   setTabsFormActive: (active: boolean) => void
   setShapesPanelOpen: (open: boolean) => void
+  setClockPanelOpen: (open: boolean) => void
+  setClockEdit: (clockId: string | null) => void
   setSetupPanelOpen: (open: boolean) => void
   setHelpOpen: (open: boolean) => void
   setTimelineOpen: (open: boolean) => void
@@ -127,6 +147,8 @@ interface UIState {
   clearPenNodes: () => void
   setNodeEditPathId: (id: string | null) => void
   setMeshAnim: (id: string | null) => void
+  setClockAnim: (id: string | null) => void
+  setClockLink: (id: string | null) => void
   setCornerPickSession: (id: string | null, baseD: string | null) => void
   setTreatedCorners: (idxs: number[]) => void
   toggleCorner: (idx: number) => void
@@ -157,8 +179,12 @@ export const useUIStore = create<UIState>()(
   machineFormActive: false,
   tabsFormActive: false,
   shapesPanelOpen: false,
+  clockPanelOpen: false,
+  clockEditId: null,
   setupPanelOpen: false,
   meshAnimPathId: null,
+  clockAnimPathId: null,
+  clockLinkPathId: null,
   helpOpen: false,
   timelineOpen: true,
   bottomTab: 'timeline' as const,
@@ -180,6 +206,11 @@ export const useUIStore = create<UIState>()(
   setMachineFormActive: (active) => set({ machineFormActive: active }),
   setTabsFormActive: (active) => set({ tabsFormActive: active }),
   setShapesPanelOpen: (open) => set({ shapesPanelOpen: open }),
+  // Closing the designer always drops the edit target, so the next time it is
+  // opened from the shapes grid it starts a NEW clock rather than silently
+  // rewriting the last one.
+  setClockPanelOpen: (open) => set({ clockPanelOpen: open, ...(open ? {} : { clockEditId: null }) }),
+  setClockEdit: (clockId) => set({ clockEditId: clockId }),
   setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
   setHelpOpen: (open) => set({ helpOpen: open }),
   setTimelineOpen: (open) => set({ timelineOpen: open }),
@@ -195,7 +226,9 @@ export const useUIStore = create<UIState>()(
   setSnap: (enabled) => set({ snapEnabled: enabled }),
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
-  setMeshAnim: (id) => set({ meshAnimPathId: id }),
+  setMeshAnim: (id) => set({ meshAnimPathId: id, clockAnimPathId: null, clockLinkPathId: null }),
+  setClockAnim: (id) => set({ clockAnimPathId: id, meshAnimPathId: null, clockLinkPathId: null }),
+  setClockLink: (id) => set({ clockLinkPathId: id, meshAnimPathId: null, clockAnimPathId: null }),
   setLastShapeType: (type) => set({ lastShapeType: type }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),

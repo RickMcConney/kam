@@ -24,6 +24,13 @@ export interface ImportedPath {
   shapePart?: string
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
+  // Which clock this shape was emitted as part of, and which wheel of it (see
+  // shapes/clockTrain.ts). Purely a LINK: the shapes are ordinary, independent
+  // and separately editable, and nothing regenerates through this. It exists so
+  // the five groups can be found again and stood up in mesh — the one question a
+  // drawing of five wheels laid out flat cannot answer.
+  clockId?: string
+  clockPart?: string
   imageSrc?: string  // base64 data URL — path acts as bounding box for this image
   stlSrc?: string            // base64-encoded STL file — path acts as 2D bounding box
   stlModelBounds?: StlModelBounds  // original STL bounding box in model space (mm)

@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown, Clock, Weight } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
-import { useWorkpieceStore, fromMM, toMM, fmtLen } from '../../store/workpieceStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
 import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
 import { escapementDims } from '../../shapes/escapementGenerator'
+import { pendulumDims } from '../../shapes/pendulumGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
+import { NumInput, Select, Check, inputCls, labelCls, toolBtnCls } from './shared'
 
 
 const LS_TEXT_KEY = 'kam:textConfig'
@@ -34,62 +36,12 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'gear',      label: 'Gear',    icon: <Cog size={ICON.md} /> },
   { type: 'cam',       label: 'Cam',     icon: <Cloud size={ICON.md} /> },
   { type: 'escapement', label: 'Escape', icon: <Anchor size={ICON.md} /> },
+  { type: 'pendulum', label: 'Pend',    icon: <Weight size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
   SHAPES.map((s) => [s.type, { label: s.label, icon: s.icon }])
 )
-
-const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
-const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-14 flex-shrink-0'
-
-function NumInput({ label, valueMM, units, onChange, min = 0.1, step, integer }: {
-  label: string; valueMM: number; units: string; onChange: (mm: number) => void
-  min?: number; step?: number; integer?: boolean
-}) {
-  const display = integer ? valueMM : fromMM(valueMM, units as 'mm' | 'in')
-  const s = step ?? (integer ? 1 : units === 'in' ? 0.0625 : 1)
-
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className={labelCls}>{label}</span>
-      <NumericInput
-        value={display}
-        min={min}
-        step={s}
-        integer={integer}
-        unit={integer ? undefined : units}
-        onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
-        className={inputCls}
-      />
-    </div>
-  )
-}
-
-const selectCls = inputCls + ' cursor-pointer'
-
-function Select<T extends string>({ label, value, options, onChange }: {
-  label: string; value: T; options: [T, string][]; onChange: (v: T) => void
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className={labelCls}>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value as T)} className={selectCls}>
-        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-      </select>
-    </div>
-  )
-}
-
-function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label className="flex items-center gap-1.5 cursor-pointer">
-      <span className={labelCls}>{label}</span>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
-        className="accent-blue-500 w-3.5 h-3.5" />
-    </label>
-  )
-}
 
 function ShapeConfig({ type, config, onChange, units }: {
   type: ShapeType; config: ShapeToolConfig; onChange: (c: ShapeToolConfig) => void; units: string
@@ -478,6 +430,41 @@ function ShapeConfig({ type, config, onChange, units }: {
         </p>}
       </div>)
     }
+    case 'pendulum': {
+      const pd = c.pendulum
+      const set = (patch: Partial<ShapeToolConfig['pendulum']>) => onChange({ ...c, pendulum: { ...c.pendulum, ...patch } })
+      const dm = pendulumDims({ ...pd, cx: 0, cy: 0 })
+      const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      return (<div className="space-y-1">
+        {/* Suspension hole to bob centre. The ONLY dimension the rate depends
+            on — hence the beat readout right under it. */}
+        <NumInput label="Length"  valueMM={pd.length} units={u} min={1} onChange={(length) => set({ length })} />
+        <NumInput label="Rod W"   valueMM={pd.rodWidth} units={u} min={0.5} onChange={(rodWidth) => set({ rodWidth })} />
+        <NumInput label="Bob W"   valueMM={pd.bobRx * 2} units={u} min={1} onChange={(w) => set({ bobRx: w / 2 })} />
+        <NumInput label="Bob H"   valueMM={pd.bobRy * 2} units={u} min={1} onChange={(h) => set({ bobRy: h / 2 })} />
+        <NumInput label="Hole Ø"  valueMM={pd.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          Beats {dm.beatSeconds.toFixed(4)} s · period {dm.periodSeconds.toFixed(4)} s
+          <br />
+          Rod {L(dm.rodLength)} overall · hangs from the hole
+          <br />
+          Length is the hole to the BOB CENTRE — the only dimension the rate depends on.
+        </p>
+        {/* A wooden rod has mass of its own, which lifts the centre of
+            oscillation above the bob centre. It always runs fast; the rating nut
+            is what fixes it. Saying so is the honest version of a beat readout
+            quoted to four places. */}
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          A real rod runs a little fast — regulate by raising the bob.
+        </p>
+        {dm.boreTooBig && <p className="text-label text-yellow-500">
+          Hole takes most of the {L(pd.rodWidth)} rod — it has been clamped to leave a shoulder.
+        </p>}
+        {dm.bobTooSmall && <p className="text-label text-yellow-500">
+          Bob is no wider than the rod — nothing to see, and nothing to weigh.
+        </p>}
+      </div>)
+    }
     case 'cam': {
       const m = c.cam
       const set = (patch: Partial<ShapeToolConfig['cam']>) => onChange({ ...c, cam: { ...c.cam, ...patch } })
@@ -538,19 +525,10 @@ function ShapeConfig({ type, config, onChange, units }: {
   }
 }
 
-const toolBtnCls = (active: boolean) =>
-  [
-    'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border',
-    active
-      ? 'border-blue-500 bg-blue-500/20'
-      : 'border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700',
-  ].join(' ')
-
-
 // ─── Main ShapePanel ──────────────────────────────────────────────────────────
 
 export default function ShapePanel({ fill = false }: { fill?: boolean }) {
-  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, penCurveType, setPenCurveType, lastShapeType, setLastShapeType } = useUIStore()
+  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, setClockPanelOpen, penCurveType, setPenCurveType, lastShapeType, setLastShapeType } = useUIStore()
   const { units } = useWorkpieceStore()
   const isShapeTool = SHAPES.some((s) => s.type === activeTool)
   const lastShape = SHAPE_META[lastShapeType] ?? SHAPE_META.rectangle
@@ -627,6 +605,18 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
                 <span className="text-label text-gray-500 dark:text-neutral-400">{label}</span>
               </button>
             ))}
+            {/* Not a shape tool, and so not in SHAPES: a clock is a whole train
+                worked out from the beat, emitted as five INDEPENDENT shapes with
+                a chip each. It lives here because this is where a user looks for
+                the gear and the escapement it is built from. */}
+            <button
+              onClick={() => { setActiveTool('select'); setShapesPanelOpen(false); setClockPanelOpen(true) }}
+              title="Clock — a whole going train from the beat"
+              className={toolBtnCls(false)}
+            >
+              <span style={{ color: PATH_COLOR }}><Clock size={ICON.md} /></span>
+              <span className="text-label text-gray-500 dark:text-neutral-400">Clock</span>
+            </button>
           </div>
         </div>
       </div>

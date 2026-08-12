@@ -31,6 +31,9 @@ import { collectSnapTargets, snapAxisDelta, type SnapTargets } from './objectSna
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
 import { EscapementAnimLayer } from './layers/EscapementAnimLayer'
 import { GearAnimLayer } from './layers/GearAnimLayer'
+import { ClockAnimLayer } from './layers/ClockAnimLayer'
+import { ClockLinkageLayer } from './layers/ClockLinkageLayer'
+import { clockAssemblyFromPaths, clockPlate, clockRoot, defaultLinkAngles, dragLinkAngle, linkAngleAt } from '../shapes/clockTrain'
 import { CornerPickLayer } from './layers/CornerPickLayer'
 import { PenLayer } from './layers/PenLayer'
 import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
@@ -149,6 +152,10 @@ type CanvasMode =
   | { type: 'drawshape'; startCNC: { x: number; y: number }; currentCNC: { x: number; y: number } }
   | { type: 'pendraw'; anchorCNC: { x: number; y: number }; closing: boolean }
   | { type: 'nodedit-drag'; nodeIdx: number; kind: 'anchor' | 'handle-in' | 'handle-out' }
+  // Dragging a joint of a clock's going train. Only ONE angle changes — the link
+  // from this arbor to the next — and everything on the drive side of it
+  // translates rigidly; see onMoveClockLink.
+  | { type: 'clocklink-drag'; nodeIdx: number }
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 const OBJECT_SNAP_PX = 8     // screen px within which a dragged bbox edge snaps to another shape's edge
@@ -286,6 +293,11 @@ export default function CanvasStage() {
   const shiftHeldRef = useRef(false)
 
   const modeRef = useRef<CanvasMode>({ type: 'idle' })
+  // The linkage being arranged. Held HERE rather than in a store for the same
+  // reason liveTransform is: it changes on every mouse move, and only the
+  // committed value (on the clock's own chip) has to outlive the gesture.
+  const [linkAngles, linkAnglesRef, setLinkAngles] = useRefState<number[] | null>(null)
+  const [hoverLinkNode, setHoverLinkNode] = useState<number | null>(null)
   // Ref pair, not plain state: mouseup bakes from liveTransformRef so a mouseup
   // that lands before React commits the last mousemove's render still bakes the
   // final transform, not the previous frame's (bugs.md B6).
@@ -361,7 +373,96 @@ export default function CanvasStage() {
   const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
   const meshAnimGroupId = usePathsStore((s) =>
     s.paths.find((p) => p.id === meshAnimPathId)?.groupId ?? null)
+  // A running CLOCK draws all five wheels itself, in mesh, so every one of its
+  // groups steps aside — which is why this is a separate exclusion from the
+  // single-group one above rather than another user of it.
+  const clockAnimPathId = useUIStore((s) => s.clockAnimPathId)
+  const clockLinkPathId = useUIStore((s) => s.clockLinkPathId)
+  // Both previews draw the whole clock themselves, so its paths step aside for
+  // either. One id covers both because the two modes are mutually exclusive.
+  const clockAnimId = usePathsStore((s) => {
+    const id = clockAnimPathId ?? clockLinkPathId
+    return s.paths.find((p) => p.id === id)?.clockId ?? null
+  })
   const cornerPickPathId = useUIStore((s) => s.cornerPickPathId)
+
+  // The assembly and root the linkage drag works against — the same ones the
+  // layer draws, so a joint lands where the cursor is rather than near it.
+  const linkFrame = useCallback(() => {
+    const st = usePathsStore.getState()
+    const clockId = st.paths.find((p) => p.id === useUIStore.getState().clockLinkPathId)?.clockId
+    if (!clockId) return null
+    const assembly = clockAssemblyFromPaths(st.paths, clockId)
+    if (assembly.length < 2) return null
+    const wp = useWorkpieceStore.getState()
+    const root = clockRoot(wp.widthMM, wp.heightMM, assembly[assembly.length - 1].params)
+    return { clockId, assembly, root }
+  }, [])
+
+  const handleLinkNodeDown = useCallback((nodeIdx: number, e: Konva.KonvaEventObject<MouseEvent>) => {
+    e.cancelBubble = true
+    didDragRef.current = false
+    setHoverLinkNode(nodeIdx)
+    setMode2({ type: 'clocklink-drag', nodeIdx })
+  }, [])
+
+  /**
+   * Swing one link so its far joint follows the cursor.
+   *
+   * The LENGTH is not negotiable — it is the centre distance the mesh runs at —
+   * so the joint rides a circle about the arbor it hangs from and only the ANGLE
+   * changes. `angles[k]` alone is written: everything toward the drive wheel then
+   * translates rigidly (it is built off this joint with its own angles intact)
+   * and everything toward the escapement stays exactly where it was. One drag,
+   * one angle, which is what makes this arrangeable rather than whippy.
+   */
+  const onMoveClockLink = useCallback((m: Extract<CanvasMode, { type: 'clocklink-drag' }>, cnc: { x: number; y: number }, shift: boolean) => {
+    const f = linkFrame()
+    const cur = linkAnglesRef.current
+    if (!f || !cur) return
+    const plate = clockPlate(f.assembly, cur)
+    if (!plate) return
+    // Shift snaps to 15° — an ANGLE snap, deliberately separate from the object
+    // snap in uiStore, which is about edges lining up and means nothing here.
+    const deg = dragLinkAngle(plate, f.root, m.nodeIdx, cnc, shift ? 15 : 0)
+    if (deg === null) return
+    const next = cur.slice()
+    next[m.nodeIdx] = deg
+    setLinkAngles(next)
+  }, [linkFrame, linkAnglesRef, setLinkAngles])
+
+  /** Write the arrangement onto the clock's own chip. No geometry moves — the
+   *  parts are still cut flat where they lie — so there is nothing to regenerate
+   *  and nothing to record: this AMENDS the chip that designed the clock. */
+  const commitClockLink = useCallback(() => {
+    const f = linkFrame()
+    const angles = linkAnglesRef.current
+    if (!f || !angles) return
+    const tl = useTimelineStore.getState()
+    for (let i = tl.events.length - 1; i >= 0; i--) {
+      const e = tl.events[i]
+      if (e.kind === 'clock.design' && e.clockId === f.clockId) {
+        tl.amendClockSpec(f.clockId, { ...e.spec, linkAngles: angles })
+        return
+      }
+    }
+  }, [linkFrame, linkAnglesRef])
+
+  // Entering linkage mode takes a working copy of the clock's committed angles;
+  // leaving drops it. Defaults fill in per element, so a clock that predates the
+  // field arranges from the lean it was drawn with rather than from nothing.
+  useEffect(() => {
+    if (!clockLinkPathId) { setLinkAngles(null); setHoverLinkNode(null); return }
+    const clockId = usePathsStore.getState().paths.find((p) => p.id === clockLinkPathId)?.clockId
+    const evs = useTimelineStore.getState().events
+    let stored: number[] | undefined
+    for (let i = evs.length - 1; i >= 0; i--) {
+      const e = evs[i]
+      if (e.kind === 'clock.design' && e.clockId === clockId) { stored = e.spec.linkAngles; break }
+    }
+    const n = defaultLinkAngles().length
+    setLinkAngles(Array.from({ length: n }, (_, i) => (linkAngleAt(stored, i) * 180) / Math.PI))
+  }, [clockLinkPathId, setLinkAngles])
   const effectiveCurveType: PenCurveType = altDown
     ? (penCurveType === 'linear' ? 'catmull-rom' : 'linear')
     : penCurveType
@@ -592,6 +693,12 @@ export default function CanvasStage() {
       }
 
       if (e.code === 'Escape') {
+        // Arranging is committed on every mouseup, so Escape just leaves — it is
+        // "done", not "cancel", and there is nothing uncommitted to throw away.
+        if (useUIStore.getState().clockLinkPathId) {
+          useUIStore.getState().setClockLink(null)
+          return
+        }
         const { nodeEditPathId: neid } = useUIStore.getState()
         if (neid) {
           if (connectSourceRef.current !== null) {
@@ -1276,6 +1383,7 @@ export default function CanvasStage() {
 
     if (m.type === 'idle' && connectSourceRef.current !== null) onMoveConnectPreview(cncMouse, vp)
     if (m.type === 'pendraw') onMovePenDraw(m, cncMouse, pointer, vp)
+    if (m.type === 'clocklink-drag') { onMoveClockLink(m, cncMouse, e.evt.shiftKey); return }
     if (m.type === 'nodedit-drag' && editDragInitRef.current) onMoveNodeEditDrag(m, cncMouse, e)
   }, [setCursorMM, onMovePan, onMoveTranslate, onMoveResize, onMoveRotate, onMoveDragbox,
       onMoveDrawShape, onMovePenHover, onMoveConnectPreview, onMovePenDraw, onMoveNodeEditDrag])
@@ -1524,6 +1632,12 @@ export default function CanvasStage() {
           useUIStore.getState().setActiveTool('select')
         }
       }
+      return
+    }
+
+    if (m.type === 'clocklink-drag') {
+      setMode2({ type: 'idle' })
+      commitClockLink()
       return
     }
 
@@ -1799,6 +1913,7 @@ export default function CanvasStage() {
             liveTransform={liveTransform}
             excludePathId={nodeEditPathId}
             excludeGroupId={meshAnimGroupId}
+            excludeClockId={clockAnimId}
           />
           {nodeEditPathId && (
             <NodeEditLayer
@@ -1824,6 +1939,15 @@ export default function CanvasStage() {
           <ShapePreviewLayer viewport={viewport} d={liveShapeD} />
           <EscapementAnimLayer viewport={viewport} />
           <GearAnimLayer viewport={viewport} />
+          <ClockAnimLayer viewport={viewport} />
+          {clockLinkPathId && (
+            <ClockLinkageLayer
+              viewport={viewport}
+              liveAngles={linkAngles}
+              onNodeMouseDown={handleLinkNodeDown}
+              activeNode={hoverLinkNode}
+            />
+          )}
           <CornerPickLayer viewport={viewport} />
           {activeTool === 'pen' && (
             <PenLayer
@@ -1895,6 +2019,13 @@ export default function CanvasStage() {
 
       <PenLengthOverlay viewport={viewport} draggingHandle={livePen !== null} snappedCursor={penSnapCursor} />
       <NodeEditDimensionOverlay viewport={viewport} nodes={editNodes} closed={editClosed} dragNodeIdx={dragNodeIdx} hoverSegIdx={hoverSegIdx} />
+
+      {/* Linkage arranging indicator */}
+      {clockLinkPathId && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
+          Drag a joint to fold the train · Shift snaps 15° · the escapement is fixed · Esc to finish
+        </div>
+      )}
 
       {/* Node edit indicator */}
       {nodeEditPathId && (

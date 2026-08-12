@@ -8,6 +8,7 @@ import PathsPanel from '../panels/PathsPanel'
 import MachinePanel from '../panels/MachinePanel'
 import PropertiesPanel from '../panels/PropertiesPanel'
 import ShapePanel from '../panels/draw/ShapePanel'
+import ClockPanel from '../panels/draw/ClockPanel'
 import WorkpiecePanel from '../panels/WorkpiecePanel'
 import GcodeViewer from '../panels/GcodeViewer'
 
@@ -16,7 +17,13 @@ const TABS: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
   { id: 'paths', label: 'Paths', icon: <Route size={ICON.md} /> },
 ]
 
-function TabContent({ tab, machineFormActive, shapesPanelOpen }: { tab: SidebarTab; machineFormActive: boolean; shapesPanelOpen: boolean }) {
+function TabContent({ tab, machineFormActive, shapesPanelOpen, clockPanelOpen }: {
+  tab: SidebarTab; machineFormActive: boolean; shapesPanelOpen: boolean; clockPanelOpen: boolean
+}) {
+  // The clock designer fills the sidebar like the shapes picker does — it has a
+  // train's worth of readouts and nothing else in the draw tab applies while it
+  // is open.
+  if (tab === 'draw' && clockPanelOpen) return <ClockPanel />
   if (tab === 'draw') return (
     <>
       {!machineFormActive && <ShapePanel fill={shapesPanelOpen} />}
@@ -27,12 +34,13 @@ function TabContent({ tab, machineFormActive, shapesPanelOpen }: { tab: SidebarT
 }
 
 export default function Sidebar() {
-  const { sidebarTab, setSidebarTab, setMachineFormActive, setShapesPanelOpen, setSetupPanelOpen, setWorkspaceTab } = useUIStore()
+  const { sidebarTab, setSidebarTab, setMachineFormActive, setShapesPanelOpen, setClockPanelOpen, setSetupPanelOpen, setWorkspaceTab } = useUIStore()
   const selectedIds = usePathsStore((s) => s.selectedIds)
   const gcodeViewerOpen = useSimStore((s) => s.gcodeViewerOpen)
   const hasGcode = useSimStore((s) => !!s.gcode)
   const machineFormActive = useUIStore((s) => s.machineFormActive)
   const shapesPanelOpen = useUIStore((s) => s.shapesPanelOpen)
+  const clockPanelOpen = useUIStore((s) => s.clockPanelOpen)
   const setupPanelOpen = useUIStore((s) => s.setupPanelOpen)
 
   const [width, setWidth] = useState(320)
@@ -105,7 +113,7 @@ export default function Sidebar() {
             {TABS.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => { setSidebarTab(tab.id); if (tab.id === 'draw') { setMachineFormActive(false); setShapesPanelOpen(false) } }}
+                onClick={() => { setSidebarTab(tab.id); if (tab.id === 'draw') { setMachineFormActive(false); setShapesPanelOpen(false); setClockPanelOpen(false) } }}
                 title={tab.label}
                 className={[
                   'flex-1 flex flex-col items-center gap-0.5 py-2 text-body transition-colors border-b-2',
@@ -137,15 +145,16 @@ export default function Sidebar() {
           </div>
 
           {/* Scrollable content — switches to flex-col fill when machine or shapes panel is open */}
-          <div className={(machineFormActive || shapesPanelOpen) && sidebarTab === 'draw'
+          <div className={(machineFormActive || shapesPanelOpen || clockPanelOpen) && sidebarTab === 'draw'
             ? 'flex-1 overflow-hidden flex flex-col'
             : 'flex-1 overflow-y-auto'
           }>
-            <TabContent tab={sidebarTab} machineFormActive={machineFormActive} shapesPanelOpen={shapesPanelOpen} />
+            <TabContent tab={sidebarTab} machineFormActive={machineFormActive} shapesPanelOpen={shapesPanelOpen} clockPanelOpen={clockPanelOpen} />
           </div>
 
-          {/* Properties panel — hidden while machine form fills the sidebar */}
-          {selectedIds.length > 0 && !machineFormActive && <PropertiesPanel />}
+          {/* Properties panel — hidden while the machine form or the clock
+              designer fills the sidebar */}
+          {selectedIds.length > 0 && !machineFormActive && !clockPanelOpen && <PropertiesPanel />}
         </>
       )}
       </div>
