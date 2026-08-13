@@ -114,21 +114,53 @@ describe('generateGearD', () => {
   it('never crosses its own flanks, even where the teeth run to a point', () => {
     // Carrying the involute past the point where the flanks meet produces a
     // self-intersecting outline that looks plausible until it is cut.
-    for (const [m, z, a] of [...CASES, [5, 6, 35], [4, 5, 30]] as [number, number, number][]) {
+    //
+    // Tested by actually LOOKING FOR A CROSSING, not by asking whether the polar
+    // angle advances all the way round. It does not, and must not: an UNDERCUT
+    // flank is re-entrant — the trochoid dips inside the involute and comes back
+    // out — so its polar angle genuinely runs backwards for a stretch. That was a
+    // fair proxy while the roots were cut radially, and it fails the moment they
+    // are cut the way a hob leaves them (m5 z6 at 20° backtracks by 0.002 rad on
+    // a perfectly sound tooth). Segment-against-segment is the thing itself.
+    for (const [m, z, a] of [...CASES, [5, 6, 35], [4, 5, 30], [4, 8, 20], [4, 12, 20]] as [number, number, number][]) {
       const ring = outline({ ...base, module: m, teeth: z, pressureAngle: a, bore: 0, spokes: 0 })
       const tag = `m${m} z${z} ${a}°`
-      // A self-intersection shows up as the radius wandering back and forth: on a
-      // clean gear the polar angle advances monotonically all the way round.
+      const n = ring.length
+      const cross = (p: number[], q: number[], r: number[], t: number[]) => {
+        const d = (o: number[], u: number[], v: number[]) =>
+          (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+        const d1 = d(r, t, p), d2 = d(r, t, q), d3 = d(p, q, r), d4 = d(p, q, t)
+        return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))
+      }
+      let hit = ''
+      for (let i = 0; i < n && !hit; i++) {
+        const p = ring[i], q = ring[(i + 1) % n]
+        const x0 = Math.min(p[0], q[0]), x1 = Math.max(p[0], q[0])
+        const y0 = Math.min(p[1], q[1]), y1 = Math.max(p[1], q[1])
+        // Skip the neighbours: consecutive segments share an endpoint.
+        for (let j = i + 2; j < n - (i === 0 ? 1 : 0); j++) {
+          const r = ring[j], t = ring[(j + 1) % n]
+          if (Math.max(r[0], t[0]) < x0 || Math.min(r[0], t[0]) > x1) continue
+          if (Math.max(r[1], t[1]) < y0 || Math.min(r[1], t[1]) > y1) continue
+          // Segments that share an endpoint are not a crossing. The ring closes
+          // on itself — the last tooth's root arc ends exactly where the first
+          // tooth's flank begins — so the wrap pair meets at a point and reads
+          // as one without this.
+          const shared = [p, q].some((u) => [r, t].some((v) => Math.hypot(u[0] - v[0], u[1] - v[1]) < 1e-9))
+          if (shared) continue
+          if (cross(p, q, r, t)) { hit = `segments ${i} and ${j}` ; break }
+        }
+      }
+      expect(hit, `${tag} self-intersects: ${hit}`).toBe('')
+      // And it still closes once round — a profile that lost a whole tooth or
+      // doubled one would pass the crossing test and fail this.
       let turned = 0
-      for (let i = 0; i < ring.length; i++) {
+      for (let i = 0; i < n; i++) {
         const a0 = Math.atan2(ring[i][1], ring[i][0])
-        const a1 = Math.atan2(ring[(i + 1) % ring.length][1], ring[(i + 1) % ring.length][0])
+        const a1 = Math.atan2(ring[(i + 1) % n][1], ring[(i + 1) % n][0])
         let da = a1 - a0
         if (da > Math.PI) da -= 2 * Math.PI
         if (da < -Math.PI) da += 2 * Math.PI
-        // Flattening at 0.005 mm on a ~25 mm radius is worth ~2e-4 rad of
-        // noise; a real crossing backtracks by whole degrees.
-        expect(da, `${tag} backtracks at vertex ${i}`).toBeGreaterThan(-1e-3)
         turned += da
       }
       expect(Math.abs(turned), tag).toBeCloseTo(2 * Math.PI, 3)

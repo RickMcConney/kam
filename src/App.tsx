@@ -10,6 +10,7 @@ import { usePathsStore } from './store/pathsStore'
 import { openProjectFile, newProject } from './io/projectLoad'
 import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
+import EscapementInfoPanel from './panels/EscapementInfoPanel'
 import { useWorkpieceStore } from './store/workpieceStore'
 import { useToolpathStore } from './store/toolpathStore'
 import { useTimelineStore } from './timeline/timelineStore'
@@ -189,6 +190,9 @@ export default function App() {
       </div>
       <StatusBar />
       <SaveDialog />
+      {/* Floats over everything and takes no focus — it is a readout being
+          watched while a spinner is held down, not a dialog. */}
+      <EscapementInfoPanel />
     </div>
   )
 }

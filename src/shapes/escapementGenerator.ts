@@ -100,14 +100,8 @@ export interface EscapementSpec {
   teeth: number
   /** Tip circle diameter — the wheel's overall size. */
   wheelDia: number
-  /** Teeth spanned by the pallets. MUST be an integer + ½, or the pallets do not
-   *  alternate; N/4 rounded to the nearest half tooth is the usual choice. */
-  span: number
   /** Tip circle to root circle, mm. */
   toothDepth: number
-  /** Degrees the tooth's leading face leans back from radial, so only the tip
-   *  can touch a pallet. */
-  undercut: number
   /** Free travel of the wheel between one tooth releasing and the next locking,
    *  in WHEEL degrees. What is left of the half tooth pitch is the impulse. */
   drop: number
@@ -124,8 +118,6 @@ export interface EscapementSpec {
   recoilArc: number
   /** Anchor arm and pallet width, mm. */
   armWidth: number
-  /** Crutch tail sticking out past the arbor, mm. 0 for none. */
-  tailLength: number
   /** Wheel bore Ø. 0 for none. */
   bore: number
   /** Wheel hub Ø — a FLOOR, grown if the spokes need more room to land on. */
@@ -134,26 +126,9 @@ export interface EscapementSpec {
   spokes: number
   /** Anchor arbor Ø. 0 for none. */
   anchorBore: number
-  /** How much the tooth flanks BOW outward, 0…1. Straight flanks taper a tooth
-   *  from a point to a narrow base and leave it weak across the grain; a real
-   *  escape wheel curves both sides so the tooth swells towards the root. The
-   *  bow grows as the square of the depth, so a flank leaves the tip on its
-   *  original line and only fattens lower down — which is what keeps it out of
-   *  the space in front of the tip, where the pallet's impulse face works at the
-   *  lock. 0 for the straight taper. */
-  toothCurve: number
-  /** Running clearance, mm. The teeth are cut this much SHORT of the circle the
-   *  pallets were laid out for, which opens the same gap at every surface the
-   *  two meet on — the escapement's equivalent of backlash on a gear, and what
-   *  keeps a wooden movement from seizing when the weather moves it. It comes
-   *  straight off the lock, so it has to stay well under the lock depth. */
-  clearance: number
   /** Wheel turns clockwise. The teeth lean the way it runs, so this is not
    *  cosmetic — a wheel cut the wrong way round will not lock at all. */
   clockwise: boolean
-  /** Draw the tip circle and the pallet circle as extra subpaths. References for
-   *  laying out the plate, not cuts — delete them before generating. */
-  refCircles: boolean
 }
 
 export interface EscapementDims {
@@ -179,8 +154,10 @@ export interface EscapementDims {
   recoilRatio: number
   wheelRootDia: number
   hub: HubFit
-  /** The span is not an integer + ½, so the pallets cannot alternate. Fatal. */
-  spanUneven: boolean
+  /** Teeth spanned by the pallets — derived from the tooth count, not asked for.
+   *  See `escapementSpan`. Reported because it is what sets the arbor's distance
+   *  and the whole shape of the anchor. */
+  span: number
   /** Drop eats the whole half pitch — there is no impulse left. Fatal. */
   noImpulse: boolean
   /** The anchor's hub reaches into the wheel; the relief cut will eat it. */
@@ -194,9 +171,18 @@ export interface EscapementDims {
   /** That dive is too much of the tooth depth to fit in the space beside a
    *  tooth: the pair will bind. Bigger teeth, less lock or lift, or less span. */
   divesTooDeep: boolean
-  /** Tooth thickness at the root, mm — what has to carry the drive across the
-   *  grain, and what the flank bow is for. */
+  /** Tooth thickness where it leaves the gullet, mm — the first section that is
+   *  the tooth's own material and not the stock joining it to its neighbours.
+   *  What has to carry the drive across the grain, and what `TOOTH_BOW` is for.
+   *  Measured at the top of the fill, not at the root circle: the fill reaches
+   *  well above that, so a thickness taken there is a thickness of solid wheel. */
   toothBase: number
+  /** The gullet, mm — the radius of the round that fills the bottom of each tooth
+   *  space, sized from the room the pallet leaves rather than from the cutter,
+   *  since the pallet never reaches down there. It is also the tightest inside
+   *  radius on the wheel, so it says what the biggest cutter that can finish the
+   *  teeth is: 2× this. */
+  gulletRadius: number
   /** What a tooth locks by at the extreme of the swing, once the running
    *  clearance is taken off, mm — the lock the escapement really runs to, as
    *  against the one that was asked for. */
@@ -215,27 +201,80 @@ export interface EscapementDims {
 /** Wheel-side clearance the arms are held off their tangent line by, mm, on top
  *  of the swing they are already rotated back through. */
 const ARM_CLEAR = 0.2
+/** What the ENTRY arm's wheel-side flank is held off that tangent by at the
+ *  pallet end instead — see `entryTaper`. Set from the measured skim, not
+ *  guessed (`scripts/esc-arm-clearance.mts`): it takes that arm from 0.68 mm of
+ *  clearance to 1.87 mm, which is where the exit arm already sits, and it is what
+ *  stops a RECOIL anchor's entry arm touching the teeth outright. */
+const ENTRY_CLEAR = 1.5
 /** Fillet on each arm's toe — its far corner, away from the wheel — as a
  *  fraction of the arm width. Nothing touches it: shape only. */
 const ARM_TOE = 0.35
+/** What a RECOIL's entry blade may stand past the far end of its own acting face,
+ *  mm. An eye judgement with a hard floor under it. At 0 the cut is flush with
+ *  the end of the acting face — no material past it at all — and the
+ *  `carries the locking face straight on into the arm` test fails, which is the
+ *  right answer: the face has to run ON past its working end or the tooth reaches
+ *  the very edge of it. This is that flush point plus 2 mm of margin. Going the
+ *  other way, BELOW zero, the cut eats the acting face itself, and a recoil face
+ *  is the travel the pendulum's overswing runs on — `recoilArc` is the honest way
+ *  to shorten that. */
+const RECOIL_TIP_LAND = 2
+/** The RECOIL's entry toe, as a fraction of the arm width — 6 mm on a standard
+ *  8 mm arm, against `ARM_TOE`'s 2.8. On that profile the toe IS the spear the
+ *  run-out leaves, and rounding it is what takes the point off. See `filletToes`. */
+const RECOIL_TOE = 0.75
 /** How sharply a vertex must turn to be a corner rather than a sample on a
  *  curve, radians. */
 const TOE_MIN_TURN = 0.7
-/** Root fillet on the wheel teeth, mm. A cutter leaves one whatever we draw. */
+/** Floor on the gullet fillet, mm. Not a design choice: a cutter leaves this much
+ *  whatever is drawn. The radius actually used is sized from the room — see
+ *  `gulletFillet`. */
 const ROOT_FILLET = 0.6
-/** Fraction of the tooth pitch taken by the back slope; the rest is root land. */
-const BACK_FRAC = 0.55
+/** Extra depth, as a fraction of the tooth, left clear UNDER the pallet's reach
+ *  before the gullet fill is allowed to stand — see `gulletFillet`. The fill's
+ *  widest section sits at this depth, so it is the real running clearance
+ *  between the pallet's deepest dive and the stock below it. */
+const GULLET_KEEP = 0.2
+/** The most of the tooth depth the radial tip land may take. It is sized from the
+ *  lock; this is the ceiling for a wheel whose lock is a large part of its own
+ *  tooth. Past it the land is most of the leading face and the undercut has
+ *  nowhere left to run. */
+const TIP_LAND_MAX = 0.35
+/** Degrees the tip land is relieved off radial. Small on purpose — see the tip
+ *  land in `toothGeom`: radial is the angle that beds on the LOCKING face, and
+ *  this is the least that keeps the land's inner corner out of the IMPULSE face,
+ *  which stands at 53° to it. Calibrated against the mesh, and it is a knee, not a
+ *  slope: 0° binds at 0.061 mm, 2° clears at 0.024, 4° is back to the 0.010 the
+ *  wheel measures with no land at all, and 6° buys another four thousandths. */
+const TIP_RELIEF = 4
 /** How much of a tooth pitch a pallet may occupy around the wheel — see
  *  `palletNib`. The rest of the space is the drop and the tooth itself. */
 const NIB_SPACE = 0.12
 /** Degrees the back of a pallet is relieved by — see `palletNib`. */
 const BACK_RELIEF = 75
 /** How much of the root land one bowed flank may take, so a strip of land is
- *  always left between the two that share it — see `bow`. */
+ *  always left between the two that share it — see `flankAngle`. */
 const BOW_SHARE = 0.3
+/** How far the tooth flanks bow outward, 0…1. Fixed rather than asked for: the
+ *  gullet fill buries most of what the bow used to add, so it moves the tooth's
+ *  section by ~13% over its whole range — not a decision worth a field.
+ *
+ *  REMOVING IT WAS TRIED AND REVERTED, 2026-08-13. The apparatus is real
+ *  complexity for a small effect, but the effect is not as small as `toothBase`
+ *  alone suggests: measured at five depths on eight wheels
+ *  (`scripts/esc-tooth-shape.mts`), taking the bow out leaves the tooth IDENTICAL
+ *  over its top half — everything the pallet works against — and about a ninth
+ *  thinner in the bottom quarter (5.76 → 5.14 mm at a tenth of the depth on the
+ *  default wheel, 12.15 → 10.48 on a 200 mm one), with the gullet fill shrinking
+ *  2.39 → 2.15 alongside it for reasons that were not run down. Not worth chasing
+ *  for the lines it saves. */
+const TOOTH_BOW = 0.6
 /** Extra depth, as a fraction of the tooth, kept clear below the pallet's reach
- *  before a flank is allowed to bow — see `toothedRing`. */
+ *  before a flank is allowed to bow — see `toothGeom`'s `start`. */
 const BOW_KEEP = 0.08
+/** Fraction of the tooth pitch taken by the back slope; the rest is root land. */
+const BACK_FRAC = 0.55
 /** How much of the tooth depth a pallet may dive past the tip circle before its
  *  impulse face starts to reach the tooth it has just locked. Calibrated against
  *  the mesh, not guessed: at 0.44 of the depth both profiles measure exactly
@@ -265,13 +304,35 @@ const norm = (p: Pt): Pt => {
   return [p[0] / n, p[1] / n]
 }
 
+/**
+ * How many teeth the pallets span — DERIVED from the tooth count, never asked
+ * for, because only one family of values works and the user cannot see which.
+ *
+ * The span must be an ODD NUMBER OF HALF TEETH. The wheel gives up half a tooth
+ * per beat, so at 7.5 of 30 (fifteen halves) one pallet locks as the other
+ * releases; at 8.0 (sixteen) one releases with nothing to catch it and the wheel
+ * runs. This used to be a field with a red warning under it, which is a bad trade
+ * — a number the form can compute is not a decision, and a third of the values a
+ * spinner offered were fatal.
+ *
+ * A quarter of the teeth is the classic choice: it puts the pallets a quarter
+ * turn apart, so the arms meet at about a right angle and the anchor looks like
+ * an anchor. Round that to the nearest odd half — NOT to the nearest half, which
+ * lands on a whole tooth for every other count and is exactly the broken case.
+ * 30 teeth gives 7.5, which is what the field's default always was.
+ */
+export function escapementSpan(teeth: number): number {
+  const N = Math.max(6, Math.round(teeth))
+  return clamp(Math.round(N / 4 - 0.5) + 0.5, 0.5, N / 2 - 0.5)
+}
+
 /** The geometry every other function here starts from. */
 function frame(spec: EscapementSpec) {
   const R = Math.max(2, spec.wheelDia / 2)
   const N = Math.max(6, Math.round(spec.teeth))
   const pitch = (2 * Math.PI) / N
   // Span is clamped short of a half turn: β → π sends the arbor to infinity.
-  const span = clamp(spec.span, 0.5, N / 2 - 0.5)
+  const span = clamp(escapementSpan(N), 0.5, N / 2 - 0.5)
   const beta = span * pitch
   const L = R / Math.cos(beta / 2)
   const rho = R * Math.tan(beta / 2)
@@ -317,7 +378,7 @@ type Side = 'entry' | 'exit'
 function dropLock(spec: EscapementSpec): number {
   if (spec.escType !== 'deadbeat') return 0
   const { rho } = frame(spec)
-  const want = (Math.max(0, spec.clearance || 0) + LANDING_MARGIN) / rho
+  const want = LANDING_MARGIN / rho
   const room = rad(Math.max(0, spec.lock)) - LANDING_MARGIN / rho
   return Math.max(0, Math.min(want, room))
 }
@@ -490,19 +551,18 @@ function nibFrame(spec: EscapementSpec, side: Side, depth: number) {
     Math.cos(th) * m[0] + Math.sin(th) * away[0],
     Math.cos(th) * m[1] + Math.sin(th) * away[1],
   ])
-  // The TIP LAND — the short square face closing the pallet beyond the release
-  // corner. It is the pallet blade's own thickness and it is left SQUARE, which
-  // looks alarming: it stands within about 2° of the tooth's direction of travel
-  // at the instant of release, so a static reading of the drawing says the tooth
-  // must skim along it and rub the impulse back out of the pendulum.
+  // THE PALLET ENDS AT THE RELEASE CORNER. There is no tip land: the relieved
+  // back starts at `inner` itself and runs straight back into the arm, so the
+  // blade comes to a point at the one end a tooth has to get past.
   //
-  // It does not, and the reason is that the static angle is the wrong thing to
-  // look at: after release the pallet is withdrawing while the tooth runs on, so
-  // the two separate far faster than that 2° suggests. Measured over the whole
-  // cycle a tooth never comes closer than 0.32 mm to this face (`__escTipLand`,
-  // and the test that pins it). Tilting it away makes no measurable difference —
-  // 0.3149 against 0.3168 mm at 20° — so it stays square.
-  const heel: Pt = [inner[0] + depth * m[0], inner[1] + depth * m[1]]
+  // It used to carry a square land a whole `nibDepth` thick there, and the land
+  // was where the blade was widest around the wheel at exactly the point it has
+  // least room — the release corner sits deepest inside the tooth space, and the
+  // land added its thickness on the side the NEXT tooth is arriving from. That
+  // is a pallet that fits the space on paper and fouls it in wood, where the
+  // teeth are never quite where the drawing says. Ending at the corner instead
+  // costs nothing: nothing acts on the land (the tooth leaves by the corner) and
+  // the blade is still `depth`-worth of wedge by the time it reaches the arm.
   const far = 2 * (ARM_CLEAR + Math.max(1, spec.armWidth)) + depth
   // THE WEDGE'S LEADING EDGE CARRIES ON ALONG THE FACE, and this is the
   // direction it leaves in: the acting face's own, taken from its last step.
@@ -525,23 +585,27 @@ function nibFrame(spec: EscapementSpec, side: Side, depth: number) {
   // a face that is itself straight to four microns over its own length.
   const lead = norm([line[line.length - 1][0] - line[line.length - 2][0],
                      line[line.length - 1][1] - line[line.length - 2][1]])
-  return { m, away, lead, rel, inner, outer, heel, line, far }
+  return { m, away, lead, rel, inner, outer, line, far }
 }
 
-/** The nib as a ring: the acting face in front, the relieved back behind, run out
- *  far enough to bury itself in the arm and cut off flush with the arm's outer
- *  edge — so the wedge disappears into the arm rather than sprouting out of the
- *  far side of it. */
+/** The nib as a ring: the acting face in front, the relieved back behind, both
+ *  run out far enough to bury themselves in the arm and cut off flush with the
+ *  arm's outer edge — so the wedge disappears into the arm rather than sprouting
+ *  out of the far side of it.
+ *
+ *  A TRIANGLE, not a quadrilateral: the two edges MEET at the release end, which
+ *  is the whole of the tip land's removal. The ring closes from the last point
+ *  back to `line[0]`, which is that corner. */
 function palletNib(spec: EscapementSpec, side: Side, depth: number): Pt[][] {
-  const { lead, rel, outer, heel, line, far } = nibFrame(spec, side, depth)
+  const { lead, rel, outer, inner, line, far } = nibFrame(spec, side, depth)
   const ring: Pt[] = [
     ...line,                                             // the acting face
     [outer[0] + far * lead[0], outer[1] + far * lead[1]], // on along it, past the arm
-    [heel[0] + far * rel[0], heel[1] + far * rel[1]],    // and back down the relief
-    heel,
+    [inner[0] + far * rel[0], inner[1] + far * rel[1]],  // and back down the relief
   ]
   return boolRings('difference', [ring], [beyondArm(spec, side)])
 }
+
 
 
 /**
@@ -564,6 +628,46 @@ function armFlank(spec: EscapementSpec, side: Side, n: number): { p: Pt; dir: Pt
   const across = norm([sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2)])
   const sw = dir * halfSwing(spec)
   return { p: rot([across[0] * n, across[1] * n], sw), dir: rot(u, sw), out: rot(across, sw) }
+}
+
+/**
+ * Everything past a line square across one arm, `reach` from the arbor — the
+ * RECOIL entry blade's second stop.
+ *
+ * `beyondArm` catches the run-out along `lead` at the arm's outer EDGE, which is
+ * a line running the length of the arm. That works on a deadbeat, whose dead arc
+ * is concentric with the arbor so its tangent crosses that edge almost at once —
+ * a fifth of a millimetre past the acting face. A RECOIL has no dead arc: the
+ * locus is still climbing at the deep end, the run-out points nearly straight out
+ * along the arm, and it is 9.45 mm past the face before the edge catches it.
+ * Rounding that off (`RECOIL_TOE`) takes the point away but not the length.
+ *
+ * So this cuts it square instead, across the arm rather than along it, and the
+ * toe fillet then rounds what is left. What must NOT be done is to shorten the
+ * run-out itself: the blade would stop before it reached the arm at all, its end
+ * face would cross the arm's TOE, and a deadbeat would come out with a jog in the
+ * silhouette where a rounded toe used to be. Tried; it broke the profile that was
+ * already right.
+ */
+function beyondTip(spec: EscapementSpec, side: Side, reach: number): Pt[] {
+  const { R, L } = frame(spec)
+  const { p, dir, out } = armFlank(spec, side, ARM_CLEAR)
+  const big = 4 * (L + R)
+  return ([[0, -big], [big, -big], [big, big], [0, big]] as Pt[])
+    .map(([u, v]) => [
+      p[0] + dir[0] * (reach + u) + out[0] * v,
+      p[1] + dir[1] * (reach + u) + out[1] * v,
+    ] as Pt)
+}
+
+/**
+ * How far from the arbor a RECOIL's entry blade may reach — its acting face's own
+ * far end, plus a land. Infinite on a deadbeat, which needs none of this.
+ */
+function recoilTipReach(spec: EscapementSpec): number {
+  if (spec.escType !== 'recoil') return Infinity
+  const face = actingProfile(spec, 'entry')
+  return Math.max(...face.map((q) => Math.hypot(q[0], q[1]))) + RECOIL_TIP_LAND
 }
 
 /** Everything past the outer edge of one arm — the wedge's stop. */
@@ -602,6 +706,33 @@ function beyondArm(spec: EscapementSpec, side: Side): Pt[] {
  * That is the obvious move and it is a gouge: it takes its bite out of the arm
  * right behind the landing, exactly where the pallet needs to be solid.
  */
+/**
+ * How far the ENTRY arm's wheel-side flank is set back at the pallet end.
+ *
+ * The exit arm needs no such thing and already has one: `lockCorner` takes its
+ * flank back to get an inside corner off the acting face, and that set-back
+ * incidentally leaves it 3.5 mm clear of the teeth. The entry arm has nothing,
+ * and it is the arm that runs closest to the wheel — measured over a full period
+ * it skims the tips by 0.44 mm on a deadbeat and TOUCHES on a recoil, whose
+ * pallet is the longer blade and whose arm therefore reaches further in.
+ * `escapement-check` cannot see it: grazing is not interference, so it reports
+ * both as clear. `scripts/esc-arm-clearance.mts` is the harness that can.
+ *
+ * A TAPER, not a wider `ARM_CLEAR`: the clearance is wanted at the pallet end
+ * and nowhere else, and that is the end an arm can spare — the bending it carries
+ * is largest at the hub. Same shape of answer as `lockCorner`'s, for the same
+ * reason, which is why `palletArm` already takes it.
+ *
+ * It moves NOTHING that acts. The pallet nib is its own ring, unioned on
+ * afterwards and cut off only at the arm's OUTER edge (`beyondArm`), so neither
+ * face moves and neither does the tip land. What does move is `backCorner`, which
+ * is where the nib's relieved back runs into this flank — it reads the taper, or
+ * it would round a corner that is no longer there and silently do nothing.
+ */
+function entryTaper(spec: EscapementSpec): number {
+  return Math.min(Math.max(1, spec.armWidth) / 2, Math.max(0, ENTRY_CLEAR - ARM_CLEAR))
+}
+
 function lockCorner(spec: EscapementSpec, side: Side): { taper: number; at: Pt } | null {
   if (side !== 'exit') return null
   const r = LOCK_RELIEF_BIT_DIA / 2
@@ -656,18 +787,28 @@ function lockCorner(spec: EscapementSpec, side: Side): { taper: number; at: Pt }
  */
 function backCorner(spec: EscapementSpec, side: Side): Pt | null {
   const w = Math.max(1, spec.armWidth)
-  const { heel, rel, far } = nibFrame(spec, side, nibDepth(spec))
-  const { p, dir } = armFlank(spec, side, ARM_CLEAR)
+  const { inner, rel, far } = nibFrame(spec, side, nibDepth(spec))
+  // The TAPERED flank, not the nominal one: the entry arm's is set back at the
+  // pallet end (`entryTaper`) and this corner is at the pallet end. Read the
+  // nominal line here and the corner lands off the outline, where `filletToes`
+  // matches by coordinate and so rounds nothing at all — silently.
+  const [hub, tip] = __escArmFlank(spec, side)
+  const p = hub
+  const dir = norm([tip[0] - hub[0], tip[1] - hub[1]])
   const den = rel[0] * dir[1] - rel[1] * dir[0]
   if (Math.abs(den) < 1e-6) return null
-  const s = ((p[0] - heel[0]) * dir[1] - (p[1] - heel[1]) * dir[0]) / den
+  const s = ((p[0] - inner[0]) * dir[1] - (p[1] - inner[1]) * dir[0]) / den
   if (!(s > 0.05 && s < far)) return null
-  const at: Pt = [heel[0] + rel[0] * s, heel[1] + rel[1] * s]
+  const at: Pt = [inner[0] + rel[0] * s, inner[1] + rel[1] * s]
   // Two infinite lines always cross. It is only a corner of the anchor if the
   // crossing lands on the arm that is actually there — which on the exit side it
-  // does not: that one is out past the end of its own arm.
+  // does not: that one is out past the end of its own arm. Measured from the HUB
+  // end of the flank, which is where `palletArm` starts its bar, so the window is
+  // the bar's own length; taking it from `armFlank`'s own origin instead is half
+  // an arm width out, and half an arm width is the difference between finding
+  // this corner and returning null.
   const along = (at[0] - p[0]) * dir[0] + (at[1] - p[1]) * dir[1]
-  return along > -w / 2 && along < armReach(spec, side, w) + w / 2 ? at : null
+  return along > 0 && along < armReach(spec, side, w) + w ? at : null
 }
 
 /** How thick a pallet may be around the wheel — a fraction of the tooth pitch at
@@ -735,15 +876,32 @@ function palletArm(spec: EscapementSpec, side: Side, reach: number, width: numbe
   // outward radius of the tip circle at the contact point.
   const n = norm([sgn * R * Math.sin(beta / 2), R * Math.cos(beta / 2)])
   const off = ARM_CLEAR + width / 2
+  const a = Math.atan2(u[1], u[0])
+  // WHICH LOCAL EDGE FACES THE WHEEL IS NOT THE SAME ON THE TWO ARMS, and it has
+  // to be asked rather than assumed. The bar is laid out along `u` and rotated by
+  // `a`, so local +y lands on the CCW perpendicular of `u` — which is `+n` on the
+  // exit arm and `−n` on the entry one, the two contact points being either side
+  // of the arbor. So local −y is the wheel side of the exit arm and the OUTER
+  // side of the entry arm.
+  //
+  // The taper existed for `lockCorner`, which is exit-only, so it was written as
+  // a flat `−width/2 + taper` and was right by luck. Handed to the entry arm that
+  // sets its OUTER edge back: the pallet wedge is still cut flush at the real
+  // outer edge (`beyondArm` works in `n`, not in local y, and is unaffected), so
+  // a taper's worth of wedge is left standing outside the arm's silhouette as a
+  // spur, with a notch behind it. It is visible in the outline and in nothing
+  // else — the mesh does not care what happens on the far side of an arm.
+  const ws = Math.sign(rot([0, 1], a)[0] * n[0] + rot([0, 1], a)[1] * n[1]) || 1
+  const near = (-ws * width) / 2                       // the wheel-side edge
+  const far = (ws * width) / 2                         // the outer edge
   // Square-ended, not a stadium: the pallet wedge is cut off flush with this
   // arm's OUTER edge, and a rounded end curves away from that line and leaves a
   // step sticking out of the silhouette. The corner it makes with the wedge is
   // rounded later, on the assembled anchor — see `anchorRings`.
   const bar: Pt[] = taper > 0
-    ? [[-width / 2, -width / 2], [reach + width / 2, -width / 2 + taper],
-       [reach + width / 2, width / 2], [-width / 2, width / 2]]
+    ? [[-width / 2, near], [reach + width / 2, near + ws * taper],
+       [reach + width / 2, far], [-width / 2, far]]
     : roundRectRing(-width / 2, -width / 2, reach + width, width, 0)
-  const a = Math.atan2(u[1], u[0])
   return bar.map(([x, y]) => {
     const p = rot([x, y], a)
     return rot([p[0] + off * n[0], p[1] + off * n[1]], dir * halfSwing(spec))
@@ -774,11 +932,8 @@ function anchorRings(spec: EscapementSpec): Pt[][] {
 
   const body: Pt[][] = [ellipseRing(0, 0, hubR, hubR)]
   const add = (r: Pt[]) => { for (const p of boolRings('union', body.splice(0), [r])) body.push(p) }
-  add(palletArm(spec, 'entry', armReach(spec, 'entry', w), w))
+  add(palletArm(spec, 'entry', armReach(spec, 'entry', w), w, entryTaper(spec)))
   add(palletArm(spec, 'exit', armReach(spec, 'exit', w), w, lockCorner(spec, 'exit')?.taper ?? 0))
-  if (spec.tailLength > 0.5) {
-    add(roundRectRing(-w / 2, -w / 2, w, spec.tailLength + w, w / 2))
-  }
 
   // Fillet the arm-to-hub junctions, and ONLY those: the nibs go on afterwards,
   // untouched. A closing of a couple of millimetres is nothing on an arm and
@@ -789,6 +944,12 @@ function anchorRings(spec: EscapementSpec): Pt[][] {
   const addTo = (r: Pt[]) => { for (const p of boolRings('union', out.splice(0), [r])) out.push(p) }
   for (const r of palletNib(spec, 'entry', nibDepth(spec))) addTo(r)
   for (const r of palletNib(spec, 'exit', nibDepth(spec))) addTo(r)
+
+  // Square off a recoil's entry end — AFTER the nibs, so the blade and the arm
+  // under it are cut to the same length. Cutting the arm first leaves the nib's
+  // own run-out standing past it, which is most of what there was to remove.
+  const cap = recoilTipReach(spec)
+  if (Number.isFinite(cap)) out = boolRings('difference', out, [beyondTip(spec, 'entry', cap)])
 
   return out
 }
@@ -806,46 +967,50 @@ export function __escLockCorner(spec: EscapementSpec, side: Side): { taper: numb
   return lockCorner(spec, side)
 }
 export function __escBackCorner(spec: EscapementSpec, side: Side): Pt | null { return backCorner(spec, side) }
+/** Test hook — one arm's WHEEL-SIDE flank, hub end to pallet end, in anchor
+ *  coordinates. The edge that runs closest to the teeth along its whole length,
+ *  and the only part of an anchor that is neither an acting face nor set by the
+ *  construction, so it is the one a clearance measurement can act on. */
+export function __escArmFlank(spec: EscapementSpec, side: Side): [Pt, Pt] {
+  const w = Math.max(1, spec.armWidth)
+  const { p, dir, out } = armFlank(spec, side, ARM_CLEAR)
+  const taper = side === 'exit' ? lockCorner(spec, 'exit')?.taper ?? 0 : entryTaper(spec)
+  const reach = armReach(spec, side, w)
+  return [
+    [p[0] - dir[0] * w / 2, p[1] - dir[1] * w / 2],
+    [p[0] + dir[0] * (reach + w / 2) + out[0] * taper, p[1] + dir[1] * (reach + w / 2) + out[1] * taper],
+  ]
+}
 /** Test hook — the toothed ring BEFORE the root-fillet closing, so a test can
  *  tell a break in the profile from the resampling clipper does to the whole
  *  outline on its way through. */
 export function __escToothRing(spec: EscapementSpec): Pt[] { return toothedRing(spec) }
 export function __escLockPoints(spec: EscapementSpec): number { return spec.escType === 'deadbeat' ? 20 : 24 }
-/** The pallet's inner (lock-side) face point and its TIP LAND — the short face
- *  closing the pallet beyond the release corner, `nibDepth` back from `inner`
- *  along the stock side of the face. Shared by the test hook below and by
- *  `filletToes`, which rounds the heel for clearance — see `HEEL_ROUND`. */
-function tipLandPts(spec: EscapementSpec, side: Side): [Pt, Pt] {
-  const { inner, heel } = nibFrame(spec, side, nibDepth(spec))
-  return [inner, heel]
+/** Test hook — the first stretch of the pallet's relieved BACK, from the release
+ *  corner outwards. With no tip land between them, this edge starts AT the
+ *  working corner, so it is what now stands closest to a tooth at release and
+ *  the tooth must drop clear of it. Measuring that is the only way to see the
+ *  relief doing its job: grazing is not interference, so the binding check
+ *  cannot see it, and the outline just shows a thin wedge. */
+export function __escBackEdge(spec: EscapementSpec, side: Side): [Pt, Pt] {
+  const { inner, rel } = nibFrame(spec, side, nibDepth(spec))
+  const k = 2 * nibDepth(spec)
+  return [inner, [inner[0] + k * rel[0], inner[1] + k * rel[1]]]
 }
-
-/** Test hook — the pallet's TIP LAND, the short face closing it beyond the
- *  release corner. A tooth must drop CLEAR of this at release; measuring that is
- *  the only way to see the relief is doing its job, since grazing it is not
- *  interference and the outline just shows a small bevel. */
-export function __escTipLand(spec: EscapementSpec, side: Side): [Pt, Pt] { return tipLandPts(spec, side) }
 
 // ─── The escape wheel ─────────────────────────────────────────────────────────
 
 /**
- * One toothed ring, centred on the origin.
+ * The tooth geometry every tooth-side function starts from: the two radii, the
+ * angular spans of the two edges, and where the pallet's reach ends.
  *
- * The tooth leans the way the wheel runs and its leading face is undercut, so
- * the only thing that can reach a pallet is the tip — which is what makes the
- * pallet face a locus of a POINT and the whole construction above possible. The
- * back is a long slope from the root land up to the next tip.
- *
- * Drawn for an anticlockwise wheel; a clockwise one is the mirror of it, applied
- * to the whole assembly at the end.
+ * One definition, because `toothedRing`, `gulletFillet`, `toothSpace` and the
+ * readouts all have to be talking about the same tooth — they each had their own
+ * copy of this arithmetic, and the readouts' copy is the one that would have gone
+ * stale.
  */
-function toothedRing(spec: EscapementSpec): Pt[] {
-  const { R, N, pitch, beta, rho } = frame(spec)
-  // Phase the teeth so one tip lands exactly on the entry contact point. It
-  // costs nothing and it makes the drawing mean something: wheel and anchor are
-  // then shown in the relative position they are actually in, mid-impulse,
-  // rather than at whichever phase the tooth loop happened to start at.
-  const phase = Math.PI / 2 + beta / 2
+function toothGeom(spec: EscapementSpec) {
+  const { R, pitch, rho } = frame(spec)
   const rRoot = Math.max(R * 0.25, R - Math.max(0.5, spec.toothDepth))
   // Cut short of the circle the pallets were laid out for. One number, applied
   // in one place, opening the same gap wherever the two meet — see `clearance`.
@@ -853,20 +1018,54 @@ function toothedRing(spec: EscapementSpec): Pt[] {
   // has neither, and an undefined clearance does not draw a slightly wrong wheel
   // — it makes every coordinate NaN and the escapement silently stops rendering.
   // Same trap the gear's `cycOf` guards against.
-  const rTip = Math.max(rRoot + 0.2, R - Math.max(0, spec.clearance || 0))
+  const rTip = R
+  const depth = rTip - rRoot
   const backSpan = clamp(BACK_FRAC * pitch, 0.02, pitch * 0.9)
-  // The undercut, as an angle at the root. Increasing angle is BEHIND the tooth
-  // (the wheel runs clockwise), so BOTH of a tooth's edges run back from the tip:
-  // the short leading face to a0+u and the long back to a0+backSpan. The tooth is
-  // the sliver between them, coming to a point at a0 — which is what makes the
-  // tip OVERHANG the space in front of it.
+  // THE TIP LAND — the top of the leading face, cut almost RADIAL so the tooth
+  // BEDS on the locking face instead of standing on a corner.
   //
-  // That overhang is the whole purpose. Put the foot in front of the tip instead
-  // and the tooth's root projects forward into exactly the space the pallet's
-  // impulse face has to occupy at the lock, and the escapement binds harder the
-  // more undercut it is asked for — which is the tell.
-  const u = clamp(((rTip - rRoot) * Math.tan(rad(clamp(spec.undercut, 0, 60)))) / rRoot, 0, backSpan * 0.7)
-
+  // Almost radial because the locking face IS radial. The construction puts the
+  // arbor where the tangents to the tip circle cross, so at the contact point the
+  // triangle centre–tip–arbor is right-angled AT THE TIP: the arbor radius and
+  // the wheel radius are perpendicular there, and a face concentric with the
+  // arbor is therefore radial to the wheel. That is what makes a deadbeat dead,
+  // and it is the same answer for both pallets — no need to pick one. Without the
+  // land the tooth meets that face at the full undercut and takes all the drive
+  // through one line of end grain, which in a wooden wheel is how a tip goes
+  // blunt.
+  //
+  // ALMOST, and the couple of degrees matter: a truly radial land FOULS THE
+  // IMPULSE FACE. That face stands 53° off the locking face, so a land lying flat
+  // on one is at 53° to the other and its inner corner ploughs into it — 0.061 mm
+  // at the default, growing dead linearly with the land, which is the fingerprint.
+  // `TIP_RELIEF` degrees of relief lifts that corner clear while opening the bed
+  // by only its own length × the tangent, a few hundredths over the whole land.
+  // Shortening the land instead works too and is the worse trade: it clears at
+  // half the lock, which is half a bed.
+  //
+  // Sized from the LOCK, since that is how deep the pallet actually comes into
+  // the tooth; a land shorter than that would bed on part of it only.
+  const lock = rho * rad(Math.max(0, spec.escType === 'deadbeat' ? spec.lock : spec.recoilArc))
+  const land = clamp(lock, 0.2, TIP_LAND_MAX * depth)
+  const rLand = rTip - land
+  // The land's own angular width at the root radius, so the leading face below it
+  // simply carries on from where it ends.
+  const uLand = (land * Math.tan(rad(TIP_RELIEF))) / rRoot
+  // The undercut, as an angle at the root, taken over the face's OWN span below
+  // the land. Increasing angle is BEHIND the tooth — the wheel runs clockwise —
+  // so both of a tooth's edges run back from the tip: the leading face to a0+u
+  // and the back to a0+backSpan. The tooth is the sliver between them, and the
+  // tip still OVERHANGS the space in front of it, because nothing reaches in
+  // front of the land.
+  //
+  // Put the undercut's foot in front of the tip instead and the tooth's root
+  // projects forward into exactly the space the pallet's impulse face has to
+  // occupy at the lock, and the escapement binds harder the more undercut it is
+  // asked for — which is the tell.
+  const u = clamp(uLand, 0, backSpan * 0.7)
+  // The root land, as an angle: what is left of the pitch once the back slope is
+  // taken out and the undercut given back.
+  const landAng = pitch - backSpan + u
   // How far a flank may bow, as an ANGLE at the root. Angular, not perpendicular
   // to the flank, so a bowed foot stays ON the root circle and the land between
   // two teeth simply runs between the feet it is given. Displace the foot off
@@ -874,36 +1073,21 @@ function toothedRing(spec: EscapementSpec): Pt[] {
   // which leaves a step in the outline at every tooth.
   //
   // Both flanks of a gap eat the same land, so each is held to a share of it.
-  const landAng = pitch - backSpan + u
-  const bowAng = clamp(spec.toothCurve || 0, 0, 1) * BOW_SHARE * landAng
-  // And WHERE the bow may start: not until below everything the pallet reaches.
-  // A pallet dives ρ·Φ past the tip circle at the end of its swing, so above that
-  // depth the tooth must stay exactly as it was — stock added there goes straight
-  // back into the pallet's way, which is what a bow reaching the tip does, and it
-  // is the recoil (whose pallet is the longer blade) that finds it first. Below
-  // it the space is the tooth's own, and that is where the strength is wanted.
-  const start = clamp((rho * halfSwing(spec)) / Math.max(0.5, rTip - rRoot) + BOW_KEEP, 0, 0.92)
-
-  const ring: Pt[] = []
-  const at = (r: number, a: number) => ring.push([r * Math.cos(a), r * Math.sin(a)])
-  at(rRoot, phase - pitch + backSpan + bowAng)   // foot of the back before the first tooth
-  for (let i = 0; i < N; i++) {
-    const a0 = phase + i * pitch
-    // Increasing angle is BEHIND the tooth: the wheel runs clockwise, so a tooth
-    // leans towards decreasing angle and both of its edges run back from the tip.
-    // The tooth is the sliver between them and comes to a point at a0, which is
-    // what makes the tip OVERHANG the space in front of it. Put the undercut's
-    // foot in front of the tip instead and the root projects forward into exactly
-    // the space the pallet's impulse face needs at the lock.
-    arcInto(ring, 0, 0, rRoot, rRoot, a0 - pitch + backSpan + bowAng, a0 + u - bowAng)
-    flank(ring, rRoot, rTip, a0 + u - bowAng, a0, -1, bowAng, start)   // up the leading face
-    flank(ring, rTip, rRoot, a0, a0 + backSpan + bowAng, 1, bowAng, start)  // down the back
-  }
-  return ring
+  const bowAng = TOOTH_BOW * BOW_SHARE * landAng
+  // WHERE THE TOOTH'S OWN GROUND BEGINS, as a fraction of the tooth depth below
+  // the tip. A pallet dives ρ·Φ past the tip circle at the end of its swing, so
+  // above that depth nothing may be added — stock there goes straight into the
+  // pallet's way, and it is the recoil (whose pallet is the longer blade) that
+  // finds it first. Below it the space is the tooth's own, and that is where the
+  // strength is wanted. Both the flank bow and the gullet fill are held to it.
+  const start = clamp((rho * halfSwing(spec)) / Math.max(0.5, depth) + BOW_KEEP, 0, 0.92)
+  return { rRoot, rTip, rLand, depth, backSpan, u, uLand, landAng, bowAng, start }
 }
 
 /**
- * One flank, from (r0,a0) to (r1,a1), bowed outward from the tooth.
+ * The angle of one bowed edge, `s` of the way along it. The law, on its own,
+ * because `flank` draws with it and `toothSpace` measures with it, and the two
+ * disagreeing would size the gullet against a tooth that is not there.
  *
  * The bow grows as the SQUARE of the depth below `start`, which is the whole
  * trick: at that depth it is zero and so is its slope, so the flank leaves the
@@ -911,33 +1095,257 @@ function toothedRing(spec: EscapementSpec): Pt[] {
  * further down. `dir` is which way is out of the tooth, and the foot angles
  * handed in already include the bow, so the curve lands on them.
  */
+function flankAngle(
+  a0: number, a1: number, s: number, dir: number,
+  bowAng: number, start: number, tipFirst: boolean,
+): number {
+  const t = tipFirst ? s : 1 - s               // depth below the tip, 0…1
+  const g = Math.max(0, (t - start) / Math.max(1e-6, 1 - start))
+  return a0 + (a1 - a0) * s + dir * bowAng * (g * g - t)
+}
+
+/**
+ * How wide the tooth SPACE is, in mm, at depth fraction `at` below the tip
+ * circle — one tooth's back on one side and the next tooth's leading face on the
+ * other, measured on the arc at that radius.
+ *
+ * This is what sizes the gullet fill, so it reads the two edges through
+ * `flankAngle` rather than approximating them: a linearised back is a tenth of a
+ * millimetre out where it matters, which is a tenth of a millimetre of fill
+ * standing in the pallet's way.
+ */
+function toothSpace(spec: EscapementSpec, at: number): number {
+  const { pitch } = frame(spec)
+  const g = toothGeom(spec)
+  const r = g.rTip - g.depth * at
+  return (pitch + faceAngle(g, at) - backAngle(g, at)) * r
+}
+
+type Tooth = ReturnType<typeof toothGeom>
+
+/** This tooth's back, at depth fraction `at` — from its own tip (0) to its foot
+ *  (1), as an angle off the tip. */
+function backAngle(g: Tooth, at: number): number {
+  return flankAngle(0, g.backSpan + g.bowAng, clamp(at, 0, 1), 1, g.bowAng, g.start, true)
+}
+
+/** The leading face, at depth fraction `at` — as an angle off its OWN tip. Below
+ *  the land it is the undercut face; at and above the land the tooth is radial,
+ *  so this stops moving and stays at 0. */
+function faceAngle(g: Tooth, at: number): number {
+  const landAt = (g.rTip - g.rLand) / Math.max(1e-6, g.depth)
+  if (at <= landAt) return (g.uLand * at) / Math.max(1e-6, landAt)   // the tip land
+  const s = clamp((1 - at) / Math.max(1e-6, 1 - landAt), 0, 1)
+  return flankAngle(g.u - g.bowAng, g.uLand, s, -1, g.bowAng, g.start, false)
+}
+
+/**
+ * The GULLET — the round that fills the bottom of each tooth space, and the one
+ * dimension of a wooden escape wheel that decides whether a tooth snaps off.
+ *
+ * It used to be a flat `ROOT_FILLET` of 0.6 mm, which was the cutter's radius and
+ * nothing else: it left the one place a tooth actually breaks — its root, across
+ * the grain — as sharp as the drawing, with a deep narrow slot behind it.
+ *
+ * **The pallet never reaches the gullet.** It dives ρ·Φ past the tip circle, and
+ * everything below that is the tooth's own ground. So this is not a fillet in a
+ * corner any more: at the radius that room allows, the closing that draws it
+ * stops rounding the two corners and starts BRIDGING the space, filling it from
+ * the bottom up — which is the whole point, material at the base of the tooth,
+ * where nothing has to pass.
+ *
+ * WHICH MAKES IT A QUESTION ABOUT REACH, not about a width and not about a corner
+ * radius. A closing by f is a disc of radius f rolled through the space, filling
+ * everything it cannot reach — so a point of a wall SURVIVES if some f-disc can
+ * still touch it, and is buried otherwise. The rule is then exactly one line: the
+ * largest f that buries nothing above the pallet's floor. That is the closing's
+ * own definition, run forwards, and it is monotone in f, so it bisects.
+ *
+ * Three sizings that look right and are not, all found by measuring the emitted
+ * outline (`scripts/esc-gullet-sweep.mts`) rather than by reading:
+ *
+ *   HALF THE SPACE'S WIDTH at the floor is wrong by a third of a millimetre to a
+ *   whole one, always in the direction that puts stock in the pallet's way. The
+ *   width is measured along the ARC and the two walls are nothing like equally
+ *   steep — between a near-radial leading face and a back at 40°, the arc gap is
+ *   far wider than any disc that fits between them.
+ *
+ *   THE LARGEST DISC THAT FITS BELOW THE FLOOR is wrong the other way, and gives
+ *   up half the fillet. A disc bigger than that does not overshoot: it cannot get
+ *   down there at all, so it jams higher and fills MORE, which is the mechanism.
+ *   Fitting below the floor is not the constraint.
+ *
+ *   THE DEEPEST DISC THAT JAMS BETWEEN THE WALLS misses the case that matters. A
+ *   disc resting on the root circle with slack to both walls is jammed by nothing
+ *   and passes any test written about its tangencies, while being far too big —
+ *   it fills the whole gullet up to the tips. Reach has to be asked of every
+ *   point, not of one disc.
+ *
+ * Floored at `ROOT_FILLET`, which is not a design choice: a cutter leaves that
+ * much whatever is drawn. That floor is what a wheel whose pallet dives too deep
+ * to fit falls back to — `divesTooDeep` is the honest report of that, not this.
+ */
+function gulletFillet(spec: EscapementSpec): number {
+  const { pitch } = frame(spec)
+  const g = toothGeom(spec)
+  const rFloor = g.rTip - g.depth * Math.min(0.98, g.start + GULLET_KEEP)
+  if (!(rFloor > g.rRoot + 0.05)) return ROOT_FILLET
+
+  // The two walls of one gullet: this tooth's back running down from its tip at
+  // angle 0, and the next tooth's leading face running up to its own tip at angle
+  // `pitch`. Sampled over the whole depth, so a disc sitting high in the space
+  // still sees the wall above it.
+  const WALL = 40
+  const sample = (off: number, ang: (at: number) => number): Pt[] => {
+    const out: Pt[] = []
+    for (let i = 0; i <= WALL; i++) {
+      const at = i / WALL
+      const r = g.rTip - g.depth * at
+      const a = off + ang(at)
+      out.push([r * Math.cos(a), r * Math.sin(a)])
+    }
+    return out
+  }
+  const near = sample(0, (at) => backAngle(g, at))
+  const far = sample(pitch, (at) => faceAngle(g, at))
+  const toWall = (p: Pt, w: Pt[]) => {
+    let best = Infinity
+    for (let i = 1; i < w.length; i++) {
+      const a = w[i - 1], b = w[i]
+      const dx = b[0] - a[0], dy = b[1] - a[1]
+      const t = clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1), 0, 1)
+      best = Math.min(best, Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]))
+    }
+    return best
+  }
+  // How big a disc fits with its centre here: clear of both walls, and never
+  // below the root circle.
+  const room = (p: Pt) => Math.min(toWall(p, near), toWall(p, far), Math.hypot(p[0], p[1]) - g.rRoot)
+
+  // Can a disc of radius f descend until it TOUCHES THE ROOT CIRCLE, clearing
+  // both walls on the way? Its centre is then at rRoot + f by definition, so
+  // there is only the angle to search.
+  //
+  // THIS IS WHAT KEEPS `toothDepth` HONEST, and it is the constraint the first
+  // version of this was missing. Sizing the fill by "the largest disc that buries
+  // nothing above the pallet's floor" bounds the TOP of the fill and says nothing
+  // about its bottom — and a big disc cannot descend into a deep narrow gullet at
+  // all, so it jams high and everything under it becomes solid. Deepening the
+  // tooth makes the gullet deeper AND narrower, which lets a bigger disc jam
+  // higher still, so past about 10 mm the floor rose faster than the root fell
+  // and asking for a deeper tooth gave a SHALLOWER one: 24 mm of tooth depth
+  // emitted a 1.26 mm tooth, and the wheel came out very nearly a circle.
+  //
+  // Tangency to the root circle fixes the floor at rRoot at every depth, so the
+  // tooth is as tall as it was asked to be and the fill is only ever as fat as
+  // the space at the bottom allows.
+  const touchesRoot = (f: number): boolean => {
+    const rc = g.rRoot + f
+    const STEPS = 72
+    for (let j = 0; j <= STEPS; j++) {
+      const a = g.backSpan + ((pitch - g.backSpan) * j) / STEPS
+      const p: Pt = [rc * Math.cos(a), rc * Math.sin(a)]
+      if (toWall(p, near) >= f - 1e-6 && toWall(p, far) >= f - 1e-6) return true
+    }
+    return false
+  }
+
+  // Can an f-disc still touch this point? Stand one off along the wall's inward
+  // Can an f-disc still touch this point? Stand one off along the wall's inward
+  // normal and ask whether it fits. The normal's sign is taken by trying both and
+  // keeping the roomier — the two walls face opposite ways and a sign rule would
+  // be one more thing to get backwards.
+  const reaches = (w: Pt[], i: number, f: number): boolean => {
+    const p = w[i]
+    const a = w[Math.max(0, i - 1)], b = w[Math.min(w.length - 1, i + 1)]
+    const tx = b[0] - a[0], ty = b[1] - a[1]
+    const n = Math.hypot(tx, ty) || 1
+    for (const s of [1, -1]) {
+      const c: Pt = [p[0] - (s * ty * f) / n, p[1] + (s * tx * f) / n]
+      if (room(c) >= f - 1e-3) return true
+    }
+    return false
+  }
+  const buriesNothing = (f: number): boolean => {
+    for (const w of [near, far]) {
+      for (let i = 0; i < w.length; i++) {
+        if (Math.hypot(w[i][0], w[i][1]) <= rFloor) continue
+        if (!reaches(w, i, f)) return false
+      }
+    }
+    return true
+  }
+
+  // Both, and both are monotone in f: a bigger disc needs more clearance to get
+  // down, and leaves more behind when it cannot.
+  const ok = (f: number) => touchesRoot(f) && buriesNothing(f)
+  let lo = ROOT_FILLET, hi = g.depth + pitch * g.rTip
+  if (!ok(lo)) return ROOT_FILLET
+  for (let i = 0; i < 26; i++) {
+    const m = (lo + hi) / 2
+    if (ok(m)) lo = m; else hi = m
+  }
+  return Number.isFinite(lo) ? Math.max(ROOT_FILLET, lo) : ROOT_FILLET
+}
+
+/**
+ * One toothed ring, centred on the origin.
+ *
+ * The tooth leans the way the wheel runs and its leading face is undercut, so the
+ * only thing that can reach a pallet is its tip — which is what makes the pallet
+ * face a locus of a POINT and the whole construction above possible. The tip is
+ * not quite a point: it carries a short RADIAL land so it beds flat on the
+ * locking face (see `toothGeom`), and the land's outer corner is that point.
+ * The back is a long slope from the root land up to the next tip.
+ *
+ * Drawn for an anticlockwise wheel; a clockwise one is the mirror of it, applied
+ * to the whole assembly at the end.
+ */
+function toothedRing(spec: EscapementSpec): Pt[] {
+  const { N, pitch, beta } = frame(spec)
+  // Phase the teeth so one tip lands exactly on the entry contact point. It
+  // costs nothing and it makes the drawing mean something: wheel and anchor are
+  // then shown in the relative position they are actually in, mid-impulse,
+  // rather than at whichever phase the tooth loop happened to start at.
+  const phase = Math.PI / 2 + beta / 2
+  const { rRoot, rTip, rLand, backSpan, u, uLand, bowAng, start } = toothGeom(spec)
+
+  const ring: Pt[] = []
+  const at = (r: number, a: number) => ring.push([r * Math.cos(a), r * Math.sin(a)])
+  at(rRoot, phase - pitch + backSpan + bowAng)   // foot of the back before the first tooth
+  for (let i = 0; i < N; i++) {
+    const a0 = phase + i * pitch
+    arcInto(ring, 0, 0, rRoot, rRoot, a0 - pitch + backSpan + bowAng, a0 + u - bowAng)
+    flank(ring, rRoot, rLand, a0 + u - bowAng, a0 + uLand, -1, bowAng, start)  // up the leading face
+    at(rTip, a0)                                                        // the tip land
+    flank(ring, rTip, rRoot, a0, a0 + backSpan + bowAng, 1, bowAng, start)  // down the back
+  }
+  return ring
+}
+
+/** One flank, from (r0,a0) to (r1,a1), bowed outward from the tooth by
+ *  `flankAngle`'s law. Always sampled, even dead straight: it costs nothing, it
+ *  keeps the outline uniform for the gullet closing, and it means a genuine break
+ *  in the profile shows up as one long edge instead of hiding among the flanks. */
 function flank(
   out: Pt[], r0: number, r1: number, a0: number, a1: number,
   dir: number, bowAng: number, start: number,
 ): void {
-  // Always sampled, even dead straight: it costs nothing, it keeps the outline
-  // uniform for the root-fillet closing, and it means a genuine break in the
-  // profile shows up as one long edge instead of hiding among the flanks.
   const steps = 12
   const tipFirst = r0 > r1                     // the tip is the larger radius
   for (let i = 1; i <= steps; i++) {
     const s = i / steps
-    const t = tipFirst ? s : 1 - s             // depth below the tip, 0…1
-    // The straight line between the two ends already ramps the bow linearly with
-    // depth, since the foot's angle carries all of it. Replace that ramp with the
-    // squared one: zero and flat where the pallet reaches, all of it at the foot.
-    const g = Math.max(0, (t - start) / Math.max(1e-6, 1 - start))
-    const a = a0 + (a1 - a0) * s + dir * bowAng * (g * g - t)
+    const a = flankAngle(a0, a1, s, dir, bowAng, start, tipFirst)
     const r = r0 + (r1 - r0) * s
     out.push([r * Math.cos(a), r * Math.sin(a)])
   }
 }
-
 // ─── Readouts ─────────────────────────────────────────────────────────────────
 
 export function escapementDims(spec: EscapementSpec): EscapementDims {
   const { R, N, L, rho, beat, mu, lam, pitch: pitchR } = frame(spec)
-  const rRoot = Math.max(R * 0.25, R - Math.max(0.5, spec.toothDepth))
+  const t = toothGeom(spec)
+  const rRoot = t.rRoot
   const rimInner = rRoot - Math.max(2, spec.wheelDia / 30)
   const hub = seatHub(rimInner, clamp(spec.bore / 2, 0, rRoot - 1), spec.hubDia, spec.spokes, spokeWidth(spec))
 
@@ -955,22 +1363,19 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
   for (let i = 1; i < face.length; i++) faceWidth += Math.hypot(face[i][0] - face[i - 1][0], face[i][1] - face[i - 1][1])
 
   const dive = rho * halfSwing(spec)
-  // Tooth thickness at the root — the chord between the two feet, plus whatever
-  // the bow has added to each flank on the way down.
-  const rRootD = Math.max(R * 0.25, R - Math.max(0.5, spec.toothDepth))
-  const backSpanD = clamp(BACK_FRAC * pitchR, 0.02, pitchR * 0.9)
-  const rTipD = Math.max(rRootD + 0.2, R - Math.max(0, spec.clearance || 0))
-  const uD = clamp(((rTipD - rRootD) * Math.tan(rad(clamp(spec.undercut, 0, 60)))) / rRootD, 0, backSpanD * 0.7)
-  const landD = (pitchR - backSpanD + uD) * rRootD
-  const toothBase = (backSpanD - uD) * rRootD + 2 * clamp(spec.toothCurve || 0, 0, 1) * BOW_SHARE * landD
+  // Tooth thickness WHERE IT LEAVES THE GULLET — at the top of the fill, which is
+  // the first section that is the tooth's own material rather than the stock
+  // joining it to its neighbours. Not at the root circle: the fill reaches well
+  // above that now, so a thickness measured there is a thickness of solid wheel.
+  const gFill = Math.min(0.98, t.start + GULLET_KEEP)
+  const rSec = t.rTip - t.depth * gFill
+  const toothBase = Math.max(0, pitchR * rSec - toothSpace(spec, gFill))
   // The lock actually left: what the anchor's swing buries the pallet by, less
   // the clearance the teeth were cut short by. And the part of it that is there
   // the moment the tooth lands, which is what the pallets' embrace buys.
   const lockDepth = rho * rad(Math.max(0, spec.escType === 'deadbeat' ? spec.lock : spec.recoilArc))
-    - Math.max(0, spec.clearance || 0)
   const dead = spec.escType === 'deadbeat'
-  const dropLockDepth = dead ? rho * dropLock(spec) - Math.max(0, spec.clearance || 0) : 0
-  const half = spec.span * 2
+  const dropLockDepth = dead ? rho * dropLock(spec) : 0
   const w = Math.max(1, spec.armWidth)
   const hubR = Math.max(w * 0.75, spec.anchorBore / 2 + Math.max(1.5, w * 0.4))
   return {
@@ -988,9 +1393,7 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
     recoilRatio: mu / lam,
     wheelRootDia: 2 * rRoot,
     hub,
-    // An integer number of half teeth, and an ODD one: 7.5 is 15 halves, 8 is 16
-    // and does not alternate.
-    spanUneven: Math.abs(half - Math.round(half)) > 1e-6 || Math.round(half) % 2 === 0,
+    span: escapementSpan(spec.teeth),
     noImpulse: rad(Math.max(0, spec.drop)) >= beat - 1e-9,
     // The arbor sits L from the wheel centre and the teeth reach R, so there is
     // only L−R of daylight for the anchor's own hub.
@@ -998,6 +1401,7 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
     faceTooSteep: impulseAngleDeg > 60,
     palletDive: dive,
     toothBase,
+    gulletRadius: gulletFillet(spec),
     lockDepth,
     dropLockDepth,
     // A deadbeat is judged on the DROP lock — it is never more than the total,
@@ -1127,7 +1531,6 @@ export interface EscapementPart { key: EscapementPartKey; d: string }
  * Drawn clear of each other; `escapementDims().centreDistance` is the spacing.
  */
 export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] {
-  const { R, rho } = frame(spec)
   const d = escapementDims(spec)
   const rRoot = d.wheelRootDia / 2
   const yA = anchorOffset(spec)
@@ -1142,7 +1545,7 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
 
   const out: EscapementPart[] = [{
     key: 'wheel',
-    d: roundConcave([toothedRing(spec)], ROOT_FILLET).map((r) => ringToD(place(r), true)).join(' '),
+    d: roundConcave([toothedRing(spec)], gulletFillet(spec)).map((r) => ringToD(place(r), true)).join(' '),
   }]
 
   const boreR = clamp(spec.bore / 2, 0, rRoot - 1)
@@ -1170,18 +1573,6 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
     out.push({ key: 'anchorbore', d: ringToD(place(ellipseRing(0, 0, anchorBoreR, anchorBoreR), yA), false) })
   }
 
-  // References, not cuts: the tip circle the pallets are set to, and the pallet
-  // circle about the arbor. Tangent to each other at the true centre distance,
-  // which is the check that the two parts were drawn for one another.
-  if (spec.refCircles) {
-    out.push({
-      key: 'ref',
-      d: [
-        ringToD(place(ellipseRing(0, 0, R, R)), false),
-        ringToD(place(ellipseRing(0, 0, rho, rho), yA), false),
-      ].join(' '),
-    })
-  }
   return out
 }
 
@@ -1200,24 +1591,24 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
  * its edge, and a calculation for the latter misses by the better part of a
  * centimetre. Distance from the arbor is true of both, and of a mirrored wheel.
  *
- * Two more corners are rounded here, found the opposite way: by GEOMETRY rather
- * than by rule, because each is a specific named point the rest of this file
- * already computes. Each pallet's TIP LAND has its own far corner
- * (`tipLandPts`'s `heel`) a few mm short of the toe, on the wheel side of it —
- * that one nothing touches either, but it sits closer to the wheel than the toe
- * does, so it is the one that actually tightens clearance. They are matched by
+ * Two more are found the opposite way: by GEOMETRY rather than by rule, because
+ * each is a specific named point the rest of this file already computes, and
+ * both are rounded to the BIT rather than to the toe radius because they are
+ * tight for the cutter rather than for the tooth — the deep-lock corner
+ * (`lockCorner`) and the one the pallet's back makes with its arm
+ * (`backCorner`). The first only works because `lockCorner` has already moved
+ * that corner away from the wheel — rounded where it sits naturally, the
+ * set-back would run back along the acting face and take the lock with it. The
+ * second needs no such help; there is room where it stands. They are matched by
  * nearest coordinate in the PLACED (mirrored) outline, not by index — the raw
  * ring can come out with its winding reversed by the mirror (`ringToD`'s
  * CCW-forcing `reverse()`), which renumbers every vertex, so an index computed
  * before placement would not point at the same corner after it.
  *
- * Two more are rounded to the BIT rather than to the toe radius, because they
- * are tight for the cutter rather than for the tooth: the deep-lock corner
- * (`lockCorner`) and the one the pallet's back makes with its arm
- * (`backCorner`). The first only works because `lockCorner` has already moved
- * that corner away from the wheel — rounded where it sits naturally, the
- * set-back would run back along the acting face and take the lock with it. The
- * second needs no such help; there is room where it stands.
+ * NOTHING rounds the release corner where the acting face meets the relieved
+ * back. That corner is the pallet's tip now that the tip land is gone, and it is
+ * a working corner: it is where the tooth leaves. The land's own far corner used
+ * to be rounded here, which is why this reads as one fillet short of the shape.
  */
 function filletToes(d: string, arbor: Pt, r: number, spec: EscapementSpec, mir: number): string {
   if (r < 0.05) return d
@@ -1239,6 +1630,32 @@ function filletToes(d: string, arbor: Pt, r: number, spec: EscapementSpec, mir: 
     return Math.abs(t)
   }
 
+  // A RECOIL'S ENTRY TOE IS ROUNDED HARDER — `RECOIL_TOE` rather than `ARM_TOE`,
+  // 6 mm against 2.8 on a standard arm.
+  //
+  // The run-out along `lead` is what buries the wedge in its arm, and the entry
+  // nib is the END of its arm, so on that side the run goes out into open air
+  // with only the arm's outer edge to catch it. On a DEADBEAT it is caught a
+  // fifth of a millimetre past the acting face, because the dead arc is
+  // concentric with the arbor and its tangent runs across the arm. A RECOIL has
+  // no dead arc: the locus is still climbing at the deep end, the same run-out
+  // points nearly straight out, and the arm ends in a long thin spear.
+  //
+  // Rounding it is the right lever because that spear tip is ALREADY the corner
+  // this picks as the arm's toe — the furthest point from the arbor on its side —
+  // so nothing new has to be found or matched, and nothing that acts is touched.
+  // What must NOT be done instead is to shorten the run-out: the blade then stops
+  // before it reaches the arm, its end face crosses the arm's toe, and a DEADBEAT
+  // comes out with a jog in the silhouette where a rounded toe used to be. That
+  // was tried, and it broke the one profile that was already right.
+  //
+  // The size is an eye judgement and cannot be anything else: winding `drop` up
+  // shortens the spear too, but by changing the angle it comes to a point at, so
+  // there is no length to calibrate a radius against.
+  //
+  // The entry pallet sits at negative x in the anchor's own frame, so it lands on
+  // the −mir side of the placed outline.
+  const entryToe = spec.escType === 'recoil' ? RECOIL_TOE * Math.max(1, spec.armWidth) : r
   const pick = new Map<number, { type: 'outerRound'; radiusMM: number }>()
   for (const sideSign of [-1, 1]) {
     let far = 0, at = -1
@@ -1248,7 +1665,9 @@ function filletToes(d: string, arbor: Pt, r: number, spec: EscapementSpec, mir: 
       const dist = Math.hypot(c.x - arbor[0], c.y - arbor[1])
       if (dist > far) { far = dist; at = c.idx }
     }
-    if (at >= 0) pick.set(at, { type: 'outerRound', radiusMM: r })
+    if (at >= 0) {
+      pick.set(at, { type: 'outerRound', radiusMM: sideSign === -mir ? entryToe : r })
+    }
   }
 
   const place = (p: Pt): Pt => [arbor[0] + mir * p[0], arbor[1] + p[1]]
@@ -1262,8 +1681,6 @@ function filletToes(d: string, arbor: Pt, r: number, spec: EscapementSpec, mir: 
   }
 
   for (const side of ['entry', 'exit'] as const) {
-    const heel = nearestCorner(place(tipLandPts(spec, side)[1]))
-    if (heel >= 0) pick.set(heel, { type: 'outerRound', radiusMM: r })
     // The two corners that are tight for the CUTTER rather than for the tooth,
     // so both are rounded to the bit rather than to the arm's toe radius: where
     // the face runs into the arm at the deep lock (`lockCorner` has already

@@ -13,7 +13,8 @@ import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
 import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
-import { escapementDims } from '../shapes/escapementGenerator'
+import type { EscapementSpec } from '../shapes/escapementGenerator'
+import EscapementInfoButton from './EscapementInfoButton'
 import { pendulumDims } from '../shapes/pendulumGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
@@ -443,10 +444,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const pinLab = pinionLabel(params)
       const mesh = gearMesh(params)
       const running = meshAnimPathId === id
-      // A mate below the undercut limit has radial roots (this generator does not
-      // hob), and radial roots do not clear the driver's tooth tips — the pair
-      // fouls, which the preview shows and nothing else does.
-      const mateUndercut = !cyc && mesh.mateTeeth < 2 / Math.sin((params.pressureAngle * Math.PI) / 180) ** 2
       const rootDeepened = !!cyc && d.rootDia < params.module * (params.teeth - 2.5) - 0.01
       const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
       // Regenerating a gear REPLACES its paths, so an edit made before the
@@ -530,7 +527,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           {params.toothLabel && !lab && isFontLoaded(SINGLE_LINE_FONT_FAMILY) && <><br /><span className="text-yellow-500">No room beside the bore for a legible marking — none engraved.</span></>}
           {params.pitchCircle && <><br /><span className="text-yellow-500">Pitch circle is a reference — delete before cutting.</span></>}
           {d.pointed && <><br /><span className="text-yellow-500">Teeth pointed — OD reduced.</span></>}
-          {!cyc && d.undercut && <><br /><span className="text-yellow-500">Undercut range — roots cut radially.</span></>}
+          {!cyc && d.undercut && <><br /><span className="text-gray-400 dark:text-neutral-500">Undercut — roots hobbed, flank waisted below the base circle.</span></>}
           {cyc && d.pinTooFat && <><br /><span className="text-red-400">
             Ø{N(params.pinDia)} pins take the whole {N(d.circularPitch)} pitch — no tooth left to drive with. Thinner pins, or a bigger module.
           </span></>}
@@ -551,10 +548,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             : `a ${mesh.mateTeeth}-tooth gear`} at {N(mesh.centreDistance)} centres
           <br />Play at the mesh {N(mesh.playAtPitch)}
 
-          {mateUndercut && <><br /><span className="text-yellow-500">
-            A {mesh.mateTeeth}-tooth mate is under the {Math.ceil(2 / Math.sin((params.pressureAngle * Math.PI) / 180) ** 2)}-tooth
-            undercut limit at {params.pressureAngle}° — its roots are cut radially, which do not clear these tips. The preview will show the pair fouling.
-          </span></>}
         </div>
         {/* A gear is drawn alone and its lantern is drawn clear of it, so the one
             thing the drawing cannot show is whether they run together. This puts
@@ -573,9 +566,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       </>)
     }
     case 'escapement': {
-      const dm = escapementDims(params)
       const dead = params.escType === 'deadbeat'
-      const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
       const running = meshAnimPathId === id
       return (<>
         <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
@@ -590,10 +581,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         </label>
         <EditField label="N"    valueMM={params.teeth} units="" min={6} integer onChange={(teeth) => update({ ...params, teeth: Math.max(6, Math.round(teeth)) })} />
         <EditField label="Wh Ø" valueMM={params.wheelDia} units={u} min={4} onChange={(wheelDia) => update({ ...params, wheelDia })} />
-        {/* Half-integer or the pallets cannot alternate — see the readout. */}
-        <EditField label="Span" valueMM={params.span} units="" min={0.5} onChange={(span) => update({ ...params, span })} />
         <EditField label="Th H" valueMM={params.toothDepth} units={u} min={0.5} onChange={(toothDepth) => update({ ...params, toothDepth })} />
-        <RawField label="Und"  value={params.undercut} min={0} max={60} step={1} suffix="°" onChange={(undercut) => update({ ...params, undercut })} />
         {/* Drop is at the WHEEL, lift at the ANCHOR. */}
         <RawField label="Drop" value={params.drop} min={0.2} max={10} step={0.25} suffix="°" onChange={(drop) => update({ ...params, drop })} />
         <RawField label="Lift" value={params.lift} min={0.5} max={12} step={0.25} suffix="°" onChange={(lift) => update({ ...params, lift })} />
@@ -601,10 +589,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           ? <RawField label="Lock" value={params.lock} min={0} max={10} step={0.25} suffix="°" onChange={(lock) => update({ ...params, lock })} />
           : <RawField label="Rcl"  value={params.recoilArc} min={0.5} max={20} step={0.5} suffix="°" onChange={(recoilArc) => update({ ...params, recoilArc })} />}
         {dead && <RawField label="Draw" value={params.draw} min={0} max={10} step={0.5} suffix="°" onChange={(draw) => update({ ...params, draw })} />}
-        <EditField label="Bow"  valueMM={params.toothCurve} units="" min={0} onChange={(toothCurve) => update({ ...params, toothCurve: Math.max(0, Math.min(1, toothCurve)) })} />
-        <EditField label="Clr"  valueMM={params.clearance} units={u} min={0} onChange={(clearance) => update({ ...params, clearance })} />
         <EditField label="ArmW" valueMM={params.armWidth} units={u} min={1} onChange={(armWidth) => update({ ...params, armWidth })} />
-        <EditField label="Tail" valueMM={params.tailLength} units={u} min={0} onChange={(tailLength) => update({ ...params, tailLength })} />
         <EditField label="Ø"    valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
         <EditField label="Hub"  valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => update({ ...params, hubDia })} />
         <EditField label="Spk"  valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => update({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
@@ -616,48 +601,11 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             onChange={(ev) => update({ ...params, clockwise: ev.target.checked })}
             className="accent-blue-500 w-3.5 h-3.5" />
         </label>
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <span className={labelCls}>R○</span>
-          <input type="checkbox" checked={params.refCircles}
-            onChange={(ev) => update({ ...params, refCircles: ev.target.checked })}
-            className="accent-blue-500 w-3.5 h-3.5" />
-        </label>
-        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
-          Arbors {N(dm.centreDistance)} apart · pallets {N(dm.palletRadius)} out
-          <br />
-          Beat {dm.beatDeg.toFixed(2)}° = {dm.wheelImpulseDeg.toFixed(2)}° impulse + {params.drop}° drop
-          <br />
-          Swing past {dm.minHalfSwingDeg.toFixed(2)}° each way · faces {N(dm.faceWidth)} at {dm.impulseAngleDeg.toFixed(0)}°
-          <br />Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth
-          {/* The drop lock is the one that decides whether it is a deadbeat at
-              all — a tooth that lands on no dead face lands on the impulse face
-              and trips. The total is what the supplementary arc runs it to. */}
-          <br />{dead
-            ? <>Lands on {N(dm.dropLockDepth)} of lock, runs to {N(dm.lockDepth)}</>
-            : <>Locks {N(dm.lockDepth)} deep</>}, after {N(params.clearance)} of clearance
-          <br />Tooth {N(dm.toothBase)} thick at the root
-          {!dead && <><br />Recoils {dm.recoilRatio.toFixed(2)}° of wheel per 1° of overswing</>}
-          <br />Drawn clear — set the arbors at that spacing.
-          {dm.spanUneven && <><br /><span className="text-red-400">
-            Span must be whole teeth + a half (7.5, 8.5 …), or the pallets cannot alternate.
-          </span></>}
-          {dm.noImpulse && <><br /><span className="text-red-400">Drop uses the whole beat — no impulse left.</span></>}
-          {dm.noLock && <><br /><span className="text-red-400">
-            {dead
-              ? 'Nothing dead under the landing tooth — it arrives on the impulse face and the wheel runs through. Less clearance, or more lock.'
-              : 'Clearance uses up the whole recoil arc — the wheel will run straight through.'}
-          </span></>}
-          {dm.divesTooDeep && <><br /><span className="text-red-400">
-            Pallets dive {N(dm.palletDive)} into {N(params.toothDepth)} of tooth — they will bind. Deeper teeth, or less lock/lift/span.
-          </span></>}
-          {dm.hubFouls && <><br /><span className="text-yellow-500">Pallet hub reaches into the wheel.</span></>}
-          {dm.faceTooSteep && <><br /><span className="text-yellow-500">Impulse faces steep at {dm.impulseAngleDeg.toFixed(0)}° — less lift, or more drop.</span></>}
-          {dm.hub.grown && <><br /><span className="text-blue-400">Hub grown to {N(dm.hub.dia)} for {params.spokes} spokes.</span></>}
-          {params.spokes >= 2 && !dm.hub.spoked && <><br /><span className="text-yellow-500">
-            {dm.hub.maxSpokes >= 2 ? `Max ${dm.hub.maxSpokes} spokes here — cut solid.` : 'No room for spokes — cut solid.'}
-          </span></>}
-          {params.refCircles && <><br /><span className="text-yellow-500">Reference circles are not cuts — delete before generating.</span></>}
-        </div>
+        {/* The readout used to sit here, a dozen lines of numbers in the
+            smallest type the app has, wrapped under the very controls being
+            clicked. It is a window now — see EscapementInfoPanel — and this
+            button carries its status so nothing fatal can hide in it. */}
+        <EscapementInfoButton spec={params as unknown as EscapementSpec} />
         {/* The parts are drawn clear of each other, so the one thing the drawing
             cannot show is whether they bind. This puts them at the real centre
             distance and runs them. A preview only — nothing is written. */}
@@ -999,8 +947,21 @@ export default function PropertiesPanel() {
   }
 
   return (
+    // GROWS DOWNWARD, and that is the whole of these three classes.
+    //
+    // It used to be the last child of a column whose other half was `flex-1`, so
+    // its box was pinned to the BOTTOM of the sidebar and every line it gained
+    // pushed its own top edge — and every field on it — upward. Which is fine
+    // until a field publishes a warning: the panel gets a line taller mid-click,
+    // the spinner arrow slides out from under the pointer, and the next click
+    // lands on nothing. Anything that appears and disappears with a value does
+    // it — the red errors, the yellow notes, the blue hub line.
+    //
+    // So the panel takes the free space instead (`flex-1`) and scrolls INSIDE it
+    // (`min-h-0 overflow-y-auto`). Its top edge is then fixed by whatever sits
+    // above, which does not move, and a warning grows into the space below.
     <div className={[
-      'border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0 transition-shadow duration-300',
+      'border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-1 min-h-0 overflow-y-auto transition-shadow duration-300',
       flashing ? 'ring-2 ring-inset ring-blue-500' : '',
     ].join(' ')}>
       <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">

@@ -112,8 +112,13 @@ export interface GearDims {
   /** The tip had to be clamped — the flanks met before the nominal outside
    *  diameter, so the teeth come to a point and the OD is smaller than m(z+2). */
   pointed: boolean
-  /** Below the undercut limit for this pressure angle (z < 2/sin²α). A hob would
-   *  undercut these roots; this generator cuts them radially instead. */
+  /** Below the undercut limit for this pressure angle (z < 2/sin²α), so the
+   *  generating rack's tip cuts into the flank it has just formed and the tooth
+   *  is waisted below the base circle. NOT a fault and not a warning: the roots
+   *  are cut that way (`toothProfile` follows the trochoid across the crossing),
+   *  which is what lets a mate's tips clear. It is worth reporting only because
+   *  an undercut tooth is thinner at the root than its pitch-line thickness
+   *  suggests. */
   undercut: boolean
   /** Cycloidal only: the pin has eaten the tooth. A lantern tooth is the circular
    *  pitch less the pin, so a pin approaching the pitch leaves nothing to drive
@@ -368,20 +373,24 @@ function rackTrochoid(m: number, z: number, alpha: number, backlash: number): { 
 
   const out: { r: number; a: number }[] = []
   // Rolled from before the fillet reaches the tip line (negative θ, where the
-  // root arc still has it) up through the root.
+  // root arc still has it) FAR ENOUGH PAST THE FORM POINT for the curve to cross
+  // the involute, which is what `toothedRing` needs: the crossing is where the
+  // root hands over to the flank, and on an undercut tooth it is above the base
+  // circle, so a roll that stops at the base circle cannot find it. Two pitches
+  // clears it on everything from z6 up; one did not reach the base circle at all
+  // (44.55 against 45.11 on the default gear).
   //
-  // NOT FAR ENOUGH TO REACH THE FORM POINT on a low tooth count, and that is a
-  // deliberate stopping place: rolling further is correct arithmetic but it is
-  // not yet CHECKED arithmetic. `gear-trochoid-check.mts` verifies this range
-  // against a gear that has actually been hobbed, and its reference stamps one
-  // rack tooth over one pitch — which stops being a hob exactly when the fillet
-  // starts reaching into its neighbour's space, i.e. exactly where an undercut
-  // begins. Extending the roll here means fixing the reference to a full rack
-  // first, or the check silently stops checking.
+  // Rolling further used to be the thing this would not do, on the grounds that
+  // `gear-trochoid-check.mts` stamped one rack tooth over one pitch and so
+  // stopped being a hob exactly where an undercut begins. It does not: it
+  // replicates that one union to all z spaces, and rotating the gear by a pitch
+  // is the same as rolling by a pitch, so the reference is a full rack over a
+  // full turn either way. The undercut cases (z8, z12 at 20°, z20 at 14.5°) pass
+  // it at 0.002 mm, which is the evidence.
   const span = Math.PI / z
-  const STEPS = 64
+  const STEPS = 96
   for (let i = 0; i <= STEPS; i++) {
-    const th = -span / 3 + ((span * 4 / 3) * i) / STEPS
+    const th = -span / 3 + ((span * 7 / 3) * i) / STEPS
     const c = Math.cos(th), s = Math.sin(th)
     const C: Pt = [(r + etaC) * c + (xiC + r * th) * s, -(r + etaC) * s + (xiC + r * th) * c]
     const P: Pt = [r * c, -r * s]
@@ -401,47 +410,126 @@ function rackTrochoid(m: number, z: number, alpha: number, backlash: number): { 
   return out.slice(lo)
 }
 
-/** The toothed outline, CCW, centred on the origin. */
-function toothedRing(m: number, z: number, alpha: number, backlash: number): Pt[] {
+/**
+ * ONE FLANK OF A TOOTH, deepest point first: the hobbed root, then the involute.
+ *
+ * Where the two meet is the FORM POINT, and finding it is the whole of this.
+ * Walk the trochoid outwards and compare it, at each radius, with the involute
+ * that would be there — the involute wins from the first radius at which it lies
+ * NEARER the tooth's centreline, because whichever of the two is nearer is the
+ * one that cut the material away.
+ *
+ * On a normal tooth count that crossing lands within a hair of the base circle
+ * and the profile is the familiar one. On a low count the trochoid dips inside
+ * the involute well ABOVE the base circle and the crossing moves up with it — the
+ * flank is cut short and the root undershoots it. THAT IS UNDERCUT, and it falls
+ * out of the same two curves rather than being a case.
+ *
+ * What this replaces is a radial run from the base circle to the root with a
+ * fillet closed into the corner. That is a fair approximation of a hobbed root
+ * and no approximation at all of an undercut one: it left the full flank standing
+ * exactly where a hob cuts it away, so a mate below the undercut limit fouled the
+ * wheel it was drawn to run with, and both panels had to warn about it. A radial
+ * run also needed its foot placed by hand at each end or the tooth came out
+ * lopsided; the trochoid has real ends and needs none of that.
+ */
+function toothProfile(m: number, z: number, alpha: number, backlash: number): { r: number; a: number }[] {
   const rp = (m * z) / 2
   const rb = rp * Math.cos(alpha)
   const ra = tipRadius(m, z, alpha, backlash)
   const rf = Math.max(0.1, rp - DEDENDUM * m)
   const psi = halfToothAngle(m, z, alpha, backlash)
-  const rStart = Math.max(rf, Math.min(rb, ra * 0.999))
-  const flank = flankPoints(rStart, ra, rb, psi)
-  const rootA = flank[0].a
   const pitch = (2 * Math.PI) / z
+
+  // The trochoid is quoted about the SPACE's centreline, which sits half a pitch
+  // from the tooth's; and it is one side only, the side facing this tooth.
+  const troch = rackTrochoid(m, z, alpha, backlash)
+    .map((q) => ({ r: q.r, a: pitch / 2 - q.a }))
+    .filter((q) => Number.isFinite(q.a) && q.r >= rf - 1e-6)
+
+  const out: { r: number; a: number }[] = []
+  let formR = rb
+  for (let i = 0; i < troch.length; i++) {
+    const q = troch[i]
+    // Below the base circle there is no involute to hand over to, so the
+    // trochoid is the boundary whatever it is doing.
+    if (q.r > rb && q.a >= flankAngle(q.r, rb, psi)) { formR = q.r; break }
+    if (q.r > ra) break
+    out.push(q)
+    formR = q.r
+  }
+  // No crossing found — the roll did not reach far enough, which it should for
+  // every count from 6 up. Fall back to the involute from the base circle: the
+  // old shape, and a safe one, rather than a tooth with no flank.
+  if (out.length === 0) return flankPoints(Math.max(rf, Math.min(rb, ra * 0.999)), ra, rb, psi)
+
+  // THINNED TO `FLANK_TOL`, like the involute beside it. `rackTrochoid` rolls at a
+  // fixed step because the roll is where its accuracy lives, and that lands ~97
+  // points on a curve a tenth of them describes to 0.02 mm — six times the
+  // outline for nothing. Everything downstream pays it twice over: the root
+  // fillet closing pushes the whole ring through clipper, and the mesh check
+  // walks it per step of a bisection.
+  //
+  // Douglas–Peucker on the CHORD, not a stride: the trochoid's curvature is all
+  // at the bottom, so dropping every other point thins the tight part and the
+  // straight part alike.
+  const kept = simplify(out.map((q) => [q.r * Math.cos(q.a), q.r * Math.sin(q.a)] as Pt), FLANK_TOL)
+  const thin = kept.map((p) => ({ r: Math.hypot(p[0], p[1]), a: Math.atan2(p[1], p[0]) }))
+
+  for (const q of flankPoints(Math.max(formR, rb), ra, rb, psi)) {
+    // Skip the handover point itself; the trochoid already ended on it.
+    if (q.r <= thin[thin.length - 1].r + 1e-9) continue
+    thin.push(q)
+  }
+  return thin
+}
+
+/** Douglas–Peucker, keeping the ends. */
+function simplify(pts: Pt[], tol: number): Pt[] {
+  if (pts.length < 3) return pts
+  const keep = new Uint8Array(pts.length)
+  keep[0] = 1; keep[pts.length - 1] = 1
+  const stack: [number, number][] = [[0, pts.length - 1]]
+  while (stack.length > 0) {
+    const [i, j] = stack.pop()!
+    if (j <= i + 1) continue
+    const a = pts[i], b = pts[j]
+    const dx = b[0] - a[0], dy = b[1] - a[1]
+    const n = Math.hypot(dx, dy) || 1
+    let worst = -1, at = -1
+    for (let k = i + 1; k < j; k++) {
+      const d = Math.abs((pts[k][0] - a[0]) * dy - (pts[k][1] - a[1]) * dx) / n
+      if (d > worst) { worst = d; at = k }
+    }
+    if (worst > tol) { keep[at] = 1; stack.push([i, at], [at, j]) }
+  }
+  return pts.filter((_, i) => keep[i] === 1)
+}
+
+/** The toothed outline, CCW, centred on the origin. */
+function toothedRing(m: number, z: number, alpha: number, backlash: number): Pt[] {
+  const ra = tipRadius(m, z, alpha, backlash)
+  const rf = Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
+  const pitch = (2 * Math.PI) / z
+  const profile = toothProfile(m, z, alpha, backlash)
+  const rootA = profile[0].a
+  const tipA = profile[profile.length - 1].a
 
   const ring: Pt[] = []
   const at = (r: number, a: number) => ring.push([r * Math.cos(a), r * Math.sin(a)])
-
-  // Below the base circle there is no involute, so the flank finishes as a
-  // radial run down to the root circle. It needs an explicit vertex at each end:
-  // `arcInto` skips its start point so arcs chain onto the previous vertex, but
-  // here the previous vertex is on the BASE circle, not the root circle, so
-  // without one the drop lands on the root arc's first SAMPLE instead of on its
-  // start — skewed by one arc step. The rising flank has no such problem (it
-  // leaves from the previous root arc's exact endpoint), so the tooth comes out
-  // lopsided: one flank meets the root square, the other at a slant, and the
-  // gear only runs true in one direction. Worse at low pressure angles, where
-  // ψ = π/2z + inv α is small, the root arc is long and its steps are coarse.
-  const hasRadial = rf < rStart - 1e-9
 
   for (let i = 0; i < z; i++) {
     const c = i * pitch
     // Rising flank: root → tip on the −φ side, which runs CCW. Its foot is
     // already on the ring — the previous tooth's root arc ended exactly there.
-    for (const q of flank) at(q.r, c - q.a)
+    for (const q of profile) at(q.r, c - q.a)
     // Across the tip.
-    arcInto(ring, 0, 0, ra, ra, c - flank[flank.length - 1].a, c + flank[flank.length - 1].a)
+    arcInto(ring, 0, 0, ra, ra, c - tipA, c + tipA)
     // Falling flank: tip → root on the +φ side.
-    for (let k = flank.length - 2; k >= 0; k--) at(flank[k].r, c + flank[k].a)
-    if (hasRadial) at(rf, c + rootA)   // the foot the root arc will not emit
-    // Root arc across to the next tooth. On a high tooth count the root sits
-    // above the base circle and this arc is short; it never inverts, because
-    // rootA < pitch/2 is exactly the condition that the tooth is thinner than
-    // the pitch.
+    for (let k = profile.length - 2; k >= 0; k--) at(profile[k].r, c + profile[k].a)
+    // The flat the rack's tip line leaves between one trochoid's foot and the
+    // next. Short, and it never inverts: rootA < pitch/2 is exactly the condition
+    // that the tooth is thinner than the pitch.
     arcInto(ring, 0, 0, rf, rf, c + rootA, c + pitch - rootA)
   }
   return ring

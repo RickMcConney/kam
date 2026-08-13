@@ -127,7 +127,7 @@ export default function ClockPanel() {
       const dm = escapementDims(p.params)
       return {
         name: p.name,
-        counts: `${p.params.teeth}t · span ${p.params.span}`,
+        counts: `${p.params.teeth}t · spans ${dm.span}`,
         size: p.params.wheelDia,
         centre: dm.centreDistance,
         drives: 'to the pallet arbor',

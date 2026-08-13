@@ -34,13 +34,12 @@ export type ShapeParams =
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | {
       type: 'escapement'; cx: number; cy: number
-      escType: EscapementType; teeth: number; wheelDia: number; span: number
-      toothDepth: number; undercut: number; drop: number; lift: number
+      escType: EscapementType; teeth: number; wheelDia: number
+      toothDepth: number; drop: number; lift: number
       lock: number; draw: number; recoilArc: number
-      toothCurve: number; clearance: number
-      armWidth: number; tailLength: number
+      armWidth: number
       bore: number; hubDia: number; spokes: number; anchorBore: number
-      clockwise: boolean; refCircles: boolean
+      clockwise: boolean
     }
   // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
   | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
@@ -67,13 +66,12 @@ export interface ShapeToolConfig {
   gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
   cam: { baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   escapement: {
-    escType: EscapementType; teeth: number; wheelDia: number; span: number
-    toothDepth: number; undercut: number; drop: number; lift: number
+    escType: EscapementType; teeth: number; wheelDia: number
+    toothDepth: number; drop: number; lift: number
     lock: number; draw: number; recoilArc: number
-    toothCurve: number; clearance: number
-    armWidth: number; tailLength: number
+    armWidth: number
     bore: number; hubDia: number; spokes: number; anchorBore: number
-    clockwise: boolean; refCircles: boolean
+    clockwise: boolean
   }
   pendulum: { length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
   text: { text: string; fontSize: number; fontFamily: string }
@@ -114,17 +112,14 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   // lever on a Ø32 crest is a lever rather than a lump.
   cam: { baseDia: 40, riseMM: 12, sweepDeg: 360, boreDia: 8, handleLength: 100, handleWidth: 18 },
   // A 30-tooth Graham deadbeat on a Ø100 wheel: the standard seconds-pendulum
-  // escape wheel, and 7.5 teeth is N/4 landing on a half tooth, which is what
-  // makes the pallets alternate. 2° of drop out of the 6° beat leaves 4° of
-  // impulse at the wheel for 3° of lift at the anchor.
+  // escape wheel. 2° of drop out of the 6° beat leaves 4° of impulse at the
+  // wheel for 3° of lift at the anchor. The span the pallets stand at is derived
+  // from the tooth count rather than set here — see `escapementSpan`.
   escapement: {
-    escType: 'deadbeat', teeth: 30, wheelDia: 100, span: 7.5,
-    toothDepth: 6, undercut: 20, drop: 2, lift: 3, lock: 1.5, draw: 2, recoilArc: 1.5,
-    // 0.3 mm of running clearance off a 1.31 mm lock — a fit a wooden movement
-    // can live with through a season, and still a mm of lock left.
-    toothCurve: 0.6, clearance: 0.3,
-    armWidth: 8, tailLength: 0, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
-    clockwise: false, refCircles: false,
+    escType: 'deadbeat', teeth: 30, wheelDia: 100,
+    toothDepth: 6, drop: 2, lift: 3, lock: 1.5, draw: 2, recoilArc: 1.5,
+    armWidth: 8, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
+    clockwise: false,
   },
   // THE seconds pendulum — 993.6 mm beats exactly one second, which is the
   // length every clock book quotes and the one a 30-tooth escape wheel is sized
@@ -785,12 +780,11 @@ export function scaleShapeParams(
       // params go and a plain path is left, as the gear and cam do.
       if (Math.abs(asx - asy) > 0.001) return null
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
-      // Teeth, span and every angle are the mechanism; only lengths scale.
+      // Teeth and every angle are the mechanism; only lengths scale.
       return {
         ...p, cx: ncx, cy: ncy,
         wheelDia: p.wheelDia * asx, toothDepth: p.toothDepth * asx,
-        clearance: p.clearance * asx,
-        armWidth: p.armWidth * asx, tailLength: p.tailLength * asx,
+        armWidth: p.armWidth * asx,
         bore: p.bore * asx, hubDia: p.hubDia * asx, anchorBore: p.anchorBore * asx,
       }
     }

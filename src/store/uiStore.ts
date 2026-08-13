@@ -81,6 +81,11 @@ interface UIState {
   clockEditId: string | null
   setupPanelOpen: boolean
   helpOpen: boolean
+  // The escapement's readout, in a window big enough to read it. Non-modal and
+  // live: it follows whichever escapement the panels are editing and stays up
+  // until it is closed, which is the point — the numbers are what a parameter is
+  // being stepped against, so they have to be legible WHILE it is stepped.
+  escapementInfoOpen: boolean
   timelineOpen: boolean
   // Which strip the bottom bar shows: history (timeline) or the ordered program
   // (operations). They are different orderings of different things — see OperationsPanel.
@@ -124,6 +129,7 @@ interface UIState {
   setClockEdit: (clockId: string | null) => void
   setSetupPanelOpen: (open: boolean) => void
   setHelpOpen: (open: boolean) => void
+  setEscapementInfoOpen: (open: boolean) => void
   setTimelineOpen: (open: boolean) => void
   setBottomTab: (tab: 'timeline' | 'operations') => void
   setRequestEditOpId: (id: string | null) => void
@@ -186,6 +192,7 @@ export const useUIStore = create<UIState>()(
   clockAnimPathId: null,
   clockLinkPathId: null,
   helpOpen: false,
+  escapementInfoOpen: false,
   timelineOpen: true,
   bottomTab: 'timeline' as const,
   requestEditOpId: null,
@@ -213,6 +220,7 @@ export const useUIStore = create<UIState>()(
   setClockEdit: (clockId) => set({ clockEditId: clockId }),
   setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
   setHelpOpen: (open) => set({ helpOpen: open }),
+  setEscapementInfoOpen: (open) => set({ escapementInfoOpen: open }),
   setTimelineOpen: (open) => set({ timelineOpen: open }),
   setBottomTab: (tab) => set({ bottomTab: tab }),
   setRequestEditOpId: (id) => set({ requestEditOpId: id }),

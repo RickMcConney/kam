@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  generateEscapementParts, escapementDims, escapementPose, anchorOffset, __escBackCorner,
-  __escFaces, __escLockCorner, __escLockPoints, __escTipLand, __escToothRing, type EscapementSpec,
+  generateEscapementParts, escapementDims, escapementPose, anchorOffset, escapementSpan, __escBackCorner,
+  __escFaces, __escLockCorner, __escLockPoints, __escBackEdge, __escToothRing, type EscapementSpec,
 } from './escapementGenerator'
 import { scaleShapeParams, type ShapeParams } from './shapeGenerators'
 
@@ -12,21 +12,20 @@ import { scaleShapeParams, type ShapeParams } from './shapeGenerators'
 // inputs that make an escapement that cannot run, and the emitted parts.
 
 const BASE: EscapementSpec = {
-  cx: 0, cy: 0, escType: 'deadbeat', teeth: 30, wheelDia: 100, span: 7.5,
-  toothDepth: 6, undercut: 20, drop: 2, lift: 3, lock: 1.5, draw: 2, recoilArc: 4,
-  toothCurve: 0.6, clearance: 0.3,
-  armWidth: 8, tailLength: 0, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
-  clockwise: false, refCircles: false,
+  cx: 0, cy: 0, escType: 'deadbeat', teeth: 30, wheelDia: 100,
+  toothDepth: 6, drop: 2, lift: 3, lock: 1.5, draw: 2, recoilArc: 4,
+  armWidth: 8, bore: 6, hubDia: 20, spokes: 5, anchorBore: 6,
+  clockwise: false,
 }
 
 describe('escapement — the classic construction', () => {
   it('puts the arbor where the tangents to the tip circle cross', () => {
     // L = R/cos(β/2) and ρ = R·tan(β/2), which together say AP ⟂ OP: the
     // pallet arms lie along tangents. Everything else rests on this.
-    for (const span of [5.5, 7.5, 10.5]) {
-      const d = escapementDims({ ...BASE, span })
+    for (const teeth of [22, 30, 42]) {
+      const d = escapementDims({ ...BASE, teeth })
       const R = BASE.wheelDia / 2
-      const beta = (span * 2 * Math.PI) / BASE.teeth
+      const beta = (escapementSpan(teeth) * 2 * Math.PI) / teeth
       expect(d.centreDistance).toBeCloseTo(R / Math.cos(beta / 2), 9)
       expect(d.palletRadius).toBeCloseTo(R * Math.tan(beta / 2), 9)
       // Right angle at the pallet: L² = R² + ρ².
@@ -40,15 +39,23 @@ describe('escapement — the classic construction', () => {
     expect(d.wheelImpulseDeg + BASE.drop).toBeCloseTo(d.beatDeg, 9)
   })
 
-  it('flags a span that is not an odd number of half teeth', () => {
+  it('always spans an ODD number of half teeth, whatever the tooth count', () => {
     // The wheel gives up half a tooth per beat, so the pallets have to stand an
     // odd number of half pitches apart or one releases without the other
-    // catching. This is the classic way to draw an escapement that cannot run.
-    expect(escapementDims({ ...BASE, span: 7.5 }).spanUneven).toBe(false)
-    expect(escapementDims({ ...BASE, span: 8.5 }).spanUneven).toBe(false)
-    expect(escapementDims({ ...BASE, span: 8 }).spanUneven).toBe(true)
-    expect(escapementDims({ ...BASE, span: 7 }).spanUneven).toBe(true)
-    expect(escapementDims({ ...BASE, span: 7.25 }).spanUneven).toBe(true)
+    // catching — the classic way to draw an escapement that cannot run. It used
+    // to be a field with a red warning under it; now it is derived, so the whole
+    // failure mode is gone and this is what says so.
+    //
+    // Note what a plain "N/4 to the nearest half" would do: at 28, 32, 36, 40 it
+    // lands on a WHOLE tooth, which is exactly the broken case.
+    for (let n = 6; n <= 120; n++) {
+      const s = escapementSpan(n)
+      expect(s * 2).toBe(Math.round(s * 2))
+      expect(Math.round(s * 2) % 2).toBe(1)
+      // And near N/4, which is what puts the pallets either side of the wheel.
+      expect(Math.abs(s - n / 4)).toBeLessThanOrEqual(0.5)
+      expect(escapementDims({ ...BASE, teeth: n }).span).toBe(s)
+    }
   })
 
   it('flags a drop that leaves no impulse', () => {
@@ -151,8 +158,6 @@ describe('escapement — emission', () => {
     expect(keys).toContain('spokes')
     expect(keys).toContain('bore')
     expect(keys).toContain('anchorbore')
-    expect(keys).not.toContain('ref')
-    expect(generateEscapementParts({ ...BASE, refCircles: true }).map((p) => p.key)).toContain('ref')
   })
 
   it('drops the parts that were not asked for', () => {
@@ -199,7 +204,6 @@ describe('escapement — as a shape', () => {
     expect(out.bore).toBe(12)
     // The mechanism is angles and tooth counts — scaling must not touch them.
     expect(out.teeth).toBe(30)
-    expect(out.span).toBe(7.5)
     expect(out.lift).toBe(3)
     expect(out.drop).toBe(2)
   })
@@ -250,15 +254,14 @@ describe('escapement — the teeth', () => {
   })
 })
 
-describe('escapement — the pallet tip land', () => {
-  it('leaves the tooth clear of the land at release', () => {
-    // The land is the pallet blade's own end face, square, and it sits within
-    // about 2° of the tooth's direction of travel at release — which reads off
-    // the drawing as "the tooth must rub along it and give the impulse back".
-    // It does not: the pallet withdraws while the tooth runs on, so they part
-    // far faster than that angle suggests. This pins the clearance, because the
-    // binding check cannot see it (grazing is not interference) and the outline
-    // shows only a small bevel.
+describe('escapement — the pallet tip', () => {
+  it('leaves the tooth clear of the relieved back at release', () => {
+    // The pallet comes to a point at the release corner — no tip land — so the
+    // edge a tooth has to get past there is the relieved BACK, starting at the
+    // corner itself. The pallet withdraws while the tooth runs on, so the two
+    // part fast; this pins that they really do, because the binding check
+    // cannot see it (grazing is not interference) and the outline shows only a
+    // thin wedge.
     for (const spec of [BASE, { ...BASE, escType: 'recoil' as const }]) {
       const S = { ...spec, clockwise: true }
       const L = escapementDims(S).centreDistance
@@ -271,7 +274,7 @@ describe('escapement — the pallet tip land', () => {
         [p[0] * Math.cos(a) - p[1] * Math.sin(a), p[0] * Math.sin(a) + p[1] * Math.cos(a)]
 
       for (const side of ['entry', 'exit'] as const) {
-        const [c0, c1] = __escTipLand(S, side)
+        const [c0, c1] = __escBackEdge(S, side)
         let closest = Infinity
         for (let i = 0; i < 200; i++) {
           const pose = escapementPose(S, i / 200)
@@ -296,65 +299,67 @@ describe('escapement — the pallet tip land', () => {
   })
 })
 
-describe('escapement — running clearance', () => {
-  it('takes the clearance off the lock, and says what is left', () => {
-    // Backlash, in effect: the teeth are cut short of the circle the pallets
-    // were laid out for, so the gap opens everywhere the two meet and the lock
-    // gives up exactly that much.
-    const rho = escapementDims(BASE).palletRadius
-    const nominal = rho * (BASE.lock * Math.PI) / 180
-    for (const clearance of [0, 0.15, 0.3, 0.5]) {
-      const d = escapementDims({ ...BASE, clearance })
-      expect(d.lockDepth).toBeCloseTo(nominal - clearance, 9)
-      expect(d.noLock).toBe(false)
-    }
-  })
-
-  it('says so when the clearance has eaten the whole lock', () => {
-    // Past this the wheel does not lock at all, it runs straight through — the
-    // one failure of this parameter, and it is silent on the drawing.
-    const rho = escapementDims(BASE).palletRadius
-    const nominal = rho * (BASE.lock * Math.PI) / 180
-    expect(escapementDims({ ...BASE, clearance: nominal + 0.5 }).noLock).toBe(true)
-  })
-
-  it('shortens the teeth and leaves everything else alone', () => {
+describe('escapement — the tip circle', () => {
+  it('cuts the teeth to the circle the pallets were laid out for', () => {
+    // There is no running clearance any more. The teeth reach the nominal tip
+    // circle exactly, so the drive bears on the pallet where the construction
+    // put it; what free travel the pair has is `drop`, and nothing else.
     const tipR = (spec: EscapementSpec) => {
       const pts = generateEscapementParts(spec).find((p) => p.key === 'wheel')!.d
         .replace(/[MZ]/g, ' ').split('L').map((t) => t.trim().split(',').map(Number))
         .filter((p) => p.length === 2 && p.every(Number.isFinite))
       return Math.max(...pts.map((p) => Math.hypot(p[0] - spec.cx, p[1] - spec.cy)))
     }
-    // Two decimals, not six: the root-fillet closing is a clipper offset pass
-    // over the whole outline and it moves a tip by a few microns. Tightening
-    // this would only be pinning that.
-    expect(tipR({ ...BASE, clearance: 0 })).toBeCloseTo(BASE.wheelDia / 2, 2)
-    expect(tipR({ ...BASE, clearance: 0.4 })).toBeCloseTo(BASE.wheelDia / 2 - 0.4, 2)
-    // The pallets are laid out for the nominal circle and must not move with it.
-    expect(escapementDims({ ...BASE, clearance: 0.4 }).palletRadius)
-      .toBeCloseTo(escapementDims(BASE).palletRadius, 9)
-    expect(escapementDims({ ...BASE, clearance: 0.4 }).centreDistance)
-      .toBeCloseTo(escapementDims(BASE).centreDistance, 9)
+    // To 0.03 mm, not to six places: the gullet closing is a clipper offset pass
+    // over the whole outline, and its resampling error scales with the radius —
+    // which is millimetres now rather than the 0.6 mm it used to be, so a tip
+    // moves by about twelve microns instead of two. A closing cannot shorten a
+    // convex corner in theory; this is the sampling, and tightening the test
+    // would only be pinning that.
+    for (const wheelDia of [60, 100, 180]) {
+      expect(Math.abs(tipR({ ...BASE, wheelDia }) - wheelDia / 2)).toBeLessThan(0.03)
+    }
+  })
+
+  it('leaves the lock the full depth the swing buries the pallet by', () => {
+    const rho = escapementDims(BASE).palletRadius
+    expect(escapementDims(BASE).lockDepth).toBeCloseTo(rho * (BASE.lock * Math.PI) / 180, 9)
+    expect(escapementDims(BASE).noLock).toBe(false)
+    // And nothing to lock on at all is still reported, now only when the lock
+    // itself is gone.
+    expect(escapementDims({ ...BASE, lock: 0 }).noLock).toBe(true)
+  })
+})
+
+describe('escapement — the tooth depth', () => {
+  it('cuts a tooth as deep as it was asked for, at every depth', () => {
+    // `toothDepth` sets the root circle, and for half a day the GULLET FILL then
+    // overruled it: the fill was sized by what it may not bury above the pallet's
+    // floor, which bounds its top and says nothing about its bottom, and a disc
+    // too big to descend into a deep narrow gullet jams high and solidifies
+    // everything under it. Deepening the tooth made the gullet deeper AND
+    // narrower, so a bigger disc jammed higher still — past about 10 mm the floor
+    // rose faster than the root fell, and 24 mm of tooth depth emitted a 1.26 mm
+    // tooth. The wheel came out nearly a circle, which is how it was noticed; no
+    // clearance, binding or fill-position check could see it, because none of
+    // them asked this.
+    for (const toothDepth of [2, 4, 6, 8, 10, 14, 18, 24]) {
+      const spec = { ...BASE, toothDepth }
+      const pts = generateEscapementParts(spec).find((p) => p.key === 'wheel')!.d
+        .replace(/[MZ]/g, ' ').split('L').map((t) => t.trim().split(',').map(Number))
+        .filter((p) => p.length === 2 && p.every(Number.isFinite)) as [number, number][]
+      const floor = Math.min(...pts.map((p) => Math.hypot(p[0] - spec.cx, p[1] - spec.cy)))
+      const root = escapementDims(spec).wheelRootDia / 2
+      // Measured off the EMITTED outline, so it sees the gullet closing. To
+      // 0.05 mm: the closing is a clipper pass and resamples everything it
+      // touches.
+      expect(Math.abs(floor - root), `toothDepth ${toothDepth}`).toBeLessThan(0.05)
+      expect(Math.abs((spec.wheelDia / 2 - floor) - toothDepth), `toothDepth ${toothDepth}`).toBeLessThan(0.05)
+    }
   })
 })
 
 describe('escapement — bowed tooth flanks', () => {
-  it('thickens the root without moving the tip', () => {
-    // Straight flanks taper to a narrow base and leave the tooth weak across the
-    // grain. The bow swells it towards the root — and must not touch the tip,
-    // which is the acting surface the pallet faces were generated from.
-    const base = (toothCurve: number) => escapementDims({ ...BASE, toothCurve }).toothBase
-    expect(base(0.5)).toBeGreaterThan(base(0) * 1.3)
-    expect(base(1)).toBeGreaterThan(base(0.5))
-    const tipR = (toothCurve: number) => {
-      const pts = generateEscapementParts({ ...BASE, toothCurve }).find((p) => p.key === 'wheel')!.d
-        .replace(/[MZ]/g, ' ').split('L').map((t) => t.trim().split(',').map(Number))
-        .filter((p) => p.length === 2 && p.every(Number.isFinite))
-      return Math.max(...pts.map((p) => Math.hypot(p[0], p[1])))
-    }
-    expect(tipR(1)).toBeCloseTo(tipR(0), 2)
-  })
-
   it('leaves no step where a flank meets the root land', () => {
     // The bow is ANGULAR, so a bowed foot stays ON the root circle and the land
     // simply runs between the feet it is given. Displace the foot off that circle
@@ -362,19 +367,23 @@ describe('escapement — bowed tooth flanks', () => {
     // still starts where the foot used to be, leaving a visible step at every
     // tooth that no dimension catches.
     //
-    // Tested on the RAW ring: the emitted outline has been through the
-    // root-fillet closing, which resamples it and collapses straight runs, so a
-    // long edge there means nothing.
-    const rRoot = escapementDims(BASE).wheelRootDia / 2
-    for (const toothCurve of [0, 0.5, 1]) {
-      const ring = __escToothRing({ ...BASE, toothCurve })
+    // The bow is fixed at `TOOTH_BOW` now rather than asked for, so this is swept
+    // over the WHEEL instead: the invariant has to hold at any size.
+    //
+    // Tested on the RAW ring: the emitted outline has been through the gullet
+    // closing, which resamples it and collapses straight runs, so a long edge
+    // there means nothing.
+    for (const wheelDia of [40, 100, 200]) {
+      const spec = { ...BASE, wheelDia }
+      const rRoot = escapementDims(spec).wheelRootDia / 2
+      const ring = __escToothRing(spec)
       // The invariant itself: the profile never leaves the band between root and
       // tip, and it REACHES the root circle exactly. A bow taken perpendicular to
       // the flank pushes the foot off that circle, and then the land — which is
       // still drawn on it — no longer meets the flank.
       const rs = ring.map((p) => Math.hypot(p[0], p[1]))
       expect(Math.min(...rs)).toBeCloseTo(rRoot, 9)
-      expect(Math.max(...rs)).toBeCloseTo(BASE.wheelDia / 2 - BASE.clearance, 9)
+      expect(Math.max(...rs)).toBeCloseTo(wheelDia / 2, 9)
     }
   })
 })
@@ -399,8 +408,9 @@ describe('escapement — the deep-lock corner relief', () => {
    *  the anchor — negative is how deep the anchor stands in its way. */
   const reach = (spec: EscapementSpec, side: 'entry' | 'exit'): number => {
     const R = spec.wheelDia / 2
-    const beta = (spec.span * 2 * Math.PI) / spec.teeth
-    const L = R / Math.cos(beta / 2)
+    const dm = escapementDims(spec)
+    const L = dm.centreDistance
+    const beta = (dm.span * 2 * Math.PI) / spec.teeth
     const yA = anchorOffset(spec)
     const mir = spec.clockwise ? 1 : -1
     const sgn = side === 'entry' ? -1 : 1
@@ -535,7 +545,7 @@ describe('escapement — the drop lock', () => {
     const wheel = generateEscapementParts(spec).find((p) => p.key === 'wheel')!.d
       .replace(/[MZ]/g, ' ').split('L').map((t) => t.trim().split(',').map(Number))
       .filter((p) => p.length === 2 && p.every(Number.isFinite)) as [number, number][]
-    const rTip = spec.wheelDia / 2 - spec.clearance
+    const rTip = spec.wheelDia / 2
     const tips = wheel.filter((p) => Math.hypot(p[0], p[1]) > rTip - 0.02)
     // Into the anchor's own frame, where the faces live — and back out of the
     // mirror the emitted parts were placed through.
@@ -647,11 +657,12 @@ describe('escapement — the drop lock', () => {
   it('gives a recoil anchor none of it', () => {
     // A recoil has no dead face and is not supposed to: its tooth lands on the
     // impulse face and drives the wheel back, which is what a recoil escapement
-    // IS. So the embrace is left alone, and the clearance does not move a face.
+    // IS. So the embrace is left alone and its faces sit where the bare loci put
+    // them, whatever the lock is asked to be.
     expect(escapementDims({ ...BASE, escType: 'recoil' }).dropLockDepth).toBe(0)
     for (const side of ['entry', 'exit'] as const) {
-      const a = __escFaces({ ...BASE, escType: 'recoil', clearance: 0 }, side)
-      const b = __escFaces({ ...BASE, escType: 'recoil', clearance: 0.6 }, side)
+      const a = __escFaces({ ...BASE, escType: 'recoil', lock: 0 }, side)
+      const b = __escFaces({ ...BASE, escType: 'recoil', lock: 3 }, side)
       for (let i = 0; i < a.length; i++) {
         expect(a[i][0]).toBeCloseTo(b[i][0], 12)
         expect(a[i][1]).toBeCloseTo(b[i][1], 12)

@@ -43,6 +43,8 @@ export default function Sidebar() {
   const clockPanelOpen = useUIStore((s) => s.clockPanelOpen)
   const setupPanelOpen = useUIStore((s) => s.setupPanelOpen)
 
+  const showProps = selectedIds.length > 0 && !machineFormActive && !clockPanelOpen
+
   const [width, setWidth] = useState(320)
   const dragging = useRef(false)
   const startX = useRef(0)
@@ -144,17 +146,29 @@ export default function Sidebar() {
             </button>
           </div>
 
-          {/* Scrollable content — switches to flex-col fill when machine or shapes panel is open */}
+          {/* Scrollable content — switches to flex-col fill when machine or
+              shapes panel is open.
+
+              WHEN THE PROPERTIES PANEL IS SHOWING IT STOPS GROWING (`flex-initial`
+              rather than `flex-1`), and that is what anchors that panel's top
+              edge. As `flex-1` this took all the free space and the properties
+              panel hung off the bottom, so the panel grew UPWARD — every warning
+              line it gained slid its own fields up, out from under a pointer
+              mid-click on a spinner. Here it takes its natural height, still
+              scrolling if it wants more, and the properties panel takes the
+              remainder and grows down into it. */}
           <div className={(machineFormActive || shapesPanelOpen || clockPanelOpen) && sidebarTab === 'draw'
-            ? 'flex-1 overflow-hidden flex flex-col'
-            : 'flex-1 overflow-y-auto'
+            ? 'flex-1 min-h-0 overflow-hidden flex flex-col'
+            : showProps
+              ? 'flex-initial min-h-0 overflow-y-auto'
+              : 'flex-1 overflow-y-auto'
           }>
             <TabContent tab={sidebarTab} machineFormActive={machineFormActive} shapesPanelOpen={shapesPanelOpen} clockPanelOpen={clockPanelOpen} />
           </div>
 
           {/* Properties panel — hidden while the machine form or the clock
               designer fills the sidebar */}
-          {selectedIds.length > 0 && !machineFormActive && !clockPanelOpen && <PropertiesPanel />}
+          {showProps && <PropertiesPanel />}
         </>
       )}
       </div>

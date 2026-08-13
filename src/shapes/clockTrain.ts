@@ -158,16 +158,6 @@ export function escapeRevSeconds(beatSeconds: number, escapeTeeth: number): numb
   return 2 * Math.max(0.05, beatSeconds) * Math.max(6, Math.round(escapeTeeth))
 }
 
-/**
- * Teeth the pallets span. Must be an integer plus a half or the pallets cannot
- * alternate (the wheel gives up half a tooth per beat) — see EscapementSpec.span.
- * N/4 rounded to the nearest half tooth is the classic choice; 30 teeth gives
- * the standard 7.5.
- */
-export function escapementSpan(teeth: number): number {
-  return Math.floor(Math.max(6, Math.round(teeth)) / 4) + 0.5
-}
-
 // ─── The going train ──────────────────────────────────────────────────────────
 
 export interface Mesh {
@@ -400,7 +390,6 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
         type: 'escapement', cx: 0, cy: 0,
         ...base.escapement,
         teeth: Math.max(6, Math.round(spec.escapeTeeth)),
-        span: escapementSpan(spec.escapeTeeth),
       },
     },
     // Last, and on no arbor at all — it hangs from the anchor. Its LENGTH is the

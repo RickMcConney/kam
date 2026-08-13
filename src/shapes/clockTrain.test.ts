@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   CLOCK_PART_ORDER, TRAIN_PART_ORDER, DEFAULT_CLOCK_SPEC, G_MM, clockRoot, defaultLinkAngles, clockAssemblyFromPaths, clockPlate, clockPose,
-  designClock, escapementSpan, escapeRevSeconds, layoutClock,
+  designClock, escapeRevSeconds, layoutClock,
   pendulumLengthMM, solveDrive, solveTrain, trainRatio,
   dragLinkAngle,
   type ClockAssembly, type ClockPlate,
@@ -39,14 +39,6 @@ describe('escape wheel', () => {
     expect(escapeRevSeconds(1, 30)).toBe(60)
   })
 
-  it('spans an odd number of half teeth', () => {
-    for (const n of [24, 28, 30, 32, 36, 40, 48]) {
-      const s = escapementSpan(n)
-      expect(s % 1).toBe(0.5)
-      // Near N/4, which is what makes the pallets sit either side of the wheel.
-      expect(Math.abs(s - n / 4)).toBeLessThanOrEqual(0.5)
-    }
-  })
 })
 
 describe('going train', () => {
