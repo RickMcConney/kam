@@ -66,6 +66,8 @@ export interface ProfileOperation extends BaseOperation {
   stepDownMM: number
   direction: CuttingDirection
   rampIn: boolean
+  /** Stock left on the wall (negative cuts past the line). Ignored for centerline. */
+  allowanceMM?: number
 }
 
 export interface PocketOperation extends BaseOperation {

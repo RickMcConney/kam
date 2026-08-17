@@ -45,6 +45,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
         side: op.side, depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), direction: op.direction,
         startNear: op.entryHint, rampIn: op.rampIn, safeHeightMM,
+        allowanceMM: op.allowanceMM,
         startZMM,
       }, pathTabs.length > 0 ? pathTabs : undefined))
 

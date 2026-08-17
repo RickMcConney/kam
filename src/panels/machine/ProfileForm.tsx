@@ -1,5 +1,5 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -22,6 +22,7 @@ interface ProfileFormState {
   stepDownMM: number
   direction: CuttingDirection
   rampIn: boolean
+  allowanceMM: number
   startFrom: StartFrom
 }
 
@@ -42,6 +43,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     const base = editOp ? {
       toolId: editOp.toolId, side: editOp.side, depthMM: editOp.depthMM,
       stepDownMM: editOp.stepDownMM, direction: editOp.direction, rampIn: editOp.rampIn ?? false,
+      allowanceMM: editOp.allowanceMM ?? 0,
       // Legacy ops stay on stock top — see PocketForm.
       startFrom: editOp.startFrom ?? { mode: 'stock' },
     } : { ...mergeWithDefaults(load('profile'), {
@@ -53,6 +55,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       stepDownMM: seedStepDownMM(defaultTool),
       direction: 'climb' as CuttingDirection,
       rampIn: false,
+      allowanceMM: 0,
       // Deliberately not carried over from the saved defaults — see PocketForm.
       startFrom: { mode: 'auto' } as StartFrom,
     }, tools), startFrom: { mode: 'auto' } as StartFrom }
@@ -72,9 +75,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const selectedPaths = editOp ? editPairs.map((e) => e.path) : selPaths
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Outside cuts reach a full diameter past the path (radius of offset + radius of tool),
-  // centerline half that, inside not at all.
-  const cutMarginMM = form.side === 'outside' ? (selectedTool?.diameterMM ?? 0)
-    : form.side === 'centerline' ? (selectedTool?.diameterMM ?? 0) / 2 : 0
+  // centerline half that, inside not at all. An allowance moves the toolpath further off
+  // the line on its own side, so it adds to an outside cut's reach — and a NEGATIVE one
+  // on an inside cut can carry the tool past the line, which is the only way an inside
+  // cut has any reach at all.
+  const cutMarginMM = form.side === 'outside' ? Math.max(0, (selectedTool?.diameterMM ?? 0) + form.allowanceMM)
+    : form.side === 'centerline' ? (selectedTool?.diameterMM ?? 0) / 2
+    : Math.max(0, -form.allowanceMM)
   // See PocketForm: ops this session already generated are not cuts preceding themselves.
   const selfOpId = editOp?.id ?? session.firstLiveOpId()
   const startZ = useStartZ(form.startFrom, selectedPaths[0]?.d ?? '', cutMarginMM, selfOpId)
@@ -86,6 +93,16 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     && cutRadiusMM < selectedTool.diameterMM / 2 - 1e-6
     ? `Offset ${fmtLen(cutRadiusMM, units)} — the ${selectedTool.type === 'vbit' ? 'V' : 'ball'} profile at ${fmtLen(form.depthMM, units)} deep, so the cut meets the path at the start surface and the wall below is tapered.`
     : null
+  // What the allowance does to the number the calipers read. The wall moves by the
+  // allowance, so the MEASURED size moves by twice it — that factor of two is the whole
+  // reason this line is here, and it is what the finishing pass at 0 gives back.
+  const a = form.allowanceMM
+  const opening = form.side === 'inside'
+  const allowanceHint = a === 0
+    ? 'Stock left on the wall for a finishing pass; negative cuts past the line.'
+    : a > 0
+      ? `${fmtLen(a, units)} on the wall — the ${opening ? 'opening' : 'part'} cuts ${fmtLen(2 * a, units)} ${opening ? 'under' : 'over'}size until a second pass at 0 cleans it.`
+      : `Cuts ${fmtLen(-a, units)} past the line — the ${opening ? 'opening' : 'part'} comes out ${fmtLen(-2 * a, units)} ${opening ? 'over' : 'under'}size.`
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
   function handleToolChange(toolId: string) {
@@ -118,12 +135,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             entryHint: hint,
             toolId: form.toolId, side: form.side, depthMM: form.depthMM,
             stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn,
+            allowanceMM: form.allowanceMM,
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation>)
           try {
             setSegments(op.id, await runInWorkerFor(op.id, 'generateProfile', path.d, tool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
+              allowanceMM: form.allowanceMM,
               startZMM: startZFor(path.d, op.id),
             }))
           } catch (err) {
@@ -153,6 +172,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             stepDownMM: form.stepDownMM,
             direction: form.direction,
             rampIn: form.rampIn,
+            allowanceMM: form.allowanceMM,
             startFrom: form.startFrom,
           }) - 1
         })
@@ -168,12 +188,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             entryHint: hint,
             name, toolId: form.toolId, side: form.side, depthMM: form.depthMM,
             stepDownMM: form.stepDownMM, direction: form.direction, rampIn: form.rampIn,
+            allowanceMM: form.allowanceMM,
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { status: 'generating' })
           try {
             setSegments(opId, await runInWorkerFor(opId, 'generateProfile', path.d, tool, {
               side: form.side, depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(tool, form.stepDownMM, form.depthMM),
               direction: form.direction, rampIn: form.rampIn, startNear: hint, safeHeightMM,
+              allowanceMM: form.allowanceMM,
               startZMM: startZFor(path.d, opId),
             }))
             if (!existingId) session.remember(path.id, opId)
@@ -210,6 +232,18 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         <p className="text-label text-gray-500 dark:text-neutral-400 normal-case">{taperHint}</p>
       )}
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
+      {/* Hidden for centerline: there is no side for stock to be left on, and a field that
+          silently does nothing is worse than an absent one. */}
+      {form.side !== 'centerline' && (
+        <div>
+          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Stock Allowance</label>
+          <LengthInput valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
+            onChangeMM={(v) => up('allowanceMM', v)} />
+          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+            {allowanceHint}
+          </p>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />

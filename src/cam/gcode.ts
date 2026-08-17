@@ -27,9 +27,15 @@ function cmt(text: string, style: PostProcessorProfile['commentStyle']): string 
   return ''
 }
 
+// A roughing pass and its finishing pass differ ONLY by the allowance, so without this
+// the two ops read identically in the file the operator checks the run against.
+function allowanceDesc(mm: number | undefined): string {
+  return mm ? ` · ${mm}mm allowance` : ''
+}
+
 function opDesc(op: AnyOperation): string {
-  if (op.type === 'profile') return `${op.side} · ${op.depthMM}mm`
-  if (op.type === 'pocket') return `pocket · ${op.stepoverPercent}% stepover · ${op.depthMM}mm`
+  if (op.type === 'profile') return `${op.side} · ${op.depthMM}mm${allowanceDesc(op.allowanceMM)}`
+  if (op.type === 'pocket') return `pocket · ${op.stepoverPercent}% stepover · ${op.depthMM}mm${allowanceDesc(op.allowanceMM)}`
   if (op.type === 'drill') return `${op.drillMode} drill · ${op.depthMM}mm`
   if (op.type === 'surface') return `surface · ${op.stepoverPercent}% stepover · ${op.passAngleDeg}° · ${op.depthMM}mm`
   if (op.type === 'vcarve') return `vcarve · ${op.angleDeg}° · ${op.maxDepthMM}mm max`

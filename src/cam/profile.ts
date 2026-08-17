@@ -14,6 +14,12 @@ export interface ProfileParams {
   startNear?: { x: number; y: number }
   rampIn?: boolean
   safeHeightMM?: number
+  /** Stock left on the wall, in mm. Shifts the offset away from the design line by
+   *  this much on whichever side the cut is on, so the finished wall lands exactly
+   *  `allowanceMM` proud of the line — inside cuts leave a smaller opening, outside
+   *  cuts a bigger part. Negative cuts past the line. Meaningless for a centerline
+   *  cut, which has no side, and ignored there. */
+  allowanceMM?: number
   // Surface the cut starts from (0 = stock top, negative = the floor an earlier op left).
   // depthMM and tab heights are both measured from here.
   startZMM?: number
@@ -184,10 +190,17 @@ export function generateProfile(
   // Every pass shares this one offset: the cone/ball surface is fixed in XY, so shallower
   // passes simply leave a step outside it and the final pass sweeps the finished wall. The
   // radial bite the last pass takes is ~stepDown·tanθ, not the whole taper.
+  //
+  // A stock allowance rides on top of that offset, on the same side: the finished wall
+  // is the offset plus the tool's radius back the other way, so moving the toolpath a
+  // further `allowance` off the line moves the wall exactly `allowance` proud of it. A
+  // centerline cut has no side for stock to be left on, so it ignores the allowance
+  // rather than guessing a direction.
   const cutRadius = toolRadiusAtHeight(tool, params.depthMM)
+  const allowance = params.allowanceMM ?? 0
   const rawDelta =
-    params.side === 'outside' ? cutRadius :
-    params.side === 'inside' ? -cutRadius : 0
+    params.side === 'outside' ? cutRadius + allowance :
+    params.side === 'inside' ? -(cutRadius + allowance) : 0
   // A near-zero offset (a V-bit barely scratching the surface) is a centerline cut —
   // Clipper would otherwise be handed a degenerate inflate.
   const delta = Math.abs(rawDelta) < 1e-6 ? 0 : rawDelta
@@ -217,6 +230,14 @@ export function generateProfile(
       .map(p => stripClosingDuplicate(p.map(({ x, y }) => [x, y] as Pt2)))
       .filter(p => p.length >= 3)
       .map(pts => ({ pts, isOpen: false }))
+    // An inside offset that eats the whole shape returns nothing, and an op that emits no
+    // segments looks identical to one that was never generated. Say which knob did it —
+    // with an allowance in the mix "the tool is too big" is no longer the only answer.
+    if (offsetPaths.length === 0 && openSubs.length === 0) {
+      throw new Error(allowance !== 0
+        ? 'Tool plus allowance is larger than the shape'
+        : 'Tool is larger than the shape')
+    }
   } else {
     // Centerline: follow every subpath exactly. Closed loops trace once (drop the
     // duplicate closing point); open strokes cut start → end with no closing line.
