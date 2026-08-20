@@ -5,7 +5,7 @@ import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useSelectedPaths } from '../../store/pathsStore'
+import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffected } from '../../cam/regenerate'
@@ -29,7 +29,9 @@ export interface BooleanEditCtx {
 
 export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx?: BooleanEditCtx }) {
   const { paths, applyPathEdit } = usePathsStore()
-  const selPaths = useSelectedPaths()
+  // In PICK order: subtract keeps the first and cuts the rest away from it, so
+  // z-order would subtract the wrong way round as often as not.
+  const selPaths = useSelectedPathsInOrder()
   const { load, save } = useFormDefaultsStore()
 
   const [form, setForm] = useState<BooleanFormState>(() => {
@@ -93,7 +95,11 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
         </label>
         {canApply ? (
           <div className="space-y-0.5">
-            {sourcePaths.map((p, i) => <PathChip key={p.id} path={p} label={i === 0 ? 'primary' : 'operand'} />)}
+            {sourcePaths.map((p, i) => (
+              <PathChip key={p.id} path={p} label={i === 0
+                ? (form.opType === 'subtract' ? 'primary (kept)' : 'primary')
+                : (form.opType === 'subtract' ? 'tool (cut away)' : 'operand')} />
+            ))}
           </div>
         ) : (
           <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">

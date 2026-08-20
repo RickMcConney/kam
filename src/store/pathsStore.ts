@@ -405,3 +405,23 @@ export function useSelectedPaths(): ImportedPath[] {
     return paths.filter((p) => sel.has(p.id))
   }, [paths, selectedIds])
 }
+
+// The selected paths in the order they were PICKED, not in z-order — `selectPath`
+// appends each extend-click, so `selectedIds` already records it.
+//
+// For an operation whose operands are interchangeable (union, intersection, a
+// properties edit) z-order is the better reading and `useSelectedPaths` is the
+// one to use. This is for the ones where the FIRST pick means something: a
+// subtraction keeps path 1 and cuts the rest away from it, and taking that from
+// z-order silently subtracts the wrong way round whenever the tool happens to sit
+// below the workpiece in the list. A rubber-band selection has no pick order to
+// record, so it still lands in z-order; the form shows the roles so it is visible
+// either way.
+export function useSelectedPathsInOrder(): ImportedPath[] {
+  const paths = usePathsStore((s) => s.paths)
+  const selectedIds = usePathsStore((s) => s.selectedIds)
+  return useMemo(() => {
+    const byId = new Map(paths.map((p) => [p.id, p]))
+    return selectedIds.flatMap((id) => { const p = byId.get(id); return p ? [p] : [] })
+  }, [paths, selectedIds])
+}

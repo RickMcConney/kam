@@ -758,6 +758,15 @@ export interface ClockPose {
  * Where a wheel and a pinion share an arbor their relative clocking is FREE —
  * a maker glues the lantern on at any angle — so it is taken as zero. Nothing
  * downstream may assume otherwise.
+ *
+ * EVERY WHEEL TURNS THE OTHER WAY FROM THE ONE IT DRIVES, and each mesh's play
+ * has to be taken up on the flank ITS OWN wheel is pushing — so the sense
+ * alternates back along the chain from the escape wheel and is handed to
+ * `gearMesh`. Its default is a gear running CCW, which is right for half the
+ * train and backwards for the other half: the drive shows as slop ahead of the
+ * pin instead of behind it, which reads as the pinion driving the wheel. Nothing
+ * errors, and no clearance check can see it — the pair runs cleanly either way,
+ * it is simply resting on the wrong side of its play.
  */
 export function clockPose(parts: ClockAssembly, plate: ClockPlate, phase: number): ClockPose {
   const n = plate.arbors.length
@@ -770,10 +779,15 @@ export function clockPose(parts: ClockAssembly, plate: ClockPlate, phase: number
   // The escape pinion, clocked with the escape wheel (free choice, see above).
   pinionDeg[n - 1] = esc.wheelDeg
 
+  // The escape wheel's own sense: `escapementPose` runs a clockwise wheel through
+  // falling angles. Each mesh reverses it, so wheel k turns against wheel k+1.
+  let sense: 1 | -1 = escPart.params.type === 'escapement' && escPart.params.clockwise ? -1 : 1
+
   for (let k = n - 2; k >= 0; k--) {
+    sense = sense === 1 ? -1 : 1
     const p = parts[k]
     if (p.params.type !== 'gear') continue
-    const mesh = gearMesh(p.params)
+    const mesh = gearMesh(p.params, sense)
     const th = (plate.arbors[k].toNext * 180) / Math.PI
     wheelDeg[k] = th + (mesh.matePhaseDeg + th - pinionDeg[k + 1]) / mesh.ratio
     pinionDeg[k] = wheelDeg[k]

@@ -1264,6 +1264,14 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
 // mate's pitch radius, is the shift onto the driving flank. Two gears of equal
 // backlash come out at exactly the backlash, as they must; a lantern comes out
 // at whatever the pin leaves, which is a good deal more.
+//
+// WHICH FLANK IS THE DRIVING ONE DEPENDS ON WHICH WAY THE GEAR TURNS, so
+// `driveSense` says. A gear previewed on its own is turned CCW by `gearPose`,
+// which is the default; a clock train is a chain of external meshes and its
+// wheels therefore turn ALTERNATELY, so half of them run the other way and take
+// the play up on the other side of the pin. Nothing errors when it is wrong —
+// the pair still runs, with the slop drawn ahead of the drive instead of behind
+// it, which reads as the PINION driving the WHEEL.
 
 export type GearMateKind = 'lantern' | 'gear'
 
@@ -1293,8 +1301,14 @@ export interface GearMesh {
   cheekDia: number
 }
 
-/** How this gear meshes, and with what. */
-export function gearMesh(spec: GearSpec): GearMesh {
+/**
+ * How this gear meshes, and with what.
+ *
+ * `driveSense` is the direction THIS gear turns, CCW positive — it drives, the
+ * mate follows. It only moves the mate within its play, onto the flank the gear
+ * is actually pushing (see above); every other number here is indifferent to it.
+ */
+export function gearMesh(spec: GearSpec, driveSense: 1 | -1 = 1): GearMesh {
   const m = Math.max(0.05, spec.module)
   const z = Math.max(4, Math.round(spec.teeth))
   const cyc = cycOf(spec)
@@ -1302,11 +1316,13 @@ export function gearMesh(spec: GearSpec): GearMesh {
   const circularPitch = Math.PI * m
   const tooth = gearDims(m, z, spec.pressureAngle, spec.backlash, cyc).toothThickness
   // Half the play, at the mate's pitch radius, is the turn that takes the mate
-  // off centre and onto the flank the gear is driving. The gear runs CCW and the
-  // mate CW, so the mate's material at the pitch point moves −y as its angle
-  // grows: the shift is POSITIVE on the mate.
+  // off centre and onto the flank the gear is driving. With the gear running CCW
+  // the mate runs CW, and its material at the pitch point moves −y as its angle
+  // grows — the driver's tooth sits BEHIND the mate's, so the mate's teeth stand
+  // back by half the play and the shift is POSITIVE on the mate. Reverse the
+  // gear and the whole picture mirrors: the drive takes up on the other flank.
   const settle = (play: number, mateR: number) =>
-    ((Math.max(0, play) / 2 / Math.max(1e-6, mateR)) * 180) / Math.PI
+    (driveSense * (Math.max(0, play) / 2 / Math.max(1e-6, mateR)) * 180) / Math.PI
 
   if (cyc) {
     const p = pinionDims(spec)!

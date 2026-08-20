@@ -349,7 +349,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
               {holeCount} hole centre{holeCount !== 1 ? 's' : ''} from {selectedHoles.length === 1 ? selectedHoles[0].path.name : `${selectedHoles.length} selected paths`} — or click the canvas to place points instead.
             </p>
           ) : (
-            <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points, or select circular paths.</p>
+            <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points — a click near a circle uses its centre.</p>
           )}
           {peckToolWarning && (
             <p className="text-label text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">

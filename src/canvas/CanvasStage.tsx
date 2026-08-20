@@ -41,7 +41,7 @@ import { SimulationLayer } from './layers/SimulationLayer'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { useSimStore } from '../store/simStore'
 import { HandleType, LiveTransform , RULER_W, RULER_H } from './types'
-import { getMultiBBox, applyTransformStep, type TransformStep } from './selectionUtils'
+import { getMultiBBox, applyTransformStep, extractCircles, type TransformStep, type CircleInfo } from './selectionUtils'
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
@@ -513,11 +513,40 @@ export default function CanvasStage() {
     return snapPoint(cnc, viewportRef.current, units, org)
   }, [])
 
-  // Snap to nearest visible path vertex within 10 screen px, then fall back to grid snap.
+  // Circles a path holds, cached on the path object — paths are replaced, never
+  // mutated, so identity is a safe key and a click costs no re-parsing.
+  const circleCache = useRef(new WeakMap<ImportedPath, CircleInfo[]>())
+  const circlesOf = useCallback((p: ImportedPath): CircleInfo[] => {
+    let cs = circleCache.current.get(p)
+    if (!cs) { cs = extractCircles(p); circleCache.current.set(p, cs) }
+    return cs
+  }, [])
+
+  // Snap to a circle CENTRE first, then to the nearest visible path vertex within
+  // 10 screen px, then fall back to grid snap.
+  //
+  // A click near a hole means "drill that hole", not "drill where I clicked" — and
+  // the drill tool owns the canvas while it is up, so clicking the circle is the only
+  // way left to say it. Near means within the tolerance of the CENTRE or of the RIM,
+  // never just "inside": a board outline is a circle too, and its open middle has to
+  // stay free ground for the free-placed points this tool also exists for. A hole
+  // small enough to be one click wide qualifies anywhere inside it either way. The
+  // SMALLEST qualifying circle wins, so a hole nested in a bigger ring is the one
+  // that gets drilled.
   const snapDrillPoint = useCallback((cnc: { x: number; y: number }): { x: number; y: number } => {
     const vp = viewportRef.current
     const radiusCNC = 10 / vp.scale
     const { paths: allPaths } = usePathsStore.getState()
+    let bestCircle: CircleInfo | null = null
+    for (const p of allPaths) {
+      if (!onCanvas(p)) continue
+      for (const c of circlesOf(p)) {
+        const d = Math.hypot(c.cx - cnc.x, c.cy - cnc.y)
+        if (d > radiusCNC && Math.abs(d - c.radiusMM) > radiusCNC) continue
+        if (!bestCircle || c.radiusMM < bestCircle.radiusMM) bestCircle = c
+      }
+    }
+    if (bestCircle) return { x: bestCircle.cx, y: bestCircle.cy }
     let bestDist = radiusCNC
     let best: { x: number; y: number } | null = null
     for (const p of allPaths) {
@@ -532,7 +561,7 @@ export default function CanvasStage() {
     }
     if (best) return best
     return snapCNC(cnc)
-  }, [snapCNC, getFlat])
+  }, [snapCNC, getFlat, circlesOf])
 
   // Pen-tool snapping: nearest path vertex first (crosshair guides through it),
   // then bbox edge/center axis alignment (same dashed guides as drag snapping),
