@@ -51,7 +51,7 @@ const FEATURES = [
   },
   {
     title: 'Shape tools',
-    desc: 'Pick a shape from the Draw tab. Click the canvas to place it at the default size, or drag to size it interactively. Edit parameters in the Properties panel.',
+    desc: 'Pick a shape from the Draw tab. Click the canvas to place it at the default size, or drag to size it interactively. Tick From centre and a drag grows outward from where it started instead of running corner to corner — drag repeatedly from one point for concentric shapes. A gear, escapement or pendulum ignores the drag and places at the size its own parameters give it — those are set by module and tooth count, or by the beat, not by how far you drag. Edit parameters in the Properties panel.',
   },
   {
     title: 'Pen tool',

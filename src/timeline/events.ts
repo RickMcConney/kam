@@ -4,16 +4,12 @@ import type { AnyOperation, MotionSegment } from '../store/toolpathStore'
 import type { Tab } from '../store/tabStore'
 import { shapeDisplayName, type ShapeParams } from '../shapes/shapeGenerators'
 import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpieceStore'
-import type { BooleanOpType } from '../tools/booleanOps'
-import type { OffsetCornerStyle } from '../tools/offsetOp'
-import type { PatternParams } from '../tools/patternOp'
-import type { ClockSpec } from '../shapes/clockTrain'
 
 // Omit distributed over a union (plain Omit collapses AnyOperation to common keys)
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never
 
 // An operation as stored in timeline events and checkpoints: settings only.
-// segments/status/errorMessage are derived and regenerated after replay.
+// segments/status/errorMessage are derived, so a recorded payload omits them.
 // Exception: 'gcode' ops keep their segments — they came from a parsed file and
 // cannot be regenerated from the op's settings.
 export type SerializedOperation = DistributiveOmit<AnyOperation, 'segments' | 'status' | 'errorMessage'> & {
@@ -36,26 +32,19 @@ export function hydrateOp(sop: SerializedOperation): AnyOperation {
 
 // Fields regenerate/setSegments/optimizeStartPoints write back onto ops
 // outside any user action (entryHint is rewritten on EVERY sim run / G-code
-// export). They are stripped from op.update event payloads and ignored by the
-// replay diff — post-scrub regeneration recomputes them.
+// export). They are stripped from op.update event payloads, so a derived write
+// never shows up as a chip.
 export const DERIVED_OP_KEYS = ['status', 'segments', 'errorMessage', 'helicalHoles', 'helicalCenterX', 'helicalCenterY', 'helicalRadius', 'entryHint', 'generatedWith'] as const
 
-// An op reduced to the fields replay can actually reproduce. Live ops carry
-// state that no event ever recorded, so comparing raw ops against replayed
-// ones always reports a difference once the project has been used:
-// - visible: IS recorded now (op.setVisible), but stays out of the comparison — a
-//   visibility toggle must not read as a settings change, or scrubbing across one would
-//   throw away the operation's segments. restoreStateAt applies the replayed value
-//   explicitly instead.
+// An op reduced to the fields a recorded payload actually carries. Live ops hold
+// state no event records, so comparing a raw op against a recorded one always
+// reports a difference once the project has been used:
+// - visible: IS recorded (op.setVisible) but stays out of the comparison, so a
+//   visibility toggle does not read as a settings change.
 // - entryHint/generatedWith: written by optimizeStartPoints before a sim run or
 //   G-code export
 // - helicalHoles + helicalCenterX/Y/helicalRadius: written back by regenerate with
 //   { record: false } — they are DERIVED from the source path's circles
-//
-// Used both by the replay oracle (replayCheck) and by scrubbing's
-// segment-preservation check — the latter has to ignore these or every undo
-// after a single Simulate would discard every generated toolpath and re-run
-// seconds of adaptive/vcarve work.
 export function comparableOp(op: SerializedOperation): Record<string, unknown> {
   const { visible: _v, entryHint: _eh, generatedWith: _gw, ...rest } = op as SerializedOperation & { visible?: boolean }
   if (rest.type === 'drill') {
@@ -66,7 +55,7 @@ export function comparableOp(op: SerializedOperation): Record<string, unknown> {
   return rest as Record<string, unknown>
 }
 
-// Do two ops carry the same replayable settings? Key-wise rather than
+// Do two ops carry the same recorded settings? Key-wise rather than
 // JSON.stringify over the whole object: spread-built ops ({ ...o, ...updates })
 // can legitimately differ in key ORDER, which whole-object stringify would
 // report as a difference.
@@ -85,7 +74,7 @@ export function sameOpSettings(a: SerializedOperation, b: SerializedOperation): 
 export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' | 'boolean' | 'offset' | 'pattern'
 
 // What kind of gesture produced a paths.edit event — names the chip and picks
-// its icon. Display metadata only; replay ignores it.
+// its icon. Display metadata only.
 // 'transform' is synthetic: timelineStore's coalesce() stamps it on a chip
 // that chained two or more DIFFERENT pure-geometry gestures (e.g. Move then
 // Rotate on the same path, nothing else in between) into one entry.
@@ -127,66 +116,22 @@ export interface WorkpieceEventChanges {
   material?: Material
 }
 
-export interface Checkpoint {
-  paths: ImportedPath[]
-  operations: SerializedOperation[]
-  tabs: Tab[]
-  // Full snapshot of the project-scoped workpiece fields. Optional because
-  // timelines saved before Phase 6 lack it — scrubbing then leaves the
-  // workpiece untouched.
-  workpiece?: WorkpieceEventChanges
-}
-
 export interface TimelineEventBase {
   seq: number               // 1-based, monotonic; seq === index + 1
   id: string                // uid('ev')
-  t: number                 // epoch ms (display only; replay ignores it)
+  t: number                 // epoch ms (display + coalescing window)
   label: string             // human-readable: "Rotate 2 paths", "Add Pocket op"
   selectionAfter: string[]  // pathsStore.selectedIds after the event
   gestureId?: string        // shared across events emitted by one user gesture
 }
 
-// Generator metadata on paths.add events (offset/pattern/duplicate): records
-// the inputs so the chip can be re-edited (form edit modes recompute + amend
-// in place) AND so applyEvent.ts's replay can recompute the result from the
-// source's CURRENT geometry instead of trusting the materialized `paths`,
-// which are only a record-time snapshot (used as the fallback when this
-// metadata is absent — pre-fix saves, or a source that's since been deleted).
-export interface OffsetEventMeta {
-  pairs: { sourceId: string; resultId: string }[]
-  distanceMM: number
-  cornerStyle: OffsetCornerStyle
-}
-export interface PatternEventMeta {
-  sourceIds: string[]
-  params: PatternParams
-}
-export interface DuplicateEventMeta {
-  pairs: { sourceId: string; resultId: string }[]
-  offsetMM: number
-}
-
 export type TimelineEventPayload =
   // ---- paths ----
-  | { kind: 'paths.add'; paths: ImportedPath[]; source?: PathsAddSource; offset?: OffsetEventMeta; pattern?: PatternEventMeta; duplicate?: DuplicateEventMeta }
-  // boolOp on gesture:'boolean' events records which boolean was applied so
-  // the chip can be re-edited (BooleanForm edit mode); replay ignores it.
-  | { kind: 'paths.edit'; updates: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[]; gesture?: PathEditGesture; boolOp?: BooleanOpType }
+  | { kind: 'paths.add'; paths: ImportedPath[]; source?: PathsAddSource }
+  | { kind: 'paths.edit'; updates: PathUpdate[]; add?: ImportedPath[]; deleteIds?: string[]; gesture?: PathEditGesture }
   | { kind: 'paths.split'; pathId: string; subPaths: ImportedPath[]; opsAfter: SerializedOperation[] | null }
   | { kind: 'paths.setHidden'; ids: string[]; hidden: boolean }
   | { kind: 'shape.params'; pathId: string; params: ShapeParams }
-  // The clock designer's own chip, recorded BEFORE the parts it produced. It
-  // creates nothing — replay is a no-op — and that is the point: it is the
-  // DESIGN, the spec the five wheels and the pendulum after it were worked out
-  // from, so clicking it reopens ClockPanel on that spec instead of making the
-  // user start a project over to try a different beat. Re-running amends this
-  // chip and the part chips in place (`amendClockSpec`, then updateShapeParams
-  // per part), so iterating on a clock never piles chips up.
-  //
-  // A no-op chip is only tolerable because it sits FIRST: by the time undo
-  // reaches it every part it led to is already gone, so there is nothing left
-  // for it to have undone.
-  | { kind: 'clock.design'; clockId: string; spec: ClockSpec }
   // ---- CAM operations ----
   // opType on update/delete is display metadata (chip icon/label survives the
   // op being gone) — replay ignores it.
@@ -207,20 +152,11 @@ export type TimelineEventPayload =
   | { kind: 'tabs.moveT'; tabId: string; t01: number }
   // ---- project ----
   | { kind: 'workpiece.set'; changes: WorkpieceEventChanges }
-  | { kind: 'snapshot'; state: Checkpoint; reason: 'genesis' | 'migration' | 'compaction' }
 
 export type TimelineEvent = TimelineEventBase & TimelineEventPayload
 
 // Runtime registry of event kinds this build can replay. The project loader
 // rejects a saved timeline containing unknown kinds (from a newer version)
-// rather than replaying it incorrectly.
-export const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set([
-  'paths.add', 'paths.edit', 'paths.split', 'paths.setHidden', 'shape.params',
-  'clock.design',
-  'op.add', 'op.update', 'op.delete', 'op.reorder', 'op.setVisible',
-  'tabs.apply', 'tabs.delete', 'tabs.moveT',
-  'workpiece.set', 'snapshot',
-])
 
 export const OP_DISPLAY_NAMES: Record<string, string> = {
   profile: 'Profile',
@@ -271,7 +207,6 @@ export function labelFor(ev: TimelineEventPayload): string {
     case 'paths.split': return 'Split path'
     case 'paths.setHidden': return ev.hidden ? 'Hide paths' : 'Show path'
     case 'shape.params': return shapeDisplayName(ev.params.type)
-    case 'clock.design': return 'Clock'
     case 'op.add': return opDisplayName(ev.op.type)
     case 'op.update': return opDisplayName(ev.opType)
     case 'op.delete': return ev.opIds.length === 1 ? `Delete ${opDisplayName(ev.opType)}` : `Delete ${ev.opIds.length} Operations`
@@ -295,7 +230,6 @@ export function labelFor(ev: TimelineEventPayload): string {
       }
       return 'Stock'
     }
-    case 'snapshot': return ev.reason === 'compaction' ? 'History start (compacted)' : 'Project start'
   }
 }
 
@@ -303,7 +237,7 @@ export function labelFor(ev: TimelineEventPayload): string {
 export type EventFamily = 'path' | 'op' | 'tab' | 'project'
 
 export function familyOf(kind: TimelineEvent['kind']): EventFamily {
-  if (kind.startsWith('paths.') || kind === 'shape.params' || kind === 'clock.design') return 'path'
+  if (kind.startsWith('paths.') || kind === 'shape.params') return 'path'
   if (kind.startsWith('op.')) return 'op'
   if (kind.startsWith('tabs.')) return 'tab'
   return 'project'

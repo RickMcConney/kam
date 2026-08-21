@@ -64,13 +64,18 @@ export function SelectionLayer({ viewport, bbox, liveTransform }: SharedProps) {
 interface HandleLayerProps extends SharedProps {
   onResizeHandleDown: (handle: HandleType, e: Konva.KonvaEventObject<MouseEvent>) => void
   onRotateHandleDown: (e: Konva.KonvaEventObject<MouseEvent>) => void
+  // A mechanism whose size comes from its own parameters (see
+  // SCALE_LOCKED_SHAPES) draws no resize handles — its module or its rate is
+  // not something to arrive at by dragging a corner. Rotation stays: turning a
+  // gear on the stock changes nothing about the gear.
+  scaleLocked?: boolean
 }
 
-export function SelectionHandleLayer({ viewport, bbox, liveTransform, onResizeHandleDown, onRotateHandleDown }: HandleLayerProps) {
+export function SelectionHandleLayer({ viewport, bbox, liveTransform, onResizeHandleDown, onRotateHandleDown, scaleLocked }: HandleLayerProps) {
   const [hoveredId, setHoveredId] = useState<HandleType | 'rot' | null>(null)
   const { corners: c, rotHandle } = handlePositions(viewport, bbox, liveTransform)
 
-  const handles: { id: HandleType; pos: { x: number; y: number } }[] = [
+  const handles: { id: HandleType; pos: { x: number; y: number } }[] = scaleLocked ? [] : [
     { id: 'tl', pos: c.tl }, { id: 'tr', pos: c.tr },
     { id: 'bl', pos: c.bl }, { id: 'br', pos: c.br },
     { id: 't',  pos: c.t  }, { id: 'b',  pos: c.b  },

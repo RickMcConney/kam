@@ -7,10 +7,9 @@ import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
-import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
 import { applyOffset, type OffsetCornerStyle } from '../../tools/offsetOp'
-import { nextPathColor } from '../../importers/svgImporter'
+import { nextPathColor, type PathDefinition } from '../../importers/svgImporter'
 import { uid } from '../../uid'
 
 interface OffsetFormState {
@@ -18,13 +17,13 @@ interface OffsetFormState {
   cornerStyle: OffsetCornerStyle
 }
 
-// Edit mode (timeline offset-chip click): recompute the SAME offset paths
-// from their recorded sources with new parameters, amending the chip.
+// Edit mode (offset-chip click): recompute the SAME offset paths from their
+// sources with new parameters. Identified by the DEFINITION id every result of
+// one Apply shares — the pairs and the parameters are read back off the live
+// paths, so what is reworked is what is actually in the document rather than a
+// snapshot taken when the chip was recorded.
 export interface OffsetEditCtx {
-  eventId: string
-  pairs: { sourceId: string; resultId: string }[]
-  distanceMM: number
-  cornerStyle: OffsetCornerStyle
+  defId: string
 }
 
 export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?: OffsetEditCtx }) {
@@ -32,8 +31,14 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
   const selPaths = useSelectedPaths()
   const { load, save } = useFormDefaultsStore()
 
+  // Every path this definition produced, and the parameters it was produced with.
+  const defPaths = editCtx ? paths.filter((p) => p.definition?.id === editCtx.defId) : []
+  const def0 = defPaths.find((p) => p.definition?.kind === 'offset')?.definition
+  const defParams = def0?.kind === 'offset' ? def0 : null
+
   const [form, setForm] = useState<OffsetFormState>(() => {
-    if (editCtx) return { distanceMM: editCtx.distanceMM, cornerStyle: editCtx.cornerStyle }
+    if (defParams) return { distanceMM: defParams.distanceMM, cornerStyle: defParams.cornerStyle }
+    if (editCtx) return { distanceMM: 5, cornerStyle: 'miter' }
     const saved = load('offset') as { distanceMM?: number; cornerStyle?: OffsetCornerStyle } | null
     return {
       distanceMM: saved?.distanceMM ?? 5,
@@ -42,10 +47,12 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
   })
   const [error, setError] = useState<string | null>(null)
 
-  const livePairs = editCtx
-    ? editCtx.pairs.filter((pair) =>
-        paths.some((p) => p.id === pair.sourceId) && paths.some((p) => p.id === pair.resultId))
-    : []
+  const livePairs = defPaths.flatMap((p) => {
+    const def = p.definition
+    return def?.kind === 'offset' && paths.some((q) => q.id === def.sourceId)
+      ? [{ sourceId: def.sourceId, resultId: p.id }]
+      : []
+  })
   const sourcePaths = editCtx
     ? livePairs.flatMap((pair) => { const p = paths.find((x) => x.id === pair.sourceId); return p ? [p] : [] })
     : selPaths
@@ -59,44 +66,38 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
     setError(null)
 
     if (editCtx) {
-      // Rework in place: recompute each result from its source, amend the chip.
-      const updates: { id: string; d: string }[] = []
+      // Rework in place: recompute each result from its source and restamp the
+      // definition with the new parameters. No chip to amend — the chip shows
+      // that an offset happened, the objects carry what it was.
+      const updates: { id: string; d: string; definition: PathDefinition }[] = []
       for (const pair of livePairs) {
         const src = paths.find((p) => p.id === pair.sourceId)!
         const d = applyOffset(src.d, { distanceMM: form.distanceMM, cornerStyle: form.cornerStyle })
         if (!d) { setError(`Offset produced no geometry for ${src.name}`); return }
-        updates.push({ id: pair.resultId, d })
-      }
-      usePathsStore.getState().rewriteGeneratedRaw({ updates })
-      const tl = useTimelineStore.getState()
-      const ev = tl.events.find((e) => e.id === editCtx.eventId)
-      if (ev?.kind === 'paths.add') {
-        const dById = new Map(updates.map((u) => [u.id, u.d]))
-        tl.amendAddEvent(editCtx.eventId, {
-          paths: ev.paths.map((p) => dById.has(p.id) ? { ...p, d: dById.get(p.id)! } : p),
-          offset: { pairs: editCtx.pairs, distanceMM: form.distanceMM, cornerStyle: form.cornerStyle },
+        updates.push({
+          id: pair.resultId, d,
+          definition: { id: editCtx.defId, kind: 'offset', sourceId: pair.sourceId, ...form },
         })
       }
+      usePathsStore.getState().rewriteGeneratedRaw({ updates })
       regenerateAffectedMany(updates.map((u) => u.id))
       useUIStore.getState().showStatus('Offset updated', 'info')
       save('offset', form)
       return
     }
 
-    const pairs: { sourceId: string; resultId: string }[] = []
+    const defId = uid('def')
     const newPaths: ImportedPath[] = []
     for (const p of sourcePaths) {
       const resultD = applyOffset(p.d, { distanceMM: form.distanceMM, cornerStyle: form.cornerStyle })
       if (!resultD) continue
-      const id = uid('path-offset')
-      pairs.push({ sourceId: p.id, resultId: id })
-      newPaths.push({ id, name: `${p.name} offset`, d: resultD, visible: true, color: nextPathColor() })
+      newPaths.push({
+        id: uid('path-offset'), name: `${p.name} offset`, d: resultD, visible: true, color: nextPathColor(),
+        definition: { id: defId, kind: 'offset', sourceId: p.id, ...form },
+      })
     }
     if (newPaths.length === 0) { setError('Offset produced no geometry'); return }
-    addPaths(newPaths, {
-      source: 'offset',
-      offset: { pairs, distanceMM: form.distanceMM, cornerStyle: form.cornerStyle },
-    })
+    addPaths(newPaths, { source: 'offset' })
     usePathsStore.getState().setSelectedIds(newPaths.map((p) => p.id))
     save('offset', form)
   }

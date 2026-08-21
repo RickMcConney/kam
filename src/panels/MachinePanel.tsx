@@ -1,7 +1,7 @@
 import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, VCarveForm, PhotoVCarveForm, InlayForm, Profile3dForm, SurfaceForm, BooleanForm, OffsetForm, PatternForm, TabsForm, NodeEditForm } from './machine'
 import { useState, useEffect } from 'react'
 import { useToolpathStore } from '../store/toolpathStore'
-import { useTimelineStore } from '../timeline/timelineStore'
+import { usePathsStore } from '../store/pathsStore'
 import type { BooleanEditCtx } from './machine/BooleanForm'
 import type { OffsetEditCtx } from './machine/OffsetForm'
 import type { PatternEditCtx } from './machine/PatternForm'
@@ -107,30 +107,28 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
     startForm(op.type as FormState)
   }, [requestEditOpId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Consume "edit this generator chip" requests (boolean/offset/pattern chips)
-  const requestEditEventId = useUIStore((s) => s.requestEditEventId)
+  // Consume "edit this generated path" requests (boolean/offset/pattern chips).
+  // Everything the form needs is on the object, so this is a lookup rather than
+  // a search through the log — and it cannot come up empty for a path that is
+  // still in the document.
+  const requestEditPathId = useUIStore((s) => s.requestEditPathId)
   useEffect(() => {
-    if (!requestEditEventId) return
-    useUIStore.getState().setRequestEditEventId(null)
-    const ev = useTimelineStore.getState().events.find((e) => e.id === requestEditEventId)
-    if (!ev) return
+    if (!requestEditPathId) return
+    useUIStore.getState().setRequestEditPathId(null)
+    const def = usePathsStore.getState().paths.find((p) => p.id === requestEditPathId)?.definition
+    if (!def) return
     clearEditCtx()
-    if (ev.kind === 'paths.edit' && ev.add?.length) {
-      setEditBool({
-        eventId: ev.id,
-        opType: ev.boolOp ?? 'union',
-        sourceIds: ev.updates.map((u) => u.id),
-        resultId: ev.add[0].id,
-      })
+    if (def.kind === 'boolean') {
+      setEditBool({ resultId: requestEditPathId })
       startForm('boolean')
-    } else if (ev.kind === 'paths.add' && ev.offset) {
-      setEditOffset({ eventId: ev.id, ...ev.offset })
+    } else if (def.kind === 'offset') {
+      setEditOffset({ defId: def.id })
       startForm('offset')
-    } else if (ev.kind === 'paths.add' && ev.pattern) {
-      setEditPattern({ eventId: ev.id, resultIds: ev.paths.map((p) => p.id), ...ev.pattern })
+    } else if (def.kind === 'pattern') {
+      setEditPattern({ defId: def.id })
       startForm('pattern')
     }
-  }, [requestEditEventId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [requestEditPathId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Consume "open this form" requests (timeline tabs/corner chips — the chip
   // click already selected the relevant path; these forms edit the selection)
@@ -168,11 +166,11 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
       ) : activeForm === 'inlay' ? (
         <InlayForm key={editOpId ?? 'new'} onClose={closeForm} editOp={editOp?.type === 'inlay' ? editOp : undefined} />
       ) : activeForm === 'boolean' ? (
-        <BooleanForm key={editBool?.eventId ?? 'new'} onClose={closeForm} editCtx={editBool ?? undefined} />
+        <BooleanForm key={editBool?.resultId ?? 'new'} onClose={closeForm} editCtx={editBool ?? undefined} />
       ) : activeForm === 'offset' ? (
-        <OffsetForm key={editOffset?.eventId ?? 'new'} onClose={closeForm} editCtx={editOffset ?? undefined} />
+        <OffsetForm key={editOffset?.defId ?? 'new'} onClose={closeForm} editCtx={editOffset ?? undefined} />
       ) : activeForm === 'pattern' ? (
-        <PatternForm key={editPattern?.eventId ?? 'new'} onClose={closeForm} editCtx={editPattern ?? undefined} />
+        <PatternForm key={editPattern?.defId ?? 'new'} onClose={closeForm} editCtx={editPattern ?? undefined} />
       ) : activeForm === 'tabs' ? (
         <TabsForm onClose={closeForm} />
       ) : activeForm === 'nodeedit' ? (

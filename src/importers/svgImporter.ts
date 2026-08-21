@@ -1,5 +1,11 @@
 import { parseNums } from '../cam/pathFlattener'
 import type { ShapeParams } from '../shapes/shapeGenerators'
+import type { TransformStep } from '../canvas/selectionUtils'
+import type { OffsetCornerStyle } from '../tools/offsetOp'
+import type { PatternParams } from '../tools/patternOp'
+import type { BooleanOpType } from '../tools/booleanOps'
+import type { CornerTreatmentType } from '../tools/cornerTreatment'
+import type { ClockSpec } from '../shapes/clockTrain'
 import { PATH_COLOR } from '../colors'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { uid } from '../uid'
@@ -22,6 +28,18 @@ export interface ImportedPath {
   // pieces carry the SAME shapeParams and share a groupId, so editing any one of
   // them regenerates the whole set.
   shapePart?: string
+  // Where this part sits RELATIVE to where its shapeParams nominally put it —
+  // the consolidated recipe (see consolidateSteps) for every repositioning
+  // gesture applied to this part alone. A multi-part shape regenerates all of
+  // its parts from one shared set of params, so without this a gear's pinion
+  // snapped back to its designed spot the moment any parameter was stepped,
+  // taking the user's arrangement with it. `d` stays the baked result of
+  // definition-then-placement, so nothing downstream reads this.
+  //
+  // Only repositioning lives here (move/rotate/mirror/skew). A SCALE is a
+  // definition edit — scaling a gear scales its module — so it still rewrites
+  // shapeParams the way it always has.
+  placement?: TransformStep[]
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
   // Which clock this shape was emitted as part of, and which wheel of it (see
@@ -31,10 +49,55 @@ export interface ImportedPath {
   // drawing of five wheels laid out flat cannot answer.
   clockId?: string
   clockPart?: string
+  // The SPEC the whole clock was worked out from, carried by every one of its
+  // parts — the same shape as `shapeParams` on a multi-part shape, and read back
+  // by ClockPanel to reopen the designer on it. On the parts rather than in a
+  // store of its own because a clock is only ever found THROUGH its parts: it
+  // has no object of its own in the document.
+  clockSpec?: ClockSpec
+  // What GENERATED this path, and from what — the parameters its form reopens
+  // on. Provenance belongs on the object rather than in the history: it is a
+  // property of the thing, not of the moment it was made, and looking it up in
+  // an event log meant a search with a failure mode (no chip found → fall back)
+  // and a chip that had to be kept in step with the geometry it described.
+  //
+  // `definition.id` is shared by every path ONE generator call produced, which
+  // is what a form's edit mode re-runs over: a pattern's copies, an offset's
+  // results. It plays the part `groupId` plays for a multi-part shape.
+  // How this object GROWS when its resize handles are dragged: outward from its
+  // middle, or holding the opposite corner still. On the PATH rather than in
+  // `shapeParams`, because it has to outlive them — a rotate, skew or mirror
+  // drops shapeParams entirely (a rotated rectangle is no longer `{x,y,w,h}`),
+  // and losing the preference with them means it can never be set on anything
+  // that has been turned. It also lets an IMPORTED outline carry it, which has
+  // no params at all.
+  fromCenter?: boolean
+  definition?: PathDefinition
+  // Corner treatments as a RECIPE over the untreated outline, not as baked
+  // geometry: `d` is `applyCornerTreatments(baseD, treatments)`, so re-editing a
+  // radius re-cuts the ORIGINAL corner instead of rounding an already-rounded
+  // one. That is what makes a corner chip honest — a chip that reopens a form is
+  // a lie unless the form can reproduce what it did.
+  //
+  // NodeEditForm has always kept this pair in a module-level session cache;
+  // holding it here is what lets it survive a reload, a save and a project load,
+  // and lets the strip find it. `treatments` is keyed by corner index into
+  // `baseD`, which is why any edit that changes the outline drops the whole
+  // thing (see applyPathEdit) — those indices would point at different corners.
+  corners?: { baseD: string; treatments: [number, { type: CornerTreatmentType; radiusMM: number }][] }
   imageSrc?: string  // base64 data URL — path acts as bounding box for this image
   stlSrc?: string            // base64-encoded STL file — path acts as 2D bounding box
   stlModelBounds?: StlModelBounds  // original STL bounding box in model space (mm)
 }
+
+// A generated path's provenance. A parametric SHAPE carries `shapeParams`
+// instead — same idea, older field.
+export type PathDefinition = { id: string } & (
+  | { kind: 'offset'; sourceId: string; distanceMM: number; cornerStyle: OffsetCornerStyle }
+  | { kind: 'pattern'; sourceIds: string[]; params: PatternParams }
+  | { kind: 'duplicate'; sourceId: string; offsetMM: number }
+  | { kind: 'boolean'; op: BooleanOpType; sourceIds: string[] }
+)
 
 export interface SvgImportResult {
   paths: ImportedPath[]

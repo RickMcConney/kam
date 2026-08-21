@@ -229,9 +229,9 @@ export function gestureForSteps(steps: TransformStep[]): PathEditGesture {
   return kinds.size === 0 ? 'move' : 'transform'
 }
 
-// Apply one transform step to a path's CURRENT d/shapeParams. Shared by live
-// baking (CanvasStage drag handlers, PropertiesPanel rotate/mirror) and
-// timeline replay (applyEvent.ts) so both compute byte-identical results.
+// Apply one transform step to a path's CURRENT d/shapeParams. Shared by every
+// live baking site (CanvasStage drag handlers, PropertiesPanel rotate/mirror)
+// so they all compute byte-identical results.
 export function applyTransformStep(
   path: Pick<ImportedPath, 'd' | 'shapeParams'>,
   step: TransformStep,
@@ -277,6 +277,57 @@ export function applyTransformSteps(
     if (r.name !== undefined) name = r.name
   }
   return { d: cur.d, shapeParams: cur.shapeParams, name }
+}
+
+// ── Placement ────────────────────────────────────────────────────────────────
+// A multi-part shape (a gear and its pinion) regenerates every part from ONE
+// shared set of params, so a part that has been dragged somewhere has nowhere
+// to record that fact — its own copy of the params used to be translated, the
+// group's copies then disagreed, and the next parameter step regenerated the
+// whole group from one of them and threw the arrangement away.
+//
+// ImportedPath.placement is that missing slot: where the part sits relative to
+// where its definition nominally puts it. `d` remains the baked result of
+// definition-then-placement, so no reader downstream (CAM, canvas, sim) is
+// aware of the split — only the writers are.
+
+// Repositioning gestures, which move a part without changing what it IS.
+// Scale is deliberately absent: scaling a gear scales its module, so it edits
+// the DEFINITION and goes on rewriting shapeParams as it always has.
+const PLACEMENT_KINDS: ReadonlySet<TransformStep['kind']> = new Set(['translate', 'rotate', 'mirror', 'skew'])
+
+export function isPlacementOnly(steps: TransformStep[] | undefined): boolean {
+  return !!steps && steps.length > 0 && steps.every((s) => PLACEMENT_KINDS.has(s.kind))
+}
+
+// The single affine map a placement recipe amounts to.
+export function placementMat(steps: TransformStep[] | undefined): Mat6 {
+  let m: Mat6 = [1, 0, 0, 1, 0, 0]
+  if (steps) for (const step of steps) m = composeMat6(m, matForStep(step))
+  return m
+}
+
+// Carry freshly generated definition geometry out to where the part actually
+// sits. Geometry only — a placement never touches params, which is the whole
+// point of keeping the two apart.
+export function applyPlacementD(d: string, steps: TransformStep[] | undefined): string {
+  if (!steps || steps.length === 0) return d
+  return stringifyD(applyMat(parseD(d), placementMat(steps)))
+}
+
+// Fold a new repositioning gesture into a part's existing placement, keeping
+// it consolidated so a session of dragging stays one canonical recipe rather
+// than an ever-growing list (see consolidateSteps).
+export function foldPlacement(
+  path: Pick<ImportedPath, 'd' | 'placement'>,
+  steps: TransformStep[],
+): TransformStep[] {
+  const chained = [...(path.placement ?? []), ...steps]
+  // consolidateSteps only consults the bbox as a FALLBACK pivot, for a
+  // scale/rotate/skew appearing in the chain for the first time; every step
+  // reaching here already carries its own pivot, so this is belt-and-braces.
+  const bbox = getBBox(path.d)
+  return bbox ? consolidateSteps(chained, bbox) : chained
 }
 
 // Apply a live transform to a single CNC-space point

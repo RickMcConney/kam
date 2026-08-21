@@ -44,7 +44,6 @@ export type ShapeParams =
   // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
   | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
-
 export interface ShapeToolConfig {
   rectangle: { w: number; h: number }
   roundrect: { w: number; h: number; r: number }
@@ -461,6 +460,24 @@ export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
   return null
 }
 
+// Shapes a drag-scale must not touch. Each is a MECHANISM whose parameters are
+// standards or rates, cut to match a part made separately from the same
+// numbers, so a scale changes the mechanism while looking like a resize:
+//   gear       module is a cutter standard, and the pinion drawn beside it was
+//              cut for THIS module — m4 dragged to m4.37 meshes with nothing.
+//   escapement the anchor's faces are loci of THIS wheel's teeth.
+//   pendulum   `length` IS the rate; dragging it bigger silently retimes the
+//              clock, which is the one thing a drawing cannot show.
+// Everything else scales: a cam has no mate and stays a valid spiral, and
+// dragging a board or a maze to fit the stock is the natural gesture.
+// The canvas suppresses the resize handles for these (their size is set by
+// their own parameters), so nothing has to refuse a gesture mid-drag.
+export const SCALE_LOCKED_SHAPES: ReadonlySet<ShapeType> = new Set<ShapeType>(['gear', 'escapement', 'pendulum'])
+
+export function isScaleLocked(params: ShapeParams | undefined | null): boolean {
+  return !!params && SCALE_LOCKED_SHAPES.has(params.type)
+}
+
 export function shapeDisplayName(type: ShapeType): string {
   switch (type) {
     case 'rectangle': return 'Rectangle'
@@ -485,11 +502,36 @@ export function shapeDisplayName(type: ShapeType): string {
 }
 
 // Build ShapeParams from a canvas drag box
+/**
+ * `fromCenter`: the drag's ORIGIN is the shape's centre and the cursor gives its
+ * half-extent, instead of the two points being opposite corners of its box.
+ * Dragging repeatedly from one point then leaves concentric shapes, which
+ * corner-to-corner cannot do at all — you would have to work out each corner.
+ *
+ * It is done by reflecting the origin through the cursor rather than by casing
+ * every shape: with `start' = 2·start − end`, the existing arithmetic below
+ * yields centre = start and width = 2·|end − start|, which IS the centred box.
+ * So every shape follows, including ones added later, and nothing in the switch
+ * has to know the mode exists.
+ */
 export function shapeParamsFromDrag(
+  type: ShapeType,
+  origin: { x: number; y: number },
+  end: { x: number; y: number },
+  config: ShapeToolConfig,
+  fromCenter = false,
+): ShapeParams {
+  // Reflecting the origin makes the drag box the CENTRED one. Nothing is recorded
+  // here — the preference lives on the PATH (ImportedPath.fromCenter), because it
+  // has to outlive the params: a rotate or a mirror drops shapeParams entirely.
+  return dragParams(type, fromCenter ? { x: 2 * origin.x - end.x, y: 2 * origin.y - end.y } : origin, end, config)
+}
+
+function dragParams(
   type: ShapeType,
   start: { x: number; y: number },
   end: { x: number; y: number },
-  config: ShapeToolConfig
+  config: ShapeToolConfig,
 ): ShapeParams {
   const x = Math.min(start.x, end.x)
   const y = Math.min(start.y, end.y)

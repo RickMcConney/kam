@@ -86,7 +86,11 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
     // mirror) keeps the session valid: the snapshot is transformed by the same
     // matrix and stored radii scale with it. Non-uniform scale, skew, and node
     // edits genuinely change the corner geometry and start a fresh session.
-    const saved = sessionCache.get(activePath.id)
+    // The path is the durable home for this (ImportedPath.corners); the cache is
+    // just this session's working copy. Falling back to the path is what lets a
+    // corner chip be clicked after a reload or a project load, when no session
+    // was ever started here.
+    const saved = sessionCache.get(activePath.id) ?? activePath.corners
     if (saved) {
       const replay = applyCornerTreatments(saved.baseD, new Map(saved.treatments))
       let session: CornerSession | null = null
@@ -135,7 +139,10 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
       // instead of replaying a stale baked d if the shape is edited later
       // at an earlier point in the timeline.
       const corner = [...treatmentsRef.current].map(([idx, p]) => ({ idx, ...p }))
-      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null, corner }], 'corner')
+      // `cornerBaseD` goes with it: the recipe means nothing without the outline
+      // it was cut from, and storing the pair is what keeps a later edit of the
+      // radius re-cutting the ORIGINAL corner rather than rounding a round one.
+      batchUpdatePaths([{ id: activePath.id, d: newD, shapeParams: null, corner, cornerBaseD: baseD }], 'corner')
       regenerateAffected(activePath.id)
     }
     sessionCache.set(activePath.id, { baseD, treatments: [...treatmentsRef.current] })

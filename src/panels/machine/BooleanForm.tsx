@@ -7,7 +7,6 @@ import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
-import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffected } from '../../cam/regenerate'
 import { applyBooleanOp, type BooleanOpType } from '../../tools/booleanOps'
 import { nextPathColor } from '../../importers/svgImporter'
@@ -17,13 +16,11 @@ interface BooleanFormState {
   opType: BooleanOpType
 }
 
-// Edit mode (timeline boolean-chip click): rework an EXISTING boolean in
-// place — same sources, new op type — amending the chip instead of creating
-// a second result.
+// Edit mode (boolean-chip click): rework an EXISTING boolean in place — same
+// sources, new op type — rather than creating a second result. The result path
+// carries which boolean it was and what it was made from, so that is what is
+// read and restamped.
 export interface BooleanEditCtx {
-  eventId: string
-  opType: BooleanOpType
-  sourceIds: string[]
   resultId: string
 }
 
@@ -34,18 +31,22 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
   const selPaths = useSelectedPathsInOrder()
   const { load, save } = useFormDefaultsStore()
 
+  const resultPath = editCtx ? paths.find((p) => p.id === editCtx.resultId) : undefined
+  const def = resultPath?.definition?.kind === 'boolean' ? resultPath.definition : null
+
   const [form, setForm] = useState<BooleanFormState>(() => {
-    if (editCtx) return { opType: editCtx.opType }
+    if (def) return { opType: def.op }
+    if (editCtx) return { opType: 'union' }
     const saved = load('boolean') as { opType?: BooleanOpType } | null
     return { opType: saved?.opType ?? 'union' }
   })
   const [error, setError] = useState<string | null>(null)
 
-  const sourcePaths = editCtx
-    ? editCtx.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
-    : selPaths
+  const sourcePaths = def
+    ? def.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
+    : editCtx ? [] : selPaths
   const canApply = sourcePaths.length >= 2
-  const resultExists = !editCtx || paths.some((p) => p.id === editCtx.resultId)
+  const resultExists = !editCtx || !!resultPath
 
   function handleApply() {
     setError(null)
@@ -54,13 +55,14 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
     if (!result.resultD) { setError('Result is empty'); return }
     const label = form.opType.charAt(0).toUpperCase() + form.opType.slice(1)
 
-    if (editCtx) {
-      // Rework in place: rewrite the live result path and amend the chip —
-      // no new event, no new chip.
-      const resultName = `${label} result`
-      usePathsStore.getState().rewritePathRaw(editCtx.resultId, { d: result.resultD, name: resultName })
-      useTimelineStore.getState().amendBooleanEvent(editCtx.eventId, {
-        boolOp: form.opType, resultD: result.resultD, resultName,
+    if (editCtx && def) {
+      // Rework in place: rewrite the live result path and restamp which boolean
+      // it now is — no new event, no new chip.
+      usePathsStore.getState().rewriteGeneratedRaw({
+        updates: [{
+          id: editCtx.resultId, d: result.resultD, name: `${label} result`,
+          definition: { ...def, op: form.opType },
+        }],
       })
       regenerateAffected(editCtx.resultId)
       useUIStore.getState().showStatus(`Boolean reworked as ${label}`, 'info')
@@ -74,12 +76,15 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
       d: result.resultD,
       visible: true,
       color: nextPathColor(),
+      definition: {
+        id: uid('def'), kind: 'boolean' as const,
+        op: form.opType, sourceIds: sourcePaths.map((p) => p.id),
+      },
     }
     // ONE atomic edit (= one timeline chip, one undo step): add the result,
     // soft-hide the source paths, select the result.
     applyPathEdit({
       gesture: 'boolean',
-      boolOp: form.opType,
       add: [newPath],
       updates: sourcePaths.map((p) => ({ id: p.id, d: p.d, hidden: true })),
       selectAfter: [newPath.id],

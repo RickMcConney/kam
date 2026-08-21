@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Group, Path } from 'react-konva'
 import type { Viewport } from '../CanvasStage'
-import { usePathsStore } from '../../store/pathsStore'
+import { usePathsStore, clockSpecOf } from '../../store/pathsStore'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { generateGearParts, gearMateParts } from '../../shapes/gearGenerator'
 import { generateEscapementParts, escapementDims, anchorOffset } from '../../shapes/escapementGenerator'
 import { generatePendulumParts } from '../../shapes/pendulumGenerator'
-import { useTimelineStore } from '../../timeline/timelineStore'
 import { clockAssemblyFromPaths, clockPendulumFromPaths, clockPlate, clockPose, clockRoot } from '../../shapes/clockTrain'
 
 /**
@@ -70,18 +69,10 @@ export function ClockAnimLayer({ viewport }: Props) {
   // On no arbor — it hangs from the pallet arbor — so it is fetched separately
   // and never enters the mesh chain.
   const pendulum = useMemo(() => clockId ? clockPendulumFromPaths(paths, clockId) : null, [paths, clockId])
-  // The arrangement lives on the clock's own chip, which is where the linkage
-  // editor writes it. Subscribed rather than read once so an arrangement
-  // committed while this is running takes effect.
-  const events = useTimelineStore((s) => s.events)
-  const linkAngles = useMemo(() => {
-    if (!clockId) return undefined
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]
-      if (e.kind === 'clock.design' && e.clockId === clockId) return e.spec.linkAngles
-    }
-    return undefined
-  }, [events, clockId])
+  // The arrangement lives on the clock's parts, which is where the linkage
+  // editor writes it. `paths` is already subscribed, so an arrangement committed
+  // while this is running takes effect.
+  const linkAngles = useMemo(() => clockSpecOf(paths, clockId)?.linkAngles, [paths, clockId])
 
   const built = useMemo(() => {
     if (!assembly || assembly.length < 2) return null

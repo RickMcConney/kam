@@ -5,14 +5,16 @@ import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useTabStore } from '../store/tabStore'
-import { useTimelineStore, nearestCheckpoint } from '../timeline/timelineStore'
+import { useTimelineStore } from '../timeline/timelineStore'
 import { sanitizeFileName } from './filename'
 
-// v2: adds the `timeline` block (event log + cursor + genesis checkpoint) so
-// the operation history survives save/load. The materialized paths/operations/
-// tabs snapshot is still written — v1-era readers and the loader's fallback
-// path (corrupt/newer timeline) use it.
-const PROJECT_VERSION = 2
+// v3: the `timeline` block is GONE. It held an event log so undo history could
+// survive save/load, back when undo replayed that log; undo is a snapshot stack
+// of live objects now, which no file can hold, so history is session-scoped and
+// the block had nothing left to do but bloat the file. What it also carried —
+// the parameters generated paths could be re-edited from — moved onto the paths
+// themselves, and `io/migrateProvenance.ts` hoists it out of v2 files on load.
+const PROJECT_VERSION = 3
 
 export function buildProjectData() {
   const { name } = useProjectStore.getState()
@@ -33,7 +35,6 @@ export function buildProjectData() {
   }))
   const { profiles, activeId } = usePostProcessorStore.getState()
   const { tabs } = useTabStore.getState()
-  const { events, cursor } = useTimelineStore.getState()
 
   return {
     version: PROJECT_VERSION,
@@ -49,11 +50,6 @@ export function buildProjectData() {
     operations,
     postProcessors: { profiles, activeId },
     tabs,
-    timeline: {
-      events,
-      cursor,
-      genesis: nearestCheckpoint(0).state,
-    },
   }
 }
 

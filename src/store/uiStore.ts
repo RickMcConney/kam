@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { DEFAULT_SHAPE_CONFIG, type ShapeToolConfig, type ShapeType } from '../shapes/shapeGenerators'
 import type { PenCurveType } from '../cam/penCurves'
+import type { ClockSpec } from '../shapes/clockTrain'
 
 
 export type SidebarTab = 'draw' | 'paths'
@@ -86,6 +87,12 @@ interface UIState {
   // until it is closed, which is the point — the numbers are what a parameter is
   // being stepped against, so they have to be legible WHILE it is stepped.
   escapementInfoOpen: boolean
+  // The clock readout window, and the spec it reads. Unlike the escapement's —
+  // which finds its subject in the selection or the shape-tool config, both of
+  // them store state — a clock being designed lives in ClockPanel's own form
+  // state, so the panel publishes it here for the window to follow live.
+  clockInfoOpen: boolean
+  clockDraft: ClockSpec | null
   timelineOpen: boolean
   // Which strip the bottom bar shows: history (timeline) or the ordered program
   // (operations). They are different orderings of different things — see OperationsPanel.
@@ -94,8 +101,10 @@ interface UIState {
   // when an op chip is clicked, consumed + cleared by MachinePanel).
   requestEditOpId: string | null
   // Ask MachinePanel to open a generator form (boolean/offset/pattern) in edit
-  // mode for a timeline event (by event id — seqs shift under inserts/removals).
-  requestEditEventId: string | null
+  // mode for a GENERATED PATH — the object carries the parameters (see
+  // ImportedPath.definition), so the form is opened on the thing rather than on
+  // the event that once made it.
+  requestEditPathId: string | null
   // Ask MachinePanel to open a specific form (timeline tabs/corner chips —
   // those forms edit the current selection, which the chip click sets).
   requestMachineForm: string | null
@@ -128,12 +137,23 @@ interface UIState {
   setClockPanelOpen: (open: boolean) => void
   setClockEdit: (clockId: string | null) => void
   setSetupPanelOpen: (open: boolean) => void
+  // Close every draw-tab panel, leaving the properties panel for the selection.
+  // The four booleans below are really ONE mode — ClockPanel overrides the whole
+  // draw tab and suppresses the properties panel (see Sidebar's TabContent) — so
+  // a caller switching to "just show me what is selected" has to clear all of
+  // them. Doing that by hand is how the clock panel got left open: clicking the
+  // clock chip opened it, and clicking any other chip closed setup and shapes
+  // but not clock, so the sidebar went on showing the designer and neither the
+  // properties panel nor a machine form could appear.
+  closeDrawPanels: () => void
   setHelpOpen: (open: boolean) => void
   setEscapementInfoOpen: (open: boolean) => void
+  setClockInfoOpen: (open: boolean) => void
+  setClockDraft: (spec: ClockSpec | null) => void
   setTimelineOpen: (open: boolean) => void
   setBottomTab: (tab: 'timeline' | 'operations') => void
   setRequestEditOpId: (id: string | null) => void
-  setRequestEditEventId: (id: string | null) => void
+  setRequestEditPathId: (id: string | null) => void
   setTransformEditEventId: (id: string | null) => void
   setRequestMachineForm: (form: string | null) => void
   flashProperties: () => void
@@ -143,6 +163,15 @@ interface UIState {
   setSnap: (enabled: boolean) => void
   setActiveTool: (tool: ActiveTool) => void
   setShapeToolConfig: (config: ShapeToolConfig) => void
+  // Drag out a shape from its CENTRE rather than corner-to-corner, and the
+  // DEFAULT for the `fromCenter` each shape drawn from here is stamped with. A
+  // tool mode rather than per-shape config: it changes what a drag MEANS, and it
+  // means the same thing for every shape — so it is shown with the active shape
+  // tool's own defaults, never on its own when no shape tool is in use.
+  // Persisted, like the other drawing preferences — someone laying out
+  // concentric work wants it to still be on tomorrow.
+  shapeFromCenter: boolean
+  setShapeFromCenter: (v: boolean) => void
   setLastShapeType: (type: ShapeType) => void
   addDrillPoint: (pt: { x: number; y: number }) => void
   setDrillPoints: (pts: { x: number; y: number }[]) => void
@@ -193,10 +222,12 @@ export const useUIStore = create<UIState>()(
   clockLinkPathId: null,
   helpOpen: false,
   escapementInfoOpen: false,
+  clockInfoOpen: false,
+  clockDraft: null,
   timelineOpen: true,
   bottomTab: 'timeline' as const,
   requestEditOpId: null,
-  requestEditEventId: null,
+  requestEditPathId: null,
   requestMachineForm: null,
   propertiesFlashSeq: 0,
   transformEditEventId: null,
@@ -219,12 +250,19 @@ export const useUIStore = create<UIState>()(
   setClockPanelOpen: (open) => set({ clockPanelOpen: open, ...(open ? {} : { clockEditId: null }) }),
   setClockEdit: (clockId) => set({ clockEditId: clockId }),
   setSetupPanelOpen: (open) => set({ setupPanelOpen: open }),
+  closeDrawPanels: () => set({
+    setupPanelOpen: false, shapesPanelOpen: false, machineFormActive: false,
+    clockPanelOpen: false, clockEditId: null,
+    clockInfoOpen: false, clockDraft: null,
+  }),
   setHelpOpen: (open) => set({ helpOpen: open }),
   setEscapementInfoOpen: (open) => set({ escapementInfoOpen: open }),
+  setClockInfoOpen: (open) => set({ clockInfoOpen: open }),
+  setClockDraft: (spec) => set({ clockDraft: spec }),
   setTimelineOpen: (open) => set({ timelineOpen: open }),
   setBottomTab: (tab) => set({ bottomTab: tab }),
   setRequestEditOpId: (id) => set({ requestEditOpId: id }),
-  setRequestEditEventId: (id) => set({ requestEditEventId: id }),
+  setRequestEditPathId: (id) => set({ requestEditPathId: id }),
   setTransformEditEventId: (id) => set({ transformEditEventId: id }),
   setRequestMachineForm: (form) => set({ requestMachineForm: form }),
   flashProperties: () => set((s) => ({ propertiesFlashSeq: s.propertiesFlashSeq + 1 })),
@@ -237,6 +275,8 @@ export const useUIStore = create<UIState>()(
   setMeshAnim: (id) => set({ meshAnimPathId: id, clockAnimPathId: null, clockLinkPathId: null }),
   setClockAnim: (id) => set({ clockAnimPathId: id, meshAnimPathId: null, clockLinkPathId: null }),
   setClockLink: (id) => set({ clockLinkPathId: id, meshAnimPathId: null, clockAnimPathId: null }),
+  shapeFromCenter: false,
+  setShapeFromCenter: (v) => set({ shapeFromCenter: v }),
   setLastShapeType: (type) => set({ lastShapeType: type }),
   addDrillPoint: (pt) => set((s) => ({ pendingDrillPoints: [...s.pendingDrillPoints, pt] })),
   setDrillPoints: (pts) => set({ pendingDrillPoints: pts }),
@@ -266,7 +306,7 @@ export const useUIStore = create<UIState>()(
       // functions (the node-edit undo/redo callbacks) that must not be serialised.
       // A preference the user sets explicitly belongs here; darkMode was missing, so
       // every reload snapped back to the `darkMode: true` default.
-      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen, bottomTab: s.bottomTab, darkMode: s.darkMode }),
+      partialize: (s) => ({ penCurveType: s.penCurveType, lastShapeType: s.lastShapeType, timelineOpen: s.timelineOpen, bottomTab: s.bottomTab, darkMode: s.darkMode, shapeFromCenter: s.shapeFromCenter }),
     }
   )
 )

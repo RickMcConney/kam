@@ -10,7 +10,7 @@ import type Konva from 'konva'
 import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
-import { usePathsStore, useSelectedPaths } from '../store/pathsStore'
+import { usePathsStore, clockSpecOf, setClockSpec, useSelectedPaths } from '../store/pathsStore'
 import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
@@ -49,6 +49,8 @@ import {
   shapeParamsFromDrag,
   shapeParamsFromConfig,
   shapeDisplayName,
+  isScaleLocked,
+  SCALE_LOCKED_SHAPES,
   type ShapeType,
 } from '../shapes/shapeGenerators'
 import type { PenNode } from '../store/uiStore'
@@ -363,6 +365,22 @@ export default function CanvasStage() {
   const selectionBBox = useMemo(() => getMultiBBox(selectedPaths.map((p) => p.d)), [selectedPaths])
   const selectionBBoxRef = useRef<BBox | null>(null)
   selectionBBoxRef.current = selectionBBox
+  // A selection holding any mechanism whose size is set by its own parameters
+  // gets no resize handles — see SCALE_LOCKED_SHAPES. Any, not every: dragging
+  // a corner scales the WHOLE selection, so one gear in it is enough to make
+  // the gesture wrong.
+  const selectionScaleLocked = useMemo(
+    () => selectedPaths.some((p) => isScaleLocked(p.shapeParams)),
+    [selectedPaths],
+  )
+  const selectionScaleLockedRef = useRef(false)
+  selectionScaleLockedRef.current = selectionScaleLocked
+  const shapeFromCenterPref = useUIStore((s) => s.shapeFromCenter)
+  // ANY flagged path in the selection is enough: scaling the group about its
+  // middle is the only reading of "centred" that a mixed selection has.
+  const centreResize = useMemo(() => selectedPaths.some((p) => p.fromCenter), [selectedPaths])
+  const centreResizeRef = useRef(false)
+  centreResizeRef.current = centreResize
   const pendingDrillPoints = useUIStore((s) => s.pendingDrillPoints)
   const penNodes = useUIStore((s) => s.penNodes)
   const penCurveType = useUIStore((s) => s.penCurveType)
@@ -431,21 +449,15 @@ export default function CanvasStage() {
     setLinkAngles(next)
   }, [linkFrame, linkAnglesRef, setLinkAngles])
 
-  /** Write the arrangement onto the clock's own chip. No geometry moves — the
-   *  parts are still cut flat where they lie — so there is nothing to regenerate
-   *  and nothing to record: this AMENDS the chip that designed the clock. */
+  /** Write the arrangement onto the clock's parts, which is where its spec
+   *  lives. No geometry moves — the parts are still cut flat where they lie — so
+   *  there is nothing to regenerate and nothing to record. */
   const commitClockLink = useCallback(() => {
     const f = linkFrame()
     const angles = linkAnglesRef.current
     if (!f || !angles) return
-    const tl = useTimelineStore.getState()
-    for (let i = tl.events.length - 1; i >= 0; i--) {
-      const e = tl.events[i]
-      if (e.kind === 'clock.design' && e.clockId === f.clockId) {
-        tl.amendClockSpec(f.clockId, { ...e.spec, linkAngles: angles })
-        return
-      }
-    }
+    const spec = clockSpecOf(usePathsStore.getState().paths, f.clockId)
+    if (spec) setClockSpec(f.clockId, { ...spec, linkAngles: angles })
   }, [linkFrame, linkAnglesRef])
 
   // Entering linkage mode takes a working copy of the clock's committed angles;
@@ -453,13 +465,9 @@ export default function CanvasStage() {
   // field arranges from the lean it was drawn with rather than from nothing.
   useEffect(() => {
     if (!clockLinkPathId) { setLinkAngles(null); setHoverLinkNode(null); return }
-    const clockId = usePathsStore.getState().paths.find((p) => p.id === clockLinkPathId)?.clockId
-    const evs = useTimelineStore.getState().events
-    let stored: number[] | undefined
-    for (let i = evs.length - 1; i >= 0; i--) {
-      const e = evs[i]
-      if (e.kind === 'clock.design' && e.clockId === clockId) { stored = e.spec.linkAngles; break }
-    }
+    const allPaths = usePathsStore.getState().paths
+    const clockId = allPaths.find((p) => p.id === clockLinkPathId)?.clockId
+    const stored = clockSpecOf(allPaths, clockId)?.linkAngles
     const n = defaultLinkAngles().length
     setLinkAngles(Array.from({ length: n }, (_, i) => (linkAngleAt(stored, i) * 180) / Math.PI))
   }, [clockLinkPathId, setLinkAngles])
@@ -959,6 +967,11 @@ export default function CanvasStage() {
     const { selectedIds: ids } = usePathsStore.getState()
     const bbox = selectionBBoxRef.current
     if (!bbox) return
+    // Belt-and-braces: the handles are not drawn for a scale-locked selection,
+    // so this is unreachable through the UI — but a scale is one of the
+    // gestures that silently changes what a mechanism IS, so it is refused
+    // here as well rather than trusted to stay unreachable.
+    if (selectionScaleLockedRef.current) return
 
     const { minX, minY, maxX, maxY, cx, cy } = bbox
     const midX = cx, midY = cy
@@ -986,7 +999,18 @@ export default function CanvasStage() {
       type: 'resize',
       pathIds: ids,
       handle,
-      anchor: anchorMap[handle],
+      // The whole scale is measured from the anchor (see onMoveResize), so
+      // "from centre" is just a different anchor — corner handles, edge handles
+      // and Alt-skew all follow with no other change. Off, the opposite corner
+      // stays put; on, the shape grows both ways about its middle, which keeps a
+      // resized ring concentric with what it was cut around.
+      //
+      // It is the OBJECT's own parameter that decides (see ShapeParams.fromCenter),
+      // not a tool setting, so a shape drawn that way goes on resizing that way
+      // and it can be changed from the shape's own panel. ANY flagged path in the
+      // selection is enough: scaling the group about its middle is the only
+      // reading of "centred" that a mixed selection has.
+      anchor: centreResizeRef.current ? { x: cx, y: cy } : anchorMap[handle],
       initHandle: handlePosMap[handle],
       initBbox: bbox,
       shiftHeld: e.evt.shiftKey,
@@ -1227,9 +1251,17 @@ export default function CanvasStage() {
     modeRef.current = { ...m, currentCNC: snappedCNC }
 
     if (didDragRef.current) {
-      const { activeTool, shapeToolConfig } = useUIStore.getState()
+      const { activeTool, shapeToolConfig, shapeFromCenter } = useUIStore.getState()
       if (activeTool !== 'select') {
-        const params = shapeParamsFromDrag(activeTool as ShapeType, m.startCNC, snappedCNC, shapeToolConfig)
+        const type = activeTool as ShapeType
+        // A mechanism sized by its own parameters ignores the drag's SIZE but
+        // not its destination: it previews at full size under the cursor and
+        // lands where the drag is released. Sizing it by how far the cursor
+        // travelled would be the same nonsense the resize handles refuse (see
+        // SCALE_LOCKED_SHAPES): a gear dragged to m4.37 meshes with nothing.
+        const params = SCALE_LOCKED_SHAPES.has(type)
+          ? shapeParamsFromConfig(type, snappedCNC.x, snappedCNC.y, shapeToolConfig)
+          : shapeParamsFromDrag(type, m.startCNC, snappedCNC, shapeToolConfig, shapeFromCenter)
         setLiveShapeD(generateShapeD(params))
       }
     }
@@ -1581,12 +1613,16 @@ export default function CanvasStage() {
       setLiveShapeD(null)
       setMode2({ type: 'idle' })
 
-      const { activeTool, shapeToolConfig } = useUIStore.getState()
+      const { activeTool, shapeToolConfig, shapeFromCenter } = useUIStore.getState()
       if (activeTool !== 'select') {
         const shapeType = activeTool as ShapeType
         const session = shapeDragSessionRef.current
         if (session.tool !== activeTool) { session.tool = activeTool; session.dragged = false }
-        const dragged = didDragRef.current
+        // For a scale-locked shape a drag IS a click: there is no size to drag
+        // out, so it places one at the mousedown point and exits to select, the
+        // same as a click does. Nothing here special-cases it beyond this line —
+        // the placement and the drag-to-repeat session both follow.
+        const dragged = didDragRef.current && !SCALE_LOCKED_SHAPES.has(shapeType)
 
         // A click (no drag) after the user has already dragged out at least one
         // shape this session means "done" — exit to select without adding a shape.
@@ -1596,9 +1632,14 @@ export default function CanvasStage() {
           return
         }
 
+        // Where it lands: normally the mousedown point, but a scale-locked shape
+        // follows the cursor and drops where it was released — the drag chooses
+        // its position even though it cannot choose its size. For a plain click
+        // the two are the same point (currentCNC starts as startCNC).
+        const at = SCALE_LOCKED_SHAPES.has(shapeType) ? m.currentCNC : m.startCNC
         const params = dragged
-          ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig)
-          : shapeParamsFromConfig(shapeType, m.startCNC.x, m.startCNC.y, shapeToolConfig)
+          ? shapeParamsFromDrag(shapeType, m.startCNC, m.currentCNC, shapeToolConfig, shapeFromCenter)
+          : shapeParamsFromConfig(shapeType, at.x, at.y, shapeToolConfig)
 
         const id = uid('shape')
         const { addPaths: add, selectPath: sel, setSelectedIds } = usePathsStore.getState()
@@ -1620,12 +1661,18 @@ export default function CanvasStage() {
             id: uid('shape'), name: `${name} ${pt.label}`, d: pt.d,
             visible: true, color, shapeParams: params, shapePart: pt.part,
             groupId, groupName: name,
+            // The tool's setting is the DEFAULT for what is drawn from it; from
+            // here on it is the object's own, changed from its panel.
+            ...(shapeFromCenter ? { fromCenter: true } : {}),
           }))
           add(made, { source: 'shape' })
           setSelectedIds(made.map((p) => p.id))
           regenId = made[0].id
         } else {
-          add([{ id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params }], { source: shapeType === 'text' ? 'text' : 'shape' })
+          add([{
+            id, name: shapeDisplayName(shapeType), d, visible: true, color: nextPathColor(), shapeParams: params,
+            ...(shapeFromCenter ? { fromCenter: true } : {}),
+          }], { source: shapeType === 'text' ? 'text' : 'shape' })
           sel(id)
         }
 
@@ -2032,6 +2079,7 @@ export default function CanvasStage() {
               liveTransform={liveTransform}
               onResizeHandleDown={handleResizeHandleDown}
               onRotateHandleDown={handleRotateHandleDown}
+              scaleLocked={selectionScaleLocked}
             />
           )}
         </Layer>
@@ -2090,7 +2138,9 @@ export default function CanvasStage() {
       )}
       {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
-          Drawing {shapeDisplayName(activeTool as ShapeType)} — click to place, drag to size, Esc to cancel
+          Drawing {shapeDisplayName(activeTool as ShapeType)} — {SCALE_LOCKED_SHAPES.has(activeTool as ShapeType)
+            ? 'click to place at its designed size, Esc to cancel'
+            : `click to place, drag to size${shapeFromCenterPref ? ' from the centre' : ''}, Esc to cancel`}
         </div>
       )}
       {cornerPickPathId && !nodeEditPathId && (
@@ -2100,7 +2150,7 @@ export default function CanvasStage() {
       )}
       {activeTool === 'select' && selectedIds.length > 0 && !nodeEditPathId && !cornerPickPathId && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-gray-700/80 text-white text-body px-3 py-1 rounded-full pointer-events-none">
-          Drag to move · corner handles to scale · rotate handle to rotate · Alt+corner to skew
+          Drag to move · corner handles to scale{centreResize ? ' about the centre' : ''} · rotate handle to rotate · Alt+corner to skew
         </div>
       )}
 

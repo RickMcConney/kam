@@ -215,19 +215,13 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   // Subscribed rather than read once, so the escapement's Animate button knows
   // to say Stop. Hooks cannot live inside the switch below.
   const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
-  // Which clock this wheel belongs to, if any, and which one is running. Both
-  // selectors return a PRIMITIVE deliberately — a fresh object from a zustand
-  // selector compares unequal every time and re-renders this panel on every
-  // store write.
-  const clockAnimPathId = useUIStore((s) => s.clockAnimPathId)
-  const clockId = usePathsStore((s) => s.paths.find((p) => p.id === id)?.clockId ?? null)
-  // Keyed on the CLOCK, not the path: selecting a different wheel of a running
-  // clock must still offer Stop rather than a second Animate.
-  const animClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockAnimPathId)?.clockId ?? null)
-  const clockRunning = !!clockId && animClockId === clockId
-  const clockLinkPathId = useUIStore((s) => s.clockLinkPathId)
-  const linkClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockLinkPathId)?.clockId ?? null)
-  const clockArranging = !!clockId && linkClockId === clockId
+  // Running the assembled clock and folding its linkage used to be offered here,
+  // on every wheel — but both are questions about the WHOLE clock, not about the
+  // wheel that happens to be selected, so five wheels each showed the same pair
+  // of buttons and they read as five different animations. They live in
+  // ClockPanel now, reached from the clock's own chip. The per-shape "Animate in
+  // mesh" below stays: that IS a question about this wheel, against its own
+  // lantern or its own anchor.
   // A multi-part shape (a gear) regenerates every path in its group, so every
   // one of their operations is stale — not just this path's. Read the paths back
   // AFTER the edit so a part that just appeared is included.
@@ -245,35 +239,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   const updateLive = (newParams: ShapeParams) => updateShapeParams(id, newParams)
   const u = units
   const ox = orgWorld.x, oy = orgWorld.y
-
-  // Offered on any wheel of a clock: the five parts are cut flat and laid out
-  // clear of each other, so whether the TRAIN runs is the one thing none of
-  // their drawings shows. The per-shape "Animate in mesh" below it answers a
-  // narrower question (this wheel against its own pinion) and stays; the two are
-  // mutually exclusive, which the store setters enforce.
-  const clockAnimBtn = clockId ? (<>
-    {/* The arbor spacings are forced by the meshes but their DIRECTIONS are the
-        plate designer's, so this is where a train gets folded to fit a case.
-        Rooted at the escapement, which never moves. */}
-    <button
-      type="button"
-      onClick={() => useUIStore.getState().setClockLink(clockArranging ? null : id)}
-      className={`col-span-2 rounded px-2 py-1 text-label ${clockArranging
-        ? 'bg-red-500/80 hover:bg-red-500 text-white'
-        : 'bg-amber-600/80 hover:bg-amber-600 text-white'}`}
-    >
-      {clockArranging ? 'Done arranging' : 'Arrange linkage'}
-    </button>
-    <button
-      type="button"
-      onClick={() => useUIStore.getState().setClockAnim(clockRunning ? null : id)}
-      className={`col-span-2 rounded px-2 py-1 text-label ${clockRunning
-        ? 'bg-red-500/80 hover:bg-red-500 text-white'
-        : 'bg-emerald-600/80 hover:bg-emerald-600 text-white'}`}
-    >
-      {clockRunning ? 'Stop clock' : 'Animate whole clock'}
-    </button>
-  </>) : null
 
   switch (params.type) {
     case 'rectangle':
@@ -553,7 +518,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
             thing the drawing cannot show is whether they run together. This puts
             the mate at the real centre distance and turns the pair. A preview
             only — nothing is written. */}
-        {clockAnimBtn}
         <button
           type="button"
           onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
@@ -609,7 +573,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         {/* The parts are drawn clear of each other, so the one thing the drawing
             cannot show is whether they bind. This puts them at the real centre
             distance and runs them. A preview only — nothing is written. */}
-        {clockAnimBtn}
         <button
           type="button"
           onClick={() => useUIStore.getState().setMeshAnim(running ? null : id)}
@@ -643,7 +606,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           {dm.boreTooBig && <><br /><span className="text-yellow-500">Hole clamped to leave a shoulder on the rod.</span></>}
           {dm.bobTooSmall && <><br /><span className="text-yellow-500">Bob is no wider than the rod.</span></>}
         </div>
-        {clockAnimBtn}
       </>)
     }
     case 'cam': {
@@ -867,6 +829,34 @@ export default function PropertiesPanel() {
     }
   }
 
+  // How this object grows — outward from its middle, or from a fixed corner.
+  // Reads the PATH, not its shapeParams: a rotate, skew or mirror drops those
+  // entirely, and the preference has to outlive them or it could never be set on
+  // anything that had been turned. That also lets an imported outline carry it.
+  //
+  // Rendered in BOTH panel bodies, because a canvas transform switches this panel
+  // to the transform-recipe editor (CanvasStage sets transformEditEventId after
+  // every drag) — and a setting whose whole subject is what the NEXT resize will
+  // do is useless if it disappears the moment you resize.
+  //
+  // Over the whole selection: ticked when they ALL are, and toggling sets them
+  // all, which matches how the resize itself treats a group.
+  const fromCentreRow = selectedPaths.length > 0 ? (
+    <label
+      className="col-span-2 flex items-center gap-1.5 cursor-pointer pt-1"
+      title="Resize about the middle instead of holding the opposite corner still"
+    >
+      <input
+        type="checkbox"
+        className="accent-blue-500 w-3.5 h-3.5"
+        checked={selectedPaths.every((p) => p.fromCenter)}
+        onChange={(e) => usePathsStore.getState().batchUpdatePaths(
+          selectedPaths.map((p) => ({ id: p.id, d: p.d, fromCenter: e.target.checked })))}
+      />
+      <span className="text-label text-gray-500 dark:text-neutral-400">Resize from centre</span>
+    </label>
+  ) : null
+
   if (activeTransformEvent) {
     const eventId = activeTransformEvent.id
     const rawSteps = activeTransformEvent.updates[0].transforms!
@@ -942,6 +932,7 @@ export default function PropertiesPanel() {
             <span className="inline-block rotate-90">↔</span> Mirror Y
           </button>
         </div>
+        {fromCentreRow && <div className="grid grid-cols-2">{fromCentreRow}</div>}
       </div>
     )
   }
@@ -1024,6 +1015,11 @@ export default function PropertiesPanel() {
           </button>
         )
       })()}
+
+      {/* Last, matching where the transform-recipe body puts it — a control that
+          jumped position when the panel swapped bodies read as a different
+          control. */}
+      {fromCentreRow && <div className="grid grid-cols-2">{fromCentreRow}</div>}
     </div>
   )
 }

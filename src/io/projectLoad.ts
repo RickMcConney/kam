@@ -11,7 +11,7 @@ import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
-import type { Checkpoint, TimelineEvent } from '../timeline/events'
+import { migrateProvenance } from './migrateProvenance'
 import { clearFileHandles } from './fileSystem'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
@@ -51,14 +51,11 @@ export interface ProjectData {
     activeId: string
   }
   tabs?: Tab[]
-  // v2: operation timeline. paths/operations/tabs above are the materialized
-  // state at timeline.cursor — the loader installs both, so undo history
-  // survives save/load. Absent or invalid → snapshot-only fallback.
-  timeline?: {
-    events: TimelineEvent[]
-    cursor: number
-    genesis: Checkpoint
-  }
+  // v2 ONLY, and never written again: the operation timeline. It is not restored
+  // — undo is a snapshot stack now and history starts at the load — but it is
+  // still READ once, to hoist the provenance of generated paths onto the paths
+  // themselves. See io/migrateProvenance.ts.
+  timeline?: { events?: unknown }
 }
 
 // Exported so the toolpath audit can load a saved .fkam through the real code path.
@@ -99,7 +96,11 @@ export function loadProject(data: ProjectData, fileName?: string) {
   if (Array.isArray(data.tools) && data.tools.length > 0) {
     useToolStore.getState().setTools(data.tools)
   }
-  usePathsStore.getState().replacePaths(data.paths ?? [])
+  // v2 and earlier kept a generated path's parameters in the event log rather
+  // than on the path. Hoist them before the paths go in, so an old project opens
+  // with its offsets, patterns, booleans and clocks still editable.
+  const migrated = migrateProvenance(data.paths ?? [], data.timeline?.events)
+  usePathsStore.getState().replacePaths(migrated.paths)
   // The offset-ring spiral pocket strategy was dropped in 2026-07; rewrite the stored id so
   // the operation form shows a valid selection instead of an empty one.
   const operations = (data.operations ?? []).map(op => {
@@ -121,16 +122,15 @@ export function loadProject(data: ProjectData, fileName?: string) {
   useTabStore.getState().replaceTabs(data.tabs ?? [])
 
   useProjectStore.getState().markClean()
-  // v2 files carry their event log: install it (stores already hold the state
-  // at cursor via the snapshot above). Anything invalid — v1 file, corrupt log,
-  // unknown event kinds from a newer version — falls back to a fresh genesis
-  // at the loaded snapshot; the project still opens, only its history is gone.
-  const tl = data.timeline
-  const timelineRestored = !!tl &&
-    useTimelineStore.getState().loadTimeline(tl.genesis, tl.events, tl.cursor)
-  if (!timelineRestored) {
-    useTimelineStore.getState().resetToCurrentState()
-    if (tl) useUIStore.getState().showStatus('Project timeline could not be restored — history starts from the loaded state', 'warn')
+  // History is session-scoped: a snapshot stack holds live objects, which no file
+  // can carry, so undo starts here rather than unwinding into the file's past.
+  useTimelineStore.getState().resetToCurrentState()
+  if (migrated.stamped > 0 || migrated.clocks > 0) {
+    const bits = [
+      migrated.stamped > 0 ? `${migrated.stamped} generated path${migrated.stamped > 1 ? 's' : ''}` : '',
+      migrated.clocks > 0 ? `${migrated.clocks} clock${migrated.clocks > 1 ? 's' : ''}` : '',
+    ].filter(Boolean).join(' and ')
+    useUIStore.getState().showStatus(`Upgraded an older project — ${bits} can be edited from their chips again.`, 'info')
   }
   // Drop the remembered G-code target so a later export doesn't overwrite the previous
   // project's file. (Project saves always prompt, so they need no such reset.)
@@ -145,10 +145,13 @@ export function newProject() {
   useSimStore.getState().clearSim()
   useUIStore.getState().setWorkspaceTab('2d')
   useUIStore.getState().setSidebarTab('draw')
-  useUIStore.getState().setShapesPanelOpen(false)
-  useUIStore.getState().setMachineFormActive(false)
+  // Every panel goes, not a hand-written list of them: the clock designer was
+  // missing from that list and stayed open over the empty project, still holding
+  // the spec of a clock that no longer existed.
+  useUIStore.getState().closeDrawPanels()
   useUIStore.getState().setTabsFormActive(false)
   useUIStore.getState().setHelpOpen(false)
+  useUIStore.getState().setEscapementInfoOpen(false)
   usePathsStore.getState().replacePaths([])
   useToolpathStore.getState().replaceOperations([])
   useTabStore.getState().replaceTabs([])

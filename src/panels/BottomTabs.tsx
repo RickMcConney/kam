@@ -1,7 +1,8 @@
 import { useUIStore } from '../store/uiStore'
 
 // Switches the bottom bar between the two strips. They look alike on purpose but are
-// NOT the same list: Timeline is history (what I did, in the order I did it), Operations
+// NOT the same list: Objects is the DOCUMENT (every path and operation, one chip each,
+// click one to edit what made it), Operations
 // is the program (what the machine will do, in the order it will do it). Reordering an
 // operation changes the second without moving anything in the first.
 export function BottomTabs() {
@@ -27,7 +28,7 @@ export function BottomTabs() {
 
   return (
     <div className="flex items-center gap-0.5 p-0.5 rounded bg-gray-300 dark:bg-neutral-900 flex-shrink-0">
-      {tab('timeline', 'Timeline', 'History — every edit, in the order it happened')}
+      {tab('timeline', 'Objects', 'Everything in the document — click a chip to edit it')}
       {tab('operations', 'Ops', 'Program — every toolpath, in the order the machine runs it')}
     </div>
   )

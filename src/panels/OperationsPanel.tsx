@@ -336,8 +336,7 @@ export default function OperationsPanel() {
         if (ids.length > 0) usePathsStore.getState().setSelectedIds(ids)
       }
       const ui = useUIStore.getState()
-      ui.setSetupPanelOpen(false)
-      ui.setShapesPanelOpen(false)
+      ui.closeDrawPanels()
       ui.setSidebarTab('draw')
       ui.setRequestEditOpId(d.ids[0])
     }

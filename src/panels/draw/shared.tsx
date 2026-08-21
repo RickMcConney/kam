@@ -70,9 +70,9 @@ export function Select<T extends string>({ label, value, options, onChange }: {
   )
 }
 
-export function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+export function Check({ label, checked, onChange, title }: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
   return (
-    <label className="flex items-center gap-1.5 cursor-pointer">
+    <label className="flex items-center gap-1.5 cursor-pointer" title={title}>
       <span className={labelCls}>{label}</span>
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
         className="accent-blue-500 w-3.5 h-3.5" />

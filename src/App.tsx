@@ -11,6 +11,7 @@ import { openProjectFile, newProject } from './io/projectLoad'
 import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
 import EscapementInfoPanel from './panels/EscapementInfoPanel'
+import ClockInfoPanel from './panels/ClockInfoPanel'
 import { useWorkpieceStore } from './store/workpieceStore'
 import { useToolpathStore } from './store/toolpathStore'
 import { useTimelineStore } from './timeline/timelineStore'
@@ -193,6 +194,7 @@ export default function App() {
       {/* Floats over everything and takes no focus — it is a readout being
           watched while a spinner is held down, not a dialog. */}
       <EscapementInfoPanel />
+      <ClockInfoPanel />
     </div>
   )
 }

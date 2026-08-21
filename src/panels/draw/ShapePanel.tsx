@@ -3,7 +3,7 @@ import { ICON } from '../../theme'
 import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown, Clock, Weight } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
-import { spirographTurns, spirographRadii, spirographCentrePen, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
+import { spirographTurns, spirographRadii, spirographCentrePen, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
 import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
@@ -469,10 +469,35 @@ function ShapeConfig({ type, config, onChange, units }: {
   }
 }
 
+// The DEFAULT for shapes drawn from here — each one records it (see
+// ImportedPath.fromCenter) and is changed afterwards from its own properties
+// panel, the same as any other parameter.
+//
+// It rides with the ACTIVE shape tool's defaults rather than sitting on its own
+// above them: it is a statement about what the next drag means, so with no shape
+// tool in use it was a checkbox about nothing — and, the setting having become a
+// per-object one, it read as a second place to change the selected shape. One
+// definition, both defaults blocks, so the two cannot drift.
+//
+// A SCALE-LOCKED shape (gear, escapement, pendulum) is never offered it: it is
+// placed at its designed size and the canvas draws it no resize handles, so
+// neither gesture the flag governs exists for one — a mechanism's size comes from
+// its module and tooth count, not from how far a cursor travelled.
+function FromCentreCheck({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <Check
+      label="From centre"
+      checked={checked}
+      onChange={onChange}
+      title="New shapes grow outward from where the drag starts, and resize about their middle — for concentric work"
+    />
+  )
+}
+
 // ─── Main ShapePanel ──────────────────────────────────────────────────────────
 
 export default function ShapePanel({ fill = false }: { fill?: boolean }) {
-  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, setClockPanelOpen, penCurveType, setPenCurveType, lastShapeType, setLastShapeType } = useUIStore()
+  const { activeTool, setActiveTool, shapeToolConfig, setShapeToolConfig, setShapesPanelOpen, setClockPanelOpen, penCurveType, setPenCurveType, lastShapeType, setLastShapeType, shapeFromCenter, setShapeFromCenter } = useUIStore()
   const { units } = useWorkpieceStore()
   const isShapeTool = SHAPES.some((s) => s.type === activeTool)
   const lastShape = SHAPE_META[lastShapeType] ?? SHAPE_META.rectangle
@@ -611,6 +636,8 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
         <div className="space-y-1.5 pt-0.5">
           <p className="text-label text-gray-400 dark:text-neutral-500 font-medium capitalize">{activeTool} defaults</p>
           <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={updateConfig} units={units} />
+          {!SCALE_LOCKED_SHAPES.has(activeTool as ShapeType) &&
+            <FromCentreCheck checked={shapeFromCenter} onChange={setShapeFromCenter} />}
         </div>
       )}
 
@@ -619,6 +646,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Text defaults</p>
           {!fontReady && <p className="text-label text-yellow-500">Loading font…</p>}
           <ShapeConfig type="text" config={shapeToolConfig} onChange={updateConfig} units={units} />
+          <FromCentreCheck checked={shapeFromCenter} onChange={setShapeFromCenter} />
         </div>
       )}
 

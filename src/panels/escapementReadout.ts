@@ -11,21 +11,10 @@
 // without the text, and the text lives in a window big enough to read it.
 
 import { escapementDims, type EscapementSpec } from '../shapes/escapementGenerator'
+import type { ReadoutLine, Tone } from './readout'
 
-/** How loudly a line reads. `error` means it will not run at all. */
-export type Tone = 'plain' | 'note' | 'warn' | 'error'
-
-export interface ReadoutLine {
-  text: string
-  tone: Tone
-}
-
-const RANK: Record<Tone, number> = { plain: 0, note: 1, warn: 2, error: 3 }
-
-/** The worst tone in a set of lines — the info button's colour. */
-export function worstTone(lines: ReadoutLine[]): Tone {
-  return lines.reduce<Tone>((w, l) => (RANK[l.tone] > RANK[w] ? l.tone : w), 'plain')
-}
+// Re-exported so the escapement's three consumers keep one import.
+export { worstTone, type Tone, type ReadoutLine } from './readout'
 
 /**
  * Everything the panels say about an escapement, in reading order: what it is,

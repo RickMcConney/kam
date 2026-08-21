@@ -7,8 +7,8 @@ import { AlertCircle } from 'lucide-react'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
 import { usePathsStore, type ImportedPath } from '../../store/pathsStore'
 import { useSelectedPaths } from '../../store/pathsStore'
+import type { PathDefinition } from '../../importers/svgImporter'
 import { useUIStore } from '../../store/uiStore'
-import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
 import { computePatternInstances, applyPatternInstance, type PatternParams } from '../../tools/patternOp'
@@ -22,15 +22,14 @@ interface PatternFormState {
   cirParams: PatternCirParams
 }
 
-// Edit mode (timeline pattern-chip click): recompute the pattern from its
-// recorded sources with new parameters, amending the chip. Result path ids
+// Edit mode (pattern-chip click): recompute the pattern from its sources with
+// new parameters. Identified by the DEFINITION id every copy of one Apply
+// shares; the sources and parameters come back off the live paths. Result ids
 // are reused index-by-index so ops on existing copies survive count changes
-// where possible.
+// where possible — and the copies are found in the DOCUMENT rather than in the
+// chip's recorded snapshot, so one deleted by hand is not resurrected.
 export interface PatternEditCtx {
-  eventId: string
-  resultIds: string[]
-  sourceIds: string[]
-  params: PatternParams
+  defId: string
 }
 
 export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx?: PatternEditCtx }) {
@@ -39,6 +38,10 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
   const { load, save } = useFormDefaultsStore()
   const { units } = useWorkpieceStore()
 
+  const defPaths = editCtx ? paths.filter((p) => p.definition?.id === editCtx.defId) : []
+  const def0 = defPaths.find((p) => p.definition?.kind === 'pattern')?.definition
+  const defParams = def0?.kind === 'pattern' ? def0 : null
+
   const [form, setForm] = useState<PatternFormState>(() => {
     const saved = load('pattern') as Partial<PatternFormState> | null
     const base: PatternFormState = {
@@ -46,8 +49,8 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
       linParams: saved?.linParams ?? { rows: 2, cols: 3, xSpacingMM: 20, ySpacingMM: 20 },
       cirParams: saved?.cirParams ?? { count: 6, radiusMM: 30, startAngleDeg: 0, endAngleDeg: 360, rotateItems: true },
     }
-    if (editCtx) {
-      const p = editCtx.params
+    if (defParams) {
+      const p = defParams.params
       if (p.type === 'linear') {
         return { ...base, mode: 'linear', linParams: { rows: p.rows, cols: p.cols, xSpacingMM: p.xSpacingMM, ySpacingMM: p.ySpacingMM } }
       }
@@ -57,9 +60,9 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
   })
   const [error, setError] = useState<string | null>(null)
 
-  const selectedPaths = editCtx
-    ? editCtx.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
-    : selPaths
+  const selectedPaths = defParams
+    ? defParams.sourceIds.flatMap((id) => { const p = paths.find((x) => x.id === id); return p ? [p] : [] })
+    : editCtx ? [] : selPaths
   const canApply = selectedPaths.length >= 1
 
   function upLin<K extends keyof PatternLinParams>(k: K, v: PatternLinParams[K]) {
@@ -89,24 +92,22 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
     }
     if (defs.length === 0) { setError('Pattern produced no geometry'); return }
 
-    if (editCtx) {
+    if (editCtx && defParams) {
       // Rework in place: reuse existing result ids by index (ops on surviving
-      // copies keep working), add/remove for count changes, amend the chip.
-      const tl = useTimelineStore.getState()
-      const ev = tl.events.find((e) => e.id === editCtx.eventId)
-      const oldPaths = ev?.kind === 'paths.add' ? ev.paths : []
+      // copies keep working), add/remove for count changes, restamp the
+      // definition. The existing copies come from the live document, so one the
+      // user deleted by hand stays deleted instead of being recreated from a
+      // chip's snapshot of how things once were.
+      const definition: PathDefinition = { id: editCtx.defId, kind: 'pattern', sourceIds: defParams.sourceIds, params }
+      const oldPaths = defPaths
       const newPaths: ImportedPath[] = defs.map((def, i) => oldPaths[i]
-        ? { ...oldPaths[i], d: def.d, name: def.name }
-        : { id: uid('path-pattern'), name: def.name, d: def.d, visible: true, color: def.color })
+        ? { ...oldPaths[i], d: def.d, name: def.name, definition }
+        : { id: uid('path-pattern'), name: def.name, d: def.d, visible: true, color: def.color, definition })
       const deleteIds = oldPaths.slice(defs.length).map((p) => p.id)
       usePathsStore.getState().rewriteGeneratedRaw({
-        updates: newPaths.slice(0, Math.min(oldPaths.length, defs.length)).map((p) => ({ id: p.id, d: p.d, name: p.name })),
+        updates: newPaths.slice(0, Math.min(oldPaths.length, defs.length)).map((p) => ({ id: p.id, d: p.d, name: p.name, definition })),
         add: newPaths.slice(oldPaths.length),
         deleteIds,
-      })
-      tl.amendAddEvent(editCtx.eventId, {
-        paths: newPaths,
-        pattern: { sourceIds: editCtx.sourceIds, params },
       })
       usePathsStore.getState().setSelectedIds(newPaths.map((p) => p.id))
       regenerateAffectedMany(newPaths.map((p) => p.id))
@@ -115,17 +116,18 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
       return
     }
 
+    const definition: PathDefinition = {
+      id: uid('def'), kind: 'pattern', sourceIds: selectedPaths.map((p) => p.id), params,
+    }
     const newPaths: ImportedPath[] = defs.map((def) => ({
       id: uid('path-pattern'),
       name: def.name,
       d: def.d,
       visible: true,
       color: def.color,
+      definition,
     }))
-    addPaths(newPaths, {
-      source: 'pattern',
-      pattern: { sourceIds: selectedPaths.map((p) => p.id), params },
-    })
+    addPaths(newPaths, { source: 'pattern' })
     save('pattern', form)
   }
 

@@ -15,25 +15,23 @@
 // mesh, each editable through its own chip in the usual way.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Clock } from 'lucide-react'
+import { Clock, Info } from 'lucide-react'
 import { ICON } from '../../theme'
 import { useUIStore } from '../../store/uiStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
-import { useTimelineStore } from '../../timeline/timelineStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
 import { generateShapeParts, translateShapeParams } from '../../shapes/shapeGenerators'
-import { gearDims, pinionDims } from '../../shapes/gearGenerator'
-import { escapementDims } from '../../shapes/escapementGenerator'
-import { pendulumDims } from '../../shapes/pendulumGenerator'
 import { loadFont, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import {
-  DEFAULT_CLOCK_SPEC, clockPlate, clockWheelClashes, designClock, layoutClock, TRAIN_WHEELS,
-  type ClockAssembly, type ClockPart, type ClockPartParams, type ClockSpec,
+  DEFAULT_CLOCK_SPEC, designClock, layoutClock,
+  type ClockPart, type ClockPartParams, type ClockSpec,
 } from '../../shapes/clockTrain'
 import { nextPathColor, type ImportedPath } from '../../importers/svgImporter'
 import { uid } from '../../uid'
 import { NumInput, PlainInput, Check, noteCls } from './shared'
+import { clockReadout } from '../clockReadout'
+import { TONE_BTN } from '../readout'
 
 const LS_CLOCK_KEY = 'kam:clockSpec'
 
@@ -46,34 +44,42 @@ const LS_CLOCK_KEY = 'kam:clockSpec'
 const MARGIN = 10
 const GAP = 12
 
-/** Seconds as the interval a clockmaker would say out loud. */
-function fmtPeriod(sec: number): string {
-  if (sec < 90) return `${+sec.toFixed(2)} s`
-  const min = sec / 60
-  if (min < 90) return `${+min.toFixed(2)} min`
-  return `${+(min / 60).toFixed(2)} h`
-}
-
 export default function ClockPanel() {
   const setClockPanelOpen = useUIStore((s) => s.setClockPanelOpen)
+  const clockInfoOpen = useUIStore((s) => s.clockInfoOpen)
+  const setClockInfoOpen = useUIStore((s) => s.setClockInfoOpen)
   const shapeToolConfig = useUIStore((s) => s.shapeToolConfig)
   const showStatus = useUIStore((s) => s.showStatus)
   // Set when a clock chip was clicked: the panel then REWRITES that clock's
   // parts rather than emitting a second one, which is what lets a beat or a
   // tooth count be tried without starting the project over.
   const clockEditId = useUIStore((s) => s.clockEditId)
+  // Both previews are addressed by a PATH — the canvas layers pick the clock up
+  // from whichever path they are handed — so any part of this clock will do.
+  // The RUNNING test is keyed on the CLOCK rather than on that path, so the
+  // buttons say Stop for a clock already running whichever of its parts was
+  // handed over. Selectors return primitives: a fresh object or function from a
+  // zustand selector compares unequal every render.
+  const clockAnimPathId = useUIStore((s) => s.clockAnimPathId)
+  const clockLinkPathId = useUIStore((s) => s.clockLinkPathId)
+  const setClockAnim = useUIStore((s) => s.setClockAnim)
+  const setClockLink = useUIStore((s) => s.setClockLink)
+  const anyClockPathId = usePathsStore((s) => s.paths.find((p) => p.clockId === clockEditId)?.id ?? null)
+  const animClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockAnimPathId)?.clockId ?? null)
+  const linkClockId = usePathsStore((s) => s.paths.find((p) => p.id === clockLinkPathId)?.clockId ?? null)
+  const clockRunning = !!clockEditId && animClockId === clockEditId
+  const clockArranging = !!clockEditId && linkClockId === clockEditId
   const { units, widthMM, heightMM } = useWorkpieceStore()
   const [spec, setSpec] = useState<ClockSpec>(DEFAULT_CLOCK_SPEC)
   const [reLayout, setReLayout] = useState(true)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    // Editing an existing clock starts from ITS spec — the one recorded on its
-    // chip — not from whatever was last typed into a fresh one.
+    // Editing an existing clock starts from ITS spec — carried by its own parts —
+    // not from whatever was last typed into a fresh one.
     if (clockEditId) {
-      const ev = useTimelineStore.getState().events.find(
-        (e) => e.kind === 'clock.design' && e.clockId === clockEditId)
-      if (ev && ev.kind === 'clock.design') { setSpec({ ...DEFAULT_CLOCK_SPEC, ...ev.spec }); return }
+      const own = usePathsStore.getState().paths.find((p) => p.clockId === clockEditId && p.clockSpec)
+      if (own?.clockSpec) { setSpec({ ...DEFAULT_CLOCK_SPEC, ...own.clockSpec }); return }
     }
     const saved = localStorage.getItem(LS_CLOCK_KEY)
     if (!saved) return
@@ -101,66 +107,35 @@ export default function ClockPanel() {
   const design = useMemo(() => designClock(spec, base), [spec, base])
 
   const L = (mm: number) => fmtLen(mm, units)
-  const { train, drive } = design
 
-  // Per-part numbers for the table: how big each wheel is, and how far its arbor
-  // sits from the next one. Both come from the same functions the shape panels
-  // read, so the table can never disagree with what is drawn.
-  const rows = useMemo(() => design.parts.map((p) => {
-    if (p.params.type === 'gear') {
-      const g = p.params
-      const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, { mateTeeth: g.mateTeeth, pinDia: g.pinDia })
-      const pin = pinionDims(g)
-      return {
-        name: p.name,
-        counts: `${g.teeth}t → ${g.mateTeeth} pins`,
-        size: d.outsideDia,
-        // Every row's spacing is from THIS arbor to the arbor of what it drives:
-        // wheel pitch radius + its pinion's, which is where the pitch circles
-        // come tangent.
-        centre: pin?.centreDistance ?? 0,
-        drives: 'to the next arbor',
-        period: p.revSeconds,
-      }
-    }
-    if (p.params.type === 'escapement') {
-      const dm = escapementDims(p.params)
-      return {
-        name: p.name,
-        counts: `${p.params.teeth}t · spans ${dm.span}`,
-        size: p.params.wheelDia,
-        centre: dm.centreDistance,
-        drives: 'to the pallet arbor',
-        period: p.revSeconds,
-      }
-    }
-    // The pendulum is on no arbor — it HANGS from the pallet arbor — so its
-    // spacing column is blank rather than a number that would read as one more
-    // hole to drill.
-    const pd = pendulumDims(p.params)
-    return {
-      name: p.name,
-      counts: `${fmtLen(p.params.length, units)} long`,
-      size: pd.rodLength,
-      centre: 0,
-      drives: 'hangs from the pallet arbor',
-      period: p.revSeconds,
-    }
-  }), [design, units])
+  // Everything derived lives in the floating readout now; the panel keeps only
+  // its TONE, for the button that stands for it.
+  const readout = useMemo(
+    () => clockReadout(spec, base, { widthMM, heightMM }, L),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec, base, widthMM, heightMM, units],
+  )
+  const problems = readout.sections.flatMap((sec) => sec.lines).filter((l) => l.tone === 'error' || l.tone === 'warn').length
+  const summary = problems === 0 ? 'Numbers' : `Numbers · ${problems} to check`
 
-  const escPart = design.parts.find((p) => p.params.type === 'escapement')
-  const escDims = escPart?.params.type === 'escapement' ? escapementDims(escPart.params) : null
-  const pendPart = design.parts.find((p) => p.params.type === 'pendulum')
-  const pendLength = pendPart?.params.type === 'pendulum' ? pendPart.params.length : 0
-  const biggest = Math.max(...rows.map((r) => r.size))
+  // The window follows the spec being designed, which lives here rather than in
+  // any store — so it is published for the window to read, and withdrawn when
+  // this panel unmounts so a stale draft cannot outlive the designer.
+  const setClockDraft = useUIStore((s) => s.setClockDraft)
+  useEffect(() => { setClockDraft(spec) }, [spec, setClockDraft])
+  useEffect(() => () => setClockDraft(null), [setClockDraft])
 
-  // The frame this arrangement needs — the TRAIN's extent, not the whole
-  // assembly's: the pendulum is a metre long and hangs outside the plate.
-  const plate = useMemo(() => clockPlate(
-    design.parts.filter((p) => p.params.type !== 'pendulum') as ClockAssembly,
-    spec.linkAngles,
-  ), [design, spec.linkAngles])
-  const clashes = plate ? clockWheelClashes(plate) : []
+  // Arranging is a canvas MODE — dragging moves link joints instead of selecting
+  // — and its only way out is the button above, so it ends when this panel does.
+  // Leaving it on with the panel shut would leave the canvas behaving oddly with
+  // nothing on screen to explain why. The ANIMATION is left running on purpose:
+  // it is a preview, it changes no interaction, and the clock's chip brings the
+  // Stop button back in one click — the same way a gear's mesh preview outlives
+  // the selection that started it.
+  useEffect(() => () => {
+    const ui = useUIStore.getState()
+    if (ui.clockLinkPathId) ui.setClockLink(null)
+  }, [])
 
   // Where a fresh clock's parts land: CENTRED on the stock, rows running right
   // and wrapping downward. Centred rather than packed into a corner because
@@ -199,7 +174,7 @@ export default function ClockPanel() {
       id: uid('shape'), name: `${part.name} ${g.label}`, d: g.d,
       visible: true, color, shapeParams: part.params, shapePart: g.part,
       groupId, groupName: part.name,
-      clockId, clockPart: part.key,
+      clockId, clockPart: part.key, clockSpec: spec,
     }))
     // One addPaths per part, so each wheel gets its OWN chip — that chip is then
     // what every later parameter edit on that wheel amends (updateShapeParams →
@@ -217,7 +192,6 @@ export default function ClockPanel() {
       // marking part. Four wheels are worth waiting for it once.
       if (shapeToolConfig.gear.toothLabel) await loadFont(SINGLE_LINE_FONT_FAMILY)
 
-      const tl = useTimelineStore.getState()
       const { setSelectedIds, updateShapeParams } = usePathsStore.getState()
       const selected: string[] = []
 
@@ -259,10 +233,14 @@ export default function ClockPanel() {
           selected.push(...ids)
           rebuilt++
         }
-        // The chip carries the SPEC, so a new spec replaces it in place.
-        if (!tl.amendClockSpec(clockEditId, spec)) {
-          tl.record({ kind: 'clock.design', clockId: clockEditId, spec })
-        }
+        // Every part carries the spec, so re-running restamps all of them —
+        // including parts of groups that updateShapeParams has just rewritten.
+        // Not recorded: the parts' own chips already record the rebuild, and the
+        // spec is a property of them rather than an edit in its own right.
+        const clockPaths = usePathsStore.getState().paths.filter((p) => p.clockId === clockEditId)
+        usePathsStore.getState().rewriteGeneratedRaw({
+          updates: clockPaths.map((p) => ({ id: p.id, d: p.d, clockSpec: spec })),
+        })
         // Selection is only meaningful for parts that were rewritten; a run that
         // rebuilt nothing left the document alone but for whatever it added.
         if (selected.length > 0) setSelectedIds(selected)
@@ -278,10 +256,6 @@ export default function ClockPanel() {
       // independent shapes and nothing regenerates through it. It exists so the
       // set can be found again — to be stood up in mesh, and to be redesigned.
       const clockId = uid('clock')
-      // Recorded BEFORE the parts, so undo reaches it only once everything it
-      // led to is already gone — which is what makes a chip that replays to
-      // nothing harmless. See 'clock.design' in timeline/events.ts.
-      tl.record({ kind: 'clock.design', clockId, spec })
       for (const part of layout()) selected.push(...emitPart(part, clockId))
       setSelectedIds(selected)
       setClockPanelOpen(false)
@@ -307,8 +281,10 @@ export default function ClockPanel() {
         </button>
       </div>
 
+      {/* Inputs only. Everything derived went to the floating readout — see
+          clockReadout.ts — which is what stopped this list pushing the button
+          that builds the clock off the bottom of the tab. */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        {/* ── The pendulum, and what it forces ────────────────────────────── */}
         <div className="space-y-1">
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Pendulum</p>
           {/* The beat is HALF a period — the number a clock is described by. */}
@@ -316,33 +292,8 @@ export default function ClockPanel() {
             onChange={(beatSeconds) => set({ beatSeconds })} />
           <NumInput label="Esc teeth" valueMM={spec.escapeTeeth} units="" min={6} integer
             onChange={(t) => set({ escapeTeeth: Math.max(6, Math.round(t)) })} />
-          <p className={noteCls}>
-            Pendulum {L(design.pendulumMM)} to the centre of oscillation
-            <br />
-            Escape wheel turns once every {fmtPeriod(design.escRevSeconds)}
-            {escDims && <><br />Must swing past {escDims.minHalfSwingDeg.toFixed(2)}° each way to unlock</>}
-            <br />
-            {/* The rod is cut to the length the beat demands; the bob's size and
-                the rod's width are the user's Pendulum defaults, untouched. */}
-            Rod cut to {L(pendLength)}, hole to bob centre — regulate by raising the bob.
-          </p>
-          {/* The escapement takes the user's Escapement defaults with only its
-              tooth count and span changed, and those two can break an otherwise
-              fine escapement — so the fatal readouts are repeated here rather
-              than left for the user to find on the chip afterwards. */}
-          {escDims?.divesTooDeep && <p className="text-label text-red-400">
-            Pallets dive {L(escDims.palletDive)} into the teeth and the pair will bind. Deeper teeth
-            or less lock/lift in the Escapement defaults.
-          </p>}
-          {escDims?.noImpulse && <p className="text-label text-red-400">
-            Drop uses up the whole {escDims.beatDeg.toFixed(2)}° beat at {spec.escapeTeeth} teeth — no impulse left.
-          </p>}
-          {escDims?.noLock && <p className="text-label text-red-400">
-            Nothing left for a tooth to lock on — less clearance, or more lock, in the Escapement defaults.
-          </p>}
         </div>
 
-        {/* ── The going train ─────────────────────────────────────────────── */}
         <div className="space-y-1">
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Going train</p>
           <NumInput label="Min pins" valueMM={spec.minPins} units="" min={6} integer
@@ -351,21 +302,8 @@ export default function ClockPanel() {
             onChange={(greatWheelMin) => set({ greatWheelMin })} />
           <NumInput label="Module" valueMM={spec.module} units={units} min={0.5} step={0.25}
             onChange={(module) => set({ module })} />
-          <p className={noteCls}>
-            {TRAIN_WHEELS} wheels, {train.meshes.length} meshes at {+train.actualRatio.toFixed(4)}:1
-            <br />
-            {train.meshes.map((m) => `${m.teeth}/${m.pins}`).join(' · ')} · escape {spec.escapeTeeth}
-          </p>
-          {train.exact
-            ? <p className={noteCls}>Train is exact — the rate is the pendulum&apos;s alone.</p>
-            : <p className="text-label text-red-400">
-                No exact train at these numbers: the hands {train.errorSecPerDay < 0 ? 'lose' : 'gain'}{' '}
-                {Math.abs(train.errorSecPerDay).toFixed(1)} s a day, which no regulating will fix.
-                Try a different escape tooth count or minimum pin count.
-              </p>}
         </div>
 
-        {/* ── The weight ──────────────────────────────────────────────────── */}
         <div className="space-y-1">
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Weight drive</p>
           <PlainInput label="Run" value={spec.runHours} unit="h" min={1} max={200} step={1}
@@ -374,67 +312,46 @@ export default function ClockPanel() {
             onChange={(fallMM) => set({ fallMM })} />
           <NumInput label="Drum Ø" valueMM={spec.drumDia} units={units} min={5}
             onChange={(drumDia) => set({ drumDia })} />
-          <p className={noteCls}>
-            {drive.teeth}/{drive.pins} onto the great wheel · {drive.turns.toFixed(1)} turns of cord
-            <br />
-            Runs {drive.runHours.toFixed(1)} h per wind. Wind the cord on a {L(spec.drumDia)} drum on this arbor.
-          </p>
-          {drive.clampedSmall && <p className="text-label text-yellow-500">
-            A {spec.runHours} h run wants a drive wheel smaller than its own pinion. Held at {drive.teeth} teeth,
-            so it runs {drive.runHours.toFixed(1)} h — for a shorter run use a fatter drum or less drop.
-          </p>}
         </div>
 
-        {/* ── What will be cut ────────────────────────────────────────────── */}
-        <div className="space-y-1">
-          <p className={noteCls + ' font-medium uppercase tracking-wider'}>Parts</p>
-          <table className="w-full text-label text-gray-500 dark:text-neutral-400 tabular-nums">
-            <thead className="text-gray-400 dark:text-neutral-500">
-              <tr>
-                <th className="text-left font-normal pr-1">Part</th>
-                <th className="text-left font-normal pr-1">Counts</th>
-                <th className="text-right font-normal pr-1">Size</th>
-                <th className="text-right font-normal pr-1">One turn</th>
-                <th className="text-right font-normal">Arbor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.name}>
-                  <td className="pr-1 text-gray-700 dark:text-neutral-300">{r.name}</td>
-                  <td className="pr-1">{r.counts}</td>
-                  <td className="pr-1 text-right">{L(r.size)}</td>
-                  <td className="pr-1 text-right">{fmtPeriod(r.period)}</td>
-                  <td className="text-right" title={`Arbor to arbor, ${r.drives}`}>{L(r.centre)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className={noteCls}>
-            {plate && <>Frame {L(plate.bbox.maxX - plate.bbox.minX)} × {L(plate.bbox.maxY - plate.bbox.minY)} as
-            arranged — select a wheel and press <em>Arrange linkage</em> to fold the train.<br /></>}
-            The last column is that arbor to the next one — the escapement&apos;s is its wheel to
-            the pallet arbor. Parts are laid out CLEAR of each other, never in mesh, so drill the
-            plate from those spacings rather than from the drawing.
-          </p>
-          {clashes.length > 0 && <p className="text-label text-yellow-500">
-            {clashes.length} pair{clashes.length > 1 ? 's' : ''} of non-neighbouring wheels overlap in this
-            arrangement. Neighbours always do (they run at different depths); these have no reason to.
-          </p>}
-          {biggest > Math.min(widthMM, heightMM) && <p className="text-label text-yellow-500">
-            The largest part is {L(biggest)} across on {L(widthMM)} × {L(heightMM)} stock — it will
-            overhang. A smaller module, a shorter beat, or bigger stock.
-          </p>}
-          <p className={noteCls}>
-            Wheels take your Gear defaults (bore, hub, spokes, pin Ø, backlash) and the escapement
-            takes your Escapement defaults. Only the counts, module and cycloidal profile come from
-            here — tweak each part afterwards through its own chip.
-            <br />
-            Select any wheel afterwards and press <em>Animate whole clock</em> to stand the train
-            up at those spacings and run it, and click the <em>Clock</em> chip in the timeline to
-            come back here and try a different beat on the same clock.
-          </p>
-        </div>
+        {/* One button standing for the whole readout, in the colour of its WORST
+            line — so a fatal warning is visible even with the window shut, which
+            is what makes moving the text out of the sidebar safe. */}
+        <button
+          onClick={() => setClockInfoOpen(!clockInfoOpen)}
+          className={`w-full flex items-center justify-center gap-1.5 py-1 rounded border text-label transition-colors ${TONE_BTN[readout.tone]}`}
+        >
+          <Info size={ICON.sm} />
+          {clockInfoOpen ? 'Hide numbers' : summary}
+        </button>
+
+        {/* Running the assembled clock, and folding the train to fit a plate.
+            Both are questions about the WHOLE clock rather than about any one
+            wheel, so they live here rather than on each wheel's properties —
+            where they appeared five times over and read as five different
+            animations. Only for a clock that EXISTS: there is nothing to stand
+            up until it has been added. */}
+        {clockEditId && <div className="space-y-1">
+          <p className={noteCls + ' font-medium uppercase tracking-wider'}>Assembly</p>
+          <button
+            onClick={() => setClockLink(clockArranging ? null : anyClockPathId)}
+            disabled={!anyClockPathId}
+            className={`w-full py-1.5 rounded text-body text-white disabled:opacity-40 transition-colors ${clockArranging
+              ? 'bg-red-500/80 hover:bg-red-500'
+              : 'bg-amber-600/80 hover:bg-amber-600'}`}
+          >
+            {clockArranging ? 'Done arranging' : 'Arrange linkage'}
+          </button>
+          <button
+            onClick={() => setClockAnim(clockRunning ? null : anyClockPathId)}
+            disabled={!anyClockPathId}
+            className={`w-full py-1.5 rounded text-body text-white disabled:opacity-40 transition-colors ${clockRunning
+              ? 'bg-red-500/80 hover:bg-red-500'
+              : 'bg-emerald-600/80 hover:bg-emerald-600'}`}
+          >
+            {clockRunning ? 'Stop clock' : 'Animate whole clock'}
+          </button>
+        </div>}
 
         {/* Changing the module or the tooth counts changes every wheel's size,
             so a re-layout is usually what is wanted — but a maker who has
