@@ -18,6 +18,7 @@ import { useTimelineStore } from './timeline/timelineStore'
 import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
 import { installSimAutoReload } from './sim/simAutoReload'
+import { installPathClipboard } from './io/pathClipboard'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const ThreeView = lazy(() => import('./three/ThreeView'))
@@ -136,6 +137,13 @@ function useKeyboardShortcuts() {
         return
       }
       if (mod && e.key === 'd') { e.preventDefault(); usePathsStore.getState().duplicateSelected(); return }
+      // Group / Ungroup. Shift+G arrives as 'G' on most layouts, so both are tested.
+      if (mod && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault()
+        const ps = usePathsStore.getState()
+        if (e.shiftKey) ps.ungroupSelected(); else ps.groupSelected()
+        return
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -162,6 +170,12 @@ function useSimAutoReload() {
   useEffect(() => installSimAutoReload(), [])
 }
 
+// Ctrl+C / Ctrl+V on the document, carrying paths as the app's own objects so a
+// gear pasted into another project is still a gear — see io/pathClipboard.ts.
+function usePathClipboard() {
+  useEffect(() => installPathClipboard(), [])
+}
+
 function useDarkMode() {
   const darkMode = useUIStore((s) => s.darkMode)
   useEffect(() => {
@@ -173,6 +187,7 @@ export default function App() {
   useKeyboardShortcuts()
   useSurfaceWorkpieceSync()
   useSimAutoReload()
+  usePathClipboard()
   useDarkMode()
   const activeTool = useUIStore(s => s.activeTool)
   useEffect(() => {

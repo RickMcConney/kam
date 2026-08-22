@@ -47,7 +47,7 @@ import {
   type Pt, clamp, arcInto, ellipseRing,
   roundConcave, ringToD,
 } from './polyOps'
-import { seatHub, spokeWindows, type HubFit } from './spokedWheel'
+import { seatHub, spokeWindows, pinRing, pinRingHoles, type HubFit, type PinRing } from './spokedWheel'
 import { generateTextD, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from './textGenerator'
 import { flattenPath } from '../cam/pathFlattener'
 
@@ -72,6 +72,22 @@ export interface GearSpec {
   /** Also emit the mating lantern pinion — its cheek disc and pin holes. Cycloidal
    *  only; the wheel's own parameters already say everything about it. */
   emitPinion: boolean
+  /** Pins of the lantern pinion that stands on THIS wheel's own arbor — the one
+   *  the wheel BEFORE it drives, in a train. The wheel carries them itself: the
+   *  holes are drilled through its hub, the pins stand in them, and a single
+   *  loose cheek caps the far ends (see spokedWheel's pinRing). 0 or absent for
+   *  a wheel that carries nothing, which is every gear drawn on its own.
+   *
+   *  It GROWS THE HUB, since the holes must fall in solid stock. */
+  arborPins?: number
+  /** Circle those pins ride, Ø. It is the carried pinion's PITCH circle, which
+   *  belongs to the mesh with the wheel before this one — so it is stated rather
+   *  than derived, and defaults to this wheel's own module × the pin count when
+   *  omitted (right whenever both meshes share a module, as a clock's do). */
+  arborPinCircleDia?: number
+  /** Those pins' diameter. Defaults to `pinDia`, the pins of the lantern this
+   *  wheel DRIVES — one rod size for the whole clock is the usual case. */
+  arborPinDia?: number
   /** Axle hole diameter. 0 for none. */
   bore: number
   /** Hub outer diameter — a MINIMUM, not a fixed size: it is grown when the
@@ -163,11 +179,16 @@ export type GearHub = HubFit
  * the bore come out as 1, 0.6 and 0.8 times that width, which is exactly what
  * `seatHub` applies.
  */
-export function gearHub(module: number, teeth: number, bore: number, hubDia: number, spokes: number): GearHub {
+export function gearHub(
+  module: number, teeth: number, bore: number, hubDia: number, spokes: number,
+  /** Hub the carried pinion's pin holes need, if this wheel carries one — see
+   *  `carriedPinion`. Another FLOOR, and the two simply take the larger. */
+  carriedHubDia = 0,
+): GearHub {
   const m = Math.max(0.05, module)
   const z = Math.max(4, Math.round(teeth))
   const rf = Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
-  return seatHub(rf - RIM * m, clamp(bore / 2, 0, rf - 1), hubDia, spokes, SPOKE * m)
+  return seatHub(rf - RIM * m, clamp(bore / 2, 0, rf - 1), Math.max(hubDia, carriedHubDia), spokes, SPOKE * m)
 }
 
 /**
@@ -990,7 +1011,7 @@ export function gearLabel(spec: GearSpec): GearLabel | null {
   // spoked adds exactly one constraint: the text has to fit BETWEEN the spoke's
   // sides. `hub.spoked` is the same test `spokeWindows` guards on, so it cannot
   // claim a spoke that was not drawn.
-  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes)
+  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0)
   let s = fitInDisc(box.w, box.h, xl, rf - LABEL_CLEAR)
   if (hub.spoked) {
     const hw = Math.min((SPOKE * m) / 2, (hub.dia / 2) * 0.9)   // as spokeWindows sizes it
@@ -1045,6 +1066,23 @@ export interface PinionDims {
   centreDistance: number
   /** Wood left between two neighbouring pin holes, mm. Negative means they merge. */
   pinGap: number
+}
+
+/**
+ * The pinion this wheel CARRIES on its own arbor, or null for one that carries
+ * none. See `GearSpec.arborPins` — the wheel is one of that pinion's two cheeks.
+ */
+export function carriedPinion(spec: GearSpec): PinRing | null {
+  const m = Math.max(0.05, spec.module)
+  const pins = Math.round(spec.arborPins ?? 0)
+  return pinRing(
+    pins,
+    // A lantern's pins ride its PITCH circle, radius m·P/2 — the same rule the
+    // teeth are cut to, so the default is right whenever the two meshes share a
+    // module.
+    spec.arborPinCircleDia ?? m * pins,
+    spec.arborPinDia ?? spec.pinDia,
+  )
 }
 
 /** The mating pinion's numbers, or null for a gear that has no lantern mate. */
@@ -1164,7 +1202,7 @@ function pinionParts(spec: GearSpec): GearPart[] {
 }
 
 /** A gear's parts, each of which wants its OWN operation. */
-export type GearPartKey = 'teeth' | 'spokes' | 'bore' | 'label' | 'pitch' | 'pinion' | 'pinholes' | 'pinionbore' | 'pinionpitch' | 'pinionlabel'
+export type GearPartKey = 'teeth' | 'spokes' | 'bore' | 'arborpins' | 'label' | 'pitch' | 'pinion' | 'pinholes' | 'pinionbore' | 'pinionpitch' | 'pinionlabel'
 
 export interface GearPart {
   key: GearPartKey
@@ -1209,10 +1247,21 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
 
   // Windings stay as they were: these are holes in the blank, so CW, which is
   // what anything reading them as regions expects.
-  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes)
+  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0)
   const windows = spokeWindows(Math.round(spec.spokes), rf - RIM * m, hub.dia / 2, SPOKE * m)
   if (windows.length > 0) {
     out.push({ key: 'spokes', d: windows.map((r) => ringToD(place(r), false)).join(' ') })
+  }
+
+  // The pins this wheel carries for the pinion on its own arbor. Their own part
+  // because they are their own cut — drilled, not profiled — and they fall in
+  // the hub, which `gearHub` has already grown to hold them.
+  const carried = carriedPinion(spec)
+  if (carried) {
+    out.push({
+      key: 'arborpins',
+      d: pinRingHoles(spec.cx, spec.cy, carried).map((r) => ringToD(r, false)).join(' '),
+    })
   }
 
   // Open strokes, already in place — its own path because it is engraved, not

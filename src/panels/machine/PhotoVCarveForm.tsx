@@ -1,5 +1,5 @@
 // ─── Photo V-Carve form ───────────────────────────────────────────────────────
-import { FormShell, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState, useEffect } from 'react'
 import { ICON } from '../../theme'
@@ -33,7 +33,7 @@ function norm180(deg: number) {
 export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: PhotoVCarveOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, widthMM, heightMM, units } = useWorkpieceStore()
 
@@ -72,7 +72,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
     }
   })
   const [generating, setGenerating] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Saved defaults carry a path id from a previous session, which no longer exists — and
@@ -109,7 +109,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
   function handleGenerate() {
     if (!selectedTool || !selectedPath?.imageSrc) return
     setGenerating(true)
-    setErrorMsg(null)
+    clearError()
     // Re-Generate for an image this form already carved updates that op in place.
     const existingId = editOp ? undefined : session.liveOpId(form.pathId)
 
@@ -168,10 +168,8 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         save('photovcarve', form)
       } catch (err) {
         if (!isWorkCancelled(err)) {
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setErrorMsg(msg)
           const failId = editOp?.id ?? existingId
-          if (failId) setError(failId, msg)
+          if (failId) reportError(failId, err)
         }
       } finally {
         setGenerating(false)
@@ -280,11 +278,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         </p>
       )}
 
-      {errorMsg && (
-        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
-          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
-        </p>
-      )}
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={!canGenerate}
         generating={generating}

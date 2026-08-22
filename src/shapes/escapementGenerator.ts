@@ -88,7 +88,7 @@ import {
   type Pt, clamp, arcInto, ellipseRing, roundRectRing,
   boolRings, roundConcave, ringToD,
 } from './polyOps'
-import { seatHub, spokeWindows, type HubFit } from './spokedWheel'
+import { seatHub, spokeWindows, pinRing, pinRingHoles, type HubFit, type PinRing } from './spokedWheel'
 import { getTreatableCorners, applyCornerTreatments } from '../tools/cornerTreatment'
 
 export type EscapementType = 'recoil' | 'deadbeat'
@@ -126,6 +126,17 @@ export interface EscapementSpec {
   spokes: number
   /** Anchor arbor Ø. 0 for none. */
   anchorBore: number
+  /** The lantern pinion the WHEEL carries on its own arbor — in a clock, the one
+   *  the third wheel drives. Its pins go through the wheel's hub and a single
+   *  loose cheek caps them; see spokedWheel's pinRing. Stated in PIN CIRCLE Ø
+   *  rather than in module, because an escapement has no module of its own —
+   *  that circle belongs to the mesh with the wheel before it. Absent for an
+   *  escapement drawn on its own, which carries nothing.
+   *
+   *  It GROWS THE HUB, since the holes must fall in solid stock. */
+  arborPins?: number
+  arborPinCircleDia?: number
+  arborPinDia?: number
   /** Wheel turns clockwise. The teeth lean the way it runs, so this is not
    *  cosmetic — a wheel cut the wrong way round will not lock at all. */
   clockwise: boolean
@@ -1342,12 +1353,26 @@ function flank(
 }
 // ─── Readouts ─────────────────────────────────────────────────────────────────
 
+/**
+ * The pinion this wheel CARRIES on its own arbor, or null. The escape wheel is
+ * one of that pinion's two cheeks — see `EscapementSpec.arborPins`.
+ */
+export function carriedPinion(spec: EscapementSpec): PinRing | null {
+  return pinRing(spec.arborPins, spec.arborPinCircleDia, spec.arborPinDia)
+}
+
 export function escapementDims(spec: EscapementSpec): EscapementDims {
   const { R, N, L, rho, beat, mu, lam, pitch: pitchR } = frame(spec)
   const t = toothGeom(spec)
   const rRoot = t.rRoot
   const rimInner = rRoot - Math.max(2, spec.wheelDia / 30)
-  const hub = seatHub(rimInner, clamp(spec.bore / 2, 0, rRoot - 1), spec.hubDia, spec.spokes, spokeWidth(spec))
+  const carried = carriedPinion(spec)
+  const hub = seatHub(
+    rimInner, clamp(spec.bore / 2, 0, rRoot - 1),
+    // Two floors, and the larger wins: what the spokes need to land on, and what
+    // the carried pinion's pin holes need to fall in.
+    Math.max(spec.hubDia, carried?.hubDia ?? 0), spec.spokes, spokeWidth(spec),
+  )
 
   // The impulse face's inclination to the dead arc: the angle its chord makes
   // with the perpendicular to the arbor radius.
@@ -1521,7 +1546,7 @@ export function escapementPose(spec: EscapementSpec, phase: number): EscapementP
 // ─── Emission ─────────────────────────────────────────────────────────────────
 
 export type EscapementPartKey =
-  | 'wheel' | 'spokes' | 'bore' | 'anchor' | 'anchorbore' | 'ref'
+  | 'wheel' | 'spokes' | 'bore' | 'arborpins' | 'anchor' | 'anchorbore' | 'ref'
 
 export interface EscapementPart { key: EscapementPartKey; d: string }
 
@@ -1558,6 +1583,18 @@ export function generateEscapementParts(spec: EscapementSpec): EscapementPart[] 
   const windows = spokeWindows(Math.round(spec.spokes), rimInner, d.hub.dia / 2, spokeWidth(spec))
   if (windows.length > 0) {
     out.push({ key: 'spokes', d: windows.map((r) => ringToD(place(r), false)).join(' ') })
+  }
+
+  // The pins this wheel carries for the pinion on its own arbor — their own cut,
+  // drilled rather than profiled, falling in the hub the dims have grown to hold
+  // them. Placed unmirrored about the centre: a ring of holes is symmetric, and
+  // `place`'s mirror is for the teeth's lean.
+  const carried = carriedPinion(spec)
+  if (carried) {
+    out.push({
+      key: 'arborpins',
+      d: pinRingHoles(spec.cx, spec.cy, carried).map((r) => ringToD(r, false)).join(' '),
+    })
   }
 
   out.push({

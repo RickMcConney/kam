@@ -11,7 +11,7 @@
 //
 // This file stays the module everything imports — several scripts/ harnesses
 // import '../src/cam/pocket.ts' by explicit path.
-import { flattenPath, splitSelfIntersecting, douglasPeucker, type Pt2 } from './pathFlattener'
+import { flattenPath, splitSelfIntersecting, requireClosedSubpaths, douglasPeucker, type Pt2 } from './pathFlattener'
 import { zPasses, pointInPolygon, classifySubpaths } from './geom'
 import { reportProgress, subProgress } from './progress'
 import type { MotionSegment } from '../store/toolpathStore'
@@ -54,7 +54,17 @@ export function generatePocket(
   tool: Tool,
   params: PocketParams,
 ): MotionSegment[] {
-  const rings = splitSelfIntersecting(flattenPath(boundaryD, 0.05))
+  const flat = flattenPath(boundaryD, 0.05)
+  // A pocket clears an AREA, and an open subpath does not bound one. Left to itself
+  // `splitSelfIntersecting` closes it mouth-to-mouth and everything downstream then
+  // clears a region the user never drew — a U-shaped path came out as a filled square,
+  // with no error and a toolpath that looks perfectly reasonable on the canvas. Named
+  // before any of that, since it is the only point where the two can still be told apart.
+  requireClosedSubpaths(flat, {
+    cut: 'a pocket',
+    remedy: 'Close the path, or use a centerline profile to cut a groove along it.',
+  })
+  const rings = splitSelfIntersecting(flat)
   if (rings.length === 0) throw new Error('No geometry found in boundary path')
 
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
@@ -71,7 +81,14 @@ export function generatePocket(
 
   let islands: Pt2[][] = []
   for (const islandD of params.islandDs) {
-    for (const ip of splitSelfIntersecting(flattenPath(islandD, 0.05))) {
+    const islandFlat = flattenPath(islandD, 0.05)
+    // An island is uncut material inside the pocket, so it bounds an area too — an open
+    // one leaves stock in a shape nobody asked for, in the middle of the cut.
+    requireClosedSubpaths(islandFlat, {
+      cut: 'a pocket', noun: 'Island path',
+      remedy: 'Close the path, or take it out of the islands.',
+    })
+    for (const ip of splitSelfIntersecting(islandFlat)) {
       if (ip.length >= 3) islands.push(ip)
     }
   }

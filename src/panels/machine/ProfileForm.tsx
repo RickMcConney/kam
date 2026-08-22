@@ -1,5 +1,5 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -30,7 +30,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, setError, updateOperation, deleteOperation, operations } = useToolpathStore()
+  const { addOperations, setSegments, updateOperation, deleteOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
@@ -62,7 +62,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     return { ...base, toolId: pickToolId(base.toolId, cutters) }
   })
   const [generating, setGenerating] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Editing covers every operation created by the same Generate click — profiling five
@@ -118,7 +118,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     if (selectedPaths.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
-    setErrorMsg(null)
+    clearError()
     // Resolved per path and against live store state — see PocketForm.
     const startZFor = (d: string, opId?: string) => resolveStartZ(
       { startFrom: form.startFrom, footprintD: d, cutMarginMM, opId },
@@ -148,9 +148,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           } catch (err) {
             // A cancel abandons the whole Generate, not just this path.
             if (isWorkCancelled(err)) break
-            const msg = err instanceof Error ? err.message : 'Generation failed'
-            setError(op.id, msg)
-            setErrorMsg(msg)
+            reportError(op.id, err)
             failed = true
           }
         }
@@ -203,10 +201,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             // Cancelled ops keep their slot (cancelGenerating marks them needs-update)
             // rather than being deleted — Generate again picks them straight back up.
             if (isWorkCancelled(err)) break
-            const msg = err instanceof Error ? err.message : 'Generation failed'
-            if (existingId) setError(opId, msg)
-            else deleteOperation(opId)
-            setErrorMsg(msg)
+            // A Generate that failed leaves nothing behind: an operation with no
+            // toolpath is not a thing in the document, so one this click CREATED is
+            // removed again. One that already existed keeps its slot and its error —
+            // deleting a user's operation because a re-Generate failed would be worse
+            // than leaving it there to be fixed.
+            reportError(opId, err)
+            if (!existingId) deleteOperation(opId)
             failed = true
           }
         }
@@ -251,11 +252,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
-      {errorMsg && (
-        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
-          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
-        </p>
-      )}
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={selectedPaths.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}

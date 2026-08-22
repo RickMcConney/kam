@@ -337,7 +337,13 @@ describe('generateVCarve — rejections', () => {
   })
 
   it('rejects a path with no closed geometry', async () => {
+    // A two-point line used to land on the generic "no geometry" message, because it was
+    // dropped by the ≥3-point filter rather than recognised as a stroke. It now gets the
+    // open-path message, which says what to do about it — see the block at the bottom.
     await expect(generateVCarve('M 0 0 L 10 10', vbit(), { angleDeg: 90, maxDepthMM: 10, islandDs: [] }))
+      .rejects.toThrow(/Path is open/)
+    // Nothing drawn at all still reaches the generic message.
+    await expect(generateVCarve('', vbit(), { angleDeg: 90, maxDepthMM: 10, islandDs: [] }))
       .rejects.toThrow('No geometry found in path')
   })
 })
@@ -441,5 +447,34 @@ describe('classifySubpaths', () => {
     expect(regions[0].outer).toEqual(square(0, 0, 100))
     expect(regions[0].holes).toEqual([square(5, 5, 40), square(60, 60, 30)])
     expect(regions[1].outer).toEqual(square(10, 10, 20))
+  })
+})
+
+describe('an open boundary is refused, not carved', () => {
+  // A v-carve cuts the MEDIAL AXIS of a region — the ridge equidistant from its walls —
+  // so it needs walls all round. `splitSelfIntersecting` closes every subpath
+  // implicitly, so an open one used to be carved as though its ends were joined: the
+  // medial axis of a shape nobody drew.
+  const OPEN_U = 'M 0 0 L 0 40 L 40 40 L 40 0'
+  const CLOSED = 'M 0 0 L 0 40 L 40 40 L 40 0 Z'
+  const params = { angleDeg: 60, maxDepthMM: 3, islandDs: [] as string[], safeHeightMM: 5 }
+
+  it('refuses an open boundary and names the cut that does work on one', async () => {
+    await expect(generateVCarve(OPEN_U, vbit(60), params)).rejects.toThrow(
+      'Path is open — a V-carve needs a closed shape. Close the path, or use a centerline profile with the V-bit to cut a groove along it.')
+  })
+
+  it('refuses a compound path with one open subpath among closed ones', async () => {
+    await expect(generateVCarve(`${CLOSED} M 60 0 L 100 0 L 100 40`, vbit(60), params))
+      .rejects.toThrow(/Path has 1 of 2 subpaths open/)
+  })
+
+  it('refuses an open ISLAND, which would carve the wrong hole', async () => {
+    await expect(generateVCarve(CLOSED, vbit(60), { ...params, islandDs: ['M 10 10 L 30 10 L 30 30'] }))
+      .rejects.toThrow(/^Island path is open/)
+  })
+
+  it('still carves a closed path', async () => {
+    expect((await generateVCarve(CLOSED, vbit(60), params)).length).toBeGreaterThan(0)
   })
 })

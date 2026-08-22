@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
-  generateEscapementParts, escapementDims, escapementPose, anchorOffset, escapementSpan, __escBackCorner,
-  __escFaces, __escLockCorner, __escLockPoints, __escBackEdge, __escToothRing, type EscapementSpec,
+  carriedPinion, generateEscapementParts, escapementDims, escapementPose, anchorOffset, escapementSpan,
+  __escBackCorner, __escFaces, __escLockCorner, __escLockPoints, __escBackEdge, __escToothRing,
+  type EscapementSpec,
 } from './escapementGenerator'
+import { flattenPath } from '../cam/pathFlattener'
+import { pointInPolygon } from '../cam/geom'
 import { scaleShapeParams, type ShapeParams } from './shapeGenerators'
 
 // Whether the thing actually escapes is a question about the wheel and the
@@ -188,6 +191,45 @@ describe('escapement — emission', () => {
     for (const teeth of [15, 30, 48]) {
       const d = escapementDims({ ...BASE, teeth })
       expect(d.toothPitchDeg).toBeCloseTo(360 / teeth, 12)
+    }
+  })
+})
+
+// The escape wheel carries the third wheel's pinion, like every other driven
+// wheel in a clock: the pins go through its hub and one loose cheek caps them.
+// Stated in PIN CIRCLE rather than module, because an escapement has none — that
+// circle belongs to the mesh with the wheel before it.
+describe('escapement — the pinion the wheel carries', () => {
+  const carrier: EscapementSpec = { ...BASE, arborPins: 12, arborPinCircleDia: 48, arborPinDia: 5 }
+
+  it('carries nothing unless asked', () => {
+    expect(carriedPinion(BASE)).toBeNull()
+    expect(generateEscapementParts(BASE).some((p) => p.key === 'arborpins')).toBe(false)
+    // …and asking changes nothing about the wheel it escapes with.
+    expect(escapementDims(carrier).centreDistance).toBeCloseTo(escapementDims(BASE).centreDistance, 9)
+    const teeth = (p: EscapementSpec) => generateEscapementParts(p).find((x) => x.key === 'wheel')!.d
+    expect(teeth(carrier)).toBe(teeth(BASE))
+  })
+
+  it('grows the hub to hold the holes, and drills them in solid stock', () => {
+    const grown = escapementDims(carrier).hub
+    expect(grown.dia).toBeGreaterThan(escapementDims(BASE).hub.dia)
+    expect(grown.dia).toBeCloseTo(carriedPinion(carrier)!.hubDia, 9)
+
+    const parts = generateEscapementParts(carrier)
+    const holes = flattenPath(parts.find((p) => p.key === 'arborpins')!.d, 0.01)
+    const windows = flattenPath(parts.find((p) => p.key === 'spokes')!.d, 0.05)
+    expect(holes).toHaveLength(12)
+    for (const h of holes) {
+      // Measured radially — a sampled circle's vertex mean is not its centre.
+      const rs = h.map(([x, y]) => Math.hypot(x, y))
+      expect(Math.min(...rs)).toBeCloseTo(24 - 2.5, 1)
+      expect(Math.max(...rs)).toBeCloseTo(24 + 2.5, 1)
+      for (const v of h) {
+        expect(Math.hypot(v[0], v[1])).toBeLessThan(grown.dia / 2)
+        expect(Math.hypot(v[0], v[1])).toBeGreaterThan(carrier.bore / 2)
+        for (const w of windows) expect(pointInPolygon(v[0], v[1], w)).toBe(false)
+      }
     }
   })
 })

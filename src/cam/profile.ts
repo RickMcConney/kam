@@ -1,4 +1,4 @@
-import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, ARC_FIT_MAX_SPAN, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, ARC_FIT_MAX_SPAN, splitSelfIntersecting, isOpenSubpath, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { zPasses, arcLengths, interpPt, stripClosingDuplicate, toolRadiusAtHeight, pushAll } from './geom'
 import type { MotionSegment } from '../store/toolpathStore'
@@ -166,11 +166,8 @@ export function generateProfile(
   //    "No geometry found") and wraps a self-touching open stroke into a closed
   //    loop, adding a spurious end→start closing line.
   const flat = flattenPath(d, 0.05)
-  const isOpenSub = (sp: Pt2[]) =>
-    sp.length < 2 ||
-    Math.hypot(sp[sp.length - 1][0] - sp[0][0], sp[sp.length - 1][1] - sp[0][1]) >= 1e-6
-  const closedSubs = splitSelfIntersecting(flat.filter((sp) => !isOpenSub(sp)))
-  const openSubs = flat.filter(isOpenSub)
+  const closedSubs = splitSelfIntersecting(flat.filter((sp) => !isOpenSubpath(sp)))
+  const openSubs = flat.filter(isOpenSubpath)
   if (closedSubs.length === 0 && openSubs.length === 0) throw new Error('No geometry found in path')
   // Combined design geometry, used for tab arc-length placement.
   const designSubs = [...closedSubs, ...openSubs]
@@ -237,6 +234,18 @@ export function generateProfile(
       throw new Error(allowance !== 0
         ? 'Tool plus allowance is larger than the shape'
         : 'Tool is larger than the shape')
+    }
+    // An open stroke has no interior, so there is no inside or outside of it to offset
+    // to, and it is left out of the inflate above. Left at that it is simply DROPPED —
+    // the op generates, reports nothing, and the stroke is never cut, which is only
+    // discovered in the material. Name it instead, and name the cut that does work on
+    // an open stroke.
+    if (openSubs.length > 0) {
+      const side = params.side === 'inside' ? 'inside' : 'outside'
+      throw new Error(closedSubs.length === 0
+        ? `Path is open — an ${side} profile needs a closed shape. Use a centerline profile to cut along it.`
+        : `${openSubs.length} of ${designSubs.length} subpaths are open and cannot be offset — an ${side} profile needs closed shapes. `
+          + 'Use a centerline profile, or split the path and profile the closed parts.')
     }
   } else {
     // Centerline: follow every subpath exactly. Closed loops trace once (drop the

@@ -20,7 +20,12 @@ const SHORTCUTS: Section[] = [
     rows: [
       { keys: ['Ctrl+Z'], desc: 'Undo' },
       { keys: ['Ctrl+Y'], desc: 'Redo' },
+      { keys: ['Ctrl+C'], desc: 'Copy selected paths (paste into any project)' },
+      { keys: ['Ctrl+V'], desc: 'Paste paths' },
+      { keys: ['Ctrl+X'], desc: 'Cut selected paths' },
       { keys: ['Ctrl+D'], desc: 'Duplicate selected' },
+      { keys: ['Ctrl+G'], desc: 'Group selected paths' },
+      { keys: ['Ctrl+Shift+G'], desc: 'Ungroup' },
       { keys: ['Delete', 'Backspace'], desc: 'Delete selected' },
       { keys: ['Escape'], desc: 'Deselect / cancel operation' },
     ],
@@ -48,6 +53,18 @@ const FEATURES = [
   {
     title: 'Select tool',
     desc: 'Click to select, drag empty area to box-select. Shift-click to toggle membership in a multi-selection. Drag handles to move, scale, or rotate. Hold Alt while dragging a corner handle to skew (shear) instead of scale.',
+  },
+  {
+    title: 'Export SVG',
+    desc: 'The toolbar Export SVG button writes the selected paths — or every visible path when nothing is selected — as an SVG in millimetres, with the stock as the page, so a path lands back where it was drawn when the file is imported into a project with the same stock. Path names ride along and come back as names. It carries OUTLINES only: a gear arrives as a shape with no module or tooth count, and images and STL bounding boxes are left out. To move work between two projects of this app, use Ctrl+C / Ctrl+V instead, which keeps the objects.',
+  },
+  {
+    title: 'Copying between projects',
+    desc: 'Ctrl+C copies the selected paths and Ctrl+V pastes them — into the same project, or into another one open in a second tab or window. The copy carries the OBJECTS, not just their outlines: a gear arrives with its module and tooth count still editable, a clock as one clock, a group as one group, and holding tabs come with the path. Provenance (an offset, a pattern, a boolean) survives only when the paths it was generated from are copied too, since a form has nothing to re-run without them. Pasting back into the project it came from nudges the copy 5 mm clear; into another project it lands where it was drawn. Operations are not copied — they name a tool and a floor the other project need not have.',
+  },
+  {
+    title: 'Groups',
+    desc: 'Select several paths and press Ctrl+G (or Group in the Properties panel) to tie them together: clicking any member then selects the whole group, so they move, scale, rotate and delete as one thing, and the Objects strip shows them as one chip. Ctrl+Shift+G ungroups. To get at a single path inside a group, Alt-click it on the canvas or click it in the Paths list. Groups nest: group a group with a shape and ungrouping gives back that group and that shape, one level at a time.',
   },
   {
     title: 'Shape tools',

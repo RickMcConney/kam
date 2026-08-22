@@ -10,9 +10,9 @@
 
 FreazyKam runs entirely in your browser — no account, no server, no install. You design or import 2D vector geometry, configure your tool library and workpiece, generate CNC toolpaths, preview the simulation, and export machine-ready G-code.
 
-![Design view — canvas, operation forms, and the timeline / operations strips](screen%20shots/design.png)
+![Design view — canvas, operation forms, and the objects / operations strips](screen%20shots/design.png)
 
-*Designing and generating toolpaths. The strip along the bottom switches between the project **timeline** (every edit, in the order you made it) and the **operations** list (every toolpath, in the order the machine runs it).*
+*Designing and generating toolpaths. The strip along the bottom switches between **Objects** (everything in the document, one chip each) and **Ops** (every toolpath, in the order the machine runs it).*
 
 ![3D simulation — material removal against the workpiece](screen%20shots/3d%20sim.png)
 
@@ -34,7 +34,15 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 - **G-code** — `.gcode`, `.nc`, `.ngc`, `.tap` for inspection and simulation
 
 ### Drawing Tools
-- **Shapes** — rectangle, rounded rect, inner-rounded rect, circle, ellipse, polygon, star, heart, slot, shield
+- **Shapes** — rectangle, rounded rect, sign (inner-rounded), circle, ellipse, polygon, star, heart, slot, shield, spirograph
+- **Parametric mechanisms** — every one is a real part, not a lookalike, and stays editable from its own chip:
+  - **Gear** — a true involute profile (or cycloidal, for clock work) with a hobbed trochoidal root that undercuts below the classic tooth-count limit. Module × teeth, bore, hub, spokes, backlash; pitch radius and tooth count engraved on the face in a single-stroke font. Cycloidal wheels emit the mating lantern pinion too, and either can be **animated in mesh** against its mate to check the pair actually runs
+  - **Escapement** — deadbeat or recoil, wheel and anchor generated together from one spec (the pallet faces are loci of this wheel's tooth tips, so the two halves only mean anything as a pair). Animates through its beat
+  - **Pendulum** — rod, hanging hole and bob, sized from the beat you want
+  - **Cam** — Archimedean snail cam with a lever, for clamps and hold-downs; lift is linear in handle angle, and the panel reports the pressure angle that decides whether it holds what it grips
+  - **Cutting board** — body, juice groove, hand slots or hanging hole, with paddle/cask/carry handle options; the groove is a true constant-distance offset of the cutting field, not a scaled copy
+  - **Maze** — a marble-run centreline, emitted as grooves for a ball-nose cutter rather than as an outline
+- **Clock** — a whole going train solved from one number: the beat. Pendulum length, an exact wheel/pinion factorisation for the rate (it says so in red rather than rounding when no exact train exists), optional 12:1 motion work for the hands, and the drive wheel's run time. Emits every wheel as an ordinary editable shape, lays them out on the stock, and will **run the assembled clock** on the canvas or let you drag its arbors into a plate arrangement that fits your case
 - **Text** — vector text paths via opentype.js; choose from bundled or web fonts, edit the text and font of an existing object at any time
 - **Pen tool** — click for straight segments, click-drag for Bezier curves; Escape to finish open path, click near first node to close
 - **Point editing** — double-click any path; drag anchors and handles, click segment to insert, hover + Delete to remove
@@ -42,19 +50,25 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 ### Object Editing
 - Move, scale (uniform and non-uniform), rotate with on-canvas handles
 - Boolean operations: union, intersection, subtract
-- Offset tool: inset/outset with round, miter or square corners — re-editable from its timeline chip
+- Offset tool: inset/outset with round, miter or square corners — re-editable from its chip
 - Corner treatment: outer radius, inner radius, chamfer, dogbone
 - Linear and circular pattern tools — also re-editable from their chip
 - Holding tabs: configure count, length, height; drag individual tabs along path
-- Undo/redo for everything, backed by the project timeline (below)
+- Group / ungroup (`Ctrl+G` / `Ctrl+Shift+G`) — groups nest, and Alt-click reaches a single path inside one
+- Copy and paste paths between projects (`Ctrl+C` / `Ctrl+V`) — a pasted gear is still a gear, with its parameters, corner treatments and grouping intact
+- Undo/redo for everything
 
-### Timeline & Operations
+### Objects & Operations
 
-The bar under the canvas holds two strips — they look alike but are different orderings of different things.
+The bar under the canvas holds two strips. They look alike, but one is the **document** and the other is the **program**.
 
-**Timeline** is the history: one chip per edit, in the order you made it. Click any chip to scrub the whole project back to that moment, then click forward again. Chips are editable in place — click a shape chip to change its parameters, a boolean chip to switch union/subtract, a pocket chip to change its depth — and the change is applied as an amendment to that step rather than as a new one stacked on top. History is saved in the project file, so it survives a reload.
+**Objects** is everything in the project, one chip per thing — every path, every clock, every operation. Click a chip to select what it stands for and open the editor that made it: a gear chip reopens the gear's parameters, a boolean chip its union/subtract, a pocket chip its depth. Editing a thing changes its chip rather than adding another, and deleting a chip deletes the thing.
 
-**Operations** is the program: one chip per toolpath, in the order the machine will run them, which is the order G-code is written in. Operations sharing a tool are drawn as a coloured band, with a marker at every tool change. Drag a chip — or a whole band — to reorder, and *Minimise tool changes* groups each tool's work together in one step. Hover a chip to hide it (hidden operations are excluded from exported G-code) or delete it; click one to select the paths it cuts and open its settings.
+A group — a multi-part shape, an imported SVG, a set of paths you grouped by hand — is one chip. So is a whole Generate: profiling five selected paths makes five operations, because each is its own run of the tool, but it was one decision and it edits as one. Tabs and corner treatments get chips too, attached to the path they belong to and sharing its colour, because each carries parameters worth reopening.
+
+**Ops** is the program: one chip per toolpath, in the order the machine will run them, which is the order G-code is written in. Operations sharing a tool are drawn as a coloured band, with a marker at every tool change. Drag a chip — or a whole band — to reorder. When the program visits a tool more than once, a **−N TC** button appears and gathers each tool's operations together in one step, so you load it once. Hover a chip to hide it (hidden operations are excluded from exported G-code) or delete it.
+
+Undo and redo cover every edit and are independent of both strips; undo history is per session.
 
 ### CAM Operations
 | Operation | Description |
@@ -113,7 +127,8 @@ Depths are always measured *from* the start surface, and the tool-reach and past
 - Pre-export preflight: cut-time estimate, and warnings for anything that would surprise you at the machine
 - Arc output (G2/G3) optional per profile
 - Separate G-code unit mode (mm or inches) independent of display units
-- Saves as `.fkam` project files (JSON) — geometry, operations, tool library, workpiece **and the full edit history** for round-trip editing
+- **SVG export** of the selected paths, or the whole drawing — written to round-trip through this app's own importer, with the stock as the page, so a path exported at (120, 40) comes back at (120, 40)
+- Saves as `.fkam` project files (JSON) — geometry, operations, tool library and workpiece, with every generated object keeping the parameters it was made from so it stays editable after a reload
 
 ---
 
@@ -127,6 +142,8 @@ Depths are always measured *from* the start surface, and the tool-reach and past
 | `Ctrl/Cmd+Z` | Undo |
 | `Ctrl/Cmd+Y` / `Ctrl/Cmd+Shift+Z` | Redo |
 | `Ctrl/Cmd+D` | Duplicate selected |
+| `Ctrl/Cmd+C` / `Ctrl/Cmd+V` | Copy / paste paths, including between projects |
+| `Ctrl/Cmd+G` / `Ctrl/Cmd+Shift+G` | Group / ungroup selected |
 | `Delete` / `Backspace` | Delete selected |
 | `S` | Toggle snap to grid |
 | `Space` | Play / pause simulation |

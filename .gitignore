@@ -49,3 +49,4 @@ scripts/
 # local scratch material (moved from repo root) + import-warning test files
 scratch/
 testfiles-b8/
+coverage/

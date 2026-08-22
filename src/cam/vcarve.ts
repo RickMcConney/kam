@@ -15,7 +15,7 @@ import { jspoly as JSPOLY } from './lib/jspoly.js'
 // jspoly.js's internal methods reference `JSPoly` as a bare global (written for <script> context).
 // In ES module scope it's never defined, so we pin it on globalThis once at import time.
 ;(globalThis as any).JSPoly = JSPOLY
-import { flattenPath, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { flattenPath, splitSelfIntersecting, requireClosedSubpaths, type Pt2 } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 
@@ -510,12 +510,25 @@ export async function generateVCarve(
   // Maximum tool radius in scaled units (used for pruning thresholds)
   const maxRadiusScaled = params.maxDepthMM * tanHalfAngle * SCALE
 
-  const allSubpathsPt2 = splitSelfIntersecting(flattenPath(d, 0.05))
+  // A v-carve cuts the MEDIAL AXIS of a region — the ridge equidistant from its walls —
+  // so it needs walls on every side. An open path has none, and closing it implicitly
+  // carves the medial axis of a shape that was never drawn.
+  const flat = flattenPath(d, 0.05)
+  requireClosedSubpaths(flat, {
+    cut: 'a V-carve',
+    remedy: 'Close the path, or use a centerline profile with the V-bit to cut a groove along it.',
+  })
+  const allSubpathsPt2 = splitSelfIntersecting(flat)
   if (!allSubpathsPt2.length) throw new Error('No geometry found in path')
 
   const islandPt2: Pt2[][] = []
   for (const iD of params.islandDs) {
-    for (const sub of splitSelfIntersecting(flattenPath(iD, 0.05))) {
+    const islandFlat = flattenPath(iD, 0.05)
+    requireClosedSubpaths(islandFlat, {
+      cut: 'a V-carve', noun: 'Island path',
+      remedy: 'Close the path, or take it out of the islands.',
+    })
+    for (const sub of splitSelfIntersecting(islandFlat)) {
       if (sub.length >= 3) islandPt2.push(sub)
     }
   }

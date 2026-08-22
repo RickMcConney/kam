@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { generateGcode } from './gcode'
+import { generateGcode, generateGcodePerTool } from './gcode'
 import { parseGcode } from '../sim/gcodeParser'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import type { PostProcessorProfile } from '../store/postProcessorStore'
@@ -276,5 +276,158 @@ describe('generateGcode — round-trip through the simulator parser', () => {
     const end = arcPts[arcPts.length - 1]
     expect(end.x).toBeCloseTo(20, 1)
     expect(end.y).toBeCloseTo(30, 1)
+  })
+})
+
+
+// ─── Per-tool split ───────────────────────────────────────────────────────────
+// One file per tool, for a machine with no changer: the operator loads a tool, runs
+// its file, loads the next. What makes it delicate is that the split is by MOTION,
+// not by operation — a 3D profile carries both its tools in one segment stream, with
+// a `toolChange` marker at the handover — so the question every test here asks is
+// whether the cutting survives being cut up.
+
+const TOOL_R: Tool = {
+  id: 'tr', name: 'Rough 6mm', type: 'endmill', diameterMM: 6, fluteCount: 2,
+  rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 25,
+}
+const TOOL_F: Tool = {
+  id: 'tf', name: 'Ball 3mm', type: 'ballnose', diameterMM: 3, fluteCount: 2,
+  rpm: 24000, xyFeedMmMin: 600, zFeedMmMin: 200, maxDepthMM: 15,
+}
+const SPLIT_TOOLS = { t1: TOOL, t2: TOOL2, tr: TOOL_R, tf: TOOL_F }
+
+/** A 3D profile: one op, two tools, handed over mid-stream by a toolChange marker. */
+const make3d = (over: Partial<AnyOperation> = {}): AnyOperation => ({
+  id: 'p3', name: '3D Profile', type: 'profile3d', toolId: 'tf', roughingToolId: 'tr',
+  pathId: 'p', status: 'done', color: '#fff', visible: true,
+  stepoverPercent: 40, rasterAngleDeg: 0, maxDepthMM: 10,
+  segments: [
+    rapid(0, 0, 5), cut(0, 0, -3), cut(10, 0, -3),
+    { x: 10, y: 0, z: 5, rapid: true, toolChange: 'tf' },
+    rapid(20, 0, 5), cut(20, 0, -1), cut(30, 0, -1),
+  ],
+  ...over,
+} as AnyOperation)
+
+const split = (ops: AnyOperation[], tools = SPLIT_TOOLS) =>
+  generateGcodePerTool(ops, tools, 'proj', POST)
+
+/** Cutting lines only — the material removal, which splitting must not change. */
+const cutLines = (g: string) => g.split('\n').filter((l) => l.startsWith('G1 '))
+
+describe('generateGcodePerTool — which files come out', () => {
+  it('makes one file per tool, in order of first use', () => {
+    const files = split([
+      makeOp([rapid(0, 0, 5), cut(0, 0, -1), cut(10, 0, -1)], { id: 'a', toolId: 't1' }),
+      makeOp([rapid(20, 0, 5), cut(20, 0, -1), cut(30, 0, -1)], { id: 'b', toolId: 't2' }),
+    ])
+    expect(files.map((f) => f.toolId)).toEqual(['t1', 't2'])
+    expect(files.map((f) => f.toolName)).toEqual(['Test End Mill', 'Small End Mill'])
+    expect(files.map((f) => f.rpm)).toEqual([18000, 24000])
+  })
+
+  it('gives a tool ONE file however many times the program comes back to it', () => {
+    // The ops list is flat and new ops append, so A, B, A is an ordinary program. Three
+    // files would mean loading the first tool twice, which is the thing this avoids.
+    const files = split([
+      makeOp([rapid(0, 0, 5), cut(0, 0, -1), cut(10, 0, -1)], { id: 'a', toolId: 't1' }),
+      makeOp([rapid(20, 0, 5), cut(20, 0, -1), cut(30, 0, -1)], { id: 'b', toolId: 't2' }),
+      makeOp([rapid(40, 0, 5), cut(40, 0, -1), cut(50, 0, -1)], { id: 'c', toolId: 't1' }),
+    ])
+    expect(files.map((f) => f.toolId)).toEqual(['t1', 't2'])
+    expect(cutLines(files[0].gcode)).toHaveLength(4)   // both t1 operations
+    expect(cutLines(files[1].gcode)).toHaveLength(2)
+  })
+
+  it('puts the roughing tool before the finishing one', () => {
+    // A 3D profile names its FINISHING tool in `toolId`, so reading that alone would
+    // hand the operator the ball nose first and the roughing pass second.
+    expect(split([make3d()]).map((f) => f.toolId)).toEqual(['tr', 'tf'])
+  })
+
+  it('leaves out everything generateGcode would leave out', () => {
+    expect(split([
+      makeOp([rapid(0, 0, 5), cut(0, 0, -1)], { id: 'a', visible: false }),
+      makeOp([rapid(0, 0, 5), cut(0, 0, -1)], { id: 'b', status: 'error' }),
+      makeOp([], { id: 'c' }),
+      { ...makeOp([rapid(0, 0, 5), cut(0, 0, -1)], { id: 'd' }), type: 'gcode' } as AnyOperation,
+    ])).toEqual([])
+  })
+
+  it('skips an operation whose tool is not in the library', () => {
+    expect(split([makeOp([rapid(0, 0, 5), cut(0, 0, -1)], { id: 'a', toolId: 'gone' })])).toEqual([])
+  })
+
+  it('makes no file for a tool that turns out to cut nothing', () => {
+    // A 3D profile names a roughing tool whether or not the generator ended up emitting
+    // a roughing pass — a shallow model can hand everything to the finishing tool. The
+    // tool list is built from those NAMES, so without the empty check the operator is
+    // handed a file that loads a cutter and then cuts nothing with it.
+    const noRough = make3d({
+      segments: [
+        { x: 0, y: 0, z: 5, rapid: true, toolChange: 'tf' },
+        rapid(20, 0, 5), cut(20, 0, -1), cut(30, 0, -1),
+      ],
+    } as Partial<AnyOperation>)
+    expect(split([noRough]).map((f) => f.toolId)).toEqual(['tf'])
+  })
+
+  it('numbers the files and sanitises the tool name into them', () => {
+    const odd: Tool = { ...TOOL, id: 'tx', name: '1/2" Bit: rough/finish' }
+    const files = generateGcodePerTool(
+      [makeOp([rapid(0, 0, 5), cut(0, 0, -1)], { id: 'a', toolId: 'tx' })], { tx: odd }, 'my proj', POST)
+    expect(files[0].filename).toBe('my proj_1_1_2_ Bit_ rough_finish')
+    // The file names itself in its own header, so a loose file on a USB stick says
+    // which tool it wants.
+    expect(files[0].gcode.split('\n')[0]).toBe('; my proj_1_1_2_ Bit_ rough_finish')
+  })
+})
+
+describe('generateGcodePerTool — the motion survives the split', () => {
+  it('cuts exactly what the single-file program cuts, no more and no less', () => {
+    // The invariant the whole feature rests on: every cutting move appears in exactly
+    // one file, and none is invented. A missed segment is a pass the part never gets.
+    const ops = [
+      makeOp([rapid(0, 0, 5), cut(0, 0, -1), cut(10, 0, -1)], { id: 'a', toolId: 't1' }),
+      make3d(),
+      makeOp([rapid(40, 0, 5), cut(40, 0, -1), cut(50, 0, -1)], { id: 'c', toolId: 't2' }),
+    ]
+    const combined = cutLines(generateGcode(ops, SPLIT_TOOLS, 'proj', POST)).sort()
+    const perTool = split(ops).flatMap((f) => cutLines(f.gcode)).sort()
+    expect(perTool).toEqual(combined)
+  })
+
+  it('sends each half of a 3D profile to its own tool, and only its own', () => {
+    const [rough, finish] = split([make3d()])
+    expect(cutLines(rough.gcode)).toEqual(['G1 X0.00 Y0.00 Z-3.00 F300', 'G1 X10.00 Y0.00 Z-3.00 F1000'])
+    expect(cutLines(finish.gcode)).toEqual(['G1 X20.00 Y0.00 Z-1.00 F200', 'G1 X30.00 Y0.00 Z-1.00 F600'])
+  })
+
+  it('turns the handover marker into a plain positioning move', () => {
+    // In the combined program that marker is where the operator swaps tools. Inside a
+    // single-tool file there is nothing to swap, so it must not carry the pause — the
+    // operator would be told to change to the tool already in the spindle.
+    const [rough, finish] = split([make3d()])
+    for (const f of [rough, finish]) {
+      expect(f.gcode).not.toContain('\nM0')
+    }
+    // It survives as the rapid that positions the finishing tool for its first cut.
+    expect(finish.gcode).toContain('G0 X10.00 Y0.00 Z5.00')
+  })
+
+  it('gives every file its own spindle speed and its own end block', () => {
+    // Each is a complete program: it is loaded and run on its own.
+    const files = split([make3d()])
+    expect(files[0].gcode).toContain('M3 S18000')
+    expect(files[0].gcode).not.toContain('M3 S24000')
+    expect(files[1].gcode).toContain('M3 S24000')
+    expect(files[1].gcode).not.toContain('M3 S18000')
+    for (const f of files) expect(f.gcode.trimEnd().endsWith('M30')).toBe(true)
+  })
+
+  it('reports the speed the operator should set for the file', () => {
+    const files = split([make3d()])
+    expect(files.map((f) => f.rpm)).toEqual([18000, 24000])
   })
 })

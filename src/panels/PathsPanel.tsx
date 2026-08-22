@@ -6,7 +6,7 @@
 // running A, B, A drew two tidy groups while the machine performed three tool changes.
 import { ICON } from '../theme'
 import { Eye, EyeOff, Trash2, Layers, ChevronRight, ChevronDown, FolderOpen, Folder, Image, Box } from 'lucide-react'
-import { usePathsStore } from '../store/pathsStore'
+import { usePathsStore, groupKeyOf, outerGroupOf } from '../store/pathsStore'
 
 export default function PathsPanel() {
   const {
@@ -20,13 +20,17 @@ export default function PathsPanel() {
   const groupMap = new Map<string, typeof paths>()
   const ungrouped: typeof paths = []
 
+  // Either axis makes a folder: an import/shape group, or a group the user tied
+  // together — and a path in both is listed under the user's, which is the outer
+  // one (groupKeyOf).
   for (const p of paths) {
-    if (p.groupId) {
-      if (!groupMap.has(p.groupId)) {
-        groupMap.set(p.groupId, [])
-        groupOrder.push(p.groupId)
+    const key = groupKeyOf(p)
+    if (key) {
+      if (!groupMap.has(key)) {
+        groupMap.set(key, [])
+        groupOrder.push(key)
       }
-      groupMap.get(p.groupId)!.push(p)
+      groupMap.get(key)!.push(p)
     } else {
       ungrouped.push(p)
     }
@@ -48,7 +52,12 @@ export default function PathsPanel() {
           {groupOrder.map((groupId) => {
             const members = groupMap.get(groupId)!
             const collapsed = collapsedGroups.has(groupId)
-            const groupName = members[0].groupName ?? groupId
+            // A user group has no name of its own — it is whatever the user put
+            // in it — so it is labelled for what it is, with the member count
+            // already shown beside it.
+            const groupName = outerGroupOf(members[0]) === groupId
+              ? 'Group'
+              : members[0].groupName ?? groupId
             const allVisible = members.every((p) => p.visible)
             const anySelected = members.some((p) => selectedIds.includes(p.id))
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { splitRegions } from './inlay'
+import { splitRegions, generateInlayFemale, generateInlayMale } from './inlay'
+import type { Tool } from '../store/toolStore'
 
 // Two subpaths (two M commands) — the multi-region gate splitRegions applies before
 // grouping. A single self-intersecting path is one shape and is deliberately skipped.
@@ -36,5 +37,40 @@ describe('splitRegions', () => {
     const regions = splitRegions(`${BOX} M 100 0 L 160 0 L 160 60 L 100 60 Z`)
     expect(regions.length).toBe(2)
     expect(regions.every((r) => r.islandDs.length === 0)).toBe(true)
+  })
+})
+
+describe('an open path is refused by both halves', () => {
+  // The socket is a pocket and the plug is the solid that fills it, so both bound a
+  // REGION. An open path was closed off implicitly by splitRegions and machined as a
+  // shape nobody drew — and since the two halves have to seat together, a wrong shape
+  // in either is a pair that cannot be assembled.
+  const OPEN_U = 'M 0 0 L 0 40 L 40 40 L 40 0'
+  const CLOSED = 'M 0 0 L 0 40 L 40 40 L 40 0 Z'
+  const EM: Tool = {
+    id: 'em6', name: '6mm End Mill', type: 'endmill', diameterMM: 6, fluteCount: 2,
+    rpm: 18000, xyFeedMmMin: 1000, zFeedMmMin: 300, maxDepthMM: 25,
+  }
+  const P = {
+    angleDeg: 60, pocketDepthMM: 2, stepDownMM: 2, stepoverPercent: 50,
+    glueLineMM: 0, clearanceMM: 0, islandDs: [] as string[], safeHeightMM: 5,
+  }
+
+  it('names the half that was asked for', async () => {
+    await expect(generateInlayFemale(OPEN_U, EM, null, P)).rejects
+      .toThrow('Path is open — an inlay socket needs a closed shape. Close the path — an inlay needs a shape with an inside and an outside.')
+    await expect(generateInlayMale(OPEN_U, EM, null, P)).rejects
+      .toThrow('Path is open — an inlay plug needs a closed shape. Close the path — an inlay needs a shape with an inside and an outside.')
+  })
+
+  it('refuses an open island in either half', async () => {
+    const withIsland = { ...P, islandDs: ['M 10 10 L 30 10 L 30 30'] }
+    await expect(generateInlayFemale(CLOSED, EM, null, withIsland)).rejects.toThrow(/^Island path is open/)
+    await expect(generateInlayMale(CLOSED, EM, null, withIsland)).rejects.toThrow(/^Island path is open/)
+  })
+
+  it('still cuts a closed path', async () => {
+    const f = await generateInlayFemale(CLOSED, EM, null, P)
+    expect(f.endmillSegs.length + f.vbitSegs.length).toBeGreaterThan(0)
   })
 })

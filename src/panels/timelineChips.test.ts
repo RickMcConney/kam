@@ -80,6 +80,38 @@ describe('the object strip', () => {
     expect(chips[1].label).toBe('Offset')
   })
 
+  // One Apply of a pattern is ONE set of parameters to go back and change, so
+  // the copies it made are one chip — the same reasoning as a batch of
+  // operations. Copies from a DUPLICATE are not grouped: each is its own object
+  // with no form behind it.
+  it('collapses the paths one generator call made into one chip', () => {
+    const params = { type: 'linear' as const, rows: 1, cols: 3, xSpacingMM: 10, ySpacingMM: 0 }
+    const pat = (n: string) => path({ id: n, definition: { id: 'dp', kind: 'pattern' as const, sourceIds: ['src'], params } })
+    const chips = buildChips([
+      path({ id: 'src' }),
+      pat('p1'), pat('p2'),
+      path({ id: 'c1', definition: { id: 'dd', kind: 'duplicate', sourceId: 'src', offsetMM: 5 } }),
+      path({ id: 'c2', definition: { id: 'dd', kind: 'duplicate', sourceId: 'src', offsetMM: 5 } }),
+    ], [])
+    expect(chips.map((c) => c.key)).toEqual(['src', 'def:dp', 'c1', 'c2'])
+    expect(chips[1].label).toBe('Pattern ×2')
+    expect(chips[1].pathIds).toEqual(['p1', 'p2'])
+    expect(chips[1].editPathId).toBe('p1')
+  })
+
+  // A group is ONE thing — that is what grouping it meant — so it is one chip,
+  // and its members' own chips come back when it is ungrouped.
+  it('collapses a user group to one chip standing for every member', () => {
+    const chips = buildChips([
+      path({ id: 'a', userGroups: ['g1'] }),
+      path({ id: 'loose' }),
+      path({ id: 'b', userGroups: ['g1', 'inner'] }),
+    ], [])
+    expect(chips.map((c) => c.key)).toEqual(['ugroup:g1', 'loose'])
+    expect(chips[0].label).toBe('Group ×2')
+    expect(chips[0].pathIds).toEqual(['a', 'b'])
+  })
+
   // Tabs and corner treatments are the two things with parameters that had no
   // chip. Both belong TO a path, so they follow it rather than sitting loose.
   it('puts a tabs chip straight after the path it holds', () => {

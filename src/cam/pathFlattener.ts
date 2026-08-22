@@ -581,6 +581,53 @@ function splitAtIntersections(pts: Pt2[], tol = 0.01): Pt2[][] {
 }
 
 // Convenience: split any self-touching or self-crossing subpaths into simple loops.
+/**
+ * Does this subpath draw a STROKE rather than a region — i.e. do its ends fail to meet?
+ *
+ * The distinction matters because `splitSelfIntersecting` treats every subpath as
+ * implicitly closed: hand it a U and it returns the U joined mouth-to-mouth, which is a
+ * perfectly good ring of the wrong shape. Anything that clears or carries an AREA has to
+ * ask this first, or it silently machines something the user did not draw.
+ *
+ * A subpath of under two points draws nothing at all and counts as open — it cannot be
+ * followed as a stroke either.
+ */
+export function isOpenSubpath(sp: Pt2[]): boolean {
+  return sp.length < 2 ||
+    Math.hypot(sp[sp.length - 1][0] - sp[0][0], sp[sp.length - 1][1] - sp[0][1]) >= 1e-6
+}
+
+/**
+ * Refuse a path that does not bound a region, and say what to do about it.
+ *
+ * Everything that CLEARS or CARRIES an area — pocket, v-carve, trochoidal, inlay —
+ * runs its input through `splitSelfIntersecting`, which closes every subpath
+ * implicitly. So an open path is not rejected downstream, it is quietly closed off and
+ * machined: a U-shaped path pocketed as a filled square, with no error and a toolpath
+ * that looks entirely reasonable on the canvas. This is the only point at which a
+ * stroke and a region can still be told apart, so each of those entry points asks here
+ * first.
+ *
+ * Subpaths of under two points draw nothing and are ignored — a stray moveto in an
+ * imported file is not something to fail a job over.
+ *
+ * `cut` names the operation ("a pocket"), `remedy` says what to do, and `noun` names
+ * the offender when it is not the main path ("Island path").
+ */
+export function requireClosedSubpaths(
+  subpaths: Pt2[][],
+  opts: { cut: string; remedy: string; noun?: string },
+): void {
+  const drawn = subpaths.filter((sp) => sp.length >= 2)
+  const open = drawn.filter(isOpenSubpath)
+  if (open.length === 0) return
+  const noun = opts.noun ?? 'Path'
+  throw new Error(open.length === drawn.length
+    ? `${noun} is open — ${opts.cut} needs a closed shape. ${opts.remedy}`
+    : `${noun} has ${open.length} of ${drawn.length} subpaths open — ${opts.cut} needs closed `
+      + `shapes, and an open one is closed off as though its ends were joined. ${opts.remedy}`)
+}
+
 export function splitSelfIntersecting(subpaths: Pt2[][]): Pt2[][] {
   return subpaths
     .filter(s => s.length >= 3)

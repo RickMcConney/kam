@@ -465,6 +465,13 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     }))
   },
 
+  // Marks the operation failed and clears its segments. It does NOT report anywhere —
+  // WHERE a failure is shown depends on who asked for it, and showing it twice is worse
+  // than showing it once. A Generate the user just clicked says so in that form's own
+  // banner (`useGenerateError` in panels/machine/shared), right under the button; an
+  // automatic regeneration has no form open and goes to the status bar instead (see
+  // regenerate.ts). `errorMessage` is kept either way — the operations strip shows it on
+  // the row, which is where a failure is fixed or thrown away.
   setError: (id, error) =>
     set((s) => ({
       operations: s.operations.map((o) =>

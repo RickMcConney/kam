@@ -54,8 +54,8 @@ const MESHES = TRAIN_WHEELS - 1
 
 // Bounds on ONE mesh. A wooden clock wheel much under 1.5:1 is not worth the
 // arbor it sits on, and much over 12:1 needs a wheel that will not fit the case.
-const MIN_MESH_RATIO = 1.5
-const MAX_MESH_RATIO = 12
+export const MIN_MESH_RATIO = 1.5
+export const MAX_MESH_RATIO = 12
 // How far above `minPins` the solver may go looking for an exact train. Each
 // extra pin makes every wheel on that mesh bigger for the same ratio, so this is
 // a last resort and is priced as one below.
@@ -67,10 +67,26 @@ const PIN_HEADROOM = 3
  *  starts before anyone arranges it. */
 const TRAIN_LEAN_DEG = 22
 
+/** Where the MOTION WORK's arbor sits, as one more entry on the end of
+ *  `linkAngles`. The train's links run 0…TRAIN_WHEELS-1 (one per pair of
+ *  neighbouring arbors); this one is a BRANCH off the great arbor rather than
+ *  the next link of the chain, which is why it is indexed past them and why its
+ *  angle points the other way — from its host TO the joint, since here the host
+ *  is what is fixed. */
+export const MOTION_LINK = TRAIN_WHEELS
+
+/** …and where it starts: straight out to the right of the great arbor, clear of
+ *  a train that leans upward. As arbitrary as the train's own lean, and as
+ *  arrangeable — only the LENGTH is forced. */
+const MOTION_LEAN_DEG = 0
+
 /** The lean as link angles: up and alternately left/right, which keeps the
- *  train compact and vertical and leaves the middle clear for the pendulum. */
-export function defaultLinkAngles(links = TRAIN_WHEELS): number[] {
-  return Array.from({ length: links }, (_, i) => 90 + (i % 2 === 0 ? 1 : -1) * TRAIN_LEAN_DEG)
+ *  train compact and vertical and leaves the middle clear for the pendulum. The
+ *  motion branch rides on the end, so one array covers the whole arrangement. */
+export function defaultLinkAngles(links = TRAIN_WHEELS + 1): number[] {
+  return Array.from({ length: links }, (_, i) => i === MOTION_LINK
+    ? MOTION_LEAN_DEG
+    : 90 + (i % 2 === 0 ? 1 : -1) * TRAIN_LEAN_DEG)
 }
 
 /**
@@ -84,7 +100,8 @@ export function defaultLinkAngles(links = TRAIN_WHEELS): number[] {
  */
 export function linkAngleAt(angles: number[] | undefined, i: number): number {
   const a = angles?.[i]
-  const deg = Number.isFinite(a) ? (a as number) : 90 + (i % 2 === 0 ? 1 : -1) * TRAIN_LEAN_DEG
+  const fallback = i === MOTION_LINK ? MOTION_LEAN_DEG : 90 + (i % 2 === 0 ? 1 : -1) * TRAIN_LEAN_DEG
+  const deg = Number.isFinite(a) ? (a as number) : fallback
   return (deg * Math.PI) / 180
 }
 
@@ -94,6 +111,13 @@ export interface ClockSpec {
   beatSeconds: number
   /** Escape wheel teeth. With a one-second beat, 30 turns it once a minute. */
   escapeTeeth: number
+  /** Tooth counts the user is HOLDING, one per mesh (great, second, third);
+   *  `null` or absent means the solver chooses. The rate is still what the
+   *  search is costed on, so pinning one wheel moves the others to keep the
+   *  train exact — pin the wheel you have stock for, or have already cut. Pin
+   *  all three and there is nothing left to solve: the train is reported as it
+   *  stands, in red if it no longer keeps time. See `solveTrain`. */
+  lockedTeeth?: (number | null)[]
   /** Fewest pins any lantern pinion in the train may have. A lantern pinion with
    *  too few pins has a coarse, lumpy action, so this is the floor the solver
    *  works up from — it is not a target. */
@@ -102,6 +126,28 @@ export interface ClockSpec {
   greatWheelMin: number
   /** Tooth size for the whole going train, mm. */
   module: number
+  /** Play at every mesh, mm at the pitch line — tooth THINNING, not a wider
+   *  centre distance (see gearGenerator). One figure for the whole clock: it is
+   *  a property of how the wheels are cut, and setting it per wheel meant
+   *  opening five chips to change one decision. */
+  backlash: number
+  /** Every lantern pinion's pin diameter, mm. On a cycloidal wheel this is a
+   *  tooth-FORM parameter — the wheel's face is the epicycloid of the pin circle
+   *  offset inward by the pin radius — so it belongs with the module rather than
+   *  on each wheel: a clock whose wheels disagree about it has wheels cut for
+   *  pins that are not in it. */
+  pinDia: number
+  /** Cut the MOTION WORK too — the two extra wheels that drive an hour hand off
+   *  the minute arbor at 12:1 (see `solveMotionWork`). Optional, and absent on a
+   *  clock designed before it existed, which reads as off. */
+  motionWork?: boolean
+  /** k in the motion work's `P₁ = 5k / P₂ = 4k` family — the ONE free number in
+   *  it, since the ratios and the equal centre distance fix everything else. 2 is
+   *  the classic 10/30 + 8/32; each step up makes both wheels and the arbor
+   *  spacing half as big again, which is how the minute wheel's stud is moved
+   *  out clear of a big great wheel. Absent on an older clock: reads as
+   *  MOTION_SIZE. */
+  motionSize?: number
   /** Hours the clock should run on one wind. */
   runHours: number
   /** How far the weight falls over that run, mm. */
@@ -131,6 +177,15 @@ export const DEFAULT_CLOCK_SPEC: ClockSpec = {
   greatWheelMin: 60,
   // Module 4 for the cutter, not the gear — see DEFAULT_SHAPE_CONFIG.gear.
   module: 4,
+  // The Gear defaults' own figures, so a clock starts where a hand-drawn gear
+  // does; both are now editable in one place for the whole train.
+  backlash: 0.3,
+  pinDia: 5,
+  // Off: a clock is a going train, and the hands are a thing you add to one.
+  motionWork: false,
+  // = MOTION_SIZE, which is declared with the rest of the motion work below —
+  // the classic 10/30 + 8/32.
+  motionSize: 2,
   // A day's run off a metre of fall on a 40 mm drum: about eight turns of cord,
   // so the drive wheel wants roughly 3:1 onto the great wheel.
   runHours: 24,
@@ -186,49 +241,97 @@ export interface TrainSolution {
  *
  * The search is over integer factorisations, not over rounded cube roots,
  * because a clock train that is a thousandth out is 86 seconds a day. It walks
- * the two outer wheels and takes the third from the quotient; anything that
- * lands on a whole tooth costs nothing, everything else pays for its rate error
- * first and its shape second.
+ * two of the wheels and takes the third from the quotient; anything that lands
+ * on a whole tooth costs nothing, everything else pays for its rate error first
+ * and its shape second.
  *
  * Cost, in order: rate error, then how far the three ratios are spread apart (an
  * even split gives the smallest wheels overall), then pins above `minPins` — the
  * last priced so that a train needing fatter pinions is only ever chosen when
  * there is no exact one without them.
+ *
+ * `locked` HOLDS TOOTH COUNTS THE USER HAS CHOSEN, one entry per mesh (great,
+ * second, third; `null` for free). The search then runs over what is left and
+ * the RATE is still what it is costed on, which is the point of the feature: pin
+ * the wheel you have stock for, or the one you have already cut, and the others
+ * move to keep the train exact. Three things follow from a lock and each would
+ * be a bug if it were forgotten:
+ *
+ *   • the DERIVED wheel is the last FREE one, not always the third — with two
+ *     locked there is only one left to solve for, and with three there is
+ *     nothing to search at all and the train is simply reported (inexact and in
+ *     red, if that is what the user has asked for);
+ *   • a locked count IGNORES the mesh-ratio bounds. They exist to stop the
+ *     search proposing silly wheels, and a number the user typed is not a
+ *     proposal;
+ *   • the result is NOT SORTED when anything is locked. The sort puts the
+ *     biggest wheel at the great arbor, which is right for a train the solver
+ *     chose freely — but the locks are per WHEEL, and sorting would slide the
+ *     user's count onto a different arbor.
  */
-export function solveTrain(ratio: number, minPins: number): TrainSolution {
+export function solveTrain(ratio: number, minPins: number, locked?: (number | null)[]): TrainSolution {
   const target = Math.max(1, ratio)
   const floor = Math.max(2, Math.round(minPins))
   const ideal = Math.log(target) / MESHES
 
+  // One entry per mesh: the count the user is holding, or null.
+  const lock = Array.from({ length: MESHES }, (_, i) => {
+    const v = locked?.[i]
+    return typeof v === 'number' && Number.isFinite(v) && v >= 4 ? Math.round(v) : null
+  })
+  const anyLocked = lock.some((v) => v !== null)
+  // The one the quotient decides — the LAST free mesh, or none when all three
+  // are held.
+  const freeIdx = lock.map((v, i) => (v === null ? i : -1)).filter((i) => i >= 0)
+  const derive = freeIdx.length > 0 ? freeIdx[freeIdx.length - 1] : -1
+  const walk = [0, 1, 2].filter((i) => i !== derive)
+
   let bestCost = Infinity
   let best: Mesh[] | null = null
+
+  const consider = (t: number[], p: number[], pinCost: number) => {
+    const actual = (t[0] / p[0]) * (t[1] / p[1]) * (t[2] / p[2])
+    // Rate error dominates by six orders of magnitude: an exact train is always
+    // preferred to a prettier inexact one.
+    const relErr = Math.abs(actual / target - 1)
+    const spread = t.reduce((sum, ti, i) => sum + (Math.log(ti / p[i]) - ideal) ** 2, 0)
+    const cost = relErr * 1e6 + spread + pinCost
+    if (cost < bestCost) {
+      bestCost = cost
+      best = [0, 1, 2].map((i) => ({ teeth: t[i], pins: p[i] }))
+    }
+  }
 
   for (let p1 = floor; p1 <= floor + PIN_HEADROOM; p1++) {
     for (let p2 = floor; p2 <= floor + PIN_HEADROOM; p2++) {
       for (let p3 = floor; p3 <= floor + PIN_HEADROOM; p3++) {
+        const pins = [p1, p2, p3]
         const pinCost = 0.01 * (p1 + p2 + p3 - 3 * floor)
         if (pinCost >= bestCost) continue
         const product = target * p1 * p2 * p3   // what T1·T2·T3 must come to
-        const t1Lo = Math.ceil(MIN_MESH_RATIO * p1), t1Hi = Math.floor(MAX_MESH_RATIO * p1)
-        const t2Lo = Math.ceil(MIN_MESH_RATIO * p2), t2Hi = Math.floor(MAX_MESH_RATIO * p2)
-        const t3Lo = Math.ceil(MIN_MESH_RATIO * p3), t3Hi = Math.floor(MAX_MESH_RATIO * p3)
-        for (let t1 = t1Lo; t1 <= t1Hi; t1++) {
-          for (let t2 = t2Lo; t2 <= t2Hi; t2++) {
-            const t3 = Math.round(product / (t1 * t2))
-            if (t3 < t3Lo || t3 > t3Hi) continue
-            const actual = (t1 / p1) * (t2 / p2) * (t3 / p3)
-            // Rate error dominates by six orders of magnitude: an exact train is
-            // always preferred to a prettier inexact one.
-            const relErr = Math.abs(actual / target - 1)
-            const spread =
-              (Math.log(t1 / p1) - ideal) ** 2 +
-              (Math.log(t2 / p2) - ideal) ** 2 +
-              (Math.log(t3 / p3) - ideal) ** 2
-            const cost = relErr * 1e6 + spread + pinCost
-            if (cost < bestCost) {
-              bestCost = cost
-              best = [{ teeth: t1, pins: p1 }, { teeth: t2, pins: p2 }, { teeth: t3, pins: p3 }]
-            }
+
+        if (derive < 0) {
+          // Every count held: there is nothing to search, only to report.
+          consider(lock as number[], pins, pinCost)
+          continue
+        }
+        // A locked count is walked as itself and is NOT held to the ratio
+        // bounds; a free one is walked over them.
+        const range = (i: number): [number, number] => lock[i] !== null
+          ? [lock[i]!, lock[i]!]
+          : [Math.ceil(MIN_MESH_RATIO * pins[i]), Math.floor(MAX_MESH_RATIO * pins[i])]
+        const [aLo, aHi] = range(walk[0])
+        const [bLo, bHi] = range(walk[1])
+        const [dLo, dHi] = range(derive)
+        const t = [0, 0, 0]
+        for (let a = aLo; a <= aHi; a++) {
+          t[walk[0]] = a
+          for (let b = bLo; b <= bHi; b++) {
+            t[walk[1]] = b
+            const d = Math.round(product / (a * b))
+            if (d < dLo || d > dHi) continue
+            t[derive] = d
+            consider(t, pins, pinCost)
           }
         }
       }
@@ -236,15 +339,20 @@ export function solveTrain(ratio: number, minPins: number): TrainSolution {
   }
 
   // Nothing in range at all (an absurd ratio). Fall back to an even split so the
-  // caller always has a train to draw and a rate error to report.
+  // caller always has a train to draw and a rate error to report — holding
+  // whatever the user locked, since that is not the solver's to give up.
   if (!best) {
     const r = Math.exp(ideal)
-    best = Array.from({ length: MESHES }, () => ({ teeth: Math.max(4, Math.round(floor * r)), pins: floor }))
+    best = Array.from({ length: MESHES }, (_, i) => ({
+      teeth: lock[i] ?? Math.max(4, Math.round(floor * r)),
+      pins: floor,
+    }))
   }
 
   // Descending, so the biggest wheel is the great wheel — the slow, high-torque
-  // end of the train, which is where a wooden clock wants its material.
-  best.sort((a, b) => b.teeth / b.pins - a.teeth / a.pins)
+  // end of the train, which is where a wooden clock wants its material. NOT when
+  // anything is locked: the locks are per wheel, and this would move them.
+  if (!anyLocked) best.sort((a, b) => b.teeth / b.pins - a.teeth / a.pins)
 
   const actualRatio = best.reduce((r, m) => r * (m.teeth / m.pins), 1)
   // The hands advance as the great wheel turns, so a train that is too SLOW
@@ -305,9 +413,86 @@ export function solveDrive(spec: ClockSpec, minPins: number): DriveSolution {
   }
 }
 
+// ─── The motion work ──────────────────────────────────────────────────────────
+//
+// The two extra wheels that drive the HOUR HAND off the minute arbor at 12:1.
+// The going train ends at the great wheel turning once an hour, which carries
+// the minute hand directly; the hour hand runs on a tube around that same arbor
+// and has to be geared down from it.
+//
+// It is one reduction folded through an intermediate arbor, and it is 3 × 4 for
+// a reason that is not taste. BOTH MESHES SPAN THE SAME PAIR OF ARBORS — the
+// minute arbor and the intermediate one — because the hour wheel is CONCENTRIC
+// with the minute arbor (its tube runs over the cannon pinion's). So the two
+// centre distances are the same distance, and with a lantern pinion of P pins
+// sitting on a pitch circle of `m·P/2` (`describingRadius`, the same rule the
+// wheels' teeth are cut to) that says
+//
+//     P₁ + T₁ = P₂ + T₂,   T₁ = r₁·P₁,   T₂ = r₂·P₂,   r₁·r₂ = 12
+//
+// With r₁ = 3 and r₂ = 4 that is 4P₁ = 5P₂, so P₁ = 5k and P₂ = 4k for a whole
+// number k and the counts come out 15k / 16k. At k = 2 they are the classic
+// 10 / 30 and 8 / 32 of a real motion work, which is where those numbers come
+// from. Split any other way — 2 × 6, say — and the same arithmetic gives 3P₁ =
+// 7P₂, i.e. a three-pin pinion before anything else fits: the split is forced by
+// the geometry, not chosen.
+//
+// The pin DRIVES THE WHEEL here, the opposite of the going train, so the tooth
+// contact is on the wheel's flank rather than its face — and a cycloidal wheel's
+// flank is cut radial (see gearGenerator), which is conjugate to nothing in
+// particular. It is what a motion work always is: the load is the hands and the
+// friction of the cannon-pinion clutch, so the drive is nearly free and the
+// action only has to not jam. The readout says so rather than leaving it to be
+// discovered.
+
+/** The 12:1 split, and it is forced rather than chosen — see above. */
+export const MOTION_RATIOS: readonly [number, number] = [3, 4]
+
+/** k in the P₁ = 5k / P₂ = 4k family. 2 is the smallest that gives both pinions
+ *  enough pins to be worth calling lanterns (8 and 10); 1 would ask for a
+ *  four-pin one. A field, if anyone ever wants the motion work a size up. */
+export const MOTION_SIZE = 2
+
+export interface MotionWork {
+  /** Pins on the cannon pinion — the driver, fixed to the minute arbor. */
+  cannonPins: number
+  /** Teeth on the minute wheel it drives, on the intermediate arbor. */
+  minuteTeeth: number
+  /** Pins on the pinion beside that wheel, on the same intermediate arbor. */
+  minutePins: number
+  /** Teeth on the hour wheel it drives, back on the minute arbor. */
+  hourTeeth: number
+  /** Minute arbor to intermediate arbor. ONE number: both meshes run at it, and
+   *  that is the whole constraint the counts satisfy. */
+  centreDistanceMM: number
+  /** 12, by construction — stated so a caller can check rather than trust. */
+  ratio: number
+}
+
+export function solveMotionWork(module: number, size = MOTION_SIZE): MotionWork {
+  const m = Math.max(0.05, module)
+  const k = Math.max(1, Math.round(size))
+  const [r1, r2] = MOTION_RATIOS
+  const cannonPins = 5 * k
+  const minutePins = 4 * k
+  const minuteTeeth = r1 * cannonPins
+  const hourTeeth = r2 * minutePins
+  return {
+    cannonPins, minuteTeeth, minutePins, hourTeeth,
+    // m(P+T)/2 either way round — the equality is the point.
+    centreDistanceMM: (m * (cannonPins + minuteTeeth)) / 2,
+    ratio: (minuteTeeth / cannonPins) * (hourTeeth / minutePins),
+  }
+}
+
 // ─── Emitting the parts ───────────────────────────────────────────────────────
 
-export type ClockPartKey = 'drive' | 'great' | 'second' | 'third' | 'escapement' | 'pendulum'
+export type ClockPartKey =
+  | 'drive' | 'great' | 'second' | 'third' | 'escapement' | 'pendulum'
+  // The motion work, present only when it was asked for. Off the great arbor and
+  // not in the going train: they change no rate and are on no arbor `clockPlate`
+  // walks — see TRAIN_PART_ORDER.
+  | 'minute' | 'hour'
 
 /** The shapes the GOING TRAIN is made of — narrowed so every reader can reach
  *  the tooth counts without re-narrowing the whole ShapeParams union. The
@@ -338,6 +523,8 @@ export interface ClockDesign {
   drive: DriveSolution
   pendulumMM: number
   escRevSeconds: number
+  /** The hour-hand gearing, when it was asked for. */
+  motion: MotionWork | null
   parts: ClockPart[]
 }
 
@@ -355,17 +542,40 @@ export interface ClockDesign {
  */
 export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   const escRev = escapeRevSeconds(spec.beatSeconds, spec.escapeTeeth)
-  const train = solveTrain(trainRatio(spec), spec.minPins)
+  const train = solveTrain(trainRatio(spec), spec.minPins, spec.lockedTeeth)
   const drive = solveDrive(spec, spec.minPins)
 
-  const wheel = (teeth: number, pins: number): ClockShapeParams => ({
+  // Everything the TRAIN forces on a wheel, over the user's own Gear defaults.
+  // Backlash and pin diameter are in that list rather than left to the defaults
+  // because they are decisions about the CLOCK: every mesh in it runs on the
+  // same play, and every lantern is pinned with the same rod — and on a
+  // cycloidal wheel the pin diameter shapes the teeth, so wheels disagreeing
+  // about it are cut for pins that are not in the clock.
+  const pinDia = Math.max(0.1, spec.pinDia ?? base.gear.pinDia)
+
+  // `pins` is the lantern this wheel DRIVES, on the next arbor; `carries` is the
+  // one standing on its OWN arbor, driven by the wheel before it. The wheel is
+  // that pinion's near cheek: its pins go through the wheel's hub, which grows
+  // to hold them, and the loose cheek emitted by the previous wheel caps the far
+  // ends. One part fewer per arbor, and the pins cannot creep round the wheel
+  // the way a pinion glued to an arbor can.
+  const wheel = (teeth: number, pins: number, carries = 0): ClockShapeParams => ({
     type: 'gear', cx: 0, cy: 0,
     ...base.gear,
     module: spec.module,
     teeth,
     toothProfile: 'cycloidal',
     mateTeeth: pins,
+    backlash: Math.max(0, spec.backlash ?? base.gear.backlash),
+    pinDia,
     emitPinion: true,
+    ...(carries >= 2 ? {
+      arborPins: carries,
+      // The carried pinion's PITCH circle — m·P — since both meshes are cut to
+      // the same module here.
+      arborPinCircleDia: spec.module * carries,
+      arborPinDia: pinDia,
+    } : {}),
   })
 
   // Arbor periods, from the escape wheel backwards: each wheel turns its mesh
@@ -375,21 +585,63 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   const secondSec = thirdSec * (m2.teeth / m2.pins)
   const greatActual = secondSec * (m1.teeth / m1.pins)
 
+  // The hour hand's gearing, if asked for: two more wheels of the same kind, off
+  // the great arbor rather than along the train. Its ratio is 12 whatever the
+  // great wheel does, so a great wheel not turning once an hour makes the hour
+  // hand wrong — which the readout says, since nothing here can fix it.
+  const motion = spec.motionWork ? solveMotionWork(spec.module, spec.motionSize ?? MOTION_SIZE) : null
+
   const parts: ClockPart[] = [
     {
+      // Nothing drives the drive wheel but the cord, so its arbor carries no
+      // pinion — it is the one wheel in the clock with no pins through its hub.
+      // What its hub IS is the drum: the cord winds on that arbor, and cutting
+      // the hub to `drumDia` makes the wheel itself the drum's face, so the
+      // winding has something to run against and the two cannot disagree about
+      // a diameter the RUN TIME was worked out from. A floor like every other
+      // hub — `seatHub` still grows it if the spokes need more, which the
+      // readout reports, since then the cord would ride against the hub.
       key: 'drive', name: 'Drive Wheel',
       revSeconds: greatActual * (drive.teeth / drive.pins),
-      params: wheel(drive.teeth, drive.pins),
+      params: { ...wheel(drive.teeth, drive.pins), hubDia: Math.max(0, spec.drumDia) },
     },
-    { key: 'great',  name: 'Great Wheel',  revSeconds: greatActual, params: wheel(m1.teeth, m1.pins) },
-    { key: 'second', name: 'Second Wheel', revSeconds: secondSec,   params: wheel(m2.teeth, m2.pins) },
-    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,    params: wheel(m3.teeth, m3.pins) },
+    {
+      key: 'great', name: 'Great Wheel', revSeconds: greatActual,
+      params: wheel(m1.teeth, m1.pins, drive.pins),
+    },
+    // In CLOCK_PART_ORDER position: straight after the wheel whose arbor they
+    // hang off. Each is emitted with the lantern it MESHES with, exactly as a
+    // train wheel is — the difference is which of the pair drives, which changes
+    // nothing about the two parts to be cut.
+    ...(motion ? [
+      {
+        // Its arbor is the stud, and the pinion on it is the one driving the hour
+        // wheel — so the minute wheel carries those pins, and the hour wheel's
+        // emitted lantern is their cheek.
+        key: 'minute' as const, name: 'Minute Wheel',
+        revSeconds: greatActual * (motion.minuteTeeth / motion.cannonPins),
+        params: wheel(motion.minuteTeeth, motion.cannonPins, motion.minutePins),
+      },
+      {
+        key: 'hour' as const, name: 'Hour Wheel',
+        revSeconds: greatActual * motion.ratio,
+        params: wheel(motion.hourTeeth, motion.minutePins),
+      },
+    ] : []),
+    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(m2.teeth, m2.pins, m1.pins) },
+    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(m3.teeth, m3.pins, m2.pins) },
     {
       key: 'escapement', name: 'Escapement', revSeconds: escRev,
       params: {
         type: 'escapement', cx: 0, cy: 0,
         ...base.escapement,
         teeth: Math.max(6, Math.round(spec.escapeTeeth)),
+        // It carries the third wheel's pinion, like every other driven wheel —
+        // and it is the one wheel that cannot work the pin circle out for
+        // itself, having no module of its own.
+        arborPins: m3.pins,
+        arborPinCircleDia: spec.module * m3.pins,
+        arborPinDia: pinDia,
       },
     },
     // Last, and on no arbor at all — it hangs from the anchor. Its LENGTH is the
@@ -407,7 +659,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   ]
 
   return {
-    train, drive, parts,
+    train, drive, parts, motion,
     pendulumMM: pendulumLengthMM(spec.beatSeconds),
     escRevSeconds: escRev,
   }
@@ -530,6 +782,26 @@ export function layoutClock(
  */
 export type ClockAssembly = { key: ClockPartKey; params: ClockShapeParams }[]
 
+/** A gear's parameters, narrowed — the motion work is two of them. */
+export type ClockGearParams = Extract<ShapeParams, { type: 'gear' }>
+
+/**
+ * The motion work as an assembly: the two wheels, read back out of the document
+ * the same way the train is.
+ *
+ * Separate from `ClockAssembly` because it is a BRANCH, not more of the chain —
+ * letting it into the train's array would put its wheels on arbors of their own
+ * and `clockPose` would gear the escapement through them. Both wheels or
+ * nothing: one of them alone cannot be stood up, since the pair is what fixes
+ * the intermediate arbor.
+ */
+export interface ClockMotion {
+  /** On the intermediate arbor, driven by the cannon pinion. */
+  minute: ClockGearParams
+  /** Back on the minute arbor, driven by the pinion beside the minute wheel. */
+  hour: ClockGearParams
+}
+
 export interface ClockArbor {
   /** Which part's WHEEL sits on this arbor. The pinion on it (for every arbor
    *  but the first) was emitted by the part BEFORE it. */
@@ -545,9 +817,29 @@ export interface ClockArbor {
   centreDistance: number
 }
 
+/** Where the motion work stands, when the clock has one. */
+export interface ClockPlateMotion {
+  /** Index in `arbors` of the arbor it hangs off — the great wheel's, which is
+   *  the minute arbor. The HOUR WHEEL sits on that same arbor, concentric with
+   *  it, so it has no position of its own. */
+  hostIdx: number
+  /** The intermediate arbor, carrying the minute wheel and its pinion. */
+  x: number
+  y: number
+  /** Host to intermediate. ONE distance: both meshes run at it (see
+   *  `solveMotionWork`), and it is taken from the MINUTE wheel — if a hand edit
+   *  has left the hour wheel wanting a different one, the drawing shows that
+   *  mesh standing off rather than quietly splitting the difference. */
+  centreDistance: number
+  minuteRadius: number
+  hourRadius: number
+}
+
 export interface ClockPlate {
   /** drive, great, second, third, escape — the going train, in order. */
   arbors: ClockArbor[]
+  /** The hour hand's gearing, if the clock has any. */
+  motion: ClockPlateMotion | null
   /** The pallet arbor, straight above the escape wheel at the escapement's own
    *  centre distance (which is how the escapement generator lays it out). */
   anchor: { x: number; y: number }
@@ -563,7 +855,7 @@ export interface ClockPlate {
  * `angles` are `ClockSpec.linkAngles` — link *i* runs from arbor *i* to arbor
  * *i+1*. Omitted or short, it defaults per element (see `linkAngleAt`).
  */
-export function clockPlate(parts: ClockAssembly, angles?: number[]): ClockPlate | null {
+export function clockPlate(parts: ClockAssembly, angles?: number[], motionParts?: ClockMotion | null): ClockPlate | null {
   if (parts.length < 2) return null
   const n = parts.length
 
@@ -609,15 +901,42 @@ export function clockPlate(parts: ClockAssembly, angles?: number[]): ClockPlate 
   const anchorGap = escPart.params.type === 'escapement' ? escapementDims(escPart.params).centreDistance : 0
   const anchor = { x: escArbor.x, y: escArbor.y + anchorGap }
 
+  // The motion work hangs off the GREAT arbor — the minute arbor — at an angle
+  // that is the user's, like every other link. Its own wheel is on the host
+  // arbor itself, so only the intermediate one has to be placed.
+  let motion: ClockPlateMotion | null = null
+  const hostIdx = parts.findIndex((p) => p.key === 'great')
+  if (motionParts && hostIdx >= 0) {
+    const host = arbors[hostIdx]
+    const th = linkAngleAt(angles, MOTION_LINK)
+    const cd = pinionDims(motionParts.minute)?.centreDistance ?? 0
+    const rOf = (g: ClockGearParams) =>
+      gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, { mateTeeth: g.mateTeeth, pinDia: g.pinDia })
+        .outsideDia / 2
+    motion = {
+      hostIdx,
+      x: host.x + cd * Math.cos(th),
+      y: host.y + cd * Math.sin(th),
+      centreDistance: cd,
+      minuteRadius: rOf(motionParts.minute),
+      hourRadius: rOf(motionParts.hour),
+    }
+  }
+
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const a of arbors) {
-    minX = Math.min(minX, a.x - a.wheelRadius); maxX = Math.max(maxX, a.x + a.wheelRadius)
-    minY = Math.min(minY, a.y - a.wheelRadius); maxY = Math.max(maxY, a.y + a.wheelRadius)
+  const span = (x: number, y: number, r: number) => {
+    minX = Math.min(minX, x - r); maxX = Math.max(maxX, x + r)
+    minY = Math.min(minY, y - r); maxY = Math.max(maxY, y + r)
+  }
+  for (const a of arbors) span(a.x, a.y, a.wheelRadius)
+  if (motion) {
+    span(motion.x, motion.y, motion.minuteRadius)
+    span(arbors[motion.hostIdx].x, arbors[motion.hostIdx].y, motion.hourRadius)
   }
   // The anchor's arms reach back over the wheel, so its own arbor is the only
   // point past the wheel that has to be counted.
   maxY = Math.max(maxY, anchor.y)
-  return { arbors, anchor, bbox: { minX, minY, maxX, maxY } }
+  return { arbors, anchor, motion, bbox: { minX, minY, maxX, maxY } }
 }
 
 /**
@@ -645,6 +964,20 @@ export function dragLinkAngle(
   cursor: { x: number; y: number },
   snapDeg = 0,
 ): number | null {
+  // THE MOTION BRANCH IS MEASURED THE OTHER WAY ROUND. Along the train the
+  // dragged joint is the CHILD's arbor and its parent is the next one toward the
+  // escapement, so the angle wanted is from the joint to the parent. The motion
+  // arbor hangs off a great arbor that is itself fixed by the chain, so here the
+  // parent is the anchor point and the angle runs from IT to the cursor.
+  if (nodeIdx === MOTION_LINK) {
+    const m = plate.motion
+    if (!m) return null
+    const host = plate.arbors[m.hostIdx]
+    const hx = root.x + host.x, hy = root.y + host.y
+    if (Math.abs(hx - cursor.x) < 1e-9 && Math.abs(hy - cursor.y) < 1e-9) return null
+    const deg = (Math.atan2(cursor.y - hy, cursor.x - hx) * 180) / Math.PI
+    return snapDeg > 0 ? Math.round(deg / snapDeg) * snapDeg : deg
+  }
   const parent = plate.arbors[nodeIdx + 1]
   if (!parent) return null              // the root itself, or off the end
   const fx = root.x + parent.x, fy = root.y + parent.y
@@ -653,6 +986,79 @@ export function dragLinkAngle(
   if (Math.abs(fx - cursor.x) < 1e-9 && Math.abs(fy - cursor.y) < 1e-9) return null
   const deg = (Math.atan2(fy - cursor.y, fx - cursor.x) * 180) / Math.PI
   return snapDeg > 0 ? Math.round(deg / snapDeg) * snapDeg : deg
+}
+
+/** An arbor running through the space a wheel turns in. `depth` is how far
+ *  inside that wheel's tip circle it falls. */
+export interface ClockArborClash {
+  arbor: ClockPartKey | 'motion' | 'anchor'
+  wheel: ClockPartKey | 'minute' | 'hour'
+  depthMM: number
+}
+
+/**
+ * Arbors that pass through a wheel they do not belong to — which is fatal,
+ * unlike two wheels overlapping.
+ *
+ * THE DIFFERENCE IS DEPTH. Wheels a mesh apart always overlap in plan view and
+ * are meant to: each meshes with the NEXT arbor's pinion, and the two sit at
+ * different depths along their arbors, so the outlines cross and the material
+ * never does (`clockWheelClashes` ignores neighbours for exactly this reason).
+ * An ARBOR is not at a depth — it is a rod running the whole way from plate to
+ * plate, so it sweeps every depth, and a wheel whose tip circle contains one has
+ * nowhere to turn.
+ *
+ * A normal train never trips it, and the reason is worth knowing: the centre
+ * distance is the wheel's pitch radius plus its pinion's, while the wheel
+ * reaches one addendum past its pitch circle — so it clears the next arbor by
+ * `m·(pins/2 − 1)`, which is 20 mm for a 12-pin m4 pinion and shrinks as the
+ * pinion does. Folding the linkage tight is what breaks it.
+ *
+ * TWO SPACES, NOT ONE. The going train runs between the plates; the motion work
+ * runs in FRONT of the front plate, its stud fixed to that plate and the hour
+ * wheel on a tube over the minute arbor. So the stud landing inside the great
+ * wheel is not a clash — they are on opposite sides of the plate, the same way
+ * neighbouring wheels are at different depths — and only bodies sharing a space
+ * are compared. In front there are just two shafts: the stud, and the minute
+ * arbor coming through to carry the cannon pinion.
+ */
+export function clockArborClashes(plate: ClockPlate): ClockArborClash[] {
+  const out: ClockArborClash[] = []
+  const a = plate.arbors
+  const test = (
+    arbor: ClockArborClash['arbor'], ax: number, ay: number,
+    wheel: ClockArborClash['wheel'], wx: number, wy: number, r: number,
+  ) => {
+    const d = Math.hypot(ax - wx, ay - wy)
+    if (d < r) out.push({ arbor, wheel, depthMM: r - d })
+  }
+
+  // Between the plates: every arbor against every wheel but its own, the PALLET
+  // arbor included — it is a rod like the others, and folding a train tight can
+  // bring a wheel over it. Its own escape wheel is exempt: the anchor is placed
+  // where the tangents to the tip circle cross, so it always stands outside it,
+  // and the pallets sweeping that wheel is the whole point of an escapement.
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < a.length; j++) {
+      if (i === j) continue
+      test(a[j].key, a[j].x, a[j].y, a[i].key, a[i].x, a[i].y, a[i].wheelRadius)
+    }
+    if (i < a.length - 1) {
+      test('anchor', plate.anchor.x, plate.anchor.y, a[i].key, a[i].x, a[i].y, a[i].wheelRadius)
+    }
+  }
+
+  // In front of it: the minute wheel must clear the minute arbor it is driven
+  // from, and the hour wheel must clear the stud the minute wheel turns on.
+  // Both hold by construction at any sane size — they are here because a wheel
+  // edited by hand can break them, and nothing else would say so.
+  const m = plate.motion
+  if (m) {
+    const host = a[m.hostIdx]
+    test(host.key, host.x, host.y, 'minute', m.x, m.y, m.minuteRadius)
+    test('motion', m.x, m.y, 'hour', host.x, host.y, m.hourRadius)
+  }
+  return out
 }
 
 /**
@@ -730,6 +1136,20 @@ export interface ClockPose {
   pinionDeg: number[]
   /** The pallets, about the anchor arbor. */
   anchorDeg: number
+  /** The motion work, when the clock has one. */
+  motion: ClockPoseMotion | null
+}
+
+export interface ClockPoseMotion {
+  /** The minute wheel AND the pinion beside it — one body on the intermediate
+   *  arbor, so one angle (their relative clocking is free, as everywhere else a
+   *  wheel and a pinion share an arbor). */
+  minuteDeg: number
+  /** The hour wheel, about the host arbor it is concentric with. */
+  hourDeg: number
+  /** The cannon pinion, on that same host arbor — FIXED to it in a real clock
+   *  through the friction clutch, so it simply turns with the great wheel. */
+  cannonDeg: number
 }
 
 /**
@@ -768,10 +1188,16 @@ export interface ClockPose {
  * errors, and no clearance check can see it — the pair runs cleanly either way,
  * it is simply resting on the wrong side of its play.
  */
-export function clockPose(parts: ClockAssembly, plate: ClockPlate, phase: number): ClockPose {
+export function clockPose(
+  parts: ClockAssembly,
+  plate: ClockPlate,
+  phase: number,
+  motionParts?: ClockMotion | null,
+): ClockPose {
   const n = plate.arbors.length
   const wheelDeg = new Array<number>(n).fill(0)
   const pinionDeg = new Array<number>(n).fill(0)
+  const senses = new Array<1 | -1>(n).fill(1)
 
   const escPart = parts[n - 1]
   const esc = escPart.params.type === 'escapement' ? escapementPose(escPart.params, phase) : { wheelDeg: 0, anchorDeg: 0 }
@@ -782,9 +1208,11 @@ export function clockPose(parts: ClockAssembly, plate: ClockPlate, phase: number
   // The escape wheel's own sense: `escapementPose` runs a clockwise wheel through
   // falling angles. Each mesh reverses it, so wheel k turns against wheel k+1.
   let sense: 1 | -1 = escPart.params.type === 'escapement' && escPart.params.clockwise ? -1 : 1
+  senses[n - 1] = sense
 
   for (let k = n - 2; k >= 0; k--) {
     sense = sense === 1 ? -1 : 1
+    senses[k] = sense
     const p = parts[k]
     if (p.params.type !== 'gear') continue
     const mesh = gearMesh(p.params, sense)
@@ -793,11 +1221,71 @@ export function clockPose(parts: ClockAssembly, plate: ClockPlate, phase: number
     pinionDeg[k] = wheelDeg[k]
   }
 
-  return { wheelDeg, pinionDeg, anchorDeg: esc.anchorDeg }
+  return {
+    wheelDeg, pinionDeg, anchorDeg: esc.anchorDeg,
+    motion: motionPose(motionParts, plate, wheelDeg, senses),
+  }
 }
 
-/** Emission order — everything a clock is cut from. */
-export const CLOCK_PART_ORDER: ClockPartKey[] = ['drive', 'great', 'second', 'third', 'escapement', 'pendulum']
+/**
+ * The motion work's two bodies, solved off the great wheel.
+ *
+ * Same solve as a train mesh and the same trap: the phase is the whole of it and
+ * a wrong one draws pins through teeth without erroring. `gearMesh` puts the
+ * mate along +x, so each mesh is turned by the angle it really lies at — from
+ * the WHEEL to its mate, which for the minute wheel is back towards the host
+ * arbor (θ + 180°) and for the hour wheel is out along the branch (θ).
+ *
+ * TWO THINGS ARE BACKWARDS HERE COMPARED WITH THE TRAIN, and both follow from
+ * the pinion being the driver:
+ *
+ *   • the KNOWN angle is the mate's, not the wheel's, for both meshes — the
+ *     cannon pinion is fixed to the great arbor and the minute pinion is fixed
+ *     to the minute wheel — which is the same inversion `clockPose` already does
+ *     along the train, so the formula is the same one;
+ *   • the SETTLE is inverted (`-sense`). `gearMesh` shifts the mate onto the
+ *     flank the GEAR is pushing; here the mate pushes the gear, so the play is
+ *     taken up on the other side. Nothing errors either way — it is the same
+ *     silent "reads as the pinion driving the wheel" as along the train, except
+ *     that here the pinion really is driving.
+ */
+function motionPose(
+  motionParts: ClockMotion | null | undefined,
+  plate: ClockPlate,
+  wheelDeg: number[],
+  senses: (1 | -1)[],
+): ClockPoseMotion | null {
+  const m = plate.motion
+  if (!motionParts || !m) return null
+
+  // The cannon pinion turns WITH the great wheel — it is fixed to that arbor
+  // through the clutch that lets the hands be set.
+  const cannonDeg = wheelDeg[m.hostIdx]
+  const hostSense = senses[m.hostIdx]
+  const th = (Math.atan2(m.y - plate.arbors[m.hostIdx].y, m.x - plate.arbors[m.hostIdx].x) * 180) / Math.PI
+
+  // Minute wheel: on the intermediate arbor, its mate (the cannon pinion) lying
+  // back along the branch. Driven, so it turns against the great wheel.
+  const minuteSense: 1 | -1 = hostSense === 1 ? -1 : 1
+  const mm = gearMesh(motionParts.minute, minuteSense === 1 ? -1 : 1)
+  const thMinute = th + 180
+  const minuteDeg = thMinute + (mm.matePhaseDeg + thMinute - cannonDeg) / mm.ratio
+
+  // Hour wheel: back on the host arbor, its mate (the pinion beside the minute
+  // wheel, clocked with it) out along the branch. Turns with the great wheel
+  // again, which is why both hands go round the same way.
+  const hm = gearMesh(motionParts.hour, hostSense === 1 ? -1 : 1)
+  const hourDeg = th + (hm.matePhaseDeg + th - minuteDeg) / hm.ratio
+
+  return { minuteDeg, hourDeg, cannonDeg }
+}
+
+/** Emission order — everything a clock CAN be cut from. The motion work is in
+ *  it only when the spec asks for it, so compare against `designClock`'s output
+ *  rather than assuming the whole list. It sits straight after the great wheel
+ *  because that is the arbor it hangs off. */
+export const CLOCK_PART_ORDER: ClockPartKey[] =
+  ['drive', 'great', 'minute', 'hour', 'second', 'third', 'escapement', 'pendulum']
 
 /** …and the subset that is the GOING TRAIN, arbor by arbor. The pendulum is on
  *  no arbor, so it is not here: `clockPlate` would try to mesh it. */
@@ -828,6 +1316,25 @@ export function clockAssemblyFromPaths(
     if (hit) out.push({ key, params: hit.shapeParams as ClockShapeParams })
   }
   return out
+}
+
+/**
+ * The motion work, from the same paths — BOTH wheels or nothing.
+ *
+ * One of them alone cannot be stood up: the intermediate arbor is where the two
+ * meshes agree, so a clock with only its hour wheel left has nowhere to put it.
+ */
+export function clockMotionFromPaths(
+  paths: { clockId?: string; clockPart?: string; shapeParams?: ShapeParams }[],
+  clockId: string,
+): ClockMotion | null {
+  const of = (key: ClockPartKey) => {
+    const hit = paths.find((p) =>
+      p.clockId === clockId && p.clockPart === key && p.shapeParams?.type === 'gear')
+    return hit ? (hit.shapeParams as ClockGearParams) : null
+  }
+  const minute = of('minute'), hour = of('hour')
+  return minute && hour ? { minute, hour } : null
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  generateGearD, gearDims, gearHub, gearMesh, gearMateParts, gearMeshRefD, gearPose,
-  moduleForRadius, FLANK_TOL, type GearSpec,
+  carriedPinion, generateGearD, generateGearParts, gearDims, gearHub, gearMesh, gearMateParts,
+  gearMeshRefD, gearPose, moduleForRadius, FLANK_TOL, type GearSpec,
 } from './gearGenerator'
 import { generateShapeD } from './shapeGenerators'
 import { flattenPath, signedArea } from '../cam/pathFlattener'
@@ -501,5 +501,84 @@ describe('gear — running the pair', () => {
     // `ellipseRing`'s step.
     expect(Math.max(...xs)).toBeCloseTo(spec.cx + mesh.centreDistance + mesh.matePitchRadius, 1)
     expect(Math.min(...xs)).toBeCloseTo(spec.cx - mesh.pitchRadius, 1)
+  })
+})
+
+// ─── The pinion the wheel carries ─────────────────────────────────────────────
+//
+// A lantern's near cheek can be the WHEEL on the same arbor: the pin holes go
+// through its hub and one loose cheek caps the far ends. What has to hold is
+// that the holes land in solid stock — which is why the hub is a floor they push
+// up, exactly as the spokes do.
+describe('a wheel that carries its own pinion', () => {
+  const carrier: GearSpec = {
+    ...base, module: 4, teeth: 48, bore: 8, hubDia: 24, spokes: 5,
+    toothProfile: 'cycloidal', mateTeeth: 12, pinDia: 5, emitPinion: false,
+    arborPins: 12, arborPinCircleDia: 48, arborPinDia: 5,
+  }
+  const holesOf = (p: GearSpec) =>
+    flattenPath(generateGearParts(p).find((x) => x.key === 'arborpins')?.d ?? '', 0.01)
+
+  // Measured RADIALLY, never from a vertex mean: a sampled circle's mean sits a
+  // few tenths off its centre (`circleOf`'s lesson in gear-pinion-check), which
+  // reads as every hole displaced by a sinusoid in its own angle.
+  it('drills one hole per pin, on the pin circle', () => {
+    const holes = holesOf(carrier)
+    expect(holes).toHaveLength(12)
+    const angles: number[] = []
+    for (const h of holes) {
+      const rs = h.map(([x, y]) => Math.hypot(x, y))
+      // Nearest and furthest point of a hole are the pin circle ∓ the pin radius.
+      expect(Math.min(...rs)).toBeCloseTo(24 - 2.5, 1)
+      expect(Math.max(...rs)).toBeCloseTo(24 + 2.5, 1)
+      const xs = h.map(([x]) => x), ys = h.map(([, y]) => y)
+      angles.push(Math.atan2(
+        (Math.min(...ys) + Math.max(...ys)) / 2,
+        (Math.min(...xs) + Math.max(...xs)) / 2))
+    }
+    // Evenly spaced round the circle.
+    angles.sort((a, b) => a - b)
+    for (let i = 1; i < angles.length; i++) {
+      expect(angles[i] - angles[i - 1]).toBeCloseTo((2 * Math.PI) / 12, 3)
+    }
+  })
+
+  // The whole cost of the arrangement, and the thing that makes it work: the hub
+  // grows to hold the holes with a rim, so every one of them is in solid stock.
+  it('grows the hub to enclose them, and leaves the spoke windows clear of them', () => {
+    const grown = gearHub(4, 48, 8, 24, 5, carriedPinion(carrier)!.hubDia)
+    const bare = gearHub(4, 48, 8, 24, 5)
+    expect(grown.dia).toBeGreaterThan(bare.dia)
+    expect(grown.dia).toBeCloseTo(carriedPinion(carrier)!.hubDia, 9)
+    expect(grown.spoked).toBe(true)
+
+    const parts = generateGearParts(carrier)
+    const windows = flattenPath(parts.find((p) => p.key === 'spokes')!.d, 0.05)
+    for (const h of holesOf(carrier)) for (const v of h) {
+      // Inside the hub…
+      expect(Math.hypot(v[0], v[1])).toBeLessThan(grown.dia / 2)
+      // …outside the arbor hole…
+      expect(Math.hypot(v[0], v[1])).toBeGreaterThan(carrier.bore / 2)
+      // …and in stock, not in a spoke window.
+      for (const w of windows) expect(pointInPolygon(v[0], v[1], w)).toBe(false)
+    }
+  })
+
+  it('carries nothing unless asked, and changes no tooth when it does', () => {
+    const plain = { ...carrier, arborPins: undefined, arborPinCircleDia: undefined, arborPinDia: undefined }
+    expect(carriedPinion(plain)).toBeNull()
+    expect(generateGearParts(plain).some((p) => p.key === 'arborpins')).toBe(false)
+    // The teeth are the wheel's business and the hub is not: same outline.
+    const teeth = (p: GearSpec) => generateGearParts(p).find((x) => x.key === 'teeth')!.d
+    expect(teeth(carrier)).toBe(teeth(plain))
+  })
+
+  // The pin circle is the CARRIED pinion's pitch circle, which belongs to the
+  // mesh with the wheel before this one — so it is stated, and only defaults to
+  // this wheel's own module when the two meshes share one.
+  it('defaults the pin circle to module × pins', () => {
+    const c = carriedPinion({ ...carrier, arborPinCircleDia: undefined })!
+    expect(c.pinCircleDia).toBeCloseTo(4 * 12, 9)
+    expect(carriedPinion({ ...carrier, arborPinDia: undefined })!.pinDia).toBe(carrier.pinDia)
   })
 })

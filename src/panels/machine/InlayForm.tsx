@@ -1,5 +1,5 @@
 // ─── Inlay form ───────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, PathChip, PathListSection, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
 import { useState } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
@@ -47,7 +47,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, setError, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
+  const { addOperations, setSegments, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled, units } = useWorkpieceStore()
 
@@ -96,6 +96,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         : (pickToolId(base.vbitToolId, finishers) || INLAY_NO_FINISH) }
   })
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, reportError, clearError] = useGenerateError()
 
   // Finish = "None": roughing tool only, no separate wall-finish pass. Female → flat-walled
   // pocket; male → flat-walled plug freed by the roughing bit. One operation, no pairing.
@@ -166,6 +167,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   }
 
   function handleGenerate() {
+    clearError()
     if (groups.length === 0 || !pocketTool || (!vbitTool && !finishIsNone)) return
     setGenerating(true)
 
@@ -241,9 +243,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
         } catch (err) {
           if (!isWorkCancelled(err)) {
-            const msg = err instanceof Error ? err.message : 'Generation failed'
-            setError(editOp.id, msg)
-            if (linkedOp) setError(linkedOp.id, msg)
+            reportError(editOp.id, err)
+            // The two halves of an inlay fail together — one plug, one socket.
+            if (linkedOp) reportError(linkedOp.id, err)
           }
         }
         setGenerating(false)
@@ -303,9 +305,11 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           } catch (err) {
             // A cancel abandons the whole Generate, not just this group.
             if (isWorkCancelled(err)) break
-            setError(ids[i], err instanceof Error ? err.message : 'Generation failed')
+            reportError(ids[i], err)
           }
         }
+        // A Generate that failed leaves nothing behind — only the ops this click made.
+        discardFailedOps(ids.filter((_, i) => typeof soloSlots[i] === 'number'))
         setGenerating(false)
         save('inlay', form)
       }, 0)
@@ -398,11 +402,15 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
 
         } catch (err) {
           if (isWorkCancelled(err)) break
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setError(firstIds[i], msg)
-          setError(secondIds[i], msg)
+          reportError(firstIds[i], err)
+          reportError(secondIds[i], err)
         }
       }
+      // Both halves of a failed pair go: one plug without its socket is not a thing.
+      discardFailedOps([
+        ...firstIds.filter((_, i) => typeof phaseSlots[0][i] === 'number'),
+        ...secondIds.filter((_, i) => typeof phaseSlots[1][i] === 'number'),
+      ])
       setGenerating(false)
       save('inlay', form)
     }, 0)
@@ -567,6 +575,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           </label>
         </div>
       )}
+      <FormError msg={errorMsg} />
       <GenerateBtn disabled={!canGenerate} generating={generating} onClick={handleGenerate}
         title={groups.length > 1 ? `Creates ${groups.length * (finishIsNone ? 1 : 2)} operations` : undefined}
         label={editOp

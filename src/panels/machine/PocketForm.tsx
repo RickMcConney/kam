@@ -1,5 +1,5 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -40,7 +40,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, setError, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
+  const { addOperations, setSegments, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -86,6 +86,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     return { ...base, toolId: pickToolId(base.toolId, cutters) }
   })
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Editing covers every operation created by the same Generate click, not just the one
@@ -165,6 +166,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   // the verdict called not worth cutting. The status warning names the gesture, so it is
   // discoverable exactly when it is relevant.
   async function handleGenerate(e?: React.MouseEvent) {
+    clearError()
+    // Ids this click CREATES. A Generate that fails leaves nothing behind, so these are
+    // thrown away again in the finally; an op that already existed is never touched.
+    const createdIds: string[] = []
     const forceStrategy = e?.altKey === true
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
@@ -210,7 +215,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             // A cancel abandons the whole Generate, not just this group — carrying on
             // would immediately queue the next one against the state the user just left.
             if (isWorkCancelled(err)) break
-            setError(op.id, err instanceof Error ? err.message : 'Generation failed')
+            reportError(op.id, err)
           }
         }
       } else {
@@ -259,7 +264,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           const existingId = typeof slot === 'string' ? slot : undefined
           const opId = existingId ?? newIds[slot as number]
           const name = `Pocket: ${boundary.name} (${tool.name})`
-          if (!existingId) session.remember(boundary.id, opId)
+          if (!existingId) { session.remember(boundary.id, opId); createdIds.push(opId) }
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
@@ -285,11 +290,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
           } catch (err) {
             if (isWorkCancelled(err)) break
-            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+            reportError(opId, err)
           }
         }
       }
     } finally {
+      discardFailedOps(createdIds)
       setGenerating(false)
       save('pocket', form)
     }
@@ -374,6 +380,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}
         generating={generating}

@@ -358,6 +358,58 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   )
 }
 
+/**
+ * Why a Generate failed, in the form that asked for it.
+ *
+ * Every failure also reaches the status bar (see `toolpathStore.setError`), but that
+ * message is transient and sits at the far end of the window from the button that was
+ * just clicked. Four of the fourteen forms had a banner of their own and the rest had
+ * nothing, so whether a failure was explained depended on which form you were in. One
+ * definition, rendered by every form, directly above its Generate button.
+ */
+export function FormError({ msg }: { msg: string | null }) {
+  if (!msg) return null
+  return (
+    <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
+      <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{msg}
+    </p>
+  )
+}
+
+/**
+ * Throw away the operations THIS Generate created that failed.
+ *
+ * An operation with no toolpath is not a thing in the document — `generateGcode` skips
+ * it, and a chip standing for a cut that does not exist is worse than no chip. So a
+ * failed Generate leaves nothing behind. Pass only the ids this click CREATED: an
+ * operation that already existed keeps its slot and its error message, because deleting
+ * a user's operation because a re-Generate failed would be the worse of the two wrongs.
+ */
+export function discardFailedOps(createdIds: string[]) {
+  if (createdIds.length === 0) return
+  const { operations, deleteOperations } = useToolpathStore.getState()
+  const failed = createdIds.filter((id) => operations.find((o) => o.id === id)?.status === 'error')
+  if (failed.length > 0) deleteOperations(failed)
+}
+
+/**
+ * `[message, report, clear]` for a form's Generate.
+ *
+ * `report` marks the operation failed — which publishes the status-bar message and
+ * clears its segments — and hands back the text for the banner, so the two can never
+ * disagree about what went wrong. Call `clear()` at the top of a Generate.
+ */
+export function useGenerateError(): [string | null, (opId: string, err: unknown) => string, () => void] {
+  const [msg, setMsg] = useState<string | null>(null)
+  const report = (opId: string, err: unknown) => {
+    const text = err instanceof Error ? err.message : 'Generation failed'
+    useToolpathStore.getState().setError(opId, text)
+    setMsg(text)
+    return text
+  }
+  return [msg, report, () => setMsg(null)]
+}
+
 // `onClick` receives the mouse event so a form can read modifiers — PocketForm uses
 // alt-click to force a strategy the shape would otherwise decline. Handlers that take no
 // argument stay assignable, so the other forms are unaffected.

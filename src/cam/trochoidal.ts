@@ -1,4 +1,4 @@
-import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, type Pt2 } from './pathFlattener'
+import { flattenPath, ensureWinding, signedArea, rotatePolylineNear, arcFitPolyline, splitSelfIntersecting, requireClosedSubpaths, isOpenSubpath, type Pt2 } from './pathFlattener'
 import { inflatePathsD, JoinType, EndType } from 'clipper2-ts'
 import { zPasses, arcLengths, interpPt, stripClosingDuplicate, pushAll } from './geom'
 import { designPathAtT, nearestArcLen, polylinePassWithTabs } from './profile'
@@ -31,8 +31,11 @@ export interface TrochoidalParams {
 // many short facets those steps rotate the trochoidal perpendicular and staircase the
 // loop stems. Instead we compute a tangent at each vertex (blend of its two edges) and
 // angle-interpolate along each segment, so direction rotates continuously through corners.
-// `closed` has a duplicate closing vertex (closed[last] === closed[0]).
-function makeTangentSampler(closed: Pt2[], lens: number[]): (s: number) => [number, number] {
+// A CLOSED `closed` has a duplicate closing vertex (closed[last] === closed[0]) and every
+// vertex bisects two edges. An OPEN one has none: its two ends have a single edge each and
+// take that edge's own direction, or the bisector would wrap the first edge against the
+// last and point the tangent somewhere across the middle of the part.
+function makeTangentSampler(closed: Pt2[], lens: number[], open = false): (s: number) => [number, number] {
   const m = closed.length - 1                 // unique vertices / edges
   const edgeAng: number[] = []
   for (let j = 0; j < m; j++) {
@@ -41,14 +44,15 @@ function makeTangentSampler(closed: Pt2[], lens: number[]): (s: number) => [numb
   // Angle bisector at each vertex from its incoming and outgoing edge directions.
   const vertAng: number[] = []
   for (let j = 0; j < m; j++) {
-    const aPrev = edgeAng[(j - 1 + m) % m]
+    if (open && j === 0) { vertAng.push(edgeAng[0]); continue }
+    const aPrev = edgeAng[open ? j - 1 : (j - 1 + m) % m]
     const aCur = edgeAng[j]
     let d = aCur - aPrev
     while (d <= -Math.PI) d += 2 * Math.PI
     while (d > Math.PI) d -= 2 * Math.PI
     vertAng.push(aPrev + d / 2)
   }
-  vertAng.push(vertAng[0])                     // for the duplicate closing vertex
+  vertAng.push(open ? edgeAng[m - 1] : vertAng[0])   // far end / the duplicate closing vertex
 
   const total = lens[lens.length - 1]
   return (s: number): [number, number] => {
@@ -75,11 +79,15 @@ function makeTangentSampler(closed: Pt2[], lens: number[]): (s: number) => [numb
 // producing sharp kinks/straight chords across corners. Spreading the turn over a
 // short arc lets the tangent rotate gradually so loops stay round and evenly spaced.
 // Roughing-only smoothing: the wall corner is recovered exactly by the finishing pass.
-function roundPolygonCorners(poly: Pt2[], radius: number): Pt2[] {
+// `open`: the first and last vertices are the ENDS of a stroke, not corners — there is
+// nothing on the far side of them to turn through, and rounding them would pull the cut
+// short of where the line was drawn.
+function roundPolygonCorners(poly: Pt2[], radius: number, open = false): Pt2[] {
   const n = poly.length
   if (n < 3 || radius <= 1e-6) return poly
   const out: Pt2[] = []
   for (let i = 0; i < n; i++) {
+    if (open && (i === 0 || i === n - 1)) { out.push(poly[i]); continue }
     const prev = poly[(i - 1 + n) % n]
     const cur = poly[i]
     const next = poly[(i + 1) % n]
@@ -119,9 +127,14 @@ export function generateTrochoidal(
   params: TrochoidalParams,
   tabs?: Tab[],
 ): MotionSegment[] {
+  // A CENTERLINE trochoidal follows a stroke — that is trochoidal slotting, and cutting a
+  // slot along an open line is one of the things the strategy is for. So open subpaths are
+  // kept, exactly as profile.ts keeps them, and only the SIDED cuts refuse them: an inside
+  // or an outside needs an interior to be on a side of, and a stroke has none.
   const designSubs = flattenPath(d, 0.05)
-  const subpaths = splitSelfIntersecting(designSubs)
-  if (subpaths.length === 0) throw new Error('No geometry found in path')
+  const openSubs = designSubs.filter((sp) => sp.length >= 2 && isOpenSubpath(sp))
+  const subpaths = splitSelfIntersecting(designSubs.filter((sp) => !isOpenSubpath(sp)))
+  if (subpaths.length === 0 && openSubs.length === 0) throw new Error('No geometry found in path')
 
   const safeZ = params.safeHeightMM ?? 5
   const l = Math.max(0.01, params.trochRadiusMM)  // loop amplitude
@@ -131,6 +144,13 @@ export function generateTrochoidal(
   const delta =
     params.side === 'outside' ? tool.diameterMM / 2 :
     params.side === 'inside' ? -tool.diameterMM / 2 : 0
+
+  if (delta !== 0 && openSubs.length > 0) {
+    requireClosedSubpaths(designSubs, {
+      cut: `an ${params.side} trochoidal cut`,
+      remedy: 'Close the path, or set the cut to centerline — a trochoidal slot follows an open line.',
+    })
+  }
 
   const passes = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
@@ -154,7 +174,7 @@ export function generateTrochoidal(
   const perpSign = params.direction === 'climb' ? 1 : -1
 
   // Compute offset paths via Clipper2 (same as profile.ts).
-  interface OffsetPath { pts: Pt2[] }
+  interface OffsetPath { pts: Pt2[]; isOpen?: boolean }
   let offsetPaths: OffsetPath[]
   if (delta !== 0) {
     const inputPaths = subpaths
@@ -170,47 +190,78 @@ export function generateTrochoidal(
       .filter(p => p.length >= 3)
       .map(pts => ({ pts }))
   } else {
-    offsetPaths = subpaths
-      .map(sp => stripClosingDuplicate(sp))
-      .filter(sp => sp.length >= 3)
-      .map(pts => ({ pts }))
+    offsetPaths = [
+      ...subpaths
+        .map(sp => stripClosingDuplicate(sp))
+        .filter(sp => sp.length >= 3)
+        .map(pts => ({ pts })),
+      ...openSubs.map(pts => ({ pts, isOpen: true })),
+    ]
   }
 
   const STEPS = 32  // segments per trochoidal loop (matches pocket.ts)
 
-  for (const { pts: rawPts } of offsetPaths) {
-    const oriented = ensureWinding(rawPts, wantCCW)
-    const rotated = params.startNear
-      ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
-      : oriented
-
+  for (const { pts: rawPts, isOpen } of offsetPaths) {
     // Round sharp corners so trochoidal loops sweep smoothly around them instead of
     // snapping. Radius is scaled to the loop geometry: large enough to fit a couple of
     // loops in the corner arc, capped so it never consumes a whole short edge (the
     // function itself clamps the trim to half each adjacent edge).
     const cornerR = Math.max(l, 2 * w)
 
-    // Place the start at the midpoint of the first edge rather than on a corner.
-    // rotatePolylineNear starts the path at a vertex; corner-rounding then displaces that
-    // point onto the fillet, so the loops (which start/end at the rounded p0) no longer
-    // meet the finishing pass (which follows the exact wall). A mid-edge point is collinear
-    // — roundPolygonCorners preserves it verbatim — so both paths share an identical start
-    // point and connect cleanly, and the original start corner now gets rounded like the rest.
-    const startList: Pt2[] = [
-      [(rotated[0][0] + rotated[1][0]) / 2, (rotated[0][1] + rotated[1][1]) / 2],
-      ...rotated.slice(1),
-      rotated[0],
-    ]
-    const smoothed = roundPolygonCorners(startList, cornerR)
+    let closed: Pt2[]        // loop guide, corners rounded
+    let closedExact: Pt2[]   // the true path, for the finishing pass
 
-    // Close polyline for full loop traversal. `closed` (rounded corners) drives the
-    // trochoidal loops; `closedExact` (true offset) is reserved for the finishing pass
-    // so the finished wall holds its real, un-rounded corners. Both start at the same point.
-    const closed: Pt2[] = [...smoothed, smoothed[0]]
-    const closedExact: Pt2[] = [...startList, startList[0]]
+    if (isOpen) {
+      // A stroke has no winding to fix and no vertex to rotate the start onto — the only
+      // choice is which END to start from, so start at whichever is nearer the entry hint
+      // and run to the other. Its two ends stay sharp: they are where the line was drawn
+      // to, not corners to turn through.
+      const near = params.startNear
+      const a = rawPts[0], b = rawPts[rawPts.length - 1]
+      const src = near && Math.hypot(b[0] - near.x, b[1] - near.y) < Math.hypot(a[0] - near.x, a[1] - near.y)
+        ? [...rawPts].reverse()
+        : rawPts
+      closedExact = src
+      closed = roundPolygonCorners(src, cornerR, true)
+    } else {
+      const oriented = ensureWinding(rawPts, wantCCW)
+      const rotated = params.startNear
+        ? rotatePolylineNear(oriented, params.startNear.x, params.startNear.y)
+        : oriented
+
+      // Place the start at the midpoint of the first edge rather than on a corner.
+      // rotatePolylineNear starts the path at a vertex; corner-rounding then displaces that
+      // point onto the fillet, so the loops (which start/end at the rounded p0) no longer
+      // meet the finishing pass (which follows the exact wall). A mid-edge point is collinear
+      // — roundPolygonCorners preserves it verbatim — so both paths share an identical start
+      // point and connect cleanly, and the original start corner now gets rounded like the rest.
+      const startList: Pt2[] = [
+        [(rotated[0][0] + rotated[1][0]) / 2, (rotated[0][1] + rotated[1][1]) / 2],
+        ...rotated.slice(1),
+        rotated[0],
+      ]
+      const smoothed = roundPolygonCorners(startList, cornerR)
+
+      // Close polyline for full loop traversal. `closed` (rounded corners) drives the
+      // trochoidal loops; `closedExact` (true offset) is reserved for the finishing pass
+      // so the finished wall holds its real, un-rounded corners. Both start at the same point.
+      closed = [...smoothed, smoothed[0]]
+      closedExact = [...startList, startList[0]]
+    }
+
     const { lens, total } = arcLengths(closed)
     if (total < 1e-6) continue
-    const tangentAt = makeTangentSampler(closed, lens)
+    const tangentAt = makeTangentSampler(closed, lens, isOpen)
+
+    // WHERE THE LOOPS SWING. Against a wall the guide path IS the wall and the swing runs
+    // 0 → 2l into the material, so the finished wall is cut on every loop. A slot has no
+    // wall: the line is its CENTRE, so the swing runs −l → +l about it and the slot comes
+    // out 2l + tool wide, centred on the line that was drawn. Getting this wrong does not
+    // fail, it just cuts the slot a full amplitude off to one side.
+    const offsetOf = isOpen
+      ? (theta: number) => -l * Math.cos(theta)
+      : (theta: number) => l * (1 - Math.cos(theta))
+    const entryOffset = offsetOf(0)
 
     // Tab ranges (same design-path t → offset-path arc-length mapping as
     // profile.ts). Two range sets: the loop guide path (`closed`, corners
@@ -236,8 +287,13 @@ export function generateTrochoidal(
     const nLoops = Math.floor(total / w)
     if (nLoops === 0) continue
 
-    // Start: tool is on the offset path (offset=0 at θ=0).
-    const [p0x, p0y] = closed[0]
+    // Start: where θ = 0 actually puts the tool. On a wall that is the guide path itself
+    // (offset 0); in a centred slot it is one amplitude to the side, so the entry plunge
+    // has to be there and not on the line.
+    const [g0x, g0y] = closed[0]
+    const [t0x, t0y] = tangentAt(0)
+    const p0x = g0x + entryOffset * perpSign * (-t0y)
+    const p0y = g0y + entryOffset * perpSign * t0x
 
     // Ramp spans 2× tool diameter of arc-length advance, split into rampLoops full loops.
     // Matches profile.ts ramp distance convention.
@@ -272,7 +328,7 @@ export function generateTrochoidal(
         const theta = i * (2 * Math.PI / STEPS)
         const advance = r * theta - l * Math.sin(theta)
         const s = Math.min(advance, total)
-        const offsetVal = l * (1 - Math.cos(theta))
+        const offsetVal = offsetOf(theta)
 
         const [cx, cy] = interpPt(closed, lens, s)
         const [tx, ty] = tangentAt(s)
@@ -299,10 +355,12 @@ export function generateTrochoidal(
         segs.push(seg)
       }
 
-      // Return to start to close the loop at full depth (lifted if a tab
-      // covers the start of the guide path).
-      const startTab = activeRanges.find((tr) => 0 >= tr.start && 0 <= tr.end)
-      segs.push({ x: p0x, y: p0y, z: startTab ? Math.max(zDepth, startTab.tabZ) : zDepth, rapid: false })
+      if (!isOpen) {
+        // Return to start to close the loop at full depth (lifted if a tab
+        // covers the start of the guide path).
+        const startTab = activeRanges.find((tr) => 0 >= tr.start && 0 <= tr.end)
+        segs.push({ x: p0x, y: p0y, z: startTab ? Math.max(zDepth, startTab.tabZ) : zDepth, rapid: false })
+      }
 
       // Optional finishing pass: one clean sweep along the offset path.
       // With active tabs, use the generic tab-lifting polyline pass instead of
@@ -310,7 +368,45 @@ export function generateTrochoidal(
       // gcode.ts re-fits arcs between the tabs).
       if (params.finishingPass) {
         const activeExact = tabRangesExact.filter((tr) => zDepth < tr.tabZ)
-        if (activeExact.length > 0) {
+        if (isOpen) {
+          // A SLOT'S FINISH IS ITS TWO WALLS, not its centreline. Against a wall the
+          // roughing loops swing outward from the exact path, so a sweep along that path
+          // is a real cut; in a centred slot they swing to BOTH sides of the line and
+          // clear right across it, so the same sweep cuts nothing but air. The walls are
+          // the two things left scalloped, at ±l — and one Clipper ring round the stroke
+          // is both of them plus the ends, in a single pass.
+          for (const loop of inflatePathsD(
+            [closedExact.map(([x, y]) => ({ x, y }))], l, JoinType.Round, EndType.Butt, 4, 6)) {
+            const raw = stripClosingDuplicate(loop.map(({ x, y }) => [x, y] as Pt2))
+            if (raw.length < 3) continue
+            // Start the ring at whatever point is nearest the tool. The loops end at the
+            // far END of the stroke, not back at their own start the way a closed pass
+            // does, so without this the link into the finish is a cut straight across the
+            // work — which is the diagonal that showed up on a 3-point path.
+            const here = segs[segs.length - 1]
+            const rot = rotatePolylineNear(raw, here.x, here.y)
+            const ring: Pt2[] = [...rot, rot[0]]
+            // arcFitPolyline and polylinePassWithTabs both SKIP their first point, on the
+            // assumption the tool is already standing on it. Here it is not, so the move
+            // onto the ring has to be made explicitly.
+            segs.push({ x: ring[0][0], y: ring[0][1], z: zDepth, rapid: false })
+            if (activeExact.length > 0) {
+              // The ring passes every tab TWICE, once up each wall, so a lift decided by
+              // arc length ALONG THE RING would protect one side and cut the other. Each
+              // point is projected back onto the design line instead.
+              for (let i = 1; i < ring.length; i++) {
+                const [rx, ry] = ring[i]
+                const at = nearestArcLen(closedExact, exactLens.lens, rx, ry)
+                const tab = activeExact.find((tr) => at >= tr.start && at <= tr.end)
+                segs.push({ x: rx, y: ry, z: tab ? Math.max(zDepth, tab.tabZ) : zDepth, rapid: false })
+              }
+            } else {
+              for (const seg of arcFitPolyline(ring, 0.1)) {
+                segs.push({ x: seg.x, y: seg.y, z: zDepth, rapid: false, ...(seg.arc ? { arc: seg.arc } : {}) })
+              }
+            }
+          }
+        } else if (activeExact.length > 0) {
           pushAll(segs, polylinePassWithTabs(closedExact, zDepth, activeExact, exactLens.lens))
         } else {
           const arcSegs = arcFitPolyline(closedExact, 0.1)
@@ -319,9 +415,18 @@ export function generateTrochoidal(
           }
         }
       }
+
+      // A closed loop finishes where it started, so the next pass just plunges again. A
+      // stroke finishes at the far end: lift, and return over the slot rather than back
+      // through it, so the next pass starts from the same end as this one did.
+      if (isOpen && pi < passes.length - 1) {
+        segs.push({ x: segs[segs.length - 1].x, y: segs[segs.length - 1].y, z: safeZ, rapid: true })
+        segs.push({ x: p0x, y: p0y, z: safeZ, rapid: true })
+      }
     }
 
-    segs.push({ x: p0x, y: p0y, z: safeZ, rapid: true })
+    const [lastX, lastY] = isOpen ? [segs[segs.length - 1].x, segs[segs.length - 1].y] : [p0x, p0y]
+    segs.push({ x: lastX, y: lastY, z: safeZ, rapid: true })
   }
 
   return segs

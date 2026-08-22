@@ -539,16 +539,32 @@ function queryStartZ(
  * records what generation used, and by the staleness check that compares the two. They
  * cannot drift apart into disagreeing about an op's start height.
  */
+/** One closed circle per point, as a compound d string — a set of clicked holes. */
+function discsD(points: { x: number; y: number }[], r: number): string {
+  return points.map(({ x, y }) =>
+    `M ${x - r} ${y} A ${r} ${r} 0 1 0 ${x + r} ${y} A ${r} ${r} 0 1 0 ${x - r} ${y} Z`).join(' ')
+}
+
 export function startInputForOp(
   op: AnyOperation,
   paths: ImportedPath[],
   tools: { id: string; diameterMM: number }[],
 ): ResolveInput | null {
-  if (op.type !== 'pocket' && op.type !== 'vcarve' && op.type !== 'profile' && op.type !== 'photovcarve') return null
+  if (op.type !== 'pocket' && op.type !== 'vcarve' && op.type !== 'profile'
+      && op.type !== 'photovcarve' && op.type !== 'drill') return null
   const path = paths.find((p) => p.id === op.pathId)
-  if (!path) return null
+  // A drill op need not have a path at all: peck points are clicked on the canvas. Its
+  // footprint is then the holes themselves, each a disc of the tool — small, but it is
+  // what decides whether those points land on a pocket floor or on bare stock.
+  if (!path) {
+    if (op.type !== 'drill' || op.points.length === 0) return null
+    const r = (tools.find((t) => t.id === op.toolId)?.diameterMM ?? 0) / 2
+    if (r <= 0) return null
+    return { startFrom: op.startFrom, footprintD: discsD(op.points, r), cutMarginMM: 0, opId: op.id }
+  }
   // Pocket, v-carve and photo v-carve stay inside their outline (the photo's own rectangle,
   // which is where its raster lines are clipped); a profile swings the tool outside it.
+  // A drill stays inside its own circle: the bore's wall IS the path.
   let cutMarginMM = 0
   if (op.type === 'profile') {
     const dia = tools.find((t) => t.id === op.toolId)?.diameterMM ?? 0

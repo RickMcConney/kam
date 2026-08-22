@@ -14,8 +14,8 @@
 // is no clock left in the document, only five ordinary shapes that happen to
 // mesh, each editable through its own chip in the usual way.
 
-import { useEffect, useMemo, useState } from 'react'
-import { Clock, Info } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Clock, Info, Lock, LockOpen } from 'lucide-react'
 import { ICON } from '../../theme'
 import { useUIStore } from '../../store/uiStore'
 import { usePathsStore } from '../../store/pathsStore'
@@ -35,6 +35,11 @@ import { TONE_BTN } from '../readout'
 
 const LS_CLOCK_KEY = 'kam:clockSpec'
 
+/** The three wheels the train solver has to place, in mesh order. The drive
+ *  wheel and the escape wheel are not among them: one follows the run time and
+ *  the other sets the ratio the three of these divide. */
+const TRAIN_WHEEL_NAMES = ['Great', 'Second', 'Third'] as const
+
 // Margin from the stock edge, and daylight between parts. Both generous: these
 // are big wheels, and a clock that lands overlapping its own stock edge is more
 // annoying to fix than one that needs nudging in.
@@ -43,6 +48,40 @@ const LS_CLOCK_KEY = 'kam:clockSpec'
 // rows wrap.
 const MARGIN = 10
 const GAP = 12
+
+/**
+ * One wheel's tooth count: what the solver worked out, editable, with a lock.
+ *
+ * TYPING IS LOCKING. A count the user has typed is a count they want kept, and
+ * making them type it and then press a padlock to make it stick would be a trap
+ * — the next spinner step on any other field would silently take it away again.
+ * The padlock is therefore only ever used to LET GO (or to hold what the solver
+ * chose, without retyping it).
+ */
+function TeethRow({ label, teeth, locked, onLock, title }: {
+  label: string; teeth: number; locked: boolean
+  onLock: (v: number | null) => void
+  title: string
+}) {
+  return (
+    <div className="flex items-center gap-1" title={title}>
+      <div className="flex-1 min-w-0">
+        <NumInput label={label} valueMM={teeth} units="" min={6} integer onChange={(t) => onLock(Math.max(6, Math.round(t)))} />
+      </div>
+      <button
+        onClick={() => onLock(locked ? null : teeth)}
+        title={locked
+          ? `Held at ${teeth} teeth — click to let the train solver choose again`
+          : `Solved: ${teeth} teeth. Click to hold it and let the others move`}
+        className={`p-1 rounded border flex-shrink-0 transition-colors ${locked
+          ? 'border-blue-500 bg-blue-500/20 text-blue-500'
+          : 'border-gray-400 dark:border-neutral-600 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300'}`}
+      >
+        {locked ? <Lock size={11} /> : <LockOpen size={11} />}
+      </button>
+    </div>
+  )
+}
 
 export default function ClockPanel() {
   const setClockPanelOpen = useUIStore((s) => s.setClockPanelOpen)
@@ -108,6 +147,10 @@ export default function ClockPanel() {
 
   const L = (mm: number) => fmtLen(mm, units)
 
+  // One entry per mesh, always MESHES long whatever an older spec carries — a
+  // short or missing array must read as "nothing held", not as undefined rows.
+  const locks: (number | null)[] = TRAIN_WHEEL_NAMES.map((_, i) => spec.lockedTeeth?.[i] ?? null)
+
   // Everything derived lives in the floating readout now; the panel keeps only
   // its TONE, for the button that stands for it.
   const readout = useMemo(
@@ -124,6 +167,31 @@ export default function ClockPanel() {
   const setClockDraft = useUIStore((s) => s.setClockDraft)
   useEffect(() => { setClockDraft(spec) }, [spec, setClockDraft])
   useEffect(() => () => setClockDraft(null), [setClockDraft])
+
+  // WHAT CLOSES THIS PANEL is picking something ELSE. It fills the whole Draw tab
+  // and suppresses the properties panel (Sidebar's `showProps`), so leaving it up
+  // over a gear the user has just clicked shows them nothing about that gear.
+  // Adding or updating a clock does NOT close it — that selects the clock's own
+  // parts, and a run of small changes is how one is designed.
+  //
+  // An EMPTY selection leaves it alone: clicking bare canvas is deselecting, not
+  // choosing something else to look at.
+  // It watches for a CHANGE, not for a state: the selection the panel was opened
+  // over is none of its business — a clock chip opens it without touching the
+  // selection at all, and a user who had a gear selected when they reached for
+  // the Clock button would otherwise see the panel shut the instant it appeared.
+  // `selectedIds` is replaced rather than mutated, so identity is the test.
+  const selectedIds = usePathsStore((s) => s.selectedIds)
+  const lastSel = useRef(selectedIds)
+  useEffect(() => {
+    const changed = lastSel.current !== selectedIds
+    lastSel.current = selectedIds
+    if (!changed || selectedIds.length === 0) return
+    const paths = usePathsStore.getState().paths
+    const mine = !!clockEditId
+      && selectedIds.every((id) => paths.find((p) => p.id === id)?.clockId === clockEditId)
+    if (!mine) setClockPanelOpen(false)
+  }, [selectedIds, clockEditId, setClockPanelOpen])
 
   // Arranging is a canvas MODE — dragging moves link joints instead of selecting
   // — and its only way out is the button above, so it ends when this panel does.
@@ -233,6 +301,20 @@ export default function ClockPanel() {
           selected.push(...ids)
           rebuilt++
         }
+        // A part the design no longer HAS goes with it — turning the motion work
+        // off is the only way to get here, and leaving two orphaned wheels
+        // behind, still stamped with this clock, would be the wrong answer to
+        // "update clock". One undo puts them and their operations back.
+        const wanted = new Set(design.parts.map((p) => p.key as string))
+        const orphans = usePathsStore.getState().paths
+          .filter((p) => p.clockId === clockEditId && p.clockPart && !wanted.has(p.clockPart))
+        if (orphans.length > 0) {
+          usePathsStore.getState().applyPathEdit({
+            deleteIds: orphans.map((p) => p.id),
+            label: 'Clock parts removed',
+          })
+        }
+
         // Every part carries the spec, so re-running restamps all of them —
         // including parts of groups that updateShapeParams has just rewritten.
         // Not recorded: the parts' own chips already record the rebuild, and the
@@ -244,10 +326,10 @@ export default function ClockPanel() {
         // Selection is only meaningful for parts that were rewritten; a run that
         // rebuilt nothing left the document alone but for whatever it added.
         if (selected.length > 0) setSelectedIds(selected)
-        setClockPanelOpen(false)
+        const dropped = orphans.length > 0 ? `, ${orphans.length} paths removed` : ''
         showStatus(rebuilt === 0
           ? `No parts of that clock are in the document — ${added} rebuilt from scratch.`
-          : `Clock updated — ${rebuilt} parts rebuilt${added > 0 ? `, ${added} added` : ''}.`)
+          : `Clock updated — ${rebuilt} parts rebuilt${added > 0 ? `, ${added} added` : ''}${dropped}.`)
         return
       }
 
@@ -257,9 +339,15 @@ export default function ClockPanel() {
       // set can be found again — to be stood up in mesh, and to be redesigned.
       const clockId = uid('clock')
       for (const part of layout()) selected.push(...emitPart(part, clockId))
+      // The panel STAYS OPEN and turns into that clock's editor, so a beat or a
+      // tooth count can be tried straight away — and the Arrange/Animate buttons,
+      // which only exist for a clock that is in the document, appear at once. The
+      // edit id has to be set BEFORE the selection: the effect above closes this
+      // panel for a selection that is not the clock being edited, and these parts
+      // only ARE that clock once it knows which clock it is editing.
+      useUIStore.getState().setClockEdit(clockId)
       setSelectedIds(selected)
-      setClockPanelOpen(false)
-      showStatus(`Clock added — ${design.parts.length} parts. Click the Clock chip to redesign it.`)
+      showStatus(`Clock added — ${design.parts.length} parts. Change anything and press Update clock.`)
     } catch (err) {
       showStatus(`Could not build the clock: ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
@@ -298,10 +386,67 @@ export default function ClockPanel() {
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Going train</p>
           <NumInput label="Min pins" valueMM={spec.minPins} units="" min={6} integer
             onChange={(p) => set({ minPins: Math.max(6, Math.round(p)) })} />
+          {/* THE THREE TRAIN WHEELS, as the solver has them — type one and the
+              others move to keep the ratio exact. The escape wheel is above (it
+              sets the ratio rather than dividing it) and the drive wheel is
+              below (its count follows the run time, not the rate). */}
+          {TRAIN_WHEEL_NAMES.map((name, i) => (
+            <TeethRow
+              key={name}
+              label={name}
+              teeth={design.train.meshes[i]?.teeth ?? 0}
+              locked={locks[i] !== null}
+              title={`${name} wheel — drives a ${design.train.meshes[i]?.pins ?? 0}-pin pinion`}
+              onLock={(v) => {
+                const next = locks.slice()
+                next[i] = v
+                set({ lockedTeeth: next.some((x) => x !== null) ? next : undefined })
+              }}
+            />
+          ))}
+          <p className={noteCls}>
+            {locks.every((l) => l === null)
+              ? `Solved for ${+design.train.actualRatio.toFixed(4)}:1 · drive ${design.drive.teeth}t follows the run · escape ${spec.escapeTeeth}t`
+              : `${locks.filter((l) => l !== null).length} held — the rest move to keep ${+design.train.targetRatio.toFixed(4)}:1`}
+          </p>
           <PlainInput label="Great" value={spec.greatWheelMin} unit="min/rev" min={1} max={1440} step={1}
             onChange={(greatWheelMin) => set({ greatWheelMin })} />
           <NumInput label="Module" valueMM={spec.module} units={units} min={0.5} step={0.25}
             onChange={(module) => set({ module })} />
+          {/* One figure each for the WHOLE clock. Both are decisions about how
+              the wheels are cut rather than about any one wheel — and the pin
+              diameter shapes a cycloidal tooth, so wheels disagreeing about it
+              are cut for pins that are not in the clock. Set per chip they meant
+              opening seven forms to change one thing. */}
+          <NumInput label="Backlash" valueMM={spec.backlash} units={units} min={0} step={0.05}
+            onChange={(backlash) => set({ backlash })} />
+          <NumInput label="Pin Ø" valueMM={spec.pinDia} units={units} min={0.5} step={0.5}
+            onChange={(pinDia) => set({ pinDia })} />
+        </div>
+
+        {/* The hour hand's gearing. Two more wheels of the same kind, off the
+            great arbor rather than along the train — so it changes no rate, and
+            the counts are forced by both meshes spanning the same pair of
+            arbors (see solveMotionWork). */}
+        <div className="space-y-1">
+          <p className={noteCls + ' font-medium uppercase tracking-wider'}>Hour hand</p>
+          <Check label="Motion work" checked={!!spec.motionWork}
+            onChange={(motionWork) => set({ motionWork })} />
+          {/* The ONE free number in the motion work: the ratios and the equal
+              centre distance fix everything else. Each step up makes both wheels
+              and the arbor spacing half as big again, which is how the minute
+              wheel's stud is walked out clear of a big great wheel. */}
+          {spec.motionWork && (
+            <NumInput label="Size" valueMM={spec.motionSize ?? 2} units="" min={1} integer
+              onChange={(motionSize) => set({ motionSize: Math.max(1, Math.round(motionSize)) })} />
+          )}
+          <p className={noteCls}>
+            {design.motion
+              ? `${design.motion.cannonPins}/${design.motion.minuteTeeth} then `
+                + `${design.motion.minutePins}/${design.motion.hourTeeth}, both at `
+                + `${L(design.motion.centreDistanceMM)} — 12:1 off the minute arbor.`
+              : 'Off — the great wheel carries the minute hand and there is no hour hand.'}
+          </p>
         </div>
 
         <div className="space-y-1">

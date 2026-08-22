@@ -98,7 +98,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         }
         setSegments(opId, generateHelicalDrills(holes, tool, {
           depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM),
-          startNear: op.entryHint, safeHeightMM,
+          startNear: op.entryHint, safeHeightMM, startZMM,
         }))
       } else {
         // Derived, but NOT written back: `points` is the recorded payload of a
@@ -108,7 +108,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
         // enough.
         const points = circles.length > 0 ? circles.map((c) => ({ x: c.cx, y: c.cy })) : op.points
         setSegments(opId, generatePeckDrill(points, tool, {
-          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), startNear: op.entryHint, safeHeightMM,
+          depthMM: op.depthMM, stepDownMM: effectiveStepDownMM(tool, op.stepDownMM, op.depthMM), startNear: op.entryHint, safeHeightMM, startZMM,
         }))
       }
 
@@ -248,7 +248,12 @@ export async function regenerateOperation(opId: string): Promise<void> {
     // A cancelled regenerate is not a failure: abortGeneration has already settled the
     // op's status, and the state it was computing against is gone.
     if (isWorkCancelled(err)) return
-    setError(opId, err instanceof Error ? err.message : 'Generation failed')
+    const msg = err instanceof Error ? err.message : 'Generation failed'
+    setError(opId, msg)
+    // Nobody clicked anything, so there is no form banner to carry this: an edit to a
+    // path silently broke an operation that was already generated. The status bar is the
+    // only place the user will see it.
+    useUIStore.getState().showStatus(`${op.name}: ${msg}`, 'error')
   }
 }
 

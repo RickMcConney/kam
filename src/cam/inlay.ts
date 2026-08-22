@@ -1,5 +1,5 @@
 import { pointInPolygon, interiorPoint, pushAll } from './geom'
-import { flattenPath, signedArea, splitSelfIntersecting, sharesVertex, type Pt2 } from './pathFlattener'
+import { flattenPath, signedArea, splitSelfIntersecting, requireClosedSubpaths, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
 import { generateVCarve } from './vcarve'
 import { inflatePathsD, differenceD, intersectD, FillRule, JoinType, EndType } from 'clipper2-ts'
@@ -973,12 +973,29 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool | null, par
  * `endmill` is the roughing tool, `vbit` the wall tool (its .type selects the wall method).
  * `vbit === null` skips the wall pass entirely → a plain flat-walled roughing-only socket.
  */
+/**
+ * Both halves of an inlay bound a REGION — the socket is a pocket, the plug is the
+ * solid that fills it — so an open path is meaningless to either. Checked once at each
+ * entry point, before `splitRegions` closes everything implicitly, and covering the
+ * islands too: an open island is a hole of the wrong shape in one half and a
+ * protrusion of the wrong shape in the other, and the pair then cannot seat.
+ */
+function requireClosedInlay(d: string, params: InlayParams, half: 'socket' | 'plug'): void {
+  const cut = `an inlay ${half}`
+  const remedy = 'Close the path — an inlay needs a shape with an inside and an outside.'
+  requireClosedSubpaths(flattenPath(d, 0.05), { cut, remedy })
+  for (const iD of params.islandDs) {
+    requireClosedSubpaths(flattenPath(iD, 0.05), { cut, noun: 'Island path', remedy })
+  }
+}
+
 export async function generateInlayFemale(
   d: string,
   endmill: Tool,
   vbit: Tool | null,
   params: InlayParams
 ): Promise<InlaySplitResult> {
+  requireClosedInlay(d, params, 'socket')
   const regions = splitRegions(d)
 
   // Text with a V-bit: plain VCarve over the whole path (the VCarve alone forms the
@@ -1235,6 +1252,7 @@ export async function generateInlayMale(
   vbitTool: Tool | null,
   params: InlayParams
 ): Promise<InlaySplitResult> {
+  requireClosedInlay(d, params, 'plug')
   // Text with a V-bit: Virtual Z-Plane Shift (raised-letter prisms). Gated the same way
   // as the female's V-carve socket — see MULTI_REGION_IS_TEXT.
   const regions = splitRegions(d)

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { ICON } from '../theme'
 import {
-  FilePlus, FolderOpen, Save, Import, FileCog,
+  FilePlus, FolderOpen, Save, Import, FileCog, Share,
   Undo2, Redo2, Magnet, HelpCircle, Play, Sun, Moon,
 } from 'lucide-react'
 import { useProjectStore } from '../store/projectStore'
@@ -12,6 +12,7 @@ import { useWorkpieceStore } from '../store/workpieceStore'
 import { useSimStore } from '../store/simStore'
 import { generateGcode } from '../cam/gcode'
 import { buildGcodeInputs } from '../io/gcodeExport'
+import { exportSvg } from '../io/svgExport'
 import { triggerProjectSave, triggerGcodeExport, triggerGcodeExportSplit } from '../io/fileSystem'
 import { buildExportPreflight, type ExportPreflight } from '../cam/exportPreflight'
 import ExportPreflightDialog from './ExportPreflightDialog'
@@ -209,6 +210,14 @@ export default function Toolbar() {
           icon={<FileCog size={ICON.md} />}
           label={hasToolpaths ? 'Export G-code' : 'Export G-code (no toolpaths)'}
           onClick={() => setPreflight(buildExportPreflight())}
+        />
+        {/* Geometry OUT, for another tool. Copying paths between two projects of
+            this app is Ctrl+C/Ctrl+V, which keeps the objects — see
+            io/pathClipboard.ts — and an SVG cannot: it carries outlines. */}
+        <ToolbarButton
+          icon={<Share size={ICON.md} />}
+          label="Export SVG (selected paths, or all)"
+          onClick={exportSvg}
         />
         <Sep />
 

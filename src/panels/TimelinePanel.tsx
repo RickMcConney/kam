@@ -4,9 +4,9 @@ import {
   Shapes, Wrench, Square, Squircle, Signpost, Circle, Ellipse, Hexagon,
   Star, Heart, Pill, Shield, Orbit, Grid3x3, CookingPot, Cog, Snail, Type, PenTool, Copy, Import, SquaresUnite,
   SquareSquare, LayoutGrid, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
-  X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare,
+  X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare, Group,
 } from 'lucide-react'
-import { usePathsStore, clearCorners, type ImportedPath } from '../store/pathsStore'
+import { usePathsStore, clearCorners, outerGroupOf, type ImportedPath } from '../store/pathsStore'
 import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { shapeDisplayName } from '../shapes/shapeGenerators'
@@ -112,6 +112,8 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
   const out: ObjectChip[] = []
   const seenGroup = new Set<string>()
   const seenClock = new Set<string>()
+  const seenDef = new Set<string>()
+  const seenUserGroup = new Set<string>()
 
   for (const p of paths) {
     // A clock gets a chip of its own, at the position of its first part, which
@@ -121,6 +123,23 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
       seenClock.add(p.clockId)
       out.push({ key: `clock:${p.clockId}`, label: 'Clock', Icon: Clock, family: 'clock', pathIds: [], clockId: p.clockId })
     }
+    // A user group is ONE thing — that is what grouping means — so it is one
+    // chip standing for every member, at the position of the first. Its members'
+    // own chips go while it lasts and come back when it is ungrouped.
+    const ugroup = outerGroupOf(p)
+    if (ugroup) {
+      if (seenUserGroup.has(ugroup)) continue
+      seenUserGroup.add(ugroup)
+      // The OUTERMOST group only: an inner one is not a thing on its own until
+      // the outer is ungrouped, at which point its chip appears.
+      const members = paths.filter((q) => outerGroupOf(q) === ugroup)
+      out.push({
+        key: `ugroup:${ugroup}`, label: `Group \u00d7${members.length}`, Icon: Group,
+        family: 'path', pathIds: members.map((m) => m.id),
+      })
+      for (const m of members) out.push(...attachedChips(m, tabs))
+      continue
+    }
     if (p.groupId) {
       if (seenGroup.has(p.groupId)) continue
       seenGroup.add(p.groupId)
@@ -128,10 +147,29 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
       const editable = members.find((m) => m.definition && m.definition.kind !== 'duplicate')
       out.push({ key: p.groupId, ...pathVisual(p), family: 'path', pathIds: members.map((m) => m.id), editPathId: editable?.id })
       for (const m of members) out.push(...attachedChips(m, tabs))
+    } else if (defGroupId(p)) {
+      // ONE CHIP PER GENERATOR CLICK, for the same reason a batch of operations
+      // gets one: a pattern of six copies, or an offset of four selected paths,
+      // is ONE set of parameters to go back and change — and the form edits the
+      // whole set through the definition id every copy shares. Six chips said
+      // there were six patterns to edit. A DUPLICATE is deliberately not grouped
+      // (`defGroupId` excludes it): a copy is its own object from the moment it
+      // is made, with no form behind it.
+      const defId = defGroupId(p)!
+      if (seenDef.has(defId)) continue
+      seenDef.add(defId)
+      const members = paths.filter((q) => defGroupId(q) === defId)
+      const vis = pathVisual(p)
+      out.push({
+        key: `def:${defId}`, ...vis,
+        label: members.length === 1 ? vis.label : `${vis.label} \u00d7${members.length}`,
+        family: 'path', pathIds: members.map((m) => m.id), editPathId: p.id,
+      })
+      for (const m of members) out.push(...attachedChips(m, tabs))
     } else {
       out.push({
         key: p.id, ...pathVisual(p), family: 'path', pathIds: [p.id],
-        editPathId: p.definition && p.definition.kind !== 'duplicate' ? p.id : undefined,
+        editPathId: undefined,
       })
       out.push(...attachedChips(p, tabs))
     }
@@ -165,6 +203,15 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
     })
   }
   return out
+}
+
+// The paths ONE generator call produced share their definition's id (see
+// ImportedPath.definition), which is exactly what a form's edit mode re-runs
+// over — so they are one chip. A duplicate is excluded: it carries a definition
+// only to record where it came from, and has no form to reopen.
+function defGroupId(p: ImportedPath): string | null {
+  const def = p.definition
+  return def && def.kind !== 'duplicate' ? def.id : null
 }
 
 // What is attached to one path: its holding tabs, its corner treatments. Each

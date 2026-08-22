@@ -30,7 +30,10 @@ export type ShapeParams =
       hole: boolean; holeDia: number
       groove: boolean; grooveInset: number
     }
-  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
+  // `arborPins`/`arborPinCircleDia`/`arborPinDia`: the lantern pinion this wheel
+  // CARRIES on its own arbor — its pins go through the wheel's hub. Optional, and
+  // absent on every gear drawn by hand; see GearSpec.
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | {
       type: 'escapement'; cx: number; cy: number
@@ -40,6 +43,11 @@ export type ShapeParams =
       armWidth: number
       bore: number; hubDia: number; spokes: number; anchorBore: number
       clockwise: boolean
+      // The lantern pinion the escape wheel carries on its own arbor — the one
+      // the third wheel drives. Stated in PIN CIRCLE rather than module, because
+      // an escapement has none of its own: that circle belongs to the mesh with
+      // the wheel before it. See spokedWheel's pinRing.
+      arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number
     }
   // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
   | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }

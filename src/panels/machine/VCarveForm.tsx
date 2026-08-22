@@ -1,5 +1,5 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -24,7 +24,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
   const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
+  const { addOperations, setSegments, updateOperation, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
@@ -46,6 +46,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     return { ...base, toolId: pickToolId(base.toolId, vbits) }
   })
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Editing covers every operation created by the same Generate click — see PocketForm.
@@ -79,6 +80,10 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   }
 
   async function handleGenerate() {
+    clearError()
+    // Ids this click CREATES. A Generate that fails leaves nothing behind, so these are
+    // thrown away again at the end; an operation that already existed is never touched.
+    const createdIds: string[] = []
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
@@ -108,7 +113,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             }))
           } catch (err) {
             if (isWorkCancelled(err)) break
-            setError(op.id, err instanceof Error ? err.message : 'Generation failed')
+            reportError(op.id, err)
           }
         }
       } else {
@@ -135,7 +140,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           const existingId = typeof slot === 'string' ? slot : undefined
           const opId = existingId ?? newIds[slot as number]
           const name = `V-Carve: ${boundary.name} (${tool.name})`
-          if (!existingId) session.remember(boundary.id, opId)
+          if (!existingId) { session.remember(boundary.id, opId); createdIds.push(opId) }
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
@@ -151,11 +156,12 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             }))
           } catch (err) {
             if (isWorkCancelled(err)) break
-            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+            reportError(opId, err)
           }
         }
       }
     } finally {
+      discardFailedOps(createdIds)
       setGenerating(false)
       save('vcarve', form)
     }
@@ -193,6 +199,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           Cuts at most {fmtLen((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2, units)} wide at full depth.
         </p>
       </div>
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.maxDepthMM <= 0 || selectedTool.type !== 'vbit'}
         generating={generating}

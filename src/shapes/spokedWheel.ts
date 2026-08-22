@@ -11,7 +11,7 @@
 // SPOKE 2.5·m is the width, WEB 1.5·m is 0.6·spokeW, and HUB 2·m is 0.8·spokeW —
 // so this is a rename of the gear's own rules, not a new set of them.
 
-import { type Pt, clamp, arcInto, roundConvex } from './polyOps'
+import { type Pt, clamp, arcInto, roundConvex, ellipseRing } from './polyOps'
 
 /** Daylight left between two spokes where they meet the hub, radians. */
 const SPOKE_GAP = 0.15
@@ -106,6 +106,69 @@ export function spokeWindows(n: number, rimInner: number, hubOuter: number, spok
     // The window's convex corners are the WEB's concave ones — the stress
     // risers where a spoke meets the hub and the rim.
     for (const r of roundConvex([ring], fillet)) out.push(r)
+  }
+  return out
+}
+
+// ─── The pinion a wheel CARRIES ───────────────────────────────────────────────
+//
+// A lantern pinion is a pin circle between two cheeks, and one of those cheeks
+// can be the WHEEL that shares its arbor: drill the pin holes through the
+// wheel's hub, stand the pins in them, and cap the far ends with a single loose
+// cheek. That is one part fewer per arbor, and — the real reason — it takes the
+// pinion's clocking out of the assembly: pins set in the wheel cannot creep
+// round it, where a pinion glued on an arbor can.
+//
+// It costs the wheel its hub: the holes have to fall in solid stock with a rim
+// round them, so the hub becomes a FLOOR of `pinRing().hubDia` — which is what
+// `seatHub` already does for spokes, and the two floors simply take the larger.
+// Shared by the gear and the escape wheel because it is a question about the
+// HUB, and neither of them owns that.
+//
+// Stated in PIN CIRCLE rather than in module, because the escape wheel has no
+// module of its own: the circle its pins ride is the mating pinion's pitch
+// circle, which belongs to the mesh with the wheel BEFORE it.
+
+/** Stock left outside a pin hole: × the pin, never less than 1.5 mm. */
+const PIN_RING_RIM = 0.4
+
+export interface PinRing {
+  pins: number
+  pinDia: number
+  pinCircleDia: number
+  /** Hub the wheel needs to carry these holes with a rim round them. */
+  hubDia: number
+  /** Wood between two neighbouring holes, mm. Negative means they merge. */
+  gap: number
+}
+
+/** The ring of pin holes a wheel carries, or null if it carries none. */
+export function pinRing(
+  pins: number | undefined,
+  pinCircleDia: number | undefined,
+  pinDia: number | undefined,
+): PinRing | null {
+  const n = Math.round(pins ?? 0)
+  const dia = pinDia ?? 0
+  const circle = pinCircleDia ?? 0
+  if (n < 2 || dia <= 0 || circle <= 0) return null
+  const rim = Math.max(1.5, PIN_RING_RIM * dia)
+  return {
+    pins: n,
+    pinDia: dia,
+    pinCircleDia: circle,
+    hubDia: circle + dia + 2 * rim,
+    gap: circle * Math.sin(Math.PI / n) - dia,
+  }
+}
+
+/** Those holes as rings, centred on the wheel's own centre. */
+export function pinRingHoles(cx: number, cy: number, ring: PinRing): Pt[][] {
+  const r = ring.pinCircleDia / 2
+  const out: Pt[][] = []
+  for (let i = 0; i < ring.pins; i++) {
+    const a = (i * 2 * Math.PI) / ring.pins
+    out.push(ellipseRing(cx + r * Math.cos(a), cy + r * Math.sin(a), ring.pinDia / 2, ring.pinDia / 2))
   }
   return out
 }

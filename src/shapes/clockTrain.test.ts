@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
-  CLOCK_PART_ORDER, TRAIN_PART_ORDER, DEFAULT_CLOCK_SPEC, G_MM, clockRoot, defaultLinkAngles, clockAssemblyFromPaths, clockPlate, clockPose,
+  CLOCK_PART_ORDER, TRAIN_PART_ORDER, solveMotionWork, MOTION_RATIOS, MOTION_LINK,
+  clockArborClashes, clockMotionFromPaths, type ClockMotion, DEFAULT_CLOCK_SPEC, G_MM, clockRoot, defaultLinkAngles, clockAssemblyFromPaths, clockPlate, clockPose,
   designClock, escapeRevSeconds, layoutClock,
   pendulumLengthMM, solveDrive, solveTrain, trainRatio,
   dragLinkAngle,
   type ClockAssembly, type ClockPlate,
 } from './clockTrain'
-import { gearMesh } from './gearGenerator'
+import { gearMesh, pinionDims } from './gearGenerator'
 import { generatePendulumParts, pendulumBeat } from './pendulumGenerator'
 import { DEFAULT_SHAPE_CONFIG, generateShapeParts } from './shapeGenerators'
 import { getMultiBBox } from '../canvas/selectionUtils'
@@ -19,7 +20,7 @@ const BASE = {
 /** The going train only — the pendulum hangs off the anchor and is on no arbor,
  *  so it is not part of what stands up as a plate. */
 const trainOf = (d: ReturnType<typeof designClock>): ClockAssembly =>
-  d.parts.filter((p) => p.params.type !== 'pendulum')
+  d.parts.filter((p) => TRAIN_PART_ORDER.includes(p.key))
     .map((p) => ({ key: p.key, params: p.params as ClockAssembly[number]['params'] }))
 
 describe('pendulum', () => {
@@ -101,6 +102,84 @@ describe('going train', () => {
   })
 })
 
+describe('holding a tooth count', () => {
+  const ratio = trainRatio(DEFAULT_CLOCK_SPEC)
+  const solve = (locked?: (number | null)[]) => solveTrain(ratio, DEFAULT_CLOCK_SPEC.minPins, locked)
+
+  it('keeps the train exact round the wheel the user pinned', () => {
+    for (const [i, teeth] of [[0, 60], [1, 40], [2, 36], [0, 96]] as const) {
+      const locked = [null, null, null] as (number | null)[]
+      locked[i] = teeth
+      const t = solve(locked)
+      // The pinned wheel is where it was pinned — the array is per WHEEL, and a
+      // solution that moved it to another arbor would be answering another
+      // question.
+      expect(t.meshes[i].teeth).toBe(teeth)
+      // …and the rate, which is the whole point, is still exact.
+      expect(t.exact).toBe(true)
+      expect(t.actualRatio).toBeCloseTo(ratio, 9)
+    }
+  })
+
+  it('solves the last free wheel whichever two are held', () => {
+    for (const locked of [[60, 40, null], [60, null, 40], [null, 50, 48]] as (number | null)[][]) {
+      const t = solve(locked)
+      locked.forEach((v, i) => { if (v !== null) expect(t.meshes[i].teeth).toBe(v) })
+      expect(t.exact).toBe(true)
+    }
+  })
+
+  // Three held is not a search at all — it is a train being REPORTED, and it has
+  // to be reported honestly rather than quietly re-solved.
+  it('reports a fully held train as it stands, right or wrong', () => {
+    const good = solve([48, 48, 45])
+    expect(good.meshes.map((m) => m.teeth)).toEqual([48, 48, 45])
+    expect(good.exact).toBe(true)
+
+    const bad = solve([48, 48, 44])
+    expect(bad.meshes.map((m) => m.teeth)).toEqual([48, 48, 44])
+    expect(bad.exact).toBe(false)
+    expect(Math.abs(bad.errorSecPerDay)).toBeGreaterThan(60)
+  })
+
+  // The bounds stop the SEARCH proposing silly wheels; a number the user typed
+  // is not a proposal. It is the readout's job to say so, not the solver's.
+  it('accepts a held count the search would never have proposed', () => {
+    const t = solve([7, null, null])
+    expect(t.meshes[0].teeth).toBe(7)
+    expect(t.exact).toBe(true)
+  })
+
+  // Holding nothing must leave the old answer alone — the sort included, which
+  // is skipped whenever anything is held.
+  it('changes nothing when nothing is held', () => {
+    const bare = solve()
+    expect(bare.meshes.map((m) => `${m.teeth}/${m.pins}`)).toEqual(['48/12', '48/12', '45/12'])
+    expect(solve([null, null, null])).toEqual(bare)
+    // Sorted descending by mesh ratio, biggest wheel at the great arbor.
+    const rs = bare.meshes.map((m) => m.teeth / m.pins)
+    expect(rs[0]).toBeGreaterThanOrEqual(rs[1])
+    expect(rs[1]).toBeGreaterThanOrEqual(rs[2])
+  })
+
+  // A spec from before the field existed, or one carrying junk: every entry has
+  // to fill in as "free" rather than NaN the search. Same trap as `cycOf`.
+  it('reads a short or broken hold array as nothing held', () => {
+    const bare = solve()
+    for (const junk of [[], [null], [NaN, null, null], [0, null, null], [undefined as never]]) {
+      expect(solve(junk as (number | null)[])).toEqual(bare)
+    }
+  })
+
+  it('carries the holds into the emitted wheels', () => {
+    const design = designClock({ ...DEFAULT_CLOCK_SPEC, lockedTeeth: [60, null, null] }, BASE)
+    const great = design.parts.find((p) => p.key === 'great')!.params
+    if (great.type !== 'gear') throw new Error('not a gear')
+    expect(great.teeth).toBe(60)
+    expect(design.train.exact).toBe(true)
+  })
+})
+
 describe('drive wheel', () => {
   it('gives about the run asked for at the default spec', () => {
     const d = solveDrive(DEFAULT_CLOCK_SPEC, 12)
@@ -126,11 +205,91 @@ describe('drive wheel', () => {
   })
 })
 
+describe('the motion work', () => {
+  const mw = solveMotionWork(DEFAULT_CLOCK_SPEC.module)
+
+  // BOTH MESHES SPAN THE SAME PAIR OF ARBORS — the hour wheel is concentric with
+  // the minute arbor — so the two centre distances must be the same distance.
+  // That is the whole constraint on the counts, and nothing else here checks it:
+  // the parts are drawn clear of each other, so a mismatch looks fine on the
+  // stock and cannot be assembled.
+  it('runs both meshes at one centre distance', () => {
+    const m = DEFAULT_CLOCK_SPEC.module
+    // A lantern's pins sit on a pitch circle of m·P/2, the same rule the teeth
+    // are cut to, so a mesh's centre distance is m(P + T)/2 either way round.
+    const first = (m * (mw.cannonPins + mw.minuteTeeth)) / 2
+    const second = (m * (mw.minutePins + mw.hourTeeth)) / 2
+    expect(second).toBeCloseTo(first, 9)
+    expect(mw.centreDistanceMM).toBeCloseTo(first, 9)
+  })
+
+  it('gears the hour hand down by exactly 12', () => {
+    expect(mw.ratio).toBeCloseTo(12, 12)
+    expect(mw.minuteTeeth / mw.cannonPins).toBeCloseTo(MOTION_RATIOS[0], 12)
+    expect(mw.hourTeeth / mw.minutePins).toBeCloseTo(MOTION_RATIOS[1], 12)
+  })
+
+  // k = 2 of the P₁ = 5k / P₂ = 4k family, which is the classic motion work —
+  // the numbers a clockmaker would recognise, and they fall out of the equal
+  // centre distance rather than being chosen.
+  it('comes out at the classic 10/30 and 8/32', () => {
+    expect([mw.cannonPins, mw.minuteTeeth, mw.minutePins, mw.hourTeeth]).toEqual([10, 30, 8, 32])
+  })
+
+  it('adds two wheels off the great arbor, and only when asked', () => {
+    const off = designClock(DEFAULT_CLOCK_SPEC, BASE)
+    expect(off.motion).toBeNull()
+    expect(off.parts.some((p) => p.key === 'minute' || p.key === 'hour')).toBe(false)
+
+    const on = designClock({ ...DEFAULT_CLOCK_SPEC, motionWork: true }, BASE)
+    expect(on.parts.map((p) => p.key)).toEqual(CLOCK_PART_ORDER)
+    // The going train is untouched by them: same wheels, same rate.
+    expect(trainOf(on).map((p) => p.key)).toEqual(TRAIN_PART_ORDER)
+    expect(trainOf(on).map((p) => (p.params as { teeth: number }).teeth))
+      .toEqual(trainOf(off).map((p) => (p.params as { teeth: number }).teeth))
+  })
+
+  // The hour wheel turns once every 12 great-wheel revolutions — which is 12
+  // hours only when the great wheel is the minute arbor, and the readout is what
+  // says so when it is not.
+  it('turns the hour wheel once every 12 turns of the great wheel', () => {
+    const on = designClock({ ...DEFAULT_CLOCK_SPEC, motionWork: true }, BASE)
+    const great = on.parts.find((p) => p.key === 'great')!
+    const hour = on.parts.find((p) => p.key === 'hour')!
+    const minute = on.parts.find((p) => p.key === 'minute')!
+    expect(hour.revSeconds / great.revSeconds).toBeCloseTo(12, 9)
+    expect(minute.revSeconds / great.revSeconds).toBeCloseTo(3, 9)
+    expect(great.revSeconds).toBeCloseTo(3600, 6)
+  })
+
+  // Each wheel is emitted with the lantern it MESHES with, exactly as a train
+  // wheel is — which is what makes them two parts to cut and not four.
+  it('emits each wheel with the pinion it runs against', () => {
+    const on = designClock({ ...DEFAULT_CLOCK_SPEC, motionWork: true }, BASE)
+    for (const [key, teeth, pins] of [
+      ['minute', mw.minuteTeeth, mw.cannonPins],
+      ['hour', mw.hourTeeth, mw.minutePins],
+    ] as const) {
+      const part = on.parts.find((p) => p.key === key)!
+      if (part.params.type !== 'gear') throw new Error('not a gear')
+      expect(part.params.teeth).toBe(teeth)
+      expect(part.params.mateTeeth).toBe(pins)
+      expect(part.params.emitPinion).toBe(true)
+      // Cycloidal like everything else in the clock, and on the same module.
+      expect(part.params.toothProfile).toBe('cycloidal')
+      expect(part.params.module).toBe(DEFAULT_CLOCK_SPEC.module)
+    }
+  })
+})
+
 describe('the emitted clock', () => {
   const design = designClock(DEFAULT_CLOCK_SPEC, BASE)
 
   it('is a drive wheel, three going wheels, an escapement and a pendulum', () => {
-    expect(design.parts.map((p) => p.key)).toEqual(CLOCK_PART_ORDER)
+    // The motion work is optional, so the emitted parts are CLOCK_PART_ORDER
+    // less what was not asked for — never a different order.
+    expect(design.parts.map((p) => p.key))
+      .toEqual(CLOCK_PART_ORDER.filter((k) => k !== 'minute' && k !== 'hour'))
     expect(design.parts.map((p) => p.name))
       .toEqual(['Drive Wheel', 'Great Wheel', 'Second Wheel', 'Third Wheel', 'Escapement', 'Pendulum'])
   })
@@ -138,6 +297,93 @@ describe('the emitted clock', () => {
   it('carries the tooth counts Rick specified', () => {
     const teeth = trainOf(design).map((p) => p.params.teeth)
     expect(teeth.slice(1)).toEqual([48, 48, 45, 30])
+  })
+
+  // Backlash and pin diameter are decisions about the CLOCK — every mesh runs on
+  // the same play and every lantern is pinned with the same rod — so they come
+  // from the spec and override the Gear defaults on every wheel, the motion work
+  // included. Set per wheel they meant opening seven chips to change one thing.
+  it('gives every wheel the clock\'s own backlash and pin diameter', () => {
+    const spec = { ...DEFAULT_CLOCK_SPEC, motionWork: true, backlash: 0.45, pinDia: 3.5 }
+    const gears = designClock(spec, BASE).parts.filter((p) => p.params.type === 'gear')
+    expect(gears).toHaveLength(6)          // four train wheels + the two motion ones
+    for (const p of gears) {
+      if (p.params.type !== 'gear') throw new Error('not a gear')
+      expect(p.params.backlash).toBe(0.45)
+      expect(p.params.pinDia).toBe(3.5)
+      // …and everything NOT the clock's business is still the user's default.
+      expect(p.params.bore).toBe(BASE.gear.bore)
+      expect(p.params.spokes).toBe(BASE.gear.spokes)
+    }
+    // A spec saved before the fields existed falls back to those defaults rather
+    // than to NaN — the `cycOf` trap, and an undefined pin diameter does not draw
+    // a wrong tooth, it makes every coordinate NaN.
+    const old = { ...DEFAULT_CLOCK_SPEC } as Partial<typeof DEFAULT_CLOCK_SPEC>
+    delete old.backlash; delete old.pinDia
+    const first = designClock(old as typeof DEFAULT_CLOCK_SPEC, BASE).parts[0].params
+    if (first.type !== 'gear') throw new Error('not a gear')
+    expect(first.backlash).toBe(BASE.gear.backlash)
+    expect(first.pinDia).toBe(BASE.gear.pinDia)
+  })
+
+  // THE DRIVE WHEEL'S HUB IS THE DRUM. The cord winds on that arbor and the run
+  // time was worked out from that diameter, so the wheel is cut to it and the
+  // two cannot disagree. A floor, like every hub: seatHub still grows it when the
+  // arbor or the spokes need more, and the readout says so, because then the cord
+  // rides against the hub instead of the drum.
+  it('cuts the drive wheel\'s hub to the drum', () => {
+    for (const drumDia of [40, 80, 25]) {
+      const drive = designClock({ ...DEFAULT_CLOCK_SPEC, drumDia }, BASE).parts.find((p) => p.key === 'drive')!
+      if (drive.params.type !== 'gear') throw new Error('not a gear')
+      expect(drive.params.hubDia).toBe(drumDia)
+      // …and only that wheel: no other arbor carries the cord.
+      const others = designClock({ ...DEFAULT_CLOCK_SPEC, drumDia, motionWork: true }, BASE)
+        .parts.filter((p) => p.key !== 'drive' && p.params.type === 'gear')
+      for (const p of others) {
+        if (p.params.type !== 'gear') throw new Error('not a gear')
+        expect(p.params.hubDia).toBe(BASE.gear.hubDia)
+      }
+    }
+  })
+
+  // EVERY DRIVEN WHEEL CARRIES ITS OWN PINION'S PINS — the wheel is that
+  // lantern's near cheek, so the holes go through its hub and the cheek drawn
+  // beside the wheel BEFORE it caps the far ends. The drive wheel carries none
+  // (nothing drives it but the cord) and neither does the hour wheel (nothing is
+  // driven off the hour arbor).
+  it('gives every driven wheel the pins of the pinion on its own arbor', () => {
+    const spec = { ...DEFAULT_CLOCK_SPEC, motionWork: true }
+    const design = designClock(spec, BASE)
+    const pinsOf = (key: string) => {
+      const p = design.parts.find((x) => x.key === key)!.params as { arborPins?: number; arborPinCircleDia?: number }
+      return [p.arborPins ?? 0, p.arborPinCircleDia ?? 0]
+    }
+    const [m1, m2, m3] = design.train.meshes
+    // Each wheel carries the pinion the wheel BEFORE it drives.
+    expect(pinsOf('great')).toEqual([design.drive.pins, spec.module * design.drive.pins])
+    expect(pinsOf('second')).toEqual([m1.pins, spec.module * m1.pins])
+    expect(pinsOf('third')).toEqual([m2.pins, spec.module * m2.pins])
+    expect(pinsOf('escapement')).toEqual([m3.pins, spec.module * m3.pins])
+    // The minute wheel shares the stud with the pinion driving the hour wheel.
+    expect(pinsOf('minute')).toEqual([design.motion!.minutePins, spec.module * design.motion!.minutePins])
+    // …and these two carry nothing.
+    expect(pinsOf('drive')).toEqual([0, 0])
+    expect(pinsOf('hour')).toEqual([0, 0])
+  })
+
+  // The pin circle a wheel carries is the SAME circle as the cheek drawn beside
+  // the wheel before it — they hold the same pins, so a mismatch means the parts
+  // do not go together.
+  it('drills each wheel on the circle of the cheek that caps it', () => {
+    const design = designClock({ ...DEFAULT_CLOCK_SPEC, motionWork: true }, BASE)
+    for (const [wheel, driver] of [
+      ['great', 'drive'], ['second', 'great'], ['third', 'second'], ['escapement', 'third'],
+      ['minute', 'hour'],
+    ] as const) {
+      const carried = design.parts.find((p) => p.key === wheel)!.params as { arborPinCircleDia?: number }
+      const cheek = pinionDims(design.parts.find((p) => p.key === driver)!.params as never)!
+      expect(carried.arborPinCircleDia).toBeCloseTo(cheek.pinCircleDia, 9)
+    }
   })
 
   it('cuts the pendulum to the length the beat demands', () => {
@@ -261,11 +507,198 @@ describe('the assembled clock', () => {
   it('phases each mesh for the angle it actually sits at, not for +x', () => {
     // The formula reduces to gearPose when the mate lies along +x, which is the
     // one case gearMesh solves directly — so that is the anchor for the rest.
+    //
+    // ASK gearMesh FOR THE SAME MESH clockPose ASKED FOR, which means handing it
+    // the same DRIVE SENSE. `matePhaseDeg` carries the settle onto the driving
+    // flank, so it moves by the whole play when the sense flips — and the sense
+    // ALTERNATES back along the chain from the escape wheel, because a train is
+    // a chain of external meshes. Called with the default (a gear running CCW)
+    // this reads half the train as 0.7° out of phase, which is the play at those
+    // meshes and not an error in the pose.
     const flat = { ...plate, arbors: plate.arbors.map((a) => ({ ...a, toNext: 0 })) }
     const pose = clockPose(trainOf(design), flat, 0.37)
+    const esc = trainOf(design)[4].params
+    let sense: 1 | -1 = esc.type === 'escapement' && esc.clockwise ? -1 : 1
+    const senses: (1 | -1)[] = []
+    for (let k = 3; k >= 0; k--) { sense = sense === 1 ? -1 : 1; senses[k] = sense }
     for (let k = 3; k >= 0; k--) {
-      const mesh = gearMesh(trainOf(design)[k].params as never)
+      const mesh = gearMesh(trainOf(design)[k].params as never, senses[k])
       expect(pose.pinionDeg[k + 1]).toBeCloseTo(mesh.matePhaseDeg - pose.wheelDeg[k] * mesh.ratio, 9)
+    }
+  })
+})
+
+describe('the motion work, assembled', () => {
+  const spec = { ...DEFAULT_CLOCK_SPEC, motionWork: true }
+  const design = designClock(spec, BASE)
+  const asm = trainOf(design)
+  const motion: ClockMotion = {
+    minute: design.parts.find((p) => p.key === 'minute')!.params as ClockMotion['minute'],
+    hour: design.parts.find((p) => p.key === 'hour')!.params as ClockMotion['hour'],
+  }
+  const plate = clockPlate(asm, spec.linkAngles, motion)!
+  const great = asm.findIndex((p) => p.key === 'great')
+
+  it('hangs its arbor off the GREAT arbor, at the distance both meshes run at', () => {
+    expect(plate.motion).not.toBeNull()
+    expect(plate.motion!.hostIdx).toBe(great)
+    const host = plate.arbors[great]
+    expect(Math.hypot(plate.motion!.x - host.x, plate.motion!.y - host.y))
+      .toBeCloseTo(solveMotionWork(spec.module).centreDistanceMM, 6)
+  })
+
+  it('is absent from the going train it hangs off', () => {
+    // The arbors are the TRAIN's, five of them; the motion work adds a branch,
+    // not a sixth arbor — letting it into the chain would gear the escapement
+    // through the hour hand.
+    expect(plate.arbors).toHaveLength(TRAIN_PART_ORDER.length)
+    expect(clockPlate(asm, spec.linkAngles)!.motion).toBeNull()
+  })
+
+  // BOTH HANDS GO ROUND THE SAME WAY and the hour one twelve times slower. A
+  // sign error here draws a perfectly good mesh running backwards, which no
+  // clearance check can see.
+  it('turns the hour wheel 1/12 of the great wheel, the same way round', () => {
+    const a = clockPose(asm, plate, 0, motion)
+    const b = clockPose(asm, plate, 40, motion)
+    const dGreat = b.wheelDeg[great] - a.wheelDeg[great]
+    expect((b.motion!.hourDeg - a.motion!.hourDeg) / dGreat).toBeCloseTo(1 / 12, 9)
+    // The minute wheel is between them and runs backwards at 3:1, as an external
+    // mesh must.
+    expect((b.motion!.minuteDeg - a.motion!.minuteDeg) / dGreat).toBeCloseTo(-1 / 3, 9)
+    // The cannon pinion is FIXED to the great arbor — not geared to it.
+    expect(b.motion!.cannonDeg).toBeCloseTo(b.wheelDeg[great], 9)
+  })
+
+  it('has no pose without the parts, and no parts without both wheels', () => {
+    expect(clockPose(asm, plate, 0.3).motion).toBeNull()
+    const paths = [
+      { clockId: 'c1', clockPart: 'minute', shapeParams: motion.minute },
+      { clockId: 'c1', clockPart: 'hour', shapeParams: motion.hour },
+    ]
+    expect(clockMotionFromPaths(paths, 'c1')).not.toBeNull()
+    expect(clockMotionFromPaths(paths.slice(0, 1), 'c1')).toBeNull()
+    expect(clockMotionFromPaths(paths, 'c2')).toBeNull()
+  })
+
+  // THE BRANCH IS MEASURED THE OTHER WAY ROUND from a train link: its host is
+  // what is fixed, so the angle runs from the host out to the cursor.
+  it('drags its joint onto the ray from the great arbor to the cursor', () => {
+    const root = { x: 150, y: 100 }
+    for (const cursor of [{ x: 400, y: 120 }, { x: 60, y: -80 }, { x: 150, y: 400 }]) {
+      const deg = dragLinkAngle(plate, root, MOTION_LINK, cursor)!
+      const next = spec.linkAngles.slice()
+      next[MOTION_LINK] = deg
+      const after = clockPlate(asm, next, motion)!
+      const host = { x: root.x + after.arbors[great].x, y: root.y + after.arbors[great].y }
+      const joint = { x: root.x + after.motion!.x, y: root.y + after.motion!.y }
+      const toCursor = Math.atan2(cursor.y - host.y, cursor.x - host.x)
+      const toJoint = Math.atan2(joint.y - host.y, joint.x - host.x)
+      expect(Math.cos(toCursor - toJoint)).toBeCloseTo(1, 9)
+      expect(Math.hypot(joint.x - host.x, joint.y - host.y))
+        .toBeCloseTo(after.motion!.centreDistance, 9)
+      // …and nothing in the train moved with it.
+      for (let i = 0; i < after.arbors.length; i++) {
+        expect(after.arbors[i].x).toBeCloseTo(plate.arbors[i].x, 9)
+        expect(after.arbors[i].y).toBeCloseTo(plate.arbors[i].y, 9)
+      }
+    }
+  })
+
+  // The frame is what a plate has to be, so it has to CONTAIN the motion work —
+  // whether that makes it any bigger depends on where the branch is swung, and
+  // at the default angle the train's own wheels already reach further.
+  it('counts its wheels in the frame the plate has to be', () => {
+    const m = plate.motion!
+    const host = plate.arbors[m.hostIdx]
+    for (const [x, y, r] of [
+      [m.x, m.y, m.minuteRadius],
+      [host.x, host.y, m.hourRadius],
+    ] as const) {
+      expect(plate.bbox.minX).toBeLessThanOrEqual(x - r + 1e-9)
+      expect(plate.bbox.maxX).toBeGreaterThanOrEqual(x + r - 1e-9)
+      expect(plate.bbox.minY).toBeLessThanOrEqual(y - r + 1e-9)
+      expect(plate.bbox.maxY).toBeGreaterThanOrEqual(y + r - 1e-9)
+    }
+    // …and swinging the branch out past the train DOES grow it. (At the default
+    // angle it does not: a 200 mm great wheel already reaches further than an
+    // 80 mm branch carrying a 128 mm one, which is why the containment above is
+    // the invariant and this is only the case that shows the box is live.)
+    const swung = spec.linkAngles.slice()
+    swung[MOTION_LINK] = 180
+    const wide = clockPlate(asm, swung, motion)!
+    expect(wide.bbox.minX).toBeLessThan(clockPlate(asm, swung)!.bbox.minX)
+  })
+})
+
+describe('arbors through wheels', () => {
+  const spec = { ...DEFAULT_CLOCK_SPEC, motionWork: true }
+  const design = designClock(spec, BASE)
+  const asm = trainOf(design)
+  const motion: ClockMotion = {
+    minute: design.parts.find((p) => p.key === 'minute')!.params as ClockMotion['minute'],
+    hour: design.parts.find((p) => p.key === 'hour')!.params as ClockMotion['hour'],
+  }
+  const plate = clockPlate(asm, spec.linkAngles, motion)!
+
+  // An arbor is a rod from plate to plate, so it is at EVERY depth: a wheel whose
+  // tip circle contains one has nowhere to turn. Two WHEELS overlapping is the
+  // opposite case and is normal — they sit at different depths on their arbors.
+  it('finds a wheel with a foreign arbor inside its rim', () => {
+    const found = clockArborClashes(plate)
+    for (const c of found) {
+      const wheel = plate.arbors.find((a) => a.key === c.wheel)!
+      const arbor = c.arbor === 'anchor' ? plate.anchor : plate.arbors.find((a) => a.key === c.arbor)!
+      const d = Math.hypot(arbor.x - wheel.x, arbor.y - wheel.y)
+      expect(d).toBeLessThan(wheel.wheelRadius)
+      expect(c.depthMM).toBeCloseTo(wheel.wheelRadius - d, 9)
+    }
+    // Nothing is ever reported against its own arbor, or the escape wheel
+    // against the pallet arbor that is supposed to sweep it.
+    expect(found.some((c) => c.arbor === c.wheel)).toBe(false)
+    expect(found.some((c) => c.arbor === 'anchor' && c.wheel === 'escapement')).toBe(false)
+  })
+
+  // Folding the linkage is what breaks it in a train that was fine: the drive
+  // wheel swung onto the third arbor, say.
+  it('catches an arbor folded onto another wheel', () => {
+    // Doubled back on itself — links 0 and 2 out one way, 1 and 3 straight back
+    // — which piles four arbors into the same handspan. A straight or gently
+    // leaning train keeps every clearance, which is the other half of this test.
+    const folded = clockArborClashes(clockPlate(asm, [0, 180, 0, 180, 0], motion)!)
+    const leaning = clockArborClashes(clockPlate(asm, spec.linkAngles, motion)!)
+    expect(folded.length).toBeGreaterThan(leaning.length + 5)
+    for (const straight of [[0, 0, 0, 0, 0], [90, 90, 90, 90, 0], [10, -10, 10, -10, 0]]) {
+      expect(clockArborClashes(clockPlate(asm, straight, motion)!).length).toBe(leaning.length)
+    }
+  })
+
+  // The motion work is in FRONT of the front plate and the great wheel is
+  // between the plates, so the stud landing inside the great wheel is not a
+  // clash — the same "different depths" that lets neighbouring wheels overlap.
+  // What IS checked in front is the pair that really shares that space.
+  it('does not call the stud inside the great wheel a clash', () => {
+    const great = plate.arbors[plate.motion!.hostIdx]
+    // The default 12-pin train has exactly that arrangement…
+    expect(plate.motion!.centreDistance).toBeLessThan(great.wheelRadius)
+    expect(clockArborClashes(plate).some((c) => c.arbor === 'motion' || c.wheel === 'minute')).toBe(false)
+    // …and taking the motion work up a size walks the stud out past the rim.
+    const bigger = designClock({ ...spec, motionSize: 3 }, BASE)
+    const big = clockPlate(trainOf(bigger), spec.linkAngles, {
+      minute: bigger.parts.find((p) => p.key === 'minute')!.params as ClockMotion['minute'],
+      hour: bigger.parts.find((p) => p.key === 'hour')!.params as ClockMotion['hour'],
+    })!
+    expect(big.motion!.centreDistance).toBeGreaterThan(plate.arbors[big.motion!.hostIdx].wheelRadius)
+  })
+
+  // …and the size is the ONE free number in the family: the ratios and the equal
+  // centre distance fix the rest, so every size is still exactly 12:1.
+  it('keeps 12:1 and one centre distance at every size', () => {
+    for (const k of [1, 2, 3, 5]) {
+      const mw = solveMotionWork(4, k)
+      expect(mw.ratio).toBeCloseTo(12, 12)
+      expect((4 * (mw.cannonPins + mw.minuteTeeth)) / 2).toBeCloseTo(mw.centreDistanceMM, 9)
+      expect((4 * (mw.minutePins + mw.hourTeeth)) / 2).toBeCloseTo(mw.centreDistanceMM, 9)
     }
   })
 })

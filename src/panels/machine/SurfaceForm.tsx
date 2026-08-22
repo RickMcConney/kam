@@ -1,5 +1,5 @@
 // ─── Surface form ─────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId } from './shared'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId, FormError, useGenerateError, discardFailedOps } from './shared'
 import { useState } from 'react'
 import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, type AnyOperation, type SurfaceOperation } from '../../store/toolpathStore'
@@ -19,7 +19,7 @@ interface SurfaceFormState {
 export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?: SurfaceOperation }) {
   const { tools } = useToolStore()
   const { widthMM, heightMM, safeHeightMM, units } = useWorkpieceStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
 
   // Surfacing has to leave a flat face across the whole slab, so it's end mills only:
@@ -40,6 +40,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
     return { ...base, toolId: pickToolId(base.toolId, endMills) }
   })
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && !!session.liveOpId('surface')
@@ -54,6 +55,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
   }
 
   async function handleGenerate() {
+    clearError()
     if (!selectedTool) return
     const tool = selectedTool
     setGenerating(true)
@@ -70,7 +72,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
           safeHeightMM,
         }))
       } catch (err) {
-        if (!isWorkCancelled(err)) setError(editOp.id, err instanceof Error ? err.message : 'Generation failed')
+        if (!isWorkCancelled(err)) reportError(editOp.id, err)
       }
       setGenerating(false)
       save('surface', form)
@@ -103,8 +105,11 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         safeHeightMM,
       }))
     } catch (err) {
-      if (!isWorkCancelled(err)) setError(opId, err instanceof Error ? err.message : 'Generation failed')
+      if (!isWorkCancelled(err)) reportError(opId, err)
     }
+    // A Generate that failed leaves nothing behind — but only for the op this click
+    // created; a re-Generate over an existing one keeps it and its error.
+    if (!existingId) discardFailedOps([opId])
     setGenerating(false)
     save('surface', form)
   }
@@ -145,6 +150,7 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         maxDepthMM={selectedTool?.maxDepthMM}
         tool={selectedTool}
       />
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={!selectedTool || generating || form.depthMM <= 0}
         generating={generating}

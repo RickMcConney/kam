@@ -42,6 +42,19 @@ export interface ImportedPath {
   placement?: TransformStep[]
   groupId?: string   // shared across all paths from the same SVG import
   groupName?: string // display name for the group (SVG filename without extension)
+  // The groups the USER tied this path into (Group / Ungroup), so several paths
+  // select and move as one thing. A SECOND, orthogonal axis to `groupId`,
+  // deliberately not the same field: `groupId` says what MADE these paths — a
+  // gear's parts regenerate through it, an import is named by it — and a gear's
+  // parts must stay individually selectable and draggable (see `placement`).
+  //
+  // OUTERMOST FIRST, and it is a chain because groups NEST: grouping a group
+  // with a shape has to give back that group and that shape when it is
+  // ungrouped, not three loose paths. So Group PREPENDS an id and Ungroup drops
+  // the first one, revealing whatever was inside. `userGroups[0]` is the only
+  // one selection ever asks about — it is the outermost thing the path belongs
+  // to, which is what a click on the canvas selects.
+  userGroups?: string[]
   // Which clock this shape was emitted as part of, and which wheel of it (see
   // shapes/clockTrain.ts). Purely a LINK: the shapes are ordinary, independent
   // and separately editable, and nothing regenerates through this. It exists so
@@ -396,6 +409,25 @@ export interface ImportOptions {
   ppi?: number
 }
 
+/**
+ * SVG user units → CNC mm, Y-up: the one transform an SVG import hangs on.
+ *
+ *   x_mm = (x − vbX)·(widthMM/vbW)
+ *   y_mm = heightMM − (y − vbY)·(heightMM/vbH)
+ *
+ * Exported because `io/svgExport.ts` has to be its exact inverse — a file this
+ * app writes and reads back must land where it started, and two copies of this
+ * arithmetic in two files is how that quietly stops being true.
+ */
+export function svgToCncMat(
+  widthMM: number, heightMM: number,
+  vbX: number, vbY: number, vbW: number, vbH: number,
+): Mat6 {
+  const sx = widthMM / vbW
+  const sy = -(heightMM / vbH)
+  return [sx, 0, 0, sy, -vbX * sx, heightMM + vbY * (heightMM / vbH)]
+}
+
 export function importSvg(svgText: string, options?: ImportOptions | number, groupName?: string): SvgImportResult {
   const groupId = uid('svg-group')
   const opts: ImportOptions = typeof options === 'number' ? { ppi: options } : (options ?? {})
@@ -435,13 +467,9 @@ export function importSvg(svgText: string, options?: ImportOptions | number, gro
     widthMM=100; heightMM=100; vbW=100; vbH=100; needsPpiPrompt=true
   }
 
-  // Global transform: SVG px → CNC mm (Y-up)
-  // x_mm = (x_px - vbX) * (widthMM/vbW)
-  // y_mm = heightMM - (y_px - vbY) * (heightMM/vbH)
-  const gsx = widthMM / vbW
-  const gsy = -(heightMM / vbH)
-  let gtx = -vbX * gsx
-  let gty = heightMM + vbY * (heightMM / vbH)
+  // Global transform: SVG px → CNC mm (Y-up). See `svgToCncMat` — the exporter
+  // has to invert exactly this, so it is stated once.
+  const [gsx, , , gsy, gtx, gty] = svgToCncMat(widthMM, heightMM, vbX, vbY, vbW, vbH)
 
   const paths: ImportedPath[] = []
 

@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:quiet": "vitest run --reporter=dot",
     "audit": "FKAM_AUDIT_DIR=scratch vitest run src/sim/projectAudit.test.ts"
   },
   "dependencies": {
@@ -31,6 +33,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",

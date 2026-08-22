@@ -71,7 +71,7 @@ export function sameOpSettings(a: SerializedOperation, b: SerializedOperation): 
   return true
 }
 
-export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' | 'boolean' | 'offset' | 'pattern'
+export type PathsAddSource = 'import' | 'shape' | 'pen' | 'text' | 'duplicate' | 'boolean' | 'offset' | 'pattern' | 'paste'
 
 // What kind of gesture produced a paths.edit event — names the chip and picks
 // its icon. Display metadata only.

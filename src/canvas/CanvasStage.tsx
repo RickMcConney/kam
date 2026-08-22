@@ -10,7 +10,7 @@ import type Konva from 'konva'
 import { Maximize2 } from 'lucide-react'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import { useCanvasStore } from '../store/canvasStore'
-import { usePathsStore, clockSpecOf, setClockSpec, useSelectedPaths } from '../store/pathsStore'
+import { usePathsStore, clockSpecOf, setClockSpec, useSelectedPaths, expandUserGroups } from '../store/pathsStore'
 import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
@@ -33,7 +33,7 @@ import { EscapementAnimLayer } from './layers/EscapementAnimLayer'
 import { GearAnimLayer } from './layers/GearAnimLayer'
 import { ClockAnimLayer } from './layers/ClockAnimLayer'
 import { ClockLinkageLayer } from './layers/ClockLinkageLayer'
-import { clockAssemblyFromPaths, clockPlate, clockRoot, defaultLinkAngles, dragLinkAngle, linkAngleAt } from '../shapes/clockTrain'
+import { clockAssemblyFromPaths, clockMotionFromPaths, clockPlate, clockRoot, defaultLinkAngles, dragLinkAngle, linkAngleAt } from '../shapes/clockTrain'
 import { CornerPickLayer } from './layers/CornerPickLayer'
 import { PenLayer } from './layers/PenLayer'
 import { penNodesToPathD, type PenCurveType } from '../cam/penCurves'
@@ -414,7 +414,8 @@ export default function CanvasStage() {
     if (assembly.length < 2) return null
     const wp = useWorkpieceStore.getState()
     const root = clockRoot(wp.widthMM, wp.heightMM, assembly[assembly.length - 1].params)
-    return { clockId, assembly, root }
+    // The motion work too, or its joint has no plate entry to be dragged around.
+    return { clockId, assembly, motion: clockMotionFromPaths(st.paths, clockId), root }
   }, [])
 
   const handleLinkNodeDown = useCallback((nodeIdx: number, e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -438,7 +439,7 @@ export default function CanvasStage() {
     const f = linkFrame()
     const cur = linkAnglesRef.current
     if (!f || !cur) return
-    const plate = clockPlate(f.assembly, cur)
+    const plate = clockPlate(f.assembly, cur, f.motion)
     if (!plate) return
     // Shift snaps to 15° — an ANGLE snap, deliberately separate from the object
     // snap in uiStore, which is about edges lining up and means nothing here.
@@ -1091,11 +1092,20 @@ export default function CanvasStage() {
 
     if (hit) {
       if (neid && neid !== hit.id) exitNodeEdit()
-      const { selectedIds: currentIds } = usePathsStore.getState()
+      const { selectedIds: currentIds, paths: allNow } = usePathsStore.getState()
+      // A user group is ONE thing to click: hitting any member takes the whole
+      // group. Alt is the way back to a single path inside one — double-click is
+      // already point-edit/split, and the paths list reaches a member directly.
+      const hitIds = e.evt.altKey ? [hit.id] : expandUserGroups([hit.id], allNow)
       if (e.evt.shiftKey) {
-        usePathsStore.getState().selectPath(hit.id, true)
+        // Toggle the whole group's membership, not one path's: half a group in
+        // the selection is a state no click could get back out of.
+        const allIn = hitIds.every((id) => currentIds.includes(id))
+        usePathsStore.getState().setSelectedIds(allIn
+          ? currentIds.filter((id) => !hitIds.includes(id))
+          : [...currentIds, ...hitIds.filter((id) => !currentIds.includes(id))])
       } else if (!currentIds.includes(hit.id)) {
-        usePathsStore.getState().selectPath(hit.id, false)
+        usePathsStore.getState().setSelectedIds(hitIds)
       }
       didDragRef.current = false
       const moveIds = usePathsStore.getState().selectedIds
@@ -1601,7 +1611,8 @@ export default function CanvasStage() {
             if (!isFinite(minX)) return false
             return minX <= cncMax.x && maxX >= cncMin.x && minY <= cncMax.y && maxY >= cncMin.y
           })
-          setSelectedIds(intersecting.map((p) => p.id))
+          // Catching part of a group catches all of it — same rule as a click.
+          setSelectedIds(expandUserGroups(intersecting.map((p) => p.id), allPaths))
         }
       }
       setDragBox(null)

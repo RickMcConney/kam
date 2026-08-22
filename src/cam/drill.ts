@@ -12,6 +12,10 @@ export interface DrillParams {
   stepDownMM: number
   startNear?: { x: number; y: number }
   safeHeightMM?: number
+  /** Surface the hole starts from (0 = stock top, negative = the floor an earlier op
+   *  left). `depthMM` is measured from here, exactly as it is for a profile — without
+   *  it a hole drilled in a pocket came out that pocket's depth too shallow. */
+  startZMM?: number
 }
 
 /** A hole to bore: where it is and how big it is. */
@@ -45,7 +49,8 @@ export function generatePeckDrill(
 ): MotionSegment[] {
   if (points.length === 0) throw new Error('No drill points specified')
   const safeZ = params.safeHeightMM ?? 5
-  const zLevels = zPasses(params.depthMM, params.stepDownMM)
+  const startZ = Math.min(0, params.startZMM ?? 0)
+  const zLevels = zPasses(params.depthMM, params.stepDownMM, startZ)
   const segs: MotionSegment[] = []
 
   const ordered = params.startNear
@@ -56,7 +61,9 @@ export function generatePeckDrill(
     segs.push({ x: pt.x, y: pt.y, z: safeZ, rapid: true })
     for (let i = 0; i < zLevels.length; i++) {
       segs.push({ x: pt.x, y: pt.y, z: zLevels[i], rapid: false })
-      const retractZ = i < zLevels.length - 1 ? 0 : safeZ
+      // Between pecks, back out to the surface being drilled FROM — the chip break,
+      // which is about clearing the flutes, not about reaching stock top.
+      const retractZ = i < zLevels.length - 1 ? startZ : safeZ
       segs.push({ x: pt.x, y: pt.y, z: retractZ, rapid: true })
     }
   }
@@ -82,7 +89,8 @@ export function generateHelicalDrill(
   }
 
   const safeZ = params.safeHeightMM ?? 5
-  const zLevels = zPasses(params.depthMM, params.stepDownMM)
+  const startZ = Math.min(0, params.startZMM ?? 0)
+  const zLevels = zPasses(params.depthMM, params.stepDownMM, startZ)
   const stepoverMM = tool.diameterMM * 0.4
 
   // Helix radius: just under the tool radius so the helical bore clears its
@@ -102,7 +110,11 @@ export function generateHelicalDrill(
   const segs: MotionSegment[] = []
   segs.push({ x: sx, y: centerY, z: safeZ, rapid: true })
 
-  let prevZ = safeZ
+  // The first helix starts at the surface the hole is drilled from, not at safe
+  // height: everything above that surface is air (or a floor an earlier op cut), so
+  // ramping through it on the arc is a wasted revolution.
+  segs.push({ x: sx, y: centerY, z: startZ, rapid: true })
+  let prevZ = startZ
   let firstPass = true
 
   for (const zDepth of zLevels) {

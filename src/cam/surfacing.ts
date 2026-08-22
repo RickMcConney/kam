@@ -78,20 +78,31 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
   const rsMinY = Math.min(...raster.map((c) => c[1]))
   const rsMaxY = Math.max(...raster.map((c) => c[1]))
 
+  // Scanline positions in raster space. Stepping to `rsMaxY` and stopping there leaves
+  // the far edge up to a whole stepover from the last pass, and the cutter only reaches
+  // its own RADIUS past a pass — so above 50% stepover a strip of stock was left standing
+  // along that edge. The last scanline is therefore placed ON the edge: the step before
+  // it is short, which only overlaps, and every stepover setting now clears the stock.
+  const scanlineRYs: number[] = []
+  for (let ry = rsMinY; ry < rsMaxY - 1e-9; ry += stepoverMM) scanlineRYs.push(ry)
+  scanlineRYs.push(rsMaxY)
+
   const zLevels = zPasses(params.depthMM, params.stepDownMM)
   const segs: MotionSegment[] = []
   segs.push({ x: minX, y: minY, z: safeZ, rapid: true })
 
   for (const zDepth of zLevels) {
     let firstInLevel = true
-    let pass = 0
+    let pass = -1
     let lastX = 0, lastY = 0
 
-    for (let ry = rsMinY; ry <= rsMaxY + 0.001; ry += stepoverMM, pass++) {
-      const clampedRY = Math.min(ry, rsMaxY)
-
-      const clip = clipScanline(clampedRY, rsMinX, rsMaxX, cosA, sinA, minX, maxX, minY, maxY)
+    for (const ry of scanlineRYs) {
+      const clip = clipScanline(ry, rsMinX, rsMaxX, cosA, sinA, minX, maxX, minY, maxY)
       if (!clip) continue
+      // A rotated raster's last scanline can graze a single corner. Nothing is
+      // removed by a zero-length pass, so drop it rather than emit a doubled point.
+      if (clip[1] - clip[0] < 1e-9) continue
+      pass++
 
       // Zigzag: even passes left-to-right, odd passes right-to-left
       const [clipLo, clipHi] = clip
@@ -99,10 +110,10 @@ export function generateSurface(tool: Tool, params: SurfaceParams): MotionSegmen
       const endRX = pass % 2 === 0 ? clipHi : clipLo
 
       // Rotate back to CNC space (+θ)
-      const sx = startRX * cosA - clampedRY * sinA
-      const sy = startRX * sinA + clampedRY * cosA
-      const ex = endRX * cosA - clampedRY * sinA
-      const ey = endRX * sinA + clampedRY * cosA
+      const sx = startRX * cosA - ry * sinA
+      const sy = startRX * sinA + ry * cosA
+      const ex = endRX * cosA - ry * sinA
+      const ey = endRX * sinA + ry * cosA
 
       if (firstInLevel) {
         segs.push({ x: sx, y: sy, z: safeZ, rapid: true })

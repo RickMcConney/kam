@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { auditPocket, auditSummary } from '../../sim/toolpathAudit'
 import { useWorkpieceStore } from '../../store/workpieceStore'
-import type { PocketParams } from '../pocket'
+import { generatePocket, type PocketParams } from '../pocket'
 import type { Tool } from '../../store/toolStore'
 import { flattenPath, type Pt2 } from '../pathFlattener'
 import { buildOffsetLevels, closedPath, restCleanupRings } from './shared'
@@ -180,4 +180,42 @@ describe('every strategy clears the whole reachable region', () => {
       })
     }
   }
+})
+
+describe('an open boundary is refused, not filled in', () => {
+  // `splitSelfIntersecting` treats every subpath as implicitly closed, so a U-shaped
+  // path used to come back as a ring joined mouth-to-mouth: the pocket cleared the
+  // whole square the U outlines, with no error and a toolpath that looks entirely
+  // reasonable on the canvas. Machining a shape the user did not draw is the worst
+  // failure in this file, so it is refused at the door.
+  const OPEN_U = 'M 0 0 L 0 40 L 40 40 L 40 0'
+  const CLOSED = 'M 0 0 L 0 40 L 40 40 L 40 0 Z'
+
+  it('refuses an open boundary and names the cut that does work on one', () => {
+    expect(() => generatePocket(OPEN_U, TOOL, params()))
+      .toThrow('Path is open — a pocket needs a closed shape. Close the path, or use a centerline profile to cut a groove along it.')
+  })
+
+  it('refuses a two-point line with the same message, not "no geometry"', () => {
+    expect(() => generatePocket('M 0 0 L 40 0', TOOL, params())).toThrow(/Path is open/)
+  })
+
+  it('refuses a compound path with one open subpath among closed ones', () => {
+    expect(() => generatePocket(`${CLOSED} M 60 0 L 100 0 L 100 40`, TOOL, params()))
+      .toThrow(/Path has 1 of 2 subpaths open/)
+  })
+
+  it('refuses an open ISLAND — it would leave stock in a shape nobody asked for', () => {
+    expect(() => generatePocket(CLOSED, TOOL, params({ islandDs: ['M 10 10 L 30 10 L 30 30'] })))
+      .toThrow(/^Island path is open/)
+  })
+
+  it('still accepts a path closed by returning to its start without a Z', () => {
+    expect(() => generatePocket('M 0 0 L 0 40 L 40 40 L 40 0 L 0 0', TOOL, params())).not.toThrow()
+  })
+
+  it('ignores a stray moveto that draws nothing', () => {
+    // A single point is noise in an imported file, not a stroke to fail a job over.
+    expect(() => generatePocket(`${CLOSED} M 90 90`, TOOL, params())).not.toThrow()
+  })
 })

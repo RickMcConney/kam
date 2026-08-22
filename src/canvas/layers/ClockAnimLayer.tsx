@@ -7,7 +7,10 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { generateGearParts, gearMateParts } from '../../shapes/gearGenerator'
 import { generateEscapementParts, escapementDims, anchorOffset } from '../../shapes/escapementGenerator'
 import { generatePendulumParts } from '../../shapes/pendulumGenerator'
-import { clockAssemblyFromPaths, clockPendulumFromPaths, clockPlate, clockPose, clockRoot } from '../../shapes/clockTrain'
+import {
+  clockAssemblyFromPaths, clockMotionFromPaths, clockPendulumFromPaths,
+  clockPlate, clockPose, clockRoot,
+} from '../../shapes/clockTrain'
 
 /**
  * The whole clock, assembled and running.
@@ -44,6 +47,10 @@ const PERIOD_S = 3
 // escapement keeps the blue the other previews use.
 const ARBOR_COLORS = ['#f472b6', '#fbbf24', '#a3e635', '#34d399', '#38bdf8']
 
+// The motion work sits ON the great arbor and beside it, so it needs hues of its
+// own or the hour wheel is lost inside the great wheel it is concentric with.
+const MOTION_COLORS = { minute: '#fb923c', hour: '#c084fc' }
+
 interface Props {
   viewport: Viewport
 }
@@ -69,6 +76,10 @@ export function ClockAnimLayer({ viewport }: Props) {
   // On no arbor — it hangs from the pallet arbor — so it is fetched separately
   // and never enters the mesh chain.
   const pendulum = useMemo(() => clockId ? clockPendulumFromPaths(paths, clockId) : null, [paths, clockId])
+  // The hour hand's gearing, if this clock has any — a BRANCH off the great
+  // arbor rather than more of the train, so it is fetched apart from the
+  // assembly and handed to the plate and the pose separately.
+  const motion = useMemo(() => clockId ? clockMotionFromPaths(paths, clockId) : null, [paths, clockId])
   // The arrangement lives on the clock's parts, which is where the linkage
   // editor writes it. `paths` is already subscribed, so an arrangement committed
   // while this is running takes effect.
@@ -76,7 +87,7 @@ export function ClockAnimLayer({ viewport }: Props) {
 
   const built = useMemo(() => {
     if (!assembly || assembly.length < 2) return null
-    const plate = clockPlate(assembly, linkAngles)
+    const plate = clockPlate(assembly, linkAngles, motion)
     if (!plate) return null
 
     // Each part's own geometry with its ARBOR AT THE ORIGIN, so placing it is a
@@ -123,8 +134,19 @@ export function ClockAnimLayer({ viewport }: Props) {
     // the same place-and-rock as everything else.
     const pend = pendulum ? generatePendulumParts({ ...pendulum, cx: 0, cy: 0 }).map((p) => p.d).join(' ') : null
 
-    return { plate, wheels, pinions, anchor, pend, dx, dy }
-  }, [assembly, pendulum, linkAngles, stockW, stockH])
+    // Each motion wheel with the lantern it runs against — which stands on the
+    // OTHER of the two arbors, exactly as a train wheel's does. The cannon
+    // pinion is the minute wheel's mate and sits on the great arbor; the minute
+    // pinion is the hour wheel's mate and sits out on the branch.
+    const mot = motion ? {
+      minute: generateGearParts({ ...motion.minute, cx: 0, cy: 0, emitPinion: false }).map((p) => p.d).join(' '),
+      hour: generateGearParts({ ...motion.hour, cx: 0, cy: 0, emitPinion: false }).map((p) => p.d).join(' '),
+      cannon: gearMateParts({ ...motion.minute, cx: 0, cy: 0 }),
+      minutePinion: gearMateParts({ ...motion.hour, cx: 0, cy: 0 }),
+    } : null
+
+    return { plate, wheels, pinions, anchor, pend, mot, dx, dy }
+  }, [assembly, pendulum, motion, linkAngles, stockW, stockH])
 
   useEffect(() => {
     if (!built) return
@@ -140,8 +162,8 @@ export function ClockAnimLayer({ viewport }: Props) {
 
   if (!assembly || !built) return null
   const { scale } = viewport
-  const { plate, wheels, pinions, anchor, pend, dx, dy } = built
-  const pose = clockPose(assembly, plate, phase)
+  const { plate, wheels, pinions, anchor, pend, mot, dx, dy } = built
+  const pose = clockPose(assembly, plate, phase, motion)
 
   const body = (color: string) => ({
     stroke: color, strokeWidth: 1.4 / scale, fill: `${color}22`, listening: false,
@@ -174,6 +196,33 @@ export function ClockAnimLayer({ viewport }: Props) {
           )}
         </Group>
       ))}
+      {/* The motion work: the minute wheel on its own arbor out on the branch,
+          the hour wheel CONCENTRIC with the great wheel, and each one's lantern
+          standing on the other arbor. The hour wheel turns the same way as the
+          great wheel and 12 times slower — both hands go round the same way,
+          which is the one thing an eye can check here. */}
+      {mot && plate.motion && pose.motion && (() => {
+        const host = plate.arbors[plate.motion.hostIdx]
+        const m = plate.motion, mp = pose.motion
+        return (
+          <Group>
+            <Group x={m.x} y={m.y} rotation={mp.minuteDeg}>
+              <Path data={mot.minute} {...body(MOTION_COLORS.minute)} />
+            </Group>
+            <Group x={host.x} y={host.y} rotation={mp.hourDeg}>
+              <Path data={mot.hour} {...body(MOTION_COLORS.hour)} />
+            </Group>
+            <Group x={host.x} y={host.y} rotation={mp.cannonDeg}>
+              {mot.cannon.ghost && <Path data={mot.cannon.ghost} {...ghost} />}
+              <Path data={mot.cannon.solid} {...body(MOTION_COLORS.minute)} />
+            </Group>
+            <Group x={m.x} y={m.y} rotation={mp.minuteDeg}>
+              {mot.minutePinion.ghost && <Path data={mot.minutePinion.ghost} {...ghost} />}
+              <Path data={mot.minutePinion.solid} {...body(MOTION_COLORS.hour)} />
+            </Group>
+          </Group>
+        )
+      })()}
       {anchor && (
         <Group x={plate.anchor.x} y={plate.anchor.y} rotation={pose.anchorDeg}>
           <Group y={-anchor.drawnAt}>

@@ -1,5 +1,5 @@
 // ─── Drill form ───────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId } from './shared'
+import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, FormError, useGenerateError, discardFailedOps } from './shared'
 import { useState, useEffect, useRef } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle, X } from 'lucide-react'
@@ -13,34 +13,39 @@ import { useUIStore } from '../../store/uiStore'
 import { generatePeckDrill, generateHelicalDrills } from '../../cam/drill'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { extractCircles } from '../../canvas/selectionUtils'
+import { resolveStartZForOp, type StartFrom } from '../../cam/startHeight'
 
 interface DrillFormState {
   toolId: string
   drillMode: 'peck' | 'helical'
   depthMM: number
   stepDownMM: number
+  startFrom: StartFrom
 }
 
 export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: DrillOperation }) {
   const { tools } = useToolStore()
   const { paths, selectedIds } = usePathsStore()
-  const { addOperation, addOperations, setSegments, setError, updateOperation, operations } = useToolpathStore()
+  const { addOperation, addOperations, setSegments, updateOperation, operations } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
-  const { safeHeightMM, thicknessMM, units } = useWorkpieceStore()
+  const { safeHeightMM, thicknessMM, units, widthMM, heightMM } = useWorkpieceStore()
 
   const defaultTool = tools[0]
   const [form, setForm] = useState<DrillFormState>(() => editOp ? {
     toolId: editOp.toolId, drillMode: editOp.drillMode,
     depthMM: editOp.depthMM, stepDownMM: editOp.stepDownMM,
+    startFrom: editOp.startFrom ?? { mode: 'auto' as const },
   } : mergeWithDefaults(load('drill'), {
     toolId: defaultTool?.id ?? '',
     drillMode: 'peck' as const,
+    startFrom: { mode: 'auto' as const } as StartFrom,
     // Default to the full stock thickness; the tool's max Z is only a warning.
     depthMM: thicknessMM > 0 ? thicknessMM : (defaultTool?.maxDepthMM ?? 10),
     stepDownMM: seedStepDownMM(defaultTool),
   }, tools))
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Auto-enter/exit drill-placing mode based on selected mode
@@ -113,6 +118,21 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const editHoles = editOp ? holesOf(editOp) : null
   const editHoleCount = editBatch.reduce((n, op) => n + (holesOf(op)?.length ?? op.points.length), 0)
 
+  // See PocketForm: ops this session already generated are not cuts preceding themselves.
+  const selfOpId = editOp?.id ?? session.firstLiveOpId()
+  const startZ = useStartZ(form.startFrom, selectedHoles[0]?.path.d ?? '', 0, selfOpId)
+
+  // The real answer, per operation, at generation time. Resolved THROUGH the op rather
+  // than from a d string, because a drill op's footprint is either its source path's
+  // circles or — for hand-placed peck points — a disc per point, and startInputForOp is
+  // the one place that knows which.
+  const startZOf = (opId: string) => {
+    const ops = useToolpathStore.getState().operations
+    const op = ops.find((o) => o.id === opId)
+    if (!op) return 0
+    return resolveStartZForOp(op, ops, usePathsStore.getState().paths, { widthMM, heightMM }, tools).zMM
+  }
+
   function handleToolChange(toolId: string) {
     const t = tools.find((x) => x.id === toolId)
     if (t) setForm((f) => ({ ...f, toolId, stepDownMM: seedStepDownMM(t) }))
@@ -135,6 +155,10 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     : undefined
 
   function handleGenerate() {
+    clearError()
+    // Ids this click CREATES. A Generate that fails leaves nothing behind, so these are
+    // thrown away again at the end; an operation that already existed is never touched.
+    const createdIds: string[] = []
     if (!selectedTool) return
     setGenerating(true)
 
@@ -149,7 +173,8 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         const hint = entryHintAt(op.id)
         updateOperation(op.id, {
           entryHint: hint,
-          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+          startFrom: form.startFrom, status: 'generating',
         } as Partial<AnyOperation>)
       }
       setTimeout(() => {
@@ -160,15 +185,15 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             const segs = op.drillMode === 'helical' && holes
               ? generateHelicalDrills(holes, selectedTool, {
                   depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-                  startNear: hint, safeHeightMM,
+                  startNear: hint, safeHeightMM, startZMM: startZOf(op.id),
                 })
               : generatePeckDrill(op.points, selectedTool, {
                   depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-                  startNear: hint, safeHeightMM,
+                  startNear: hint, safeHeightMM, startZMM: startZOf(op.id),
                 })
             setSegments(op.id, segs)
           } catch (err) {
-            setError(op.id, err instanceof Error ? err.message : 'Generation failed')
+            reportError(op.id, err)
           }
         }
         setGenerating(false)
@@ -204,6 +229,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             helicalRadius: Math.max(0, holes[0].radiusMM - selectedTool.diameterMM / 2),
             depthMM: form.depthMM,
             stepDownMM: form.stepDownMM,
+            startFrom: form.startFrom,
           }) - 1
         })
         const newIds = addOperations(newPayloads)
@@ -214,7 +240,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           const existingId = typeof slot === 'string' ? slot : undefined
           const opId = existingId ?? newIds[slot as number]
           const name = `Helical Drill: ${path.name} (${selectedTool.name})${suffix}`
-          if (!existingId) session.remember(path.id, opId)
+          if (!existingId) { session.remember(path.id, opId); createdIds.push(opId) }
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint,
@@ -222,15 +248,16 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             helicalHoles: holes,
             helicalCenterX: holes[0].cx, helicalCenterY: holes[0].cy,
             helicalRadius: Math.max(0, holes[0].radiusMM - selectedTool.diameterMM / 2),
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
             setSegments(opId, generateHelicalDrills(holes, selectedTool, {
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-              startNear: hint, safeHeightMM,
+              startNear: hint, safeHeightMM, startZMM: startZOf(opId),
             }))
           } catch (err) {
-            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+            reportError(opId, err)
           }
         }
       } else if (pendingDrillPoints.length === 0 && !sessionPeckOp && selectedHoles.length > 0) {
@@ -251,6 +278,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             pathId: path.id,
             depthMM: form.depthMM,
             stepDownMM: form.stepDownMM,
+            startFrom: form.startFrom,
           }) - 1
         })
         const newIds = addOperations(newPayloads)
@@ -261,19 +289,20 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           const existingId = typeof slot === 'string' ? slot : undefined
           const opId = existingId ?? newIds[slot as number]
           const name = `Peck Drill: ${path.name} (${selectedTool.name}) ×${points.length}`
-          if (!existingId) session.remember(path.id, opId)
+          if (!existingId) { session.remember(path.id, opId); createdIds.push(opId) }
           const hint = entryHintAt(opId)
           updateOperation(opId, existingId ? {
             entryHint: hint, name, toolId: form.toolId, points,
-            depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+            depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+            startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
             setSegments(opId, generatePeckDrill(points, selectedTool, {
               depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-              startNear: hint, safeHeightMM,
+              startNear: hint, safeHeightMM, startZMM: startZOf(opId),
             }))
           } catch (err) {
-            setError(opId, err instanceof Error ? err.message : 'Generation failed')
+            reportError(opId, err)
           }
         }
       } else if (sessionPeckOp) {
@@ -281,15 +310,16 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         updateOperation(sessionPeckOp.id, {
           entryHint: hint,
           name: `Peck Drill (${selectedTool.name}) ×${sessionPeckOp.points.length}`,
-          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM, status: 'generating',
+          toolId: form.toolId, depthMM: form.depthMM, stepDownMM: form.stepDownMM,
+          startFrom: form.startFrom, status: 'generating',
         } as Partial<AnyOperation>)
         try {
           setSegments(sessionPeckOp.id, generatePeckDrill(sessionPeckOp.points, selectedTool, {
             depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-            startNear: hint, safeHeightMM,
+            startNear: hint, safeHeightMM, startZMM: startZOf(sessionPeckOp.id),
           }))
         } catch (err) {
-          setError(sessionPeckOp.id, err instanceof Error ? err.message : 'Generation failed')
+          reportError(sessionPeckOp.id, err)
         }
       } else {
         const opId = addOperation({
@@ -300,19 +330,22 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           points: [...pendingDrillPoints],
           depthMM: form.depthMM,
           stepDownMM: form.stepDownMM,
+          startFrom: form.startFrom,
         })
         session.remember('peck', opId)
+        createdIds.push(opId)
         const hint = entryHintAt(opId)
         updateOperation(opId, { entryHint: hint, status: 'generating' })
         try {
           setSegments(opId, generatePeckDrill(pendingDrillPoints, selectedTool, {
             depthMM: form.depthMM, stepDownMM: effectiveStepDownMM(selectedTool, form.stepDownMM, form.depthMM),
-            startNear: hint, safeHeightMM,
+            startNear: hint, safeHeightMM, startZMM: startZOf(opId),
           }))
         } catch (err) {
-          setError(opId, err instanceof Error ? err.message : 'Generation failed')
+          reportError(opId, err)
         }
       }
+      discardFailedOps(createdIds)
       setGenerating(false)
       save('drill', form)
       clearDrillPoints()
@@ -450,9 +483,11 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       )}
 
       <ToolSelector tools={drillTools} value={form.toolId} onChange={handleToolChange} />
+      <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <DepthRow depthMM={form.depthMM} stepDownMM={form.stepDownMM}
         onDepth={(v) => up('depthMM', v)} onStep={(v) => up('stepDownMM', v)}
-        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} />
+        maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={!canGenerate}
         generating={generating}

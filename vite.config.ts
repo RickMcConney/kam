@@ -37,6 +37,23 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // 'verbose' names every test as it passes; the default reporter collapses a
+    // passing file to one line, which says nothing about what was checked.
+    reporters: ['verbose'],
+    coverage: {
+      provider: 'v8',
+      // text = table in the terminal, html = browsable report in coverage/.
+      reporter: ['text', 'html'],
+      // .tsx is deliberately out: tests are logic-only in a node environment
+      // (no jsdom), so React/Konva components can never be covered and would
+      // only drag the percentage down. Same for the worker entry and the
+      // vendored jspoly.
+      include: ['src/**/*.ts'],
+      // A .tsx that a test happens to IMPORT is reported even though `include`
+      // never picked it up, so it has to be excluded outright — otherwise the
+      // 13 machine forms sit in the table at 0% and flatten the headline number.
+      exclude: ['src/**/*.test.ts', 'src/**/*.d.ts', 'src/vite-env.d.ts', 'src/**/jspoly.js', 'src/**/*.tsx'],
+    },
   },
   worker: {
     plugins: () => [jspolyPlugin],

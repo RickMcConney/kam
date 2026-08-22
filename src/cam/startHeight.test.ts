@@ -239,11 +239,37 @@ describe('startInputForOp', () => {
   })
 
   it('is null for operation types with no start-height support', () => {
-    const drill = {
-      id: 'd', name: 'Drill', type: 'drill', toolId: 't', status: 'done', segments: [], color: '#0ff',
-      visible: true, drillMode: 'peck', points: [], depthMM: 3, stepDownMM: 1,
+    const surface = {
+      id: 's', name: 'Surface', type: 'surface', toolId: 't', status: 'done', segments: [], color: '#0ff',
+      visible: true, depthMM: 1, stepDownMM: 1, stepoverPercent: 50, passAngleDeg: 0,
     } as AnyOperation
-    expect(startInputForOp(drill, paths, tools)).toBeNull()
+    expect(startInputForOp(surface, paths, tools)).toBeNull()
+  })
+
+  const drillOp = (over: Partial<Record<string, unknown>> = {}): AnyOperation => ({
+    id: 'd', name: 'Drill', type: 'drill', toolId: 't', status: 'done', segments: [], color: '#0ff',
+    visible: true, drillMode: 'peck', points: [], depthMM: 3, stepDownMM: 1, ...over,
+  } as AnyOperation)
+
+  it('takes a drill\'s footprint from its source path, with no margin', () => {
+    // The bore's wall IS the path — a helical drill never swings outside its circle.
+    const input = startInputForOp(drillOp({ pathId: 'inner' }), paths, tools)
+    expect(input?.cutMarginMM).toBe(0)
+    expect(input?.footprintD).toBe(paths[1].d)
+  })
+
+  it('builds a footprint from clicked peck points when there is no path', () => {
+    // Hand-placed points have no path to stand for them, but they still have to
+    // know whether they land on a pocket floor or on bare stock. The footprint is
+    // then the holes themselves: one disc of the tool per point.
+    const input = startInputForOp(drillOp({ points: [{ x: 10, y: 10 }, { x: 20, y: 20 }] }), paths, tools)
+    expect(input?.footprintD).toMatch(/^M 7 10 A 3 3 .* M 17 20 A 3 3 /)
+    expect(input?.cutMarginMM).toBe(0)
+  })
+
+  it('is null for a drill with neither a path nor any points', () => {
+    expect(startInputForOp(drillOp(), paths, tools)).toBeNull()
+    expect(startInputForOp(drillOp({ points: [{ x: 1, y: 1 }] }), paths, [{ id: 't', diameterMM: 0 }])).toBeNull()
   })
 
   it('is null when the source path is gone', () => {

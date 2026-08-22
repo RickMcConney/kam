@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, Dices } from 'lucide-react'
-import { usePathsStore, useSelectedPaths } from '../store/pathsStore'
+import { usePathsStore, useSelectedPaths, outerGroupOf } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
 import { useTimelineStore, bboxBeforeEvent } from '../timeline/timelineStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
@@ -11,7 +11,7 @@ import { getMultiBBox, applyTransformStep, type TransformStep } from '../canvas/
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import type { ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
-import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { carriedPinion, gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
 import type { EscapementSpec } from '../shapes/escapementGenerator'
 import EscapementInfoButton from './EscapementInfoButton'
@@ -403,7 +403,11 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const cyc = params.toothProfile === 'cycloidal'
         ? { mateTeeth: params.mateTeeth, pinDia: params.pinDia } : undefined
       const d = gearDims(params.module, params.teeth, params.pressureAngle, params.backlash, cyc)
-      const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes)
+      // The pinion this wheel CARRIES, if any — its holes are a second floor
+      // under the hub, so the readout must ask for it or it reports a hub the
+      // generator has already grown past.
+      const carried = carriedPinion(params)
+      const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes, carried?.hubDia ?? 0)
       const lab = gearLabel(params)
       const pin = pinionDims(params)
       const pinLab = pinionLabel(params)
@@ -498,6 +502,18 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           </span></>}
           {rootDeepened && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} to clear the pins.</span></>}
           {cyc && <><br />Cut for a {params.mateTeeth}-pin lantern at Ø{N(params.pinDia)}.</>}
+          {/* The pinion on this wheel's OWN arbor, which it carries: the wheel is
+              one of that lantern's two cheeks, so only one loose cheek is cut. */}
+          {carried && <>
+            <br />Carries {carried.pins} pins on Ø{N(carried.pinCircleDia)} through its hub — this wheel is
+            one cheek of that pinion, so cut ONE loose cheek for the far ends.
+            {carried.gap < 1 && <><br /><span className="text-yellow-500">
+              Only {N(Math.max(0, carried.gap))} between those holes — fewer or thinner pins.
+            </span></>}
+            {carried.pinCircleDia / 2 - carried.pinDia / 2 < params.bore / 2 + 1 && <><br /><span className="text-red-400">
+              Those holes break into the Ø{N(params.bore)} arbor hole — a bigger pin circle, or a smaller bore.
+            </span></>}
+          </>}
           {cyc && params.emitPinion && pin && <>
             <br />Pinion cheek {N(pin.cheekDia)}, pins on {N(pin.pinCircleDia)} — cut TWO, the wheel runs between them.
             <br />Arbors {N(pin.centreDistance)} apart = {N(d.pitchDia / 2)} wheel pitch radius + {N(pin.pinCircleDia / 2)} arbor to pin centre. Drawn clear, not at that spacing.
@@ -1001,6 +1017,40 @@ export default function PropertiesPanel() {
           <span className="inline-block rotate-90">↔</span> Mirror Y
         </button>
       </div>
+
+      {/* Group / Ungroup — tie the selection together so it clicks, drags and
+          deletes as one thing, or dissolve the groups it touches. Alt-click on
+          the canvas (or the paths list) still reaches a single member. */}
+      {(() => {
+        const gid0 = outerGroupOf(selectedPaths[0])
+        const isWholeGroup = !!gid0 && selectedPaths.every((p) => outerGroupOf(p) === gid0)
+          && usePathsStore.getState().paths.filter((p) => outerGroupOf(p) === gid0).length === selectedPaths.length
+        const canGroup = selectedPaths.length > 1 && !isWholeGroup
+        const canUngroup = selectedPaths.some((p) => outerGroupOf(p))
+        if (!canGroup && !canUngroup) return null
+        return (
+          <div className="mt-1.5 flex gap-1.5">
+            {canGroup && (
+              <button
+                onClick={() => usePathsStore.getState().groupSelected()}
+                title="Group the selected paths so they select and move as one"
+                className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+              >
+                Group
+              </button>
+            )}
+            {canUngroup && (
+              <button
+                onClick={() => usePathsStore.getState().ungroupSelected()}
+                title="Break the group up into its separate paths"
+                className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
+              >
+                Ungroup
+              </button>
+            )}
+          </div>
+        )
+      })()}
 
       {selectedPaths.length === 1 && (() => {
         const p = selectedPaths[0]

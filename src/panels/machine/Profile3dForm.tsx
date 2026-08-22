@@ -1,5 +1,5 @@
 // ─── 3D Profile form ──────────────────────────────────────────────────────────
-import { FormShell, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput } from './shared'
+import { FormShell, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
 import { useState, useEffect } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { ICON } from '../../theme'
@@ -30,7 +30,7 @@ interface Profile3dFormState {
 export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp?: Profile3dOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const { addOperation, setSegments, setError, updateOperation } = useToolpathStore()
+  const { addOperation, setSegments, updateOperation } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled, thicknessMM, units } = useWorkpieceStore()
 
@@ -74,7 +74,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
       roughingToolId: base.roughingToolId === '' ? '' : pickToolId(base.roughingToolId, ballNoseTools) }
   })
   const [generating, setGenerating] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [errorMsg, reportError, clearError] = useGenerateError()
   const session = useSessionOps()
 
   // Sync pathId: saved defaults use session-specific path IDs that become stale on reload.
@@ -103,7 +103,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   function handleGenerate() {
     if (!selectedTool || !selectedPath || !selectedPath.stlSrc || !selectedPath.stlModelBounds) return
     setGenerating(true)
-    setErrorMsg(null)
+    clearError()
     // Re-Generate for a model this form already generated for updates that op in place.
     const existingId = editOp ? undefined : session.liveOpId(form.pathId)
 
@@ -173,10 +173,8 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         save('profile3d', form)
       } catch (err) {
         if (!isWorkCancelled(err)) {
-          const msg = err instanceof Error ? err.message : 'Generation failed'
-          setErrorMsg(msg)
           const failId = editOp?.id ?? existingId
-          if (failId) setError(failId, msg)
+          if (failId) reportError(failId, err)
         }
       } finally {
         setGenerating(false)
@@ -360,11 +358,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         )}
       </div>
 
-      {errorMsg && (
-        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
-          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{errorMsg}
-        </p>
-      )}
+      <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={!canGenerate}
         generating={generating}

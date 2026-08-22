@@ -8,7 +8,10 @@ import { useWorkpieceStore } from '../../store/workpieceStore'
 import { generateGearParts } from '../../shapes/gearGenerator'
 import { generateEscapementParts, escapementDims, anchorOffset } from '../../shapes/escapementGenerator'
 import { generatePendulumParts } from '../../shapes/pendulumGenerator'
-import { clockAssemblyFromPaths, clockPendulumFromPaths, clockPlate, clockRoot, clockWheelClashes } from '../../shapes/clockTrain'
+import {
+  MOTION_LINK, clockArborClashes, clockAssemblyFromPaths, clockMotionFromPaths,
+  clockPendulumFromPaths, clockPlate, clockRoot, clockWheelClashes,
+} from '../../shapes/clockTrain'
 
 /**
  * The going train as a 4-bar chain, to be arranged by hand.
@@ -34,6 +37,10 @@ import { clockAssemblyFromPaths, clockPendulumFromPaths, clockPlate, clockRoot, 
 // its colour between arranging and animating.
 const ARBOR_COLORS = ['#f472b6', '#fbbf24', '#a3e635', '#34d399', '#38bdf8']
 
+// The motion work's own hues, the same pair the running preview uses — the hour
+// wheel is concentric with the great wheel and would otherwise be lost in it.
+const MOTION_COLORS = { minute: '#fb923c', hour: '#c084fc' }
+
 /** Grab radius of a joint, in SCREEN px — so it stays grabbable at any zoom. */
 export const LINK_NODE_PX = 9
 
@@ -58,6 +65,10 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
   // wheel has been separately editable since it landed.
   const assembly = useMemo(() => clockId ? clockAssemblyFromPaths(paths, clockId) : null, [paths, clockId])
   const pendulum = useMemo(() => clockId ? clockPendulumFromPaths(paths, clockId) : null, [paths, clockId])
+  // A BRANCH off the great arbor rather than more of the chain — its joint is
+  // dragged like any other, but its angle is the last entry of `linkAngles`
+  // (MOTION_LINK) and is measured from its host outwards. See dragLinkAngle.
+  const motion = useMemo(() => clockId ? clockMotionFromPaths(paths, clockId) : null, [paths, clockId])
 
   // Geometry, once per parameter change. Angles are NOT in here — they change on
   // every mouse move, and none of the outlines depend on them.
@@ -77,17 +88,21 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
         }
       : null
     const pend = pendulum ? generatePendulumParts({ ...pendulum, cx: 0, cy: 0 }).map((p) => p.d).join(' ') : null
-    return { wheels, anchor, pend, root: clockRoot(stockW, stockH, esc) }
-  }, [assembly, pendulum, stockW, stockH])
+    const mot = motion ? {
+      minute: generateGearParts({ ...motion.minute, cx: 0, cy: 0, emitPinion: false }).map((p) => p.d).join(' '),
+      hour: generateGearParts({ ...motion.hour, cx: 0, cy: 0, emitPinion: false }).map((p) => p.d).join(' '),
+    } : null
+    return { wheels, anchor, pend, mot, root: clockRoot(stockW, stockH, esc) }
+  }, [assembly, pendulum, motion, stockW, stockH])
 
   // Cheap, and it has to re-run on every frame of a drag.
   const plate = useMemo(
-    () => assembly ? clockPlate(assembly, liveAngles ?? undefined) : null,
-    [assembly, liveAngles])
+    () => assembly ? clockPlate(assembly, liveAngles ?? undefined, motion) : null,
+    [assembly, liveAngles, motion])
 
   if (!assembly || !built || !plate) return null
   const { scale } = viewport
-  const { wheels, anchor, pend, root } = built
+  const { wheels, anchor, pend, mot, root } = built
   const px = (n: number) => n / scale          // screen px → mm at this zoom
 
   const body = (color: string) => ({
@@ -103,6 +118,14 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
   // apart than that has no business sharing space. See clockWheelClashes.
   const clashes = clockWheelClashes(plate)
   const clashing = new Set(clashes.flat())
+  // An ARBOR through a wheel is the worse fault — a rod from plate to plate is at
+  // every depth, so "they run at different depths" cannot save it. Same red, and
+  // it is the wheel that gets it: the wheel is what has nowhere to turn.
+  const arborClashes = clockArborClashes(plate)
+  for (const c of arborClashes) {
+    const i = plate.arbors.findIndex((a) => a.key === c.wheel)
+    if (i >= 0) clashing.add(i)
+  }
 
   return (
     <Group x={root.x} y={root.y}>
@@ -113,6 +136,18 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
             <Path data={wheels[i]} {...body(clashing.has(i) ? '#f87171' : ARBOR_COLORS[i % ARBOR_COLORS.length])} />
           </Group>
         ))}
+        {mot && plate.motion && (
+          <>
+            <Group x={plate.motion.x} y={plate.motion.y}>
+              <Path data={mot.minute} {...body(MOTION_COLORS.minute)} />
+            </Group>
+            {/* Concentric with the great wheel — it turns on a tube over that
+                same arbor, so it has no joint of its own to drag. */}
+            <Group x={plate.arbors[plate.motion.hostIdx].x} y={plate.arbors[plate.motion.hostIdx].y}>
+              <Path data={mot.hour} {...body(MOTION_COLORS.hour)} />
+            </Group>
+          </>
+        )}
         {anchor && (
           <Group x={plate.anchor.x} y={plate.anchor.y}>
             <Group y={-anchor.drawnAt}><Path data={anchor.d} {...body('#38bdf8')} /></Group>
@@ -139,7 +174,10 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
           x={plate.bbox.minX} y={plate.bbox.maxY + px(16)}
           scaleY={-1} fontSize={px(12)} fill="#94a3b8" listening={false}
           text={`frame ${Math.round(frameW)} × ${Math.round(frameH)} mm`
-            + (clashes.length > 0 ? `  ·  ${clashes.length} wheel clash${clashes.length > 1 ? 'es' : ''}` : '')}
+            + (clashes.length > 0 ? `  ·  ${clashes.length} wheel clash${clashes.length > 1 ? 'es' : ''}` : '')
+            + (arborClashes.length > 0
+              ? `  ·  ${arborClashes.length} arbor${arborClashes.length > 1 ? 's' : ''} through a wheel`
+              : '')}
         />
       </Group>
 
@@ -151,6 +189,18 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
           stroke={boneCol} strokeWidth={2 / scale} opacity={0.9} listening={false}
         />
       ))}
+
+      {/* The motion branch: one more bone, off the great arbor, at a length the
+          two motion meshes force. */}
+      {plate.motion && (
+        <Line
+          points={[
+            plate.arbors[plate.motion.hostIdx].x, plate.arbors[plate.motion.hostIdx].y,
+            plate.motion.x, plate.motion.y,
+          ]}
+          stroke={boneCol} strokeWidth={2 / scale} opacity={0.9} listening={false}
+        />
+      )}
 
       {/* The joints. The escape arbor (last) is the fixed root and is drawn as a
           pinned square rather than a grab handle — it is what the whole
@@ -172,6 +222,19 @@ export function ClockLinkageLayer({ viewport, liveAngles, onNodeMouseDown, activ
           />
         )
       })}
+
+      {/* The motion arbor's joint. Its node index IS its angle index
+          (MOTION_LINK), which the train's joints also have — there the two
+          happen to coincide, and here it is what keeps one array and one drag
+          path covering the whole arrangement. */}
+      {plate.motion && (
+        <Circle
+          x={plate.motion.x} y={plate.motion.y} radius={px(LINK_NODE_PX)}
+          fill={activeNode === MOTION_LINK ? '#38bdf8' : '#0f172a'}
+          stroke={activeNode === MOTION_LINK ? '#ffffff' : MOTION_COLORS.minute} strokeWidth={2 / scale}
+          onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(MOTION_LINK, e) }}
+        />
+      )}
     </Group>
   )
 }

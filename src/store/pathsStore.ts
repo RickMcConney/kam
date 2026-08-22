@@ -9,9 +9,13 @@ import { useTabStore } from './tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { serializeOp, type PathsAddSource, type PathEditGesture } from '../timeline/events'
 import type { CornerTreatmentType } from '../tools/cornerTreatment'
+import { inGroup, outerGroupOf } from './pathGroups'
 import { uid } from '../uid'
 
 export type { ImportedPath }
+// User-group helpers live in their own module (pure, no store), and are
+// re-exported here so call sites have one place to import path things from.
+export { groupKeyOf, inGroup, outerGroupOf, expandUserGroups } from './pathGroups'
 
 // `transforms`: the geometric-transform recipe that produced `d`/`shapeParams`
 // (move/scale/rotate/skew/mirror only) — see selectionUtils.ts's
@@ -35,6 +39,10 @@ export type PathUpdate = {
   // ImportedPath.corners.
   cornerBaseD?: string
   fromCenter?: boolean
+  // Group membership, outermost first (see ImportedPath.userGroups). An empty
+  // array clears it; `undefined` (omitted) leaves it alone, the same convention
+  // shapeParams uses.
+  userGroups?: string[]
 }
 
 export type PathsAddMeta = { source?: PathsAddSource; label?: string }
@@ -52,6 +60,10 @@ interface PathsState {
   toggleGroupCollapsed: (groupId: string) => void
   selectPath: (id: string | null, extend?: boolean) => void
   setSelectedIds: (ids: string[]) => void
+  // Tie the selected paths together / dissolve the groups the selection touches.
+  // Both go through applyPathEdit, so each is ONE undo step.
+  groupSelected: () => void
+  ungroupSelected: () => void
   deleteSelected: () => void
   updatePathD: (id: string, newD: string) => void
   batchUpdatePaths: (updates: PathUpdate[], gesture?: PathEditGesture) => void
@@ -109,9 +121,9 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   })),
 
   toggleGroupVisibility: (groupId) => set((s) => {
-    const groupPaths = s.paths.filter((p) => p.groupId === groupId)
+    const groupPaths = s.paths.filter((p) => inGroup(p, groupId))
     const allVisible = groupPaths.every((p) => p.visible)
-    return { paths: s.paths.map((p) => p.groupId === groupId ? { ...p, visible: !allVisible } : p) }
+    return { paths: s.paths.map((p) => inGroup(p, groupId) ? { ...p, visible: !allVisible } : p) }
   }),
 
   toggleGroupCollapsed: (groupId) => set((s) => {
@@ -122,7 +134,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
 
   deleteGroup: (groupId) => {
     const s = get()
-    const ids = s.paths.filter((p) => p.groupId === groupId).map((p) => p.id)
+    const ids = s.paths.filter((p) => inGroup(p, groupId)).map((p) => p.id)
     if (ids.length === 0) return
     s.applyPathEdit({ deleteIds: ids })
   },
@@ -137,6 +149,44 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   }),
 
   setSelectedIds: (ids) => set({ selectedIds: ids }),
+
+  // Groups NEST, so grouping PREPENDS: a group and a shape put together give a
+  // group holding that group and that shape, and one Ungroup gives them back —
+  // flattening instead handed back three loose paths, which is not what the user
+  // put together.
+  groupSelected: () => {
+    const s = get()
+    const members = s.paths.filter((p) => s.selectedIds.includes(p.id))
+    if (members.length < 2) return
+    // Already exactly one whole group and nothing else: grouping it again would
+    // only add a level with nothing else in it.
+    const gid0 = outerGroupOf(members[0])
+    if (gid0 && members.every((p) => outerGroupOf(p) === gid0)
+      && s.paths.filter((p) => outerGroupOf(p) === gid0).length === members.length) return
+    const gid = uid('ugroup')
+    s.applyPathEdit({
+      updates: members.map((p) => ({ id: p.id, d: p.d, userGroups: [gid, ...(p.userGroups ?? [])] })),
+      label: 'Group',
+    })
+  },
+
+  // Takes ONE level off every group the selection touches, whole — a group is one
+  // thing, so taking one path out of one is not what "ungroup" means, and
+  // selecting a member is already selecting all of them anyway. What was inside
+  // is now what the members belong to.
+  ungroupSelected: () => {
+    const s = get()
+    const gids = new Set(s.paths
+      .filter((p) => s.selectedIds.includes(p.id))
+      .flatMap((p) => { const g = outerGroupOf(p); return g ? [g] : [] }))
+    if (gids.size === 0) return
+    const members = s.paths.filter((p) => { const g = outerGroupOf(p); return !!g && gids.has(g) })
+    s.applyPathEdit({
+      updates: members.map((p) => ({ id: p.id, d: p.d, userGroups: p.userGroups!.slice(1) })),
+      label: 'Ungroup',
+      selectAfter: members.map((p) => p.id),
+    })
+  },
 
   deleteSelected: () => {
     const s = get()
@@ -242,6 +292,9 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         if (upd.fromCenter !== undefined) {
           newPath.fromCenter = upd.fromCenter
         }
+        if (upd.userGroups !== undefined) {
+          newPath.userGroups = upd.userGroups.length > 0 ? upd.userGroups : undefined
+        }
         return newPath
       })
     set({
@@ -295,6 +348,8 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
           // same clock wheel as its siblings — without this the link is on some
           // of a group's paths and not others.
           clockId: self.clockId, clockPart: self.clockPart, clockSpec: self.clockSpec,
+          // …and to the user groups the shape was put in, for the same reason.
+          userGroups: self.userGroups,
         })
       }
       const live = new Set(parts.map((pt) => pt.part))
@@ -373,6 +428,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       hidden: orig.hidden,
       groupId: orig.groupId,
       groupName: orig.groupName,
+      userGroups: orig.userGroups,
     }))
     const opsBefore = useToolpathStore.getState().operations
     const tabsBefore = useTabStore.getState().tabs
@@ -402,6 +458,9 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     const s = get()
     if (s.selectedIds.length === 0) return
     const defId = uid('def')
+    // Copies of a group are their OWN group, not more members of the original —
+    // otherwise duplicating one grew the thing being copied.
+    const regroup = new Map<string, string>()
     const newPaths: ImportedPath[] = s.paths
       .filter((p) => s.selectedIds.includes(p.id))
       .map((p) => ({
@@ -413,6 +472,16 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         // A copy is its own object from here on: it must not inherit the
         // source's provenance, only record that it came from it.
         definition: { id: defId, kind: 'duplicate' as const, sourceId: p.id, offsetMM },
+        // Every level is remapped, so the copies come out nested exactly as the
+        // originals are — and as their OWN groups, since otherwise duplicating a
+        // group grew the thing being copied.
+        userGroups: p.userGroups?.map((g) => {
+          const found = regroup.get(g)
+          if (found) return found
+          const made = uid('ugroup')
+          regroup.set(g, made)
+          return made
+        }),
       }))
     set({
       paths: [...s.paths, ...newPaths],
