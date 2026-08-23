@@ -8,7 +8,7 @@
 
 import {
   clockArborClashes, clockPlate, clockWheelClashes, designClock, TRAIN_WHEELS, TRAIN_PART_ORDER,
-  MIN_MESH_RATIO, MAX_MESH_RATIO,
+  MIN_MESH_RATIO, MAX_MESH_RATIO, CLOCK_ROOT_BIT_DIA,
   type ClockAssembly, type ClockBase, type ClockMotion, type ClockSpec,
 } from '../shapes/clockTrain'
 import { carriedPinion as gearCarried, gearDims, gearHub, gearMesh, pinionDims } from '../shapes/gearGenerator'
@@ -109,7 +109,14 @@ export function clockReadout(
   const escDims = escPart?.params.type === 'escapement' ? escapementDims(escPart.params) : null
   const pendPart = design.parts.find((p) => p.params.type === 'pendulum')
   const pendLength = pendPart?.params.type === 'pendulum' ? pendPart.params.length : 0
-  const biggest = Math.max(...rows.map((r) => r.size))
+  // THE PENDULUM IS LEFT OUT OF THIS. It is a metre of rod and is laid out
+  // BESIDE the board rather than on it (see layoutClock), so measuring it
+  // against the stock warned that every clock overhangs — on the one part that
+  // is never packed there, and about the one dimension nothing can be done
+  // about, since the length IS the rate. `rows` is a map over `design.parts`, so
+  // the two line up by index.
+  const biggest = Math.max(...design.parts
+    .map((p, i) => (p.key === 'pendulum' ? 0 : rows[i].size)))
 
   // The frame this arrangement needs — the TRAIN's extent, not the whole
   // assembly's: the pendulum is a metre long and hangs outside the plate.
@@ -175,11 +182,17 @@ export function clockReadout(
   // cycloidalHalfTooth). Measured rather than asserted — a wheel someone has
   // edited by hand would show the difference.
   const play = gears.length > 0 ? Math.max(...gears.map(({ g }) => gearMesh(g).playAtPitch)) : 0
-  going(`Ø${+spec.pinDia.toFixed(2)} pins and ${len(spec.backlash)} of backlash on every wheel`
-    + ` — ${len(play)} of play at each mesh, the wheels being the only half cut to a thickness`)
+  const pinList = [...new Set(design.modules.meshes.map((m) => +m.pinDia.toFixed(2)))]
+  going(`${pinList.length > 1 ? `Ø${pinList.join(' and Ø')} pins` : `Ø${pinList[0]} pins`} and `
+    + `${len(spec.backlash)} of backlash — ${len(play)} of play at each mesh, the wheels being the only `
+    + 'half cut to a thickness. Which mesh takes which pin is below.')
+  // Named per WHEEL rather than against one module, the clock no longer having
+  // one: the wheel knows its own, and the Tooth size section below says which
+  // mesh each belongs to.
   if (fat.length > 0) going(
-    `Ø${+spec.pinDia.toFixed(2)} pins leave no tooth to speak of at module ${spec.module} `
-    + `(${fat.map((f) => f.name).join(', ')}) — the pair will not turn. Thinner pins, or a bigger module.`, 'error')
+    'Pins leave no tooth to speak of on '
+    + `${fat.map((f) => `${f.name} (module ${+f.g.module.toFixed(2)})`).join(', ')} — the pair will not turn. `
+    + 'Thinner pins, a bigger max wheel Ø, or a taper nearer 1.', 'error')
   // WHAT THE USER IS HOLDING, and what it cost. A locked count bypasses the
   // mesh-ratio bounds the search is held to — a number someone typed is not a
   // proposal — so the one thing to say about it is when it has gone somewhere
@@ -220,6 +233,16 @@ export function clockReadout(
     const hub = gearHub(driveGear.module, driveGear.teeth, driveGear.bore, driveGear.hubDia, driveGear.spokes)
     weight(`Its hub is cut to the drum, ${len(spec.drumDia)} — the wheel is the drum's face, so the cord `
       + 'winds against it.')
+    // THE ONE WHEEL THAT GIVES UP SPOKES RATHER THAN GROWING ITS HUB, since that
+    // hub is the drum the run time was worked out from. Said out loud because it
+    // is a number the user set on their Gear defaults and will not otherwise see
+    // change — and it changes most on the drive wheel, which the taper makes the
+    // coarsest mesh in the clock, so its spokes are the widest.
+    if (driveGear.spokes < base.gear.spokes) weight(
+      `Cut with ${driveGear.spokes} spokes rather than ${base.gear.spokes}: at module `
+      + `${+driveGear.module.toFixed(2)} a spoke is ${len(2.5 * driveGear.module)} wide, and more than that `
+      + `will not seat inside a ${len(spec.drumDia)} hub. Growing the hub instead would put the cord against `
+      + 'it, and the run time comes from the drum.', 'note')
     // Not attributed to the spokes: `seatHub` takes the largest of three floors —
     // what was asked, what the arbor needs round it, and what the spokes need to
     // land on — and HubFit does not say which bit. What matters is only that the
@@ -244,6 +267,19 @@ export function clockReadout(
     hands(`Both meshes run at ${len(mw.centreDistanceMM)}: the hour wheel is CONCENTRIC with the minute `
       + 'arbor, so its tube runs over the cannon pinion and the two meshes span the same pair of arbors. '
       + 'That equality is what fixes the counts.')
+    // ITS MODULE FALLS OUT OF THE SPACING, and the spacing is chosen for
+    // clearance rather than for strength, so it is the one place in the clock
+    // where the tooth size is nobody's decision — worth stating, and worth
+    // checking against the pin.
+    hands(`That spacing puts it at module ${+mw.module.toFixed(2)} on Ø${+mw.pinDia.toFixed(2)} pins — the `
+      + `clock's small dowel, since the hands and a clutch are next to no load — for a tooth of `
+      + `${len(mw.toothMM)} at the pitch line. Its module is its own: it meshes with nothing in the train.`)
+    if (mw.toothMM <= 0) hands(
+      `At that spacing the Ø${+mw.pinDia.toFixed(2)} pin is wider than the whole tooth space — the motion `
+      + 'work cannot turn. Wider arbor spacing, or a smaller "pin Ø small".', 'error')
+    else if (mw.toothMM < mw.pinDia) hands(
+      `Its teeth are ${len(mw.toothMM)} at the pitch line, thinner than the Ø${+mw.pinDia.toFixed(2)} pin `
+      + 'driving them. Wider arbor spacing, or a smaller "pin Ø small".', 'warn')
     hands(`Cannon pinion (${mw.cannonPins} pins) is fixed to the minute arbor, and it is the DRIVER — the `
       + 'one place in a clock where a pinion drives a wheel. The load is the hands and the friction of the '
       + 'cannon-pinion clutch, so the flank contact that follows from that is of no consequence here.', 'note')
@@ -252,17 +288,19 @@ export function clockReadout(
     // circle. Not a collision — the great wheel is between the plates and the
     // motion work is in front of them, the same "different depths" that lets
     // neighbouring wheels overlap — but it decides how the plate is made, so it
-    // is said rather than left to be noticed. Taking the motion work up a size
-    // walks the stud out past the rim.
+    // is said rather than left to be noticed. Widening the arbor spacing walks
+    // the stud out past the rim, and the readout can now name the figure to type
+    // rather than a size number to try.
     const host = plate?.motion ? plate.arbors[plate.motion.hostIdx] : null
     if (host && plate?.motion) {
       const clear = plate.motion.centreDistance - host.wheelRadius
       if (clear < 0) {
-        const needed = Math.floor(host.wheelRadius / (10 * spec.module)) + 1
+        const needed = Math.ceil(host.wheelRadius + 1)
         hands(`The minute wheel's stud lands ${len(-clear)} inside the great wheel's rim. That works only `
           + 'with the motion work in FRONT of the front plate, which is where it normally goes — the great '
-          + `wheel is between the plates. For a stud clear of the rim, take the motion work to size ${needed}`
-          + ` (${5 * needed}/${15 * needed} then ${4 * needed}/${16 * needed}, arbors ${len(10 * needed * spec.module)} apart).`, 'warn')
+          + `wheel is between the plates. For a stud clear of the rim, set the arbor spacing to `
+          + `${len(needed)} or more — at ${mw.cannonPins}/${mw.minuteTeeth} that is a module of `
+          + `${+(2 * needed / (mw.cannonPins + mw.minuteTeeth)).toFixed(2)}.`, 'warn')
       } else {
         hands(`The stud clears the great wheel's rim by ${len(clear)}, so the motion work can go on either `
           + 'side of the front plate.')
@@ -281,6 +319,59 @@ export function clockReadout(
   }
 
   // ── What will be cut ──────────────────────────────────────────────────────
+  // ── Tooth size, one mesh at a time ────────────────────────────────────────
+  //
+  // The clock has no single module any more: each mesh has its own, scaled so
+  // the biggest wheel just fits the board and tapering toward the escapement.
+  // So every per-mesh limit that used to be answered once for the whole clock
+  // has to be answered four times.
+  const teeth = section('Tooth size')
+  const MESH_NAMES = ['drive → great', 'great → second', 'second → third', 'third → escape']
+  const chain: { teeth: number; pins: number }[] = [
+    { teeth: drive.teeth, pins: drive.pins }, ...train.meshes,
+  ]
+  const bitR = CLOCK_ROOT_BIT_DIA / 2
+  teeth('Tooth size is scaled to the largest wheel that fits, not chosen — a mesh only needs its OWN wheel '
+    + 'and lantern to share a module, so each may have its own. It falls from the GREAT wheel toward the '
+    + 'escapement because torque does; the drive wheel shares the great wheel\'s, having no reason for '
+    + 'coarser teeth than the wheel the weight acts through.', 'note')
+  teeth('The two FAST arbors — the third wheel and the escape wheel — are pinned with the small dowel '
+    + 'whatever their pitch would suggest. Fitting a pin to the pitch is a strength argument, and strength '
+    + 'is not what is scarce down there: torque has fallen by the whole train ratio, while the inertia of '
+    + 'those pins is what the escapement starts and stops twice a second. Nothing is risked by going thin — '
+    + 'a smaller pin only ever leaves MORE tooth. The slow end takes whichever dowel suits its own pitch.',
+    'note')
+  design.modules.meshes.forEach((m, i) => {
+    const mesh = chain[i]
+    if (!mesh) return
+    teeth(`${MESH_NAMES[i]}: ${mesh.teeth}t on ${mesh.pins} pins of Ø${+m.pinDia.toFixed(2)}, module `
+      + `${m.module.toFixed(2)} → wheel ${len(m.wheelDia)}, tooth ${len(m.toothMM)} at the pitch line`
+      + `${m.locked ? ' (held)' : ''}${design.modules.binding === i ? ' — this one set the scale' : ''}`)
+    // A LANTERN'S TOOTH IS WHAT THE PIN LEAVES: `π·m − pin Ø − backlash`. The pin
+    // is an absolute dowel, so a fine mesh runs out of tooth long before it runs
+    // out of room — and `pinTooFat` will not catch it, firing only below 5% of
+    // the circular pitch.
+    if (m.toothMM <= 0) teeth(
+      `${MESH_NAMES[i]}: the ${len(m.pinDia)} pin is wider than the whole tooth space — that pair cannot turn. `
+      + 'A bigger max wheel Ø, a taper nearer 1, or a smaller pin.', 'error')
+    else if (m.toothMM < m.pinDia) teeth(
+      `${MESH_NAMES[i]}: its teeth are ${len(m.toothMM)} at the pitch line, thinner than the ${len(m.pinDia)} `
+      + 'pin pushing them. Wooden teeth that thin break across the grain — a taper nearer 1, a bigger max '
+      + 'wheel Ø, or a smaller "pin Ø small".', 'warn')  })
+  // The root is filled at 0.38·m whatever cuts it, so a fine mesh has a root
+  // corner no bit can reach into — and for a lantern that is not cosmetic, since
+  // the pin has to get down into that space. ONE line naming them, not one per
+  // mesh: the advice is identical, and on a small board every mesh trips it,
+  // which buried the tooth-thickness warnings that actually differ.
+  const tight = design.modules.meshes
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => 0.38 * m.module < bitR)
+  if (tight.length > 0) teeth(
+    `Root fillet inside what a ${len(CLOCK_ROOT_BIT_DIA)} bit can cut on ${tight.length} mesh`
+    + `${tight.length > 1 ? 'es' : ''} — ${tight.map(({ m, i }) => `${MESH_NAMES[i]} ${len(0.38 * m.module)}`).join(', ')}`
+    + '. Those roots come out fuller than drawn and the pin has to reach into them: cut those wheels with a '
+    + 'smaller bit, or coarsen the taper.', 'note')
+
   const parts = section('Parts')
   if (plate) parts(
     `Frame ${len(plate.bbox.maxX - plate.bbox.minX)} × ${len(plate.bbox.maxY - plate.bbox.minY)} as arranged `

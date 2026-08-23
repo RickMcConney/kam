@@ -3,7 +3,7 @@ import { ICON } from '../../theme'
 import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown, Clock, Weight } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
-import { spirographTurns, spirographRadii, spirographCentrePen, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
+import { spirographLoops, spirographRadii, spirographCentrePen, SPIRO_RATIO_RANGE, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
 import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
@@ -113,33 +113,47 @@ function ShapeConfig({ type, config, onChange, units }: {
         <NumInput label="Height" valueMM={c.shield.h} units={u} onChange={(h) => onChange({ ...c, shield: { ...c.shield, h } })} />
       </div>)
     case 'spirograph': {
-      const { radius, ratio, p } = c.spirograph
-      const { R, r } = spirographRadii(radius, ratio, p)
+      const { radius, p } = c.spirograph
+      const loops = spirographLoops(c.spirograph.ratio)
+      const { R, r } = spirographRadii(radius, loops, p)
       return (<div className="space-y-1">
         <NumInput label="Radius" valueMM={radius} units={u}
           onChange={(radius) => onChange({ ...c, spirograph: { ...c.spirograph, radius } })} />
+        {/* A slider, because the loop count is the thing you hunt for by eye and
+            an integer step means every position on it draws a different rosette. */}
         <div className="flex items-center gap-1.5">
-          <span className={labelCls}>Ratio R/r</span>
-          <NumericInput value={ratio} min={1.01} max={50} step={0.05}
-            onChange={(ratio) => onChange({ ...c, spirograph: { ...c.spirograph, ratio, p: Math.min(p, ratio) } })}
-            className={inputCls} />
+          <span className={labelCls}>Loops</span>
+          <input
+            type="range" min={SPIRO_RATIO_RANGE.min} max={SPIRO_RATIO_RANGE.max} step={1} value={loops}
+            onChange={(e) => {
+              const ratio = spirographLoops(parseFloat(e.target.value))
+              onChange({ ...c, spirograph: { ...c.spirograph, ratio, p: Math.min(p, ratio) } })
+            }}
+            className="flex-1 w-0 accent-blue-500"
+          />
+          <NumericInput value={loops} min={SPIRO_RATIO_RANGE.min} max={SPIRO_RATIO_RANGE.max} step={1}
+            onChange={(v) => {
+              const ratio = spirographLoops(v)
+              onChange({ ...c, spirograph: { ...c.spirograph, ratio, p: Math.min(p, ratio) } })
+            }}
+            className={`${inputCls} w-12 flex-none`} />
         </div>
-        {/* max = ratio leaves headroom past spirographCentrePen(ratio) — where the
+        {/* max = loops leaves headroom past spirographCentrePen — where the
             curve fills right to the middle — without much dead travel beyond it,
             since the hole re-opens on the far side. */}
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>Pen p</span>
           <input
-            type="range" min={0} max={ratio} step={0.01} value={p}
+            type="range" min={0} max={loops} step={0.01} value={p}
             onChange={(e) => onChange({ ...c, spirograph: { ...c.spirograph, p: parseFloat(e.target.value) } })}
             className="flex-1 w-0 accent-blue-500"
           />
           <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{p.toFixed(2)}</span>
         </div>
         <p className="text-label text-gray-400 dark:text-neutral-500">
-          Ring {fmtLen(R, u as 'mm' | 'in')} / wheel {fmtLen(r, u as 'mm' | 'in')}
+          Ring {fmtLen(R, u as 'mm' | 'in')} / wheel {fmtLen(r, u as 'mm' | 'in')} · R/r {loops}
           <br />
-          {spirographTurns(ratio)} turns · centre at p {spirographCentrePen(ratio).toFixed(2)}
+          centre at p {spirographCentrePen(loops).toFixed(2)}
         </p>
       </div>)
     }

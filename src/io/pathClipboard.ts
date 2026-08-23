@@ -142,7 +142,15 @@ export function remapForPaste(
       out.d = translateD(p.d, shift, shift)
       // The params are the definition of a parametric shape, so they move with
       // it or the next spinner step puts the copy back where the original is.
-      if (p.shapeParams) out.shapeParams = translateShapeParams(p.shapeParams, shift, shift)
+      // Unless the shape has a PLACEMENT, in which case `d` is the recipe
+      // applied to the definition and the nudge belongs at the end of the
+      // recipe: shifting the definition instead would come back out through a
+      // rotation as a shift in some other direction entirely.
+      if (p.placement?.length) {
+        out.placement = [...p.placement, { kind: 'translate', dx: shift, dy: shift }]
+      } else if (p.shapeParams) {
+        out.shapeParams = translateShapeParams(p.shapeParams, shift, shift)
+      }
       if (p.corners) out.corners = { ...p.corners, baseD: translateD(p.corners.baseD, shift, shift) }
     }
     return out

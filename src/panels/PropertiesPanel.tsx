@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X, Dices } from 'lucide-react'
+import { Dices } from 'lucide-react'
 import { usePathsStore, useSelectedPaths, outerGroupOf } from '../store/pathsStore'
 import { useUIStore } from '../store/uiStore'
-import { useTimelineStore, bboxBeforeEvent } from '../timeline/timelineStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
-import { getMultiBBox, applyTransformStep, type TransformStep } from '../canvas/selectionUtils'
+import { getMultiBBox, applyTransformStep, placementMat, type TransformStep } from '../canvas/selectionUtils'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
-import type { ShapeParams } from '../shapes/shapeGenerators'
+import { spirographLoops, SPIRO_RATIO_RANGE, scaleShapeParams, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
 import { carriedPinion, gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
@@ -102,89 +101,48 @@ function RawField({ label, value, onChange, suffix, step = 0.01, min, max }: {
 // — the selection's bbox from just BEFORE this chip started, NOT its
 // current/live bbox, which would drift every time dx/dy changes) the first
 // time that step kind is introduced; from then on it's whatever got stored.
-interface TransformFields {
-  dx: number; dy: number
-  angle: number; cx: number; cy: number
-  sx: number; sy: number; ax: number; ay: number
-  kx: number; ky: number; skx: number; sky: number
+
+// One heading per section, so "the thing" and "where it sits" read as two
+// groups rather than one long column of fields. Only drawn when there IS a
+// shape section — a pen path has one group and needs no label to separate it
+// from nothing.
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mt-2 mb-1">
+      {children}
+    </p>
+  )
 }
 
-function fieldsFromSteps(
-  steps: TransformStep[],
-  defaultPivot: { x: number; y: number },
-  defaultSkewPivot: { x: number; y: number },
-): TransformFields {
-  const translate = steps.find((s) => s.kind === 'translate')
-  const rotate = steps.find((s) => s.kind === 'rotate')
-  const scale = steps.find((s) => s.kind === 'scale')
-  const skew = steps.find((s) => s.kind === 'skew')
-  return {
-    dx: translate?.kind === 'translate' ? translate.dx : 0,
-    dy: translate?.kind === 'translate' ? translate.dy : 0,
-    angle: rotate?.kind === 'rotate' ? rotate.angle : 0,
-    cx: rotate?.kind === 'rotate' ? rotate.cx : defaultPivot.x,
-    cy: rotate?.kind === 'rotate' ? rotate.cy : defaultPivot.y,
-    sx: scale?.kind === 'scale' ? scale.sx : 1,
-    sy: scale?.kind === 'scale' ? scale.sy : 1,
-    ax: scale?.kind === 'scale' ? scale.ax : defaultPivot.x,
-    ay: scale?.kind === 'scale' ? scale.ay : defaultPivot.y,
-    kx: skew?.kind === 'skew' ? skew.kx : 0,
-    ky: skew?.kind === 'skew' ? skew.ky : 0,
-    skx: skew?.kind === 'skew' ? skew.ax : defaultSkewPivot.x,
-    sky: skew?.kind === 'skew' ? skew.ay : defaultSkewPivot.y,
-  }
-}
-
-// Rebuilds the step list from fields — same fixed fold order every time
-// (scale, skew, rotate, mirror, translate) — using each field's OWN carried
-// pivot, never a recomputed one.
-// `mirrors` carries through unchanged — a numeric field edit shouldn't drop
-// an already-applied mirror (or two, if the user mirrored twice; that's not
-// consolidated back to zero mirrors, just two steps that cancel out).
-function stepsFromFields(f: TransformFields, mirrors: TransformStep[]): TransformStep[] {
-  const steps: TransformStep[] = []
-  if (f.sx !== 1 || f.sy !== 1) steps.push({ kind: 'scale', ax: f.ax, ay: f.ay, sx: f.sx, sy: f.sy })
-  if (f.kx !== 0 || f.ky !== 0) steps.push({ kind: 'skew', ax: f.skx, ay: f.sky, kx: f.kx, ky: f.ky })
-  if (f.angle !== 0) steps.push({ kind: 'rotate', cx: f.cx, cy: f.cy, angle: f.angle })
-  steps.push(...mirrors)
-  steps.push({ kind: 'translate', dx: f.dx, dy: f.dy })
-  return steps
-}
-
-function TransformFieldsEditor({ fields, units, onChange }: {
-  fields: TransformFields
-  units: string
-  onChange: (f: TransformFields) => void
-}) {
-  return (<>
-    <EditField label="dX" valueMM={fields.dx} units={units} min={-1e6} onChange={(dx) => onChange({ ...fields, dx })} />
-    <EditField label="dY" valueMM={fields.dy} units={units} min={-1e6} onChange={(dy) => onChange({ ...fields, dy })} />
-    <RawField label="∠" value={fields.angle} step={1} min={-360000} max={360000} onChange={(angle) => onChange({ ...fields, angle })} suffix="°" />
-    <span />
-    <RawField label="SX" value={fields.sx} min={-1e6} onChange={(sx) => onChange({ ...fields, sx })} suffix="×" />
-    <RawField label="SY" value={fields.sy} min={-1e6} onChange={(sy) => onChange({ ...fields, sy })} suffix="×" />
-    {(fields.kx !== 0 || fields.ky !== 0) && (<>
-      <RawField label="KX" value={fields.kx} min={-1e6} onChange={(kx) => onChange({ ...fields, kx })} />
-      <RawField label="KY" value={fields.ky} min={-1e6} onChange={(ky) => onChange({ ...fields, ky })} />
-    </>)}
-  </>)
-}
-
-function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApply: (deg: number) => void }) {
-  const [text, setText] = useState('0')
+// `baseAngle` is how far the shape ALREADY stands turned — read back out of its
+// placement recipe. The field used to be a pure nudge: type 10, it turned 10°
+// more, and snapped back to 0, so a shape rotated 37° reported 0° and the one
+// number the drawing cannot show had nowhere to be read. Now that a rotation
+// spills into `placement` instead of being baked away, the angle is recoverable,
+// so the field states it and a typed value is the angle to STAND AT. What it
+// hands `onApply` is still the delta, which is what a transform step is.
+//
+// A path with no parameters has no placement and no way to know: `baseAngle` is
+// 0 for it and the field behaves exactly as it always did.
+function RotationField({ liveAngle, baseAngle, onApply }: { liveAngle: number | null; baseAngle: number; onApply: (deg: number) => void }) {
+  const shown = String(+baseAngle.toFixed(2))
+  const [text, setText] = useState(shown)
   // Guard against double-commit: Enter calls commit() then blur() which re-triggers onBlur.
   const committedRef = useRef(false)
+  // Follows the shape: after a canvas rotate lands, the field must read the new
+  // angle rather than whatever was last typed into it.
+  useEffect(() => { setText(shown) }, [shown])
 
   function commit(currentText: string) {
     if (committedRef.current) return
     committedRef.current = true
     const v = parseFloat(currentText)
-    if (!isNaN(v) && Math.abs(v) > 0.0001) onApply(v)
-    setText('0')
+    if (!isNaN(v) && Math.abs(v - baseAngle) > 0.0001) onApply(v - baseAngle)
+    setText(shown)
   }
 
   if (liveAngle !== null) {
-    return <ReadField label="∠" value={liveAngle.toFixed(1)} units="°" />
+    return <ReadField label="∠" value={(baseAngle + liveAngle).toFixed(1)} units="°" />
   }
 
   return (
@@ -199,7 +157,7 @@ function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApp
         onBlur={(e) => commit(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { commit(e.currentTarget.value); e.currentTarget.blur() }
-          if (e.key === 'Escape') { committedRef.current = true; setText('0'); e.currentTarget.blur() }
+          if (e.key === 'Escape') { committedRef.current = true; setText(shown); e.currentTarget.blur() }
           if (e.key === 'ArrowUp') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) + 1)) }
           if (e.key === 'ArrowDown') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) - 1)) }
         }}
@@ -210,7 +168,7 @@ function RotationField({ liveAngle, onApply }: { liveAngle: number | null; onApp
   )
 }
 
-function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params: ShapeParams; units: string; orgWorld: { x: number; y: number } }) {
+function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; params: ShapeParams; units: string; fromCenter?: boolean }) {
   const updateShapeParams = usePathsStore((s) => s.updateShapeParams)
   // Subscribed rather than read once, so the escapement's Animate button knows
   // to say Stop. Hooks cannot live inside the switch below.
@@ -238,58 +196,79 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
   // regenerate waits for the release.
   const updateLive = (newParams: ShapeParams) => updateShapeParams(id, newParams)
   const u = units
-  const ox = orgWorld.x, oy = orgWorld.y
+
+  // SIZE for the box-shaped params — rectangle, roundrect, inroundrect, maze,
+  // board — which all state their extent as w/h. POSITION is deliberately not
+  // here: it belongs to the Transform section, for every path, stated once, as
+  // the centre. A rectangle used to report the low corner its params happen to
+  // store, which is the right anchor only while the shape grows from a corner —
+  // set to grow from its middle, its X/Y slid every time its width was typed
+  // while the shape stayed put. And it disagreed with the circles and polygons
+  // beside it, which have always said CX/CY.
+  //
+  // A plain function, not a component: a component declared inside another one
+  // is a new type on every render, so React remounts it and the field being
+  // typed into loses focus.
+  const boxSize = <P extends ShapeParams & { x: number; y: number; w: number; h: number }>(
+    p: P, set: (patch: Partial<P>) => void,
+  ) => (<>
+    <EditField label="W" valueMM={p.w} units={u}
+      onChange={(w) => set((fromCenter ? { w, x: p.x + (p.w - w) / 2 } : { w }) as Partial<P>)} />
+    <EditField label="H" valueMM={p.h} units={u}
+      onChange={(h) => set((fromCenter ? { h, y: p.y + (p.h - h) / 2 } : { h }) as Partial<P>)} />
+  </>)
 
   switch (params.type) {
     case 'rectangle':
       return (<>
-        <EditField label="X" valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
-        <EditField label="Y" valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
-        <EditField label="W" valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
-        <EditField label="H" valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        {boxSize(params, (patch) => update({ ...params, ...patch }))}
       </>)
     case 'roundrect':
     case 'inroundrect':
       return (<>
-        <EditField label="X" valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
-        <EditField label="Y" valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
-        <EditField label="W" valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
-        <EditField label="H" valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        {boxSize(params, (patch) => update({ ...params, ...patch }))}
         <EditField label="R" valueMM={params.r} units={u} onChange={(r) => update({ ...params, r })} min={0} />
       </>)
     case 'circle':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="R" valueMM={params.radius} units={u} onChange={(radius) => update({ ...params, radius })} />
       </>)
     case 'ellipse':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="RX" valueMM={params.rx} units={u} onChange={(rx) => update({ ...params, rx })} />
         <EditField label="RY" valueMM={params.ry} units={u} onChange={(ry) => update({ ...params, ry })} />
       </>)
     case 'shield':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="W"  valueMM={params.w}  units={u} onChange={(w)  => update({ ...params, w })} />
         <EditField label="H"  valueMM={params.h}  units={u} onChange={(h)  => update({ ...params, h })} />
       </>)
     case 'spirograph':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="R"     valueMM={params.radius} units={u} onChange={(radius) => update({ ...params, radius })} />
-        <RawField  label="R/r"   value={params.ratio} min={1.01} max={50} step={0.05} onChange={(ratio) => update({ ...params, ratio, p: Math.min(params.p, ratio) })} />
-        {/* Pen position spans the grid — a slider reads the pattern's fill far
-            better than typing it, and p = ratio−1 (centre-filling) is a place
-            you find by dragging, not by knowing the number. */}
+        {/* Loops and pen position both span the grid — a slider reads the pattern
+            far better than typing it, and both the loop count and p = loops−1
+            (centre-filling) are places you find by dragging. The ratio is a whole
+            number, so every notch on the loops slider is a different rosette. */}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Loops</span>
+          <input
+            type="range" min={SPIRO_RATIO_RANGE.min} max={SPIRO_RATIO_RANGE.max} step={1}
+            value={spirographLoops(params.ratio)}
+            onChange={(e) => {
+              const ratio = spirographLoops(parseFloat(e.target.value))
+              updateLive({ ...params, ratio, p: Math.min(params.p, ratio) })
+            }}
+            onPointerUp={() => regenerateAffectedMany(groupIds())}
+            onKeyUp={() => regenerateAffectedMany(groupIds())}
+            className="flex-1 w-0 accent-blue-500"
+          />
+          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{spirographLoops(params.ratio)}</span>
+        </div>
         <div className="col-span-2 flex items-center gap-1.5">
           <span className={labelCls}>p</span>
           <input
-            type="range" min={0} max={params.ratio} step={0.01} value={params.p}
+            type="range" min={0} max={spirographLoops(params.ratio)} step={0.01} value={params.p}
             onChange={(e) => updateLive({ ...params, p: parseFloat(e.target.value) })}
             onPointerUp={() => regenerateAffectedMany(groupIds())}
             onKeyUp={() => regenerateAffectedMany(groupIds())}
@@ -300,10 +279,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       </>)
     case 'maze':
       return (<>
-        <EditField label="X"  valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
-        <EditField label="Y"  valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
-        <EditField label="W"  valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
-        <EditField label="H"  valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        {boxSize(params, (patch) => update({ ...params, ...patch }))}
         {/* Corridor spacing, not corridor count — the wall left standing is
             spacing − cutter diameter, so this is the field set from the bit. */}
         <EditField label="Sp" valueMM={params.spacing} units={u} onChange={(spacing) => update({ ...params, spacing })} />
@@ -339,10 +315,7 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const edgeLabel = BOARD_EDGE_LABEL[params.shape]
       const handleLabels = BOARD_HANDLE_LABELS[params.handle]
       return (<>
-        <EditField label="X" valueMM={params.x - ox} units={u} onChange={(x) => update({ ...params, x: x + ox })} min={-10000} />
-        <EditField label="Y" valueMM={params.y - oy} units={u} onChange={(y) => update({ ...params, y: y + oy })} min={-10000} />
-        <EditField label="W" valueMM={params.w} units={u} onChange={(w) => update({ ...params, w })} />
-        <EditField label="H" valueMM={params.h} units={u} onChange={(h) => update({ ...params, h })} />
+        {boxSize(params, (patch) => update({ ...params, ...patch }))}
         <div className="col-span-2 flex items-center gap-1.5">
           <span className={labelCls}>Sh</span>
           <select value={params.shape} onChange={(e) => update({ ...params, shape: e.target.value as typeof params.shape })}
@@ -425,8 +398,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
         else update(p)
       }
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => updateGear({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => updateGear({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="Mod" valueMM={params.module} units={u} min={0.05} onChange={(module) => updateGear({ ...params, module })} />
         <EditField label="N"   valueMM={params.teeth} units="" min={4} integer onChange={(teeth) => updateGear({ ...params, teeth: Math.max(4, Math.round(teeth)) })} />
         {/* Involute or cycloidal. A cycloidal face is cut for ONE mate, so the
@@ -549,8 +520,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const dead = params.escType === 'deadbeat'
       const running = meshAnimPathId === id
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <label className="flex items-center gap-1.5 col-span-2">
           <span className={labelCls}>Type</span>
           <select value={params.escType} className={fieldCls}
@@ -606,8 +575,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       return (<>
         {/* CX/CY is the SUSPENSION POINT, not the middle of the drawing — a
             pendulum is placed by where it hangs from. */}
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="Len"   valueMM={params.length} units={u} min={1} onChange={(length) => update({ ...params, length })} />
         <EditField label="Rod W" valueMM={params.rodWidth} units={u} min={0.5} onChange={(rodWidth) => update({ ...params, rodWidth })} />
         <EditField label="Bob W" valueMM={params.bobRx * 2} units={u} min={1} onChange={(w) => update({ ...params, bobRx: w / 2 })} />
@@ -628,8 +595,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
       const dm = camDims(params)
       const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="Base" valueMM={params.baseDia} units={u} min={1} onChange={(baseDia) => update({ ...params, baseDia })} />
         <EditField label="Rise" valueMM={params.riseMM} units={u} min={0.1} onChange={(riseMM) => update({ ...params, riseMM })} />
         <RawField  label="Swp"  value={params.sweepDeg} min={5} max={360} step={5} suffix="°" onChange={(sweepDeg) => update({ ...params, sweepDeg })} />
@@ -653,30 +618,22 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
     }
     case 'polygon':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="R" valueMM={params.radius} units={u} onChange={(radius) => update({ ...params, radius })} />
         <EditField label="N" valueMM={params.sides} units="" min={3} integer onChange={(sides) => update({ ...params, sides: Math.max(3, Math.round(sides)) })} />
       </>)
     case 'star':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="OR" valueMM={params.outerRadius} units={u} onChange={(outerRadius) => update({ ...params, outerRadius })} />
         <EditField label="IR" valueMM={params.innerRadius} units={u} onChange={(innerRadius) => update({ ...params, innerRadius })} />
         <EditField label="N" valueMM={params.points} units="" min={3} integer onChange={(points) => update({ ...params, points: Math.max(3, Math.round(points)) })} />
       </>)
     case 'heart':
       return (<>
-        <EditField label="CX" valueMM={params.cx - ox} units={u} onChange={(cx) => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY" valueMM={params.cy - oy} units={u} onChange={(cy) => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="R" valueMM={params.curveRadius} units={u} onChange={(curveRadius) => update({ ...params, curveRadius })} />
         <EditField label="Ang" valueMM={params.angle} units="" integer min={1} onChange={(angle) => update({ ...params, angle: Math.min(179, Math.max(1, Math.round(angle))) })} />
       </>)
     case 'slot':
       return (<>
-        <EditField label="CX"  valueMM={params.cx - ox}     units={u} onChange={(cx)     => update({ ...params, cx: cx + ox })} min={-10000} />
-        <EditField label="CY"  valueMM={params.cy - oy}     units={u} onChange={(cy)     => update({ ...params, cy: cy + oy })} min={-10000} />
         <EditField label="Len" valueMM={params.length} units={u} onChange={(length) => update({ ...params, length: Math.max(length, params.width) })} />
         <EditField label="W"   valueMM={params.width}  units={u} onChange={(width)  => update({ ...params, width: Math.min(width, params.length) })} />
       </>)
@@ -689,8 +646,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
           <span className={labelCls}>T</span>
           <input type="text" value={params.text} onChange={(e) => updateText({ ...params, text: e.target.value })} className={fieldCls} />
         </div>
-        <EditField label="X" valueMM={params.x - ox} units={u} onChange={(x) => updateText({ ...params, x: x + ox })} min={-10000} />
-        <EditField label="Y" valueMM={params.y - oy} units={u} onChange={(y) => updateText({ ...params, y: y + oy })} min={-10000} />
         <EditField label="Sz" valueMM={params.fontSize} units={u} min={0.1} onChange={(fontSize) => updateText({ ...params, fontSize })} />
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>Fnt</span>
@@ -708,7 +663,6 @@ function ShapeParamsEditor({ id, params, units, orgWorld }: { id: string; params
 
 
 export default function PropertiesPanel() {
-  const selectedIds = usePathsStore((s) => s.selectedIds)
   const liveRotationAngle = useCanvasStore((s) => s.liveRotationAngle)
   const liveBBox = useCanvasStore((s) => s.liveBBox)
   // Brief highlight when a timeline path-chip is clicked — this panel is where
@@ -724,46 +678,6 @@ export default function PropertiesPanel() {
   const { units, origin, widthMM, heightMM } = useWorkpieceStore()
   const orgWorld = originWorldXY(origin, widthMM, heightMM)
   const selectedPaths = useSelectedPaths()
-
-  // A move/scale/rotate/skew/mirror (or merged 'transform') timeline chip is
-  // selected: show its recorded TransformStep recipe instead of the plain
-  // shape/position fields below. Valid only while the cursor still sits on
-  // this exact event AND the selection still matches its updated paths —
-  // either changing invalidates it back to null (scrub away, select
-  // something else, record a new edit).
-  const events = useTimelineStore((s) => s.events)
-  const cursor = useTimelineStore((s) => s.cursor)
-  const transformEditEventId = useUIStore((s) => s.transformEditEventId)
-  const setTransformEditEventId = useUIStore((s) => s.setTransformEditEventId)
-  const transformEventRaw = transformEditEventId ? events.find((e) => e.id === transformEditEventId) : undefined
-  const activeTransformEvent = transformEventRaw && transformEventRaw.kind === 'paths.edit' &&
-    transformEventRaw.seq === cursor &&
-    transformEventRaw.updates.length > 0 && transformEventRaw.updates.every((u) => u.transforms?.length) &&
-    [...transformEventRaw.updates.map((u) => u.id)].sort().join(',') === [...selectedIds].sort().join(',')
-    ? transformEventRaw
-    : null
-  useEffect(() => {
-    if (transformEditEventId && !activeTransformEvent) setTransformEditEventId(null)
-  }, [transformEditEventId, activeTransformEvent, setTransformEditEventId])
-
-  // The stable reference for any step the active chip doesn't have YET — the
-  // selection's bbox as it was just before this chip started, not its current
-  // one (see fieldsFromSteps' doc comment for why that matters).
-  //
-  // Memoized because bboxBeforeEvent replays the timeline from the nearest
-  // checkpoint (up to 25 events, and applyEvent re-runs clipper booleans, path
-  // offsets and pattern instancing as it folds). Editing any field in this
-  // chip calls amendTransformSteps → new events array → re-render, so an
-  // unmemoized call put that replay on the keystroke path. The value is
-  // deliberately independent of this chip's own payload, so amending it must
-  // not recompute; a change to an EARLIER chip requires selecting a different
-  // path first, which nulls activeTransformEvent and re-runs this anyway.
-  const preChipBBoxRaw = useMemo(
-    () => activeTransformEvent
-      ? bboxBeforeEvent(activeTransformEvent.seq, activeTransformEvent.updates.map((u) => u.id))
-      : null,
-    [activeTransformEvent?.id, activeTransformEvent?.seq],
-  )
 
   if (selectedPaths.length === 0) return null
   const bbox = getMultiBBox(selectedPaths.map((p) => p.d))
@@ -794,15 +708,88 @@ export default function PropertiesPanel() {
     return { minX: cx - nHW, minY: cy - nHH, width: nHW * 2, height: nHH * 2 }
   })() : bbox)
 
-  // Opens the transform editor below for the chip this gesture just
-  // wrote/merged into, so it's visible immediately rather than only after a
-  // later, unrelated timeline click.
-  function openTransformEditorForTip() {
-    const tl = useTimelineStore.getState()
-    const ev = tl.events[tl.cursor - 1]
-    if (ev && ev.kind === 'paths.edit' && ev.updates.every((u) => u.transforms?.length)) {
-      setTransformEditEventId(ev.id)
+  // The shape's OWN fields, moved by the gesture in flight — so the panel needs
+  // no second copy of X/Y/W/H underneath, which is where the duplication came
+  // from (and they disagreed, the stored params being pre-gesture). The live
+  // step is React state inside CanvasStage rather than a store field, but for a
+  // drag and a resize the two bounding boxes say everything about it: the same
+  // axis-aligned scale-then-translate that carries `bbox` onto `liveBBox`
+  // carries the parameters with it. Scale about the box's own corner (so that
+  // corner is fixed) and then translate it onto the live one — exact, and no
+  // dividing to recover an anchor.
+  //
+  // A rotate has no liveBBox and needs none: it SPILLS into the placement, so
+  // the definition genuinely does not change and the live angle is reported by
+  // RotationField below. Same for a scale a shape cannot express, where
+  // `scaleShapeParams` returns null and the stored params stand.
+  const liveShapeParams = useMemo(() => {
+    const params = singleShape?.shapeParams
+    if (!params || !liveBBox || !bbox || bbox.width === 0 || bbox.height === 0) return params
+    const sx = liveBBox.width / bbox.width
+    const sy = liveBBox.height / bbox.height
+    const scaled = Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9
+      ? params
+      : scaleShapeParams(params, bbox.minX, bbox.minY, sx, sy)
+    if (!scaled) return params
+    return translateShapeParams(scaled, liveBBox.minX - bbox.minX, liveBBox.minY - bbox.minY)
+  }, [singleShape?.shapeParams, liveBBox, bbox])
+
+  // How far the selection already stands turned, out of its placement recipe:
+  // the angle of the transformed x-axis. Exact for a chain of rotates, mirrors
+  // and uniform scales; for one carrying a skew or a stretch it is the nearest
+  // honest single number, which is what a one-field readout can say anyway.
+  // Only for a lone path — two paths can stand at two angles.
+  // OVER THE WHOLE SELECTION, not a lone path — a MULTI-PART shape is several
+  // paths, so `length !== 1` meant a gear, a cam, an escapement and a clock
+  // wheel all reported 0° while standing visibly turned. They are rotated
+  // together, so their parts carry the same angle and the selection has one
+  // answer; a part dragged off on its own keeps that angle too, since a drag
+  // adds a translate and turns nothing. Two paths at genuinely DIFFERENT angles
+  // have no single answer, and 0 is what the field can honestly say.
+  const placedAngle = useMemo(() => {
+    const angles = selectedPaths.map((p) => {
+      if (!p.placement?.length) return 0
+      const [a, b] = placementMat(p.placement)
+      return Math.atan2(b, a) * 180 / Math.PI
+    })
+    if (angles.length === 0) return 0
+    const first = angles[0]
+    if (angles.some((d) => Math.abs(d - first) > 1e-6)) return 0
+    return Math.abs(first) < 1e-9 ? 0 : first
+  }, [selectedPaths])
+
+  // The Transform section's fields are absolute — the position and size the
+  // selection should HAVE — but a transform step is a delta, so each converts
+  // one into the other against the live bbox. Same road as a canvas drag, so a
+  // typed move and a dragged one leave the same recipe behind.
+  function applyTransform(step: TransformStep, gesture: 'move' | 'scale') {
+    const { paths: allPaths, batchUpdatePaths } = usePathsStore.getState()
+    const updates = selectedPaths
+      .map((p) => allPaths.find((ap) => ap.id === p.id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map((p) => {
+        const r = applyTransformStep(p, step)
+        return { id: p.id, d: r.d, shapeParams: r.shapeParams, name: r.name, transforms: [step] }
+      })
+    if (updates.length) {
+      batchUpdatePaths(updates, gesture)
+      regenerateAffectedMany(updates.map((u) => u.id))
     }
+  }
+
+  function applyTranslate(dx: number, dy: number) {
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return
+    applyTransform({ kind: 'translate', dx, dy }, 'move')
+  }
+
+  // Resizing holds the selection's top-left corner still, which is the corner a
+  // typed width grows away from — matching the default drag, where the anchor is
+  // the handle opposite the one being pulled.
+  function applyResize(w: number, h: number) {
+    if (!bbox || bbox.width === 0 || bbox.height === 0) return
+    const sx = w / bbox.width, sy = h / bbox.height
+    if (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9) return
+    applyTransform({ kind: 'scale', sx, sy, ax: bbox.minX, ay: bbox.maxY }, 'scale')
   }
 
   function applyRotation(angle: number) {
@@ -821,7 +808,6 @@ export default function PropertiesPanel() {
     if (updates.length) {
       batchUpdatePaths(updates, 'rotate')
       regenerateAffectedMany(updates.map((u) => u.id))
-      openTransformEditorForTip()
     }
   }
 
@@ -841,19 +827,17 @@ export default function PropertiesPanel() {
     if (updates.length) {
       batchUpdatePaths(updates, 'mirror')
       regenerateAffectedMany(updates.map((u) => u.id))
-      openTransformEditorForTip()
     }
   }
 
   // How this object grows — outward from its middle, or from a fixed corner.
-  // Reads the PATH, not its shapeParams: a rotate, skew or mirror drops those
-  // entirely, and the preference has to outlive them or it could never be set on
-  // anything that had been turned. That also lets an imported outline carry it.
-  //
-  // Rendered in BOTH panel bodies, because a canvas transform switches this panel
-  // to the transform-recipe editor (CanvasStage sets transformEditEventId after
-  // every drag) — and a setting whose whole subject is what the NEXT resize will
-  // do is useless if it disappears the moment you resize.
+  // Reads the PATH, not its shapeParams: it has to survive a gesture that leaves
+  // the parameters describing an untransformed definition, and it also lets an
+  // imported outline with no parameters at all carry the setting. It is rendered
+  // ONCE now, at the end of the one panel body — there used to be a second copy
+  // in the transform-recipe editor, because that editor replaced this whole body
+  // and a setting whose subject is what the NEXT resize does is useless if it
+  // vanishes the moment you resize. With that editor gone, so is the second copy.
   //
   // Over the whole selection: ticked when they ALL are, and toggling sets them
   // all, which matches how the resize itself treats a group.
@@ -872,86 +856,6 @@ export default function PropertiesPanel() {
       <span className="text-label text-gray-500 dark:text-neutral-400">Resize from centre</span>
     </label>
   ) : null
-
-  if (activeTransformEvent) {
-    const eventId = activeTransformEvent.id
-    const rawSteps = activeTransformEvent.updates[0].transforms!
-    const mirrorSteps = rawSteps.filter((s) => s.kind === 'mirror')
-    const preChipBBox = preChipBBoxRaw ?? bbox
-    const fields = fieldsFromSteps(
-      rawSteps,
-      { x: preChipBBox.cx, y: preChipBBox.cy },
-      { x: preChipBBox.cx, y: preChipBBox.minY },
-    )
-    // Mirroring the CURRENTLY-VISIBLE shape about its own live center, while
-    // leaving dX/dY exactly as they were: naively appending a mirror step
-    // and re-consolidating (Gram-Schmidt over the whole chain) is what the
-    // scale/rotate merge fix uses, but it has no way to prefer one valid
-    // decomposition's translate value over another equally-correct one — it
-    // was flipping dX's sign, which is legal geometry but not what "mirror
-    // it" means to someone reading the dX field. So instead: keep every
-    // existing step (scale/skew/rotate/mirror) frozen exactly as they are,
-    // and insert the new mirror — pivoted at (live bbox − existing dx/dy) —
-    // right before the UNCHANGED translate. That pivot choice is exactly
-    // the one where "mirror about where it currently sits" and "keep dX/dY
-    // fixed" are simultaneously true (verified algebraically and
-    // numerically, including with an existing scale in the chain).
-    const applyMirrorToChip = (axis: 'x' | 'y') => {
-      const existingTranslate = rawSteps.find((s) => s.kind === 'translate')
-      const tx = existingTranslate?.kind === 'translate' ? existingTranslate.dx : 0
-      const ty = existingTranslate?.kind === 'translate' ? existingTranslate.dy : 0
-      const mirror: TransformStep = { kind: 'mirror', axis, cx: bbox.cx - tx, cy: bbox.cy - ty }
-      const nonTranslate = rawSteps.filter((s) => s.kind !== 'translate')
-      const newSteps: TransformStep[] = [...nonTranslate, mirror, { kind: 'translate', dx: tx, dy: ty }]
-      useTimelineStore.getState().amendTransformSteps(eventId, newSteps)
-    }
-    return (
-      <div className={[
-        'border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-shrink-0 transition-shadow duration-300',
-        flashing ? 'ring-2 ring-inset ring-blue-500' : '',
-      ].join(' ')}>
-        <div className="flex items-center justify-between mb-1.5">
-          <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">
-            {activeTransformEvent.label}
-          </p>
-          <button
-            onClick={() => setTransformEditEventId(null)}
-            title="Back to shape properties"
-            className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300"
-          >
-            <X size={12} />
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-1.5">
-          <TransformFieldsEditor
-            fields={fields}
-            units={units}
-            onChange={(newFields) => {
-              const newSteps = stepsFromFields(newFields, mirrorSteps)
-              useTimelineStore.getState().amendTransformSteps(eventId, newSteps)
-            }}
-          />
-        </div>
-        <div className="mt-1.5 flex gap-1.5">
-          <button
-            onClick={() => applyMirrorToChip('x')}
-            title="Mirror horizontally (flip left/right)"
-            className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
-          >
-            <span className="inline-block">↔</span> Mirror X
-          </button>
-          <button
-            onClick={() => applyMirrorToChip('y')}
-            title="Mirror vertically (flip up/down)"
-            className="flex-1 text-label py-1 rounded border transition-colors border-gray-400 dark:border-neutral-600 text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300"
-          >
-            <span className="inline-block rotate-90">↔</span> Mirror Y
-          </button>
-        </div>
-        {fromCentreRow && <div className="grid grid-cols-2">{fromCentreRow}</div>}
-      </div>
-    )
-  }
 
   return (
     // GROWS DOWNWARD, and that is the whole of these three classes.
@@ -975,30 +879,78 @@ export default function PropertiesPanel() {
         {selectedPaths.length === 1 ? selectedPaths[0].name : `${selectedPaths.length} paths`}
       </p>
 
-      {singleShape?.shapeParams && liveRotationAngle === null && liveBBox === null ? (
-        <div className="grid grid-cols-2 gap-1.5">
-          <ShapeParamsEditor id={singleShape.id} params={singleShape.shapeParams} units={units} orgWorld={orgWorld} />
-        </div>
-      ) : (() => {
-        // Corner-based shapes (rect/roundrect/text) show minX/minY; all others show bbox center
-        const cornerBased = !singleShape?.shapeParams ||
-          ['rectangle', 'roundrect', 'inroundrect', 'text'].includes(singleShape.shapeParams.type)
-        const liveXLabel = cornerBased ? 'X' : 'CX'
-        const liveYLabel = cornerBased ? 'Y' : 'CY'
-        const liveX = cornerBased ? displayBBox!.minX : displayBBox!.minX + displayBBox!.width / 2
-        const liveY = cornerBased ? displayBBox!.minY : displayBBox!.minY + displayBBox!.height / 2
-        return (
-          <div className="grid grid-cols-2 gap-1.5 space-y-0">
-            <ReadField label={liveXLabel} value={fmt(liveX - orgWorld.x)} units="mm" />
-            <ReadField label={liveYLabel} value={fmt(liveY - orgWorld.y)} units="mm" />
-            <ReadField label="W" value={fmt(displayBBox!.width)} units="mm" />
-            <ReadField label="H" value={fmt(displayBBox!.height)} units="mm" />
+      {/* ONE PANEL, TWO SECTIONS: what the thing IS, then where it SITS.
+          There used to be four presentations of this — the shape's own fields,
+          a read-only bbox block for a path that had none, the rotation field and
+          mirror buttons, and a whole separate transform-recipe body that
+          REPLACED all of them. The fourth existed only because a rotate, a skew
+          or a scale used to destroy `shapeParams`, leaving its recipe as the
+          sole surviving record; parameters now spill into `placement` instead,
+          so that case no longer exists and the recipe editor had become an
+          orphan (the object strip is one chip per THING and carries no transform
+          chip, so nothing could even reopen it — it only ever appeared by
+          opening itself over whatever the user was working on).
+
+          The Transform section shows only what the Shape section does not
+          already state, which is what keeps a rectangle from listing X, Y, W and
+          H twice. The test is `x`/`cx` and `w`/`h` in the params — a question
+          asked of the object, so no per-type list can fall out of date as shapes
+          are added. Everything here is live during a gesture and editable when
+          not, for a pen path exactly as for a gear. */}
+      {liveShapeParams && singleShape && (
+        <>
+          <SectionLabel>Shape</SectionLabel>
+          <div className="grid grid-cols-2 gap-1.5">
+            <ShapeParamsEditor id={singleShape.id} params={liveShapeParams} units={units} fromCenter={singleShape.fromCenter} />
           </div>
+        </>
+      )}
+
+      {(() => {
+        const params = liveShapeParams
+        const statesSize = !!params && 'w' in params && 'h' in params
+        // POSITION IS ALWAYS HERE, ALWAYS THE CENTRE, and never in the Shape
+        // section. Every shape used to state its own, in whatever terms its
+        // params happened to store — a rectangle its low corner, a circle its
+        // centre — so the same question was answered two ways depending on what
+        // was selected, and the rectangle's answer moved when its width was
+        // typed. Where a thing sits is a property of the placement, not of the
+        // shape; one field, one meaning, one place, for a pen path exactly as
+        // for a gear. Taken from the bbox, so it is what is actually drawn: on
+        // a gear that includes the pinion beside it, which is the extent the
+        // stock has to hold.
+        const posX = displayBBox!.minX + displayBBox!.width / 2
+        const posY = displayBBox!.minY + displayBBox!.height / 2
+        const live = liveRotationAngle !== null || liveBBox !== null
+        return (
+          <>
+            {params && <SectionLabel>Transform</SectionLabel>}
+            <div className="grid grid-cols-2 gap-1.5 space-y-0">
+              {live ? (<>
+                <ReadField label="CX" value={fmt(posX - orgWorld.x)} units="mm" />
+                <ReadField label="CY" value={fmt(posY - orgWorld.y)} units="mm" />
+              </>) : (<>
+                <EditField label="CX" valueMM={posX - orgWorld.x} units={units} min={-1e6}
+                  onChange={(v) => applyTranslate(v + orgWorld.x - posX, 0)} />
+                <EditField label="CY" valueMM={posY - orgWorld.y} units={units} min={-1e6}
+                  onChange={(v) => applyTranslate(0, v + orgWorld.y - posY)} />
+              </>)}
+              {!statesSize && (live ? (<>
+                <ReadField label="W" value={fmt(displayBBox!.width)} units="mm" />
+                <ReadField label="H" value={fmt(displayBBox!.height)} units="mm" />
+              </>) : (<>
+                <EditField label="W" valueMM={displayBBox!.width} units={units}
+                  onChange={(v) => applyResize(v, displayBBox!.height)} />
+                <EditField label="H" valueMM={displayBBox!.height} units={units}
+                  onChange={(v) => applyResize(displayBBox!.width, v)} />
+              </>))}
+            </div>
+          </>
         )
       })()}
 
       <div className="mt-1.5">
-        <RotationField liveAngle={liveRotationAngle} onApply={applyRotation} />
+        <RotationField liveAngle={liveRotationAngle} baseAngle={placedAngle} onApply={applyRotation} />
       </div>
 
       <div className="mt-1.5 flex gap-1.5">

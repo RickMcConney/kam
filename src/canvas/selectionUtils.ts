@@ -233,7 +233,7 @@ export function gestureForSteps(steps: TransformStep[]): PathEditGesture {
 // live baking site (CanvasStage drag handlers, PropertiesPanel rotate/mirror)
 // so they all compute byte-identical results.
 export function applyTransformStep(
-  path: Pick<ImportedPath, 'd' | 'shapeParams'>,
+  path: Pick<ImportedPath, 'd' | 'shapeParams' | 'placement'>,
   step: TransformStep,
 ): { d: string; shapeParams: ShapeParams | null | undefined; name?: string } {
   switch (step.kind) {
@@ -243,12 +243,26 @@ export function applyTransformStep(
       return { d, shapeParams }
     }
     case 'scale': {
-      const newShapeParams = path.shapeParams
-        ? scaleShapeParams(path.shapeParams, step.ax, step.ay, step.sx, step.sy)
-        : undefined
+      // A PLACED shape's `d` is placement ∘ definition, so a scale stated in
+      // world coordinates has to be re-stated in DEFINITION ones before the
+      // params can absorb it, or regenerating from them drops the placement and
+      // the shape snaps back to un-rotated. Writing the placement as an affine
+      // M and the scale about A as S, the identity S_A ∘ M = M ∘ S_{M⁻¹A} holds
+      // for ANY M when the scale is UNIFORM (both sides come to sRx + A + s(t−A)
+      // — conformality is never needed, only that s is a scalar). It fails for a
+      // non-uniform scale unless M keeps the axes, since that needs R⁻¹SR to
+      // stay diagonal — so a stretched, rotated shape is baked, as it always was.
+      const placed = (path.placement?.length ?? 0) > 0
+      const uniform = Math.abs(Math.abs(step.sx) - Math.abs(step.sy)) <= 0.001
+      const anchor = placed && uniform
+        ? unplacePoint({ x: step.ax, y: step.ay }, path.placement)
+        : { x: step.ax, y: step.ay }
+      const newShapeParams = path.shapeParams && !(placed && !uniform)
+        ? scaleShapeParams(path.shapeParams, anchor.x, anchor.y, step.sx, step.sy)
+        : path.shapeParams ? null : undefined
       // When params are valid, regenerate d from them to preserve exact geometry (arcs stay circular)
       const d = newShapeParams != null
-        ? generateShapeD(newShapeParams)
+        ? applyPlacementD(generateShapeD(newShapeParams), path.placement)
         : scaleAroundD(path.d, step.ax, step.ay, step.sx, step.sy)
       const typeChanged = newShapeParams && path.shapeParams && newShapeParams.type !== path.shapeParams.type
       const name = typeChanged ? shapeDisplayName(newShapeParams!.type) : undefined
@@ -305,6 +319,20 @@ export function placementMat(steps: TransformStep[] | undefined): Mat6 {
   let m: Mat6 = [1, 0, 0, 1, 0, 0]
   if (steps) for (const step of steps) m = composeMat6(m, matForStep(step))
   return m
+}
+
+// The point a placement recipe MAPS TO `p` — i.e. where `p` was before the
+// recipe carried it out. `applyTransformStep` needs it to state a scale in
+// DEFINITION coordinates when the shape it is scaling has been placed.
+export function unplacePoint(
+  p: { x: number; y: number },
+  steps: TransformStep[] | undefined,
+): { x: number; y: number } {
+  const [a, b, c, d, e, f] = placementMat(steps)
+  const det = a * d - b * c
+  if (!isFinite(det) || Math.abs(det) < 1e-12) return p
+  const px = p.x - e, py = p.y - f
+  return { x: (d * px - c * py) / det, y: (a * py - b * px) / det }
 }
 
 // Carry freshly generated definition geometry out to where the part actually
@@ -417,7 +445,13 @@ function circleFromD(d: string): CircleInfo | null {
  */
 export function extractCircles(path: ImportedPath): CircleInfo[] {
   const subDs = splitCompoundPath(path.d)
-  if (subDs.length <= 1) {
+  // A PLACED shape's parameters describe its DEFINITION, not what is drawn: the
+  // recipe carries it out to where it sits, and may turn or shear it on the way.
+  // So a circle rotated about anything but its own middle has moved, and a
+  // skewed one is an ellipse — while its params still say "circle at cx,cy".
+  // Read the outline instead, which is the same rule as `a path is not a hole`.
+  const placed = (path.placement?.length ?? 0) > 0
+  if (subDs.length <= 1 && !placed) {
     if (path.shapeParams?.type === 'circle') {
       return [{ cx: path.shapeParams.cx, cy: path.shapeParams.cy, radiusMM: path.shapeParams.radius }]
     }

@@ -117,7 +117,6 @@ interface UIState {
   // plain shape/position fields. PropertiesPanel itself clears this back to
   // null once the timeline cursor or selection no longer matches the event
   // (scrubbing away, selecting something else, recording a new edit).
-  transformEditEventId: string | null
   // Local undo/redo for point-edit sessions — registered by CanvasStage, used by Toolbar + App
   nodeEditUndo: (() => void) | null
   nodeEditRedo: (() => void) | null
@@ -154,7 +153,6 @@ interface UIState {
   setBottomTab: (tab: 'timeline' | 'operations') => void
   setRequestEditOpId: (id: string | null) => void
   setRequestEditPathId: (id: string | null) => void
-  setTransformEditEventId: (id: string | null) => void
   setRequestMachineForm: (form: string | null) => void
   flashProperties: () => void
   setSidebarTab: (tab: SidebarTab) => void
@@ -230,7 +228,6 @@ export const useUIStore = create<UIState>()(
   requestEditPathId: null,
   requestMachineForm: null,
   propertiesFlashSeq: 0,
-  transformEditEventId: null,
   nodeEditUndo: null,
   nodeEditRedo: null,
   nodeEditCanUndo: false,
@@ -263,7 +260,6 @@ export const useUIStore = create<UIState>()(
   setBottomTab: (tab) => set({ bottomTab: tab }),
   setRequestEditOpId: (id) => set({ requestEditOpId: id }),
   setRequestEditPathId: (id) => set({ requestEditPathId: id }),
-  setTransformEditEventId: (id) => set({ transformEditEventId: id }),
   setRequestMachineForm: (form) => set({ requestMachineForm: form }),
   flashProperties: () => set((s) => ({ propertiesFlashSeq: s.propertiesFlashSeq + 1 })),
   setSidebarTab: (tab) => set({ sidebarTab: tab, activeTool: 'select' }),

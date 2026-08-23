@@ -24,7 +24,7 @@ import { regenerateAffectedMany } from '../../cam/regenerate'
 import { generateShapeParts, translateShapeParams } from '../../shapes/shapeGenerators'
 import { loadFont, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import {
-  DEFAULT_CLOCK_SPEC, designClock, layoutClock,
+  DEFAULT_CLOCK_SPEC, designClock, layoutClock, MAX_WHEEL_DIA, MODULE_TAPER, MOTION_CENTRE_MM,
   type ClockPart, type ClockPartParams, type ClockSpec,
 } from '../../shapes/clockTrain'
 import { nextPathColor, type ImportedPath } from '../../importers/svgImporter'
@@ -218,12 +218,7 @@ export default function ClockPanel() {
   // an emitter or a readout. Subtracting it here moved the whole clock by −origin:
   // to the left of the stock for a corner origin, onto the lower-left corner for
   // a centred one.
-  const layout = () => layoutClock(
-    design.parts,
-    { x: widthMM / 2, y: heightMM / 2 },
-    Math.max(50, widthMM - 2 * MARGIN),
-    GAP,
-  )
+  const layout = () => layoutClock(design.parts, { widthMM, heightMM }, MARGIN, GAP)
 
   /** Every path of one clock part, so its whole group can be regenerated. */
   const groupOf = (pathId: string) => {
@@ -411,8 +406,20 @@ export default function ClockPanel() {
           </p>
           <PlainInput label="Great" value={spec.greatWheelMin} unit="min/rev" min={1} max={1440} step={1}
             onChange={(greatWheelMin) => set({ greatWheelMin })} />
-          <NumInput label="Module" valueMM={spec.module} units={units} min={0.5} step={0.25}
-            onChange={(module) => set({ module })} />
+          {/* SIZE, NOT TOOTH SIZE. One module for the clock made wheel diameter
+              `m × z` with `z` forced by the rate, so nothing about how big the
+              wheels came out was anyone's choice — the default train was three
+              ~200 mm wheels whatever the board. What a maker has instead is the
+              width of the board, so that is the input and tooth size is scaled
+              to it; the taper then makes the drive end coarse and the escape end
+              fine, which is what a real clock does, torque falling by the mesh
+              ratio at every step. Set the taper to 1 for one module throughout.
+              Every mesh's module is reported in the info window. */}
+          <NumInput label="Max wheel Ø" valueMM={spec.maxWheelDia ?? MAX_WHEEL_DIA} units={units} min={20} step={10}
+            onChange={(maxWheelDia) => set({ maxWheelDia })} />
+          <PlainInput label="Tooth taper" value={+(spec.toothTaper ?? MODULE_TAPER).toFixed(2)} unit="×/mesh"
+            min={0.3} max={1} step={0.05}
+            onChange={(toothTaper) => set({ toothTaper })} />
           {/* One figure each for the WHOLE clock. Both are decisions about how
               the wheels are cut rather than about any one wheel — and the pin
               diameter shapes a cycloidal tooth, so wheels disagreeing about it
@@ -420,8 +427,16 @@ export default function ClockPanel() {
               opening seven forms to change one thing. */}
           <NumInput label="Backlash" valueMM={spec.backlash} units={units} min={0} step={0.05}
             onChange={(backlash) => set({ backlash })} />
-          <NumInput label="Pin Ø" valueMM={spec.pinDia} units={units} min={0.5} step={0.5}
+          {/* TWO DOWELS, not one. The tooth is `π·m − pin Ø − backlash` and the
+              pin is an absolute rod, so a pin that suits the great wheel is most
+              of the tooth space at the escape end and one that suits the escape
+              end rattles in the great wheel's. Each mesh takes whichever of the
+              two better suits its own pitch; the info window says which got
+              which. Set them equal for one pin throughout. */}
+          <NumInput label="Pin Ø large" valueMM={spec.pinDia} units={units} min={0.5} step={0.5}
             onChange={(pinDia) => set({ pinDia })} />
+          <NumInput label="Pin Ø small" valueMM={spec.pinDiaFine ?? spec.pinDia} units={units} min={0.5} step={0.5}
+            onChange={(pinDiaFine) => set({ pinDiaFine })} />
         </div>
 
         {/* The hour hand's gearing. Two more wheels of the same kind, off the
@@ -432,13 +447,16 @@ export default function ClockPanel() {
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Hour hand</p>
           <Check label="Motion work" checked={!!spec.motionWork}
             onChange={(motionWork) => set({ motionWork })} />
-          {/* The ONE free number in the motion work: the ratios and the equal
-              centre distance fix everything else. Each step up makes both wheels
-              and the arbor spacing half as big again, which is how the minute
-              wheel's stud is walked out clear of a big great wheel. */}
+          {/* THE ONE FREE NUMBER, and it is a DISTANCE. The ratios and the equal
+              centre distance fix the counts, which are the classic 10/30 and
+              8/32, so `C = 10·k·m` leaves exactly one — and as a spacing in mm
+              it is a continuum, where the old `k` stepped it in 50 mm jumps. It
+              is also the number the plate is drilled from and the one that walks
+              the stud clear of a big great wheel. The module falls out of it. */}
           {spec.motionWork && (
-            <NumInput label="Size" valueMM={spec.motionSize ?? 2} units="" min={1} integer
-              onChange={(motionSize) => set({ motionSize: Math.max(1, Math.round(motionSize)) })} />
+            <NumInput label="Arbor spacing" valueMM={spec.motionCentreMM ?? MOTION_CENTRE_MM}
+              units={units} min={5} step={5}
+              onChange={(motionCentreMM) => set({ motionCentreMM })} />
           )}
           <p className={noteCls}>
             {design.motion

@@ -510,6 +510,54 @@ describe('gear — running the pair', () => {
 // through its hub and one loose cheek caps the far ends. What has to hold is
 // that the holes land in solid stock — which is why the hub is a floor they push
 // up, exactly as the spokes do.
+// The loose cheek is drawn beside its wheel, and the cutter has to travel
+// between the two curved walls. On one centre line those walls come closest
+// exactly along that line, so the daylight between them IS the horizontal gap
+// and nothing more — 2 mm on every wheel in a clock, whatever its size.
+describe('the pinion drawn beside its wheel', () => {
+  const withPinion: GearSpec = {
+    ...base, module: 4, teeth: 24, toothProfile: 'cycloidal', mateTeeth: 12, pinDia: 5,
+    emitPinion: true, backlash: 0.3,
+  }
+  const cheekOf = (spec: GearSpec) => {
+    const pts = flattenPath(generateGearParts(spec).find((x) => x.key === 'pinion')!.d, 0.01).flat()
+    const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1])
+    return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
+  }
+  const wheelOf = (spec: GearSpec) => {
+    const pts = flattenPath(generateGearParts(spec).find((x) => x.key === 'teeth')!.d, 0.01).flat()
+    const ys = pts.map((q) => q[1])
+    return { minY: Math.min(...ys), maxY: Math.max(...ys) }
+  }
+
+  it('is TOP-ALIGNED with the wheel, not sharing its centre line', () => {
+    const cheek = cheekOf(withPinion), wheel = wheelOf(withPinion)
+    expect(cheek.maxY).toBeCloseTo(wheel.maxY, 1)
+    // …which is a real offset: the cheek is much the smaller of the two.
+    expect(cheek.maxY - cheek.minY).toBeLessThan((wheel.maxY - wheel.minY) * 0.75)
+  })
+
+  it('buys clearance at the pinch, where two discs on one centre line have none', () => {
+    const parts = generateGearParts(withPinion)
+    const isPin = (k: string) => k.startsWith('pinion') || k === 'pinholes'
+    const wheel = parts.filter((x) => !isPin(x.key)).flatMap((x) => flattenPath(x.d, 0.05)).flat()
+    const pin = parts.filter((x) => isPin(x.key)).flatMap((x) => flattenPath(x.d, 0.05)).flat()
+    let best = Infinity
+    for (const [x, y] of wheel) for (const [u, v] of pin) best = Math.min(best, (x - u) ** 2 + (y - v) ** 2)
+    // Sharing a centre line this is PINION_GAP exactly — 2 mm — however big the
+    // wheel gets. Offset, it opens with the difference in radius.
+    expect(Math.sqrt(best)).toBeGreaterThan(4)
+  })
+
+  it('costs no stock — the wheel still sets the bounding box', () => {
+    const parts = generateGearParts(withPinion)
+    const ys = parts.flatMap((x) => flattenPath(x.d, 0.05)).flat().map((q) => q[1])
+    const wheel = wheelOf(withPinion)
+    expect(Math.max(...ys)).toBeCloseTo(wheel.maxY, 1)
+    expect(Math.min(...ys)).toBeCloseTo(wheel.minY, 1)
+  })
+})
+
 describe('a wheel that carries its own pinion', () => {
   const carrier: GearSpec = {
     ...base, module: 4, teeth: 48, bore: 8, hubDia: 24, spokes: 5,

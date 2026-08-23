@@ -15,7 +15,7 @@ const read = (spec = DEFAULT_CLOCK_SPEC) => clockReadout(spec, base, stock, len)
 describe('the clock readout', () => {
   it('reports every section and one row per part', () => {
     const r = read()
-    expect(r.sections.map((s) => s.title)).toEqual(['Pendulum', 'Going train', 'Weight drive', 'Parts'])
+    expect(r.sections.map((s) => s.title)).toEqual(['Pendulum', 'Going train', 'Weight drive', 'Tooth size', 'Parts'])
     expect(r.rows.length).toBeGreaterThan(0)
     expect(r.rows.every((row) => row.name.length > 0)).toBe(true)
   })

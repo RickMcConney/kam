@@ -15,7 +15,6 @@ import { regenerateAffected, regenerateAffectedMany } from '../cam/regenerate'
 import { flattenPath } from '../cam/pathFlattener'
 import type { ImportedPath, PathUpdate } from '../store/pathsStore'
 import type { PathEditGesture } from '../timeline/events'
-import { useTimelineStore } from '../timeline/timelineStore'
 import { useUIStore } from '../store/uiStore'
 import { nextPathColor } from '../importers/svgImporter'
 import { importFile } from '../io/importFile'
@@ -1472,15 +1471,6 @@ export default function CanvasStage() {
     if (updates.length) {
       batchUpdatePaths(updates, gesture)
       regenerateAffectedMany(pathIds)
-      // Open the Properties panel's transform editor for the chip this just
-      // wrote/merged into — otherwise it only appears after a later,
-      // unrelated timeline click (bugs.md-style gap: nothing surfaces it the
-      // first time a transform chip exists).
-      const tl = useTimelineStore.getState()
-      const ev = tl.events[tl.cursor - 1]
-      if (ev && ev.kind === 'paths.edit' && ev.updates.every((u) => u.transforms?.length)) {
-        useUIStore.getState().setTransformEditEventId(ev.id)
-      }
     }
   }, [])
 

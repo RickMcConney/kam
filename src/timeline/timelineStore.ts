@@ -10,7 +10,7 @@ import { useTabStore, type Tab } from '../store/tabStore'
 import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import type { WorkpieceEventChanges } from './events'
-import { applyTransformSteps, consolidateSteps, gestureForSteps, getBBox, getMultiBBox, type BBox, type TransformStep } from '../canvas/selectionUtils'
+import { consolidateSteps, getBBox } from '../canvas/selectionUtils'
 
 // The operation timeline: an append-only event log ("the program") with a
 // cursor. Every project mutation records one TimelineEvent; undo/redo and the
@@ -104,22 +104,6 @@ function trimHistory(events: TimelineEvent[]): number {
 
 export function stateSnapshotAt(seq: number): Snapshot | undefined { return stateAt[seq] }
 
-// Bounding box of the given paths' geometry BEFORE event `seq` (i.e. as of
-// seq-1) — the stable reference a transform chip's editor uses as the
-// default pivot for a scale/rotate/skew step it's introducing for the first
-// time. Deliberately NOT the paths' current/live bbox: that moves every time
-// an existing field (dx/dy in particular) is edited, which would make a
-// freshly-introduced step's pivot drift on every render — the exact
-// instability this function exists to avoid.
-export function bboxBeforeEvent(seq: number, pathIds: string[]): BBox | null {
-  const before = stateAt[seq - 1]
-  if (!before) return null
-  const ds = pathIds.flatMap((id) => {
-    const p = before.paths.find((pp) => pp.id === id)
-    return p ? [p.d] : []
-  })
-  return getMultiBBox(ds)
-}
 
 export interface RecordMeta {
   label?: string
@@ -220,7 +204,6 @@ interface TimelineState {
   // not its current state — so this stays a true in-place edit of that one
   // historical step rather than stacking a new transform on top. Returns
   // false when the event isn't a transform-recipe paths.edit event.
-  amendTransformSteps: (eventId: string, steps: TransformStep[]) => boolean
   undo: () => void
   redo: () => void
   canUndo: () => boolean
@@ -765,40 +748,6 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
       return true
     }
     return false
-  },
-
-  amendTransformSteps: (eventId, steps) => {
-    const s = get()
-    const idx = s.events.findIndex((ev) => ev.id === eventId)
-    if (idx === -1) return false
-    const ev = s.events[idx]
-    if (ev.kind !== 'paths.edit' || ev.updates.length === 0 || !ev.updates.every((u) => u.transforms?.length)) {
-      return false
-    }
-    // Recompute each path from its state just BEFORE this event (not its
-    // current/live state) — the recipe is being edited in place, not
-    // stacked, so it must recompose against the same base it always did.
-    const before = stateAt[ev.seq - 1]
-    if (!before) return false   // predates this session's history
-    const beforeById = new Map(before.paths.map((p) => [p.id, p]))
-    const updates = ev.updates.map((u) => {
-      const bp = beforeById.get(u.id)
-      if (!bp) return u // path didn't exist yet at this point — leave untouched
-      const r = applyTransformSteps(bp, steps)
-      return { ...u, d: r.d, shapeParams: r.shapeParams, ...(r.name !== undefined ? { name: r.name } : {}), transforms: steps }
-    })
-    // The chip's kind/label must track what the steps actually are now —
-    // e.g. mirroring a plain Move chip from the editor makes it a Transform
-    // chip, same as if that mirror had been dragged in originally.
-    const gesture = gestureForSteps(steps)
-    const amended: TimelineEvent = { ...ev, updates, gesture, label: labelFor({ ...ev, gesture }) }
-    const events = [...s.events]
-    events[idx] = amended
-    set({ events, ...(s.savedSeq >= ev.seq ? { savedSeq: -1 } : {}) })
-    // This event is currently applied (its effects are part of live state) —
-    // re-derive from here so the canvas reflects the edit immediately.
-    if (ev.seq <= s.cursor) restoreStateAt(s.cursor, events)
-    return true
   },
 
   undo: () => get().goTo(get().cursor - 1),

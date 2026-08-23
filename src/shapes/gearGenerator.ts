@@ -108,6 +108,13 @@ export interface GearSpec {
    *  reference, not a cut: the app has no non-cutting path, so split the
    *  compound path and drop this subpath before generating. */
   pitchCircle: boolean
+  /** Draw the HUB as a circle of its own. Off for a gear drawn by hand — the
+   *  spoke windows already show where the web ends — and on for a clock's drive
+   *  wheel, whose hub is the DRUM the cord winds against and so is a diameter
+   *  worth cutting to rather than inferring. It is the SEATED hub, so when the
+   *  wheel has had to grow it past what was asked, this circle is the one the
+   *  cord will really ride on. */
+  hubCircle?: boolean
 }
 
 export type ToothProfile = 'involute' | 'cycloidal'
@@ -843,7 +850,29 @@ function toothedOutline(
   const ring = cyc
     ? cycloidalRing({ m, z, backlash, ...cyc })
     : toothedRing(m, z, alpha, backlash)
-  const rings = roundConcave([ring], ROOT_FILLET * m)
+  // THE ROOT FILLET IS CAPPED BY THE SPACE IT HAS TO SIT IN, and only a
+  // cycloidal wheel can hit that cap.
+  //
+  // `roundConcave` is a closing, so its disc has to be able to ENTER the tooth
+  // space at all — past `2f > width` it jams at the mouth and fills the whole
+  // slot from the pitch line down, which is the escape wheel's gullet lesson
+  // over again. On an involute wheel the space is `π·m/2`-ish and scales with
+  // the module, so `0.38·m` (the rack tip radius) always fits. A LANTERN'S space
+  // does not scale: the tooth is cut to `π·m − pin Ø − backlash`, so the space is
+  // the PIN plus the backlash, an absolute figure. Take the module up with a
+  // fixed pin and the disc outgrows the slot — a 30t Ø5 10-pin pair went solid
+  // between the teeth above m6.97 (`2 × 0.38m > 5.3`), and the pins then fouled
+  // by 2 mm on a wheel whose outline still looked entirely reasonable. It only
+  // came up once tooth size started tapering per mesh; at one module for the
+  // whole clock the pin was always a sensible fraction of it.
+  //
+  // 0.45 leaves the disc a tenth of the slot's width clear, and is not binding
+  // on any pair where the pin is a normal fraction of the pitch — every gear
+  // cut before this is byte-identical.
+  const fillet = cyc
+    ? Math.min(ROOT_FILLET * m, 0.45 * (Math.max(0.1, cyc.pinDia) + Math.max(0, backlash)))
+    : ROOT_FILLET * m
+  const rings = roundConcave([ring], fillet)
   if (TOOTH_CACHE.size >= TOOTH_CACHE_MAX) TOOTH_CACHE.delete(TOOTH_CACHE.keys().next().value!)
   TOOTH_CACHE.set(key, rings)
   return rings
@@ -1154,12 +1183,31 @@ export function pinionLabel(spec: GearSpec): GearLabel | null {
   return d ? { d, text, sizeMM } : null
 }
 
-/** Where the pinion is drawn — clear of the wheel, along +X. */
+/**
+ * Where the pinion is drawn — clear of the wheel, along +X, and TOP-ALIGNED
+ * with it rather than sharing its centre line.
+ *
+ * Two discs side by side on one centre line come closest exactly along that
+ * line, so the daylight between them IS the horizontal gap and nothing more.
+ * Offset the smaller one so their tops are level and the centres are
+ * `√(dx² + dy²)` apart instead of `dx`, which buys clearance for free: the
+ * cutter has to travel between two curved walls, and at the pinch point it was
+ * getting only `PINION_GAP` of it. Nothing about the PAIR changes — the pinion
+ * is drawn clear of the wheel either way and the centre distance a plate is
+ * drilled from is reported, never measured off the drawing.
+ *
+ * It costs no stock: the cheek is smaller than the wheel on any normal count, so
+ * the wheel still sets the bounding box and the whole group is the same height.
+ */
 function pinionCentre(spec: GearSpec): { cx: number; cy: number } {
   const m = Math.max(0.05, spec.module)
   const p = pinionDims(spec)!
   const raWheel = gearDims(m, spec.teeth, spec.pressureAngle, spec.backlash, cycOf(spec)).outsideDia / 2
-  return { cx: spec.cx + raWheel + p.cheekDia / 2 + Math.max(2, PINION_GAP * m), cy: spec.cy }
+  const cheekR = p.cheekDia / 2
+  return {
+    cx: spec.cx + raWheel + cheekR + Math.max(2, PINION_GAP * m),
+    cy: spec.cy + raWheel - cheekR,
+  }
 }
 
 /** Cheek outline and pin holes, placed clear of the wheel. */
@@ -1202,7 +1250,7 @@ function pinionParts(spec: GearSpec): GearPart[] {
 }
 
 /** A gear's parts, each of which wants its OWN operation. */
-export type GearPartKey = 'teeth' | 'spokes' | 'bore' | 'arborpins' | 'label' | 'pitch' | 'pinion' | 'pinholes' | 'pinionbore' | 'pinionpitch' | 'pinionlabel'
+export type GearPartKey = 'teeth' | 'spokes' | 'bore' | 'hub' | 'arborpins' | 'label' | 'pitch' | 'pinion' | 'pinholes' | 'pinionbore' | 'pinionpitch' | 'pinionlabel'
 
 export interface GearPart {
   key: GearPartKey
@@ -1267,6 +1315,17 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
   // Open strokes, already in place — its own path because it is engraved, not
   // profiled, and because a user who does not want it deletes one path.
   const label = gearLabel(spec)
+  // The hub as its own circle, when asked. It has to be its own part because
+  // nothing else draws it reliably: the spoke windows imply it, but only where
+  // there IS a window — take a wheel to a spoke count whose windows come out as
+  // slivers and the fillets eat the inner arc entirely, and a solid wheel has no
+  // window at all. For the drive wheel that circle is the drum, so inferring it
+  // from whatever the spokes happen to leave is not good enough.
+  if (spec.hubCircle) {
+    const hubR = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0).dia / 2
+    if (hubR > boreR + 0.25) out.push({ key: 'hub', d: ringToD(place(ellipseRing(0, 0, hubR, hubR)), false) })
+  }
+
   if (label) out.push({ key: 'label', d: label.d })
 
   // A reference, not a cut — see GearSpec.pitchCircle. Its own path so it can be

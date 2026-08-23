@@ -33,7 +33,7 @@ export type ShapeParams =
   // `arborPins`/`arborPinCircleDia`/`arborPinDia`: the lantern pinion this wheel
   // CARRIES on its own arbor — its pins go through the wheel's hub. Optional, and
   // absent on every gear drawn by hand; see GearSpec.
-  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; hubCircle?: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | {
       type: 'escapement'; cx: number; cy: number
@@ -95,7 +95,7 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   heart: { curveRadius: 15, angle: 90 },
   slot: { length: 40, width: 15 },
   shield: { w: 40, h: 50 },
-  spirograph: { radius: 25, ratio: 3.0769, p: 2.0769 },  // 40/13 — a 13-turn rosette, pen on the centre
+  spirograph: { radius: 25, ratio: 7, p: 6 },  // a 7-lobe rosette with the pen on the centre (p = loops−1)
   maze: { w: 150, h: 150, spacing: 12, corner: 4, seed: 1, loops: 0 },  // 12 mm pitch = 6 mm walls under a 6 mm ball
   board: {
     w: 350, h: 250, shape: 'rect', corner: 25,
@@ -164,46 +164,42 @@ function f(n: number): string { return String(+n.toFixed(4)) }
 // that selects the pattern. R and r are derived from those, so size and pattern
 // move independently and canvas scaling only touches `radius`.
 //
+// **THE RATIO IS A WHOLE NUMBER, AND IT IS THE LOOP COUNT.** θ closes the curve
+// after r/gcd(R,r) turns, so a fractional ratio in lowest terms num/den takes
+// `den` turns to close — a 40/13 draws thirteen laps of the ring, interleaving
+// thirteen sets of lobes, and the number the user typed says nothing about what
+// comes out. An integer N closes in ONE turn with exactly N lobes, so the
+// control means what it shows: `ratio` IS the loop count. That also removes the
+// point budget's whole problem — one turn instead of up to sixty — and with it
+// the continued-fraction rationalizer that used to derive the turn count.
+//
 // Emitted as a polyline — there is no closed form in arcs/béziers, and the CAM
 // pipeline flattens everything to polylines anyway.
 
-const SPIRO_MAX_TURNS = 60
-const SPIRO_MAX_POINTS = 6000
-const SPIRO_MIN_RATIO = 1.001   // r < R, or the wheel doesn't roll
+const SPIRO_MIN_RATIO = 2       // r = R/2 is the smallest wheel that draws lobes
+const SPIRO_MAX_RATIO = 360
+// Max chord deviation, mm. Matched to `flattenPath`'s own default tolerance:
+// every consumer downstream — CAM, bbox, the canvas — re-flattens at 0.1 mm, so
+// a polyline emitted finer than that is points nothing will ever look at.
+const SPIRO_TOL = 0.1
+const SPIRO_MIN_PER_LOOP = 12   // steps per lobe, so a tiny lobe still reads as one
+const SPIRO_MAX_POINTS = 4000   // hard ceiling, only reached by an extreme loop count
 
-// Best rational approximation of x, by continued fraction, stopping as soon as
-// it is within `tol` relative — NOT at a fixed denominator. A spirograph ratio
-// is a gear ratio, so the number the user means is a modest fraction (7/2, 40/13)
-// that a typed decimal only approximates; expanding to a fixed precision instead
-// would read 3.0769 as 10243/3329 rather than the 40/13 it stands for.
-function rationalize(x: number, tol = 1e-4): { num: number; den: number } {
-  let h0 = 0, h1 = 1, k0 = 1, k1 = 0, v = x
-  for (let i = 0; i < 24; i++) {
-    const a = Math.floor(v)
-    const h2 = a * h1 + h0, k2 = a * k1 + k0
-    if (!isFinite(h2) || !isFinite(k2)) break
-    h0 = h1; h1 = h2; k0 = k1; k1 = k2
-    if (Math.abs(h1 / k1 - x) <= tol * x) break
-    const frac = v - a
-    if (frac < 1e-12) break
-    v = 1 / frac
-  }
-  return { num: h1, den: k1 || 1 }
+// The one place the whole-number rule lives, so no caller can disagree about
+// what a stored ratio means. Old projects carry fractional ratios (the default
+// was 40/13) and are rounded here rather than migrated — `d` is stored, so an
+// untouched path keeps its curve and only a re-edit re-cuts it.
+export function spirographLoops(ratio: number): number {
+  const n = Math.round(ratio)
+  return Math.max(SPIRO_MIN_RATIO, Math.min(SPIRO_MAX_RATIO, Number.isFinite(n) ? n : SPIRO_MIN_RATIO))
 }
 
-// θ closes the curve after r/gcd(R,r) turns — which for R/r = num/den in lowest
-// terms is just `den`. Capped, so a ratio that never truly closes (an irrational
-// one, or a fraction in absurdly low terms) gets a long-but-finite curve instead
-// of an infinite one.
-export function spirographTurns(ratio: number): number {
-  const { den } = rationalize(Math.max(ratio, SPIRO_MIN_RATIO))
-  return Math.max(1, Math.min(SPIRO_MAX_TURNS, den))
-}
+export const SPIRO_RATIO_RANGE = { min: SPIRO_MIN_RATIO, max: SPIRO_MAX_RATIO }
 
 // Ring and wheel radii behind a given drawn size — shown in the panel so the
 // numbers a physical spirograph set is labelled with are still visible.
 export function spirographRadii(radius: number, ratio: number, p: number): { R: number; r: number } {
-  const k = 1 / Math.max(ratio, SPIRO_MIN_RATIO)   // r/R
+  const k = 1 / spirographLoops(ratio)   // r/R
   // outer radius = (R−r) + p·r = R(1 − k(1−p)), solved for R. The bracket stays
   // positive for every p ≥ 0, so an arm past the rim is well defined.
   const R = Math.max(0.1, radius) / (1 - k * (1 - Math.max(0, p)))
@@ -214,38 +210,42 @@ export function spirographRadii(radius: number, ratio: number, p: number): { R: 
 // inner radius (R−r) − p·r hits zero at p = (R−r)/r = ratio−1. Ratio-dependent,
 // so the panel shows it rather than making the user hunt for it.
 export function spirographCentrePen(ratio: number): number {
-  return Math.max(ratio, SPIRO_MIN_RATIO) - 1
+  return spirographLoops(ratio) - 1
 }
 
 function spirographD(cx: number, cy: number, radius: number, ratio: number, p0: number): string {
   const p = Math.max(0, p0)
+  const loops = spirographLoops(ratio)
   const { R, r } = spirographRadii(radius, ratio, p)
   const A = R - r         // the wheel's centre orbits at this radius
   const B = p * r         // pen offset from the wheel's centre
-  const freq = A / r      // wiggles per turn — i.e. ratio − 1
-  const thetaMax = spirographTurns(ratio) * 2 * Math.PI
+  const freq = A / r      // wiggles per turn — i.e. loops − 1
+  const thetaMax = 2 * Math.PI   // an integer ratio closes in exactly one turn
 
   const px = (t: number) => cx + A * Math.cos(t) + B * Math.cos(freq * t)
   const py = (t: number) => cy + A * Math.sin(t) - B * Math.sin(freq * t)
-  // |dP/dθ|, which swings widely along the curve (to zero at a cusp) — stepping
-  // by it keeps the chord length roughly constant instead of the θ increment.
-  const speed = (t: number) => Math.hypot(
-    -A * Math.sin(t) - B * freq * Math.sin(freq * t),
-     A * Math.cos(t) - B * freq * Math.cos(freq * t)
+  // |d²P/dθ²|. A chord spanning Δt bulges from the curve by |P''|·Δt²/8, so
+  // solving that for SPIRO_TOL sizes each step by the curvature under it —
+  // fine through a cusp, coarse along a near-straight run. The old sampler
+  // stepped by SPEED instead, holding the CHORD LENGTH constant, which spends
+  // exactly as many points on a lazy outer sweep as on a tight cusp and had no
+  // tolerance in it at all: the budget was the tolerance, so it always emitted
+  // its full 6000 points however simple the curve.
+  const accel = (t: number) => Math.hypot(
+    -A * Math.cos(t) - B * freq * freq * Math.cos(freq * t),
+    -A * Math.sin(t) + B * freq * freq * Math.sin(freq * t)
   )
 
-  // Coarse arc length first, so the chord tolerance can be sized to land under
-  // the point budget rather than blowing it on a 60-turn curve.
-  let len = 0
-  const N = 512
-  for (let i = 0; i < N; i++) len += speed(((i + 0.5) / N) * thetaMax) * (thetaMax / N)
-  const chord = Math.max(0.05, len / SPIRO_MAX_POINTS)
-  const minStep = thetaMax / (SPIRO_MAX_POINTS * 3)
+  const maxStep = (2 * Math.PI) / Math.max(1, loops * SPIRO_MIN_PER_LOOP)
+  const minStep = thetaMax / SPIRO_MAX_POINTS
 
   const pts: string[] = []
   for (let t = 0; t < thetaMax; ) {
     pts.push(`${pts.length === 0 ? 'M' : 'L'}${f(px(t))},${f(py(t))}`)
-    t += Math.min(Math.max(chord / Math.max(speed(t), 1e-6), minStep), 0.1)
+    // maxStep first, then minStep — so the point ceiling is the LAST word and an
+    // extreme loop count gives up steps-per-lobe rather than the budget.
+    const step = Math.sqrt((8 * SPIRO_TOL) / Math.max(accel(t), 1e-9))
+    t += Math.max(Math.min(step, maxStep), minStep)
   }
   return pts.join(' ') + ' Z'
 }

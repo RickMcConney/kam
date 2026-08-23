@@ -259,10 +259,56 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         // arrangement away — and a rotate cleared them outright, which took the
         // part out of the group for good. Neither now happens: the definition
         // is untouched and the offset from it is remembered.
-        if (p.shapePart !== undefined && isPlacementOnly(upd.transforms)) {
+        //
+        // A SINGLE parametric shape takes the same road, and the rule for it is
+        // that PARAMETERS ARE NEVER LOST TO A GESTURE. `shapeParams: null` used
+        // to mean "throw them away"; it now means only "the parameters could
+        // not absorb this step" — a rotate, a skew, a mirror, or a stretch of
+        // something with no aspect ratio to stretch — and the step SPILLS into
+        // the placement recipe instead. The definition goes on regenerating
+        // from the parameters and the recipe carries it back out to where the
+        // shape actually sits, so a spirograph that has been turned, stretched
+        // and dragged still opens with its loop count and still has it applied.
+        //
+        // Absorbing is preferred wherever it works, because it is what keeps
+        // the panel's own fields live: a plain drag moves x/y, and a scale a
+        // shape CAN express changes its size (a gear's module, a rectangle's
+        // W/H). Once a placement exists, repositioning must fold into it rather
+        // than splitting across the two — leaving the recipe's pivots in
+        // coordinates the parameters had since moved out of would throw the
+        // shape across the stock on the next parameter edit.
+        //
+        // A path with NO parameters — a pen path, an imported outline — records
+        // its transforms here too, and that is the whole of what makes the
+        // properties panel's Transform section work the same way for every
+        // path. Nothing regenerates such a path (there is no definition to
+        // regenerate FROM, so `d` stays baked and `applyPlacementD` is never
+        // called on it), which makes this a RECORD rather than a recipe. It is
+        // still the only place the answer to "how far is this turned?" exists:
+        // without it a rotated pen path reports 0°, because a rotation baked
+        // into a polyline is unrecoverable from the polyline.
+        const spilled = upd.shapeParams === null && p.shapeParams !== undefined
+        const reposition = (upd.transforms?.length ?? 0) > 0 && (
+          spilled
+          || p.shapeParams === undefined
+          || (isPlacementOnly(upd.transforms) &&
+              (p.shapePart !== undefined || (p.placement?.length ?? 0) > 0))
+        )
+        if (reposition) {
           newPath.placement = foldPlacement(p, upd.transforms!)
         } else if (upd.shapeParams !== undefined) {
           newPath.shapeParams = upd.shapeParams ?? undefined
+          // The PLACEMENT IS NOT CLEARED WITH THEM. It was, on the reasoning
+          // that a recipe with no definition left to carry is dead weight —
+          // true while only a parametric shape had one, and wrong now that a
+          // path without parameters keeps its placement as the RECORD of how far
+          // it has been turned. Chamfering a rotated rectangle is exactly that
+          // case: `d` is rewritten and the parameters go (a chamfered rectangle
+          // is no longer {x,y,w,h}), but the rectangle is still standing at 37°
+          // and the record is the only place that number exists — cleared, the
+          // panel read 0° under a visibly rotated shape. Nothing re-applies it,
+          // so a `d` rewrite cannot put it out of step with the geometry; only a
+          // gesture that actually turns the path changes what it says.
         }
         // Corner treatments are a recipe over an untreated outline, so they
         // survive exactly as long as that outline still describes this path:
@@ -279,6 +325,13 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
             ? { baseD, treatments: upd.corner.map((c) => [c.idx, { type: c.type, radiusMM: c.radiusMM }]) }
             : undefined
         } else if (p.corners && upd.transforms?.length) {
+          // Still moved with the path, even though the transform is now ALSO
+          // recorded in the placement. Nothing applies a non-parametric path's
+          // placement (see above — it is a record, not a recipe), so the corner
+          // form re-cuts straight from this base and writes `d` itself; leaving
+          // the base behind would put a re-chamfered rectangle back where it was
+          // first drawn. Pinned by `a move carries the base outline with it` in
+          // scripts/corner-recipe-check.mts.
           newPath.corners = transformCorners(p.corners, upd.transforms)
         } else if (p.corners && upd.d !== p.d) {
           newPath.corners = undefined
@@ -333,6 +386,19 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       const byPart = new Map(siblings.map((p) => [p.shapePart!, p]))
       const updates: PathUpdate[] = []
       const add: ImportedPath[] = []
+      // The placement the WHOLE group shares, if it shares one — a gear turned
+      // 37° gives every part the same recipe, and a part that appears mid-edit
+      // has to be turned with them or the spokes come back lying flat inside a
+      // rotated rim. Only when they ALL agree: once a part has been dragged off
+      // on its own the group has no single answer, and inheriting one part's
+      // displacement would drop the new part wherever that one was moved to.
+      const groupPlacement = (() => {
+        if (siblings.length === 0) return undefined
+        const first = JSON.stringify(siblings[0].placement ?? null)
+        return siblings.every((p) => JSON.stringify(p.placement ?? null) === first)
+          ? siblings[0].placement
+          : undefined
+      })()
       for (const pt of parts) {
         const existing = byPart.get(pt.part)
         // Generated geometry is where the definition NOMINALLY puts this part;
@@ -341,7 +407,8 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         // stepped.
         if (existing) updates.push({ id: existing.id, d: applyPlacementD(pt.d, existing.placement), shapeParams: params })
         else add.push({
-          id: uid('shape'), name: `${self.groupName ?? self.name} ${pt.label}`, d: pt.d,
+          id: uid('shape'), name: `${self.groupName ?? self.name} ${pt.label}`,
+          d: applyPlacementD(pt.d, groupPlacement), placement: groupPlacement,
           visible: true, color: self.color, shapeParams: params, shapePart: pt.part,
           groupId: self.groupId, groupName: self.groupName,
           // A part that appears mid-edit (spokes turned back on) belongs to the
@@ -390,7 +457,11 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       }
       return
     }
-    const d = generateShapeD(params)
+    // Same rule as the multi-part branch above: what `generateShapeD` returns is
+    // where the DEFINITION puts the shape, and the placement recipe is what
+    // carries it out to where it actually sits — so a rotated spirograph stays
+    // rotated when its loop count is stepped.
+    const d = applyPlacementD(generateShapeD(params), self?.placement)
     set((s) => ({
       paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
     }))

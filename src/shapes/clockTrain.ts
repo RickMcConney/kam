@@ -37,12 +37,13 @@
 // it but the cord.
 
 import { getMultiBBox } from '../canvas/selectionUtils'
-import { gearDims, gearMesh, pinionDims } from './gearGenerator'
+import { gearDims, gearHub, gearMesh, pinionDims } from './gearGenerator'
 import { escapementDims, escapementPose } from './escapementGenerator'
 import {
   generateShapeParts, translateShapeParams,
   type ShapeParams, type ShapeToolConfig,
 } from './shapeGenerators'
+import { clamp } from './polyOps'
 
 /** mm/s². The pendulum length is only as good as this, so it is stated once. */
 export const G_MM = 9806.65
@@ -105,6 +106,48 @@ export function linkAngleAt(angles: number[] | undefined, i: number): number {
   return (deg * Math.PI) / 180
 }
 
+/** Ratio between one mesh's module and the next one toward the escapement.
+ *  Applied from the GREAT wheel on — see `solveModules`. */
+export const MODULE_TAPER = 0.8
+/** Largest wheel a default clock may cut — a board's width, near enough. */
+export const MAX_WHEEL_DIA = 280
+/** What a root fillet is cut with, for the reach warning. A cycloidal root is
+ *  filled at `0.38·m` like an involute one, so below about m4.2 a 1/8" bit
+ *  leaves more material in the root than the drawing shows — which for a lantern
+ *  is not cosmetic, since the pin has to reach into that space. */
+export const CLOCK_ROOT_BIT_DIA = 25.4 / 8
+/** The fraction of a mesh's circular pitch a pin wants to be. Used only to pick
+ *  between the clock's two dowel sizes, so it needs to be about right rather
+ *  than exact: a lantern pin is roughly half the tooth SPACE, and the space is
+ *  roughly a third of the pitch once the wheel's tooth has taken its share. */
+export const PIN_PITCH_FRACTION = 0.35
+
+/** Which of the clock's two dowels suits a mesh of this module — whichever
+ *  lands nearer `PIN_PITCH_FRACTION` of its circular pitch. A tie goes to the
+ *  larger, that being the stronger pin. Only asked of the SLOW end: see
+ *  `LIGHT_PIN_MESHES`. */
+export function pinForPitch(module: number, large: number, small: number): number {
+  const want = PIN_PITCH_FRACTION * Math.PI * Math.max(0.05, module)
+  return Math.abs(large - want) <= Math.abs(small - want) ? large : small
+}
+
+/** How many meshes at the FAST end are pinned small whatever their pitch would
+ *  suggest — the last two, which are the lanterns carried by the third wheel and
+ *  the escape wheel.
+ *
+ *  Fitting the pin to the pitch is a strength argument, and at the fast end
+ *  strength is not what is scarce: torque has fallen by the whole train ratio, so
+ *  those pins carry almost nothing, while their INERTIA is what the escapement
+ *  has to start and stop twice a second. A fat pin there is weight in the worst
+ *  place. Nothing is risked by going thin, either — the tooth is
+ *  `π·m − pin Ø − backlash`, so a smaller pin only ever leaves MORE tooth. */
+export const LIGHT_PIN_MESHES = 2
+
+/** Default arbor spacing for the motion work, mm — a module of 4 at the classic
+ *  10/30 and 8/32 counts, which is what a size-2 motion work came to on the old
+ *  one-module m4 clock. */
+export const MOTION_CENTRE_MM = 80
+
 export interface ClockSpec {
   /** Seconds per beat — HALF the pendulum's period, and the number a clock is
    *  actually described by ("a seconds pendulum"). Sets the pendulum length. */
@@ -124,29 +167,59 @@ export interface ClockSpec {
   minPins: number
   /** Minutes per revolution of the great wheel. 60 puts the minute hand on it. */
   greatWheelMin: number
-  /** Tooth size for the whole going train, mm. */
-  module: number
+  /** LEGACY — one tooth size for the whole going train, mm. Clocks designed
+   *  before per-mesh modules carry this and no `maxWheelDia`; they are read as a
+   *  UNIFORM family at this module, so an old project opens cutting exactly what
+   *  it always cut. Nothing writes it any more. */
+  module?: number
+  /** The biggest wheel this clock may cut, mm — a board's width, near enough,
+   *  and the one number a maker actually has. Tooth size is scaled to it rather
+   *  than chosen: see `solveModules`. Absent on an older clock, which falls back
+   *  to `module`. */
+  maxWheelDia?: number
+  /** Ratio between one mesh's module and the next one toward the escapement.
+   *  0.8 makes each mesh a fifth finer than the one before it, which is what a
+   *  real clock does — torque falls by the mesh ratio at every step. 1 is
+   *  uniform. Absent reads as MODULE_TAPER, or as 1 on a legacy clock. */
+  toothTaper?: number
+  /** Tooth sizes the user is HOLDING, one per mesh, drive end first — the same
+   *  idea as `lockedTeeth`. A held mesh is taken out of the fit and may exceed
+   *  `maxWheelDia`, which the readout says rather than this quietly overruling
+   *  a number someone typed. */
+  lockedModules?: (number | null)[]
   /** Play at every mesh, mm at the pitch line — tooth THINNING, not a wider
    *  centre distance (see gearGenerator). One figure for the whole clock: it is
    *  a property of how the wheels are cut, and setting it per wheel meant
    *  opening five chips to change one decision. */
   backlash: number
-  /** Every lantern pinion's pin diameter, mm. On a cycloidal wheel this is a
-   *  tooth-FORM parameter — the wheel's face is the epicycloid of the pin circle
-   *  offset inward by the pin radius — so it belongs with the module rather than
-   *  on each wheel: a clock whose wheels disagree about it has wheels cut for
-   *  pins that are not in it. */
+  /** The LARGER of the two pin diameters, mm — what the coarse end of the train
+   *  is pinned with. On a cycloidal wheel this is a tooth-FORM parameter — the
+   *  wheel's face is the epicycloid of the pin circle offset inward by the pin
+   *  radius — so a wheel and the lantern it drives must agree about it. */
   pinDia: number
+  /** The SMALLER pin, for the fine end. Two sizes rather than one because the
+   *  tooth is `π·m − pin Ø − backlash` and the pin is an absolute dowel: one
+   *  that suits the great wheel is most of the tooth space at the escape end,
+   *  and one that suits the escape end rattles in the great wheel's. Each mesh
+   *  takes whichever of the two better suits its own circular pitch — see
+   *  `pinForPitch`. Absent on a clock designed before there were two, which
+   *  reads as `pinDia` for every mesh and so cuts what it always cut. */
+  pinDiaFine?: number
   /** Cut the MOTION WORK too — the two extra wheels that drive an hour hand off
    *  the minute arbor at 12:1 (see `solveMotionWork`). Optional, and absent on a
    *  clock designed before it existed, which reads as off. */
   motionWork?: boolean
-  /** k in the motion work's `P₁ = 5k / P₂ = 4k` family — the ONE free number in
-   *  it, since the ratios and the equal centre distance fix everything else. 2 is
-   *  the classic 10/30 + 8/32; each step up makes both wheels and the arbor
-   *  spacing half as big again, which is how the minute wheel's stud is moved
-   *  out clear of a big great wheel. Absent on an older clock: reads as
-   *  MOTION_SIZE. */
+  /** How far the minute wheel's stud stands from the minute arbor, mm — ONE
+   *  distance, both of the motion work's meshes running at it. It is the number
+   *  that moves the stud clear of a big great wheel, and the number a plate is
+   *  drilled from, which is why it is stated in millimetres rather than as the
+   *  `k` of the count family it used to be: with the counts fixed at the classic
+   *  10/30 and 8/32, `C = 10·k·m` makes the MODULE the thing that falls out of a
+   *  distance, and k stepped it in 50 mm jumps. Absent on an older clock, where
+   *  `motionSize` and the clock's one module say the same thing. */
+  motionCentreMM?: number
+  /** LEGACY — k in the old `P₁ = 5k / P₂ = 4k` family. Read only to recover
+   *  `motionCentreMM` for a clock designed before there was one. */
   motionSize?: number
   /** Hours the clock should run on one wind. */
   runHours: number
@@ -175,17 +248,22 @@ export const DEFAULT_CLOCK_SPEC: ClockSpec = {
   escapeTeeth: 30,
   minPins: 12,
   greatWheelMin: 60,
-  // Module 4 for the cutter, not the gear — see DEFAULT_SHAPE_CONFIG.gear.
-  module: 4,
+  // Sized to the board rather than to a module: the wheels come out as big as
+  // 280 mm allows, tapering toward the escapement.
+  maxWheelDia: MAX_WHEEL_DIA,
+  toothTaper: MODULE_TAPER,
   // The Gear defaults' own figures, so a clock starts where a hand-drawn gear
   // does; both are now editable in one place for the whole train.
   backlash: 0.3,
-  pinDia: 5,
+  // Two dowels out of the drawer: the fat one for the coarse end of the train,
+  // the thin one for the fine end.
+  pinDia: 6,
+  pinDiaFine: 3,
   // Off: a clock is a going train, and the hands are a thing you add to one.
   motionWork: false,
-  // = MOTION_SIZE, which is declared with the rest of the motion work below —
-  // the classic 10/30 + 8/32.
-  motionSize: 2,
+  // 80 mm between the minute arbor and the stud, which at the classic 10/30 and
+  // 8/32 is a module of 4 — what a size-2 motion work came to on the old m4 clock.
+  motionCentreMM: MOTION_CENTRE_MM,
   // A day's run off a metre of fall on a 40 mm drum: about eight turns of cord,
   // so the drive wheel wants roughly 3:1 onto the great wheel.
   runHours: 24,
@@ -413,6 +491,148 @@ export function solveDrive(spec: ClockSpec, minPins: number): DriveSolution {
   }
 }
 
+// ─── Tooth size: one module per MESH, tapering toward the escapement ──────────
+//
+// THE CLOCK HAS NO SINGLE MODULE, and the reason is that one module makes wheel
+// diameter `m × z` — with `z` forced by the rate — so nothing about how big the
+// wheels come out is anyone's choice. The default train (48/48/45 at m4) is
+// three ~200 mm wheels on a 300 mm board for exactly that reason.
+//
+// A mesh only requires that its OWN two members share a module: the wheel's face
+// is the epicycloid of the lantern's pin circle, and that circle is the pinion's
+// pitch circle at the mesh's module. Nothing couples one mesh to the next, so
+// each may have its own. There is no gear cutter here — a router follows an
+// outline — so the usual reason to standardise on one pitch does not apply.
+//
+// TOOTH SIZE FALLS TOWARD THE ESCAPEMENT, which is what a real clock does and is
+// about load rather than looks: torque drops by the mesh ratio at every step, so
+// the drive end carries some sixty times the escape end's. One module leaves the
+// great wheel's teeth marginal for their load or the escape wheel's needlessly
+// coarse for theirs. `toothTaper` is the ratio between one mesh's module and the
+// next along (0.8 = each mesh a fifth finer than the one before it; 1 = uniform,
+// which is what every clock designed before this did).
+//
+// The family is then SCALED so the biggest wheel just fits `maxWheelDia` — the
+// one number a maker actually has, being the width of the board. `outsideDia` is
+// NOT linear in the module (an absolute pin diameter and the cycloidal
+// addendum's `2ρ` cap both break it), so this bisects rather than dividing.
+
+export interface MeshModule {
+  /** Tooth size at this mesh, mm. */
+  module: number
+  /** Which of the clock's two dowels this mesh is pinned with. */
+  pinDia: number
+  /** Outside diameter of the wheel it cuts, mm — what has to fit the stock. */
+  wheelDia: number
+  /** Thickness of a tooth at the pitch line: `π·m − pin Ø − backlash`. The pin
+   *  is absolute, so a fine mesh runs out of tooth before it runs out of room. */
+  toothMM: number
+  /** The user pinned this one; it is outside the fitted family. */
+  locked: boolean
+}
+
+export interface ModuleFamily {
+  /** One per mesh, DRIVE END FIRST: drive→great, great→second, second→third,
+   *  third→escape. Always 4 long for the standard five-arbor clock. */
+  meshes: MeshModule[]
+  /** Index of the mesh whose wheel set the scale by hitting `maxWheelDia`, or
+   *  −1 when every mesh was pinned. */
+  binding: number
+}
+
+/** Context a mesh needs before its wheel can be measured. */
+interface ModuleCtx {
+  pressureAngle: number; backlash: number
+  /** The two dowels; `pinForPitch` picks between them per mesh. */
+  pinDia: number; pinDiaFine: number
+}
+
+/**
+ * Per-mesh tooth size for a solved train.
+ *
+ * `meshes` is drive-end first. `locked[i]`, when a finite number, pins that
+ * mesh and takes it out of the fit — a pinned mesh may therefore exceed
+ * `maxWheelDia`, which the readout reports rather than this silently overruling.
+ */
+export function solveModules(
+  meshes: readonly Mesh[],
+  maxWheelDia: number,
+  taper: number,
+  ctx: ModuleCtx,
+  locked?: (number | null)[],
+): ModuleFamily {
+  const t = Number.isFinite(taper) ? clamp(taper, 0.3, 1) : MODULE_TAPER
+  const cap = Math.max(10, Number.isFinite(maxWheelDia) ? maxWheelDia : MAX_WHEEL_DIA)
+  const large = Math.max(0.1, ctx.pinDia)
+  const small = Math.max(0.1, Math.min(ctx.pinDiaFine, large))
+
+  const diaAt = (m: number, mesh: Mesh, pin: number) =>
+    gearDims(m, mesh.teeth, ctx.pressureAngle, ctx.backlash,
+      { mateTeeth: mesh.pins, pinDia: pin }).outsideDia
+
+  const pinnedAt = (i: number) => {
+    const v = locked?.[i]
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+  }
+
+  // THE TAPER STARTS AT THE GREAT WHEEL, so mesh 0 and mesh 1 share a module.
+  // The drive wheel exists to carry the weight drum and set the running time; it
+  // meshes with the great arbor's lantern and nothing else, and there is no load
+  // case that wants its teeth COARSER than the great wheel's — the great wheel
+  // is what the weight acts through. Tapering from the drive end instead made it
+  // the biggest wheel in the clock, for nothing, and it is the one wheel whose
+  // hub is not free (see the drum).
+  const rel = meshes.map((_, i) => Math.pow(t, Math.max(0, i - 1)))
+  const free = meshes.map((_, i) => i).filter((i) => pinnedAt(i) === null)
+
+  // Pin choice depends on the module and the module fit depends on the pin (a
+  // cycloidal addendum is cut for the pin it runs against), so this is a small
+  // fixed point rather than one pass. It settles in two or three rounds; the
+  // cap is only there so a pathological case cannot spin.
+  let pins = meshes.map(() => large)
+  let k = 1
+  for (let round = 0; round < 5; round++) {
+    if (free.length > 0) {
+      const fits = (kk: number) => free.every((i) => diaAt(kk * rel[i], meshes[i], pins[i]) <= cap)
+      let lo = 0.01, hi = 200
+      if (fits(hi)) lo = hi
+      else {
+        for (let n = 0; n < 60; n++) {
+          const mid = (lo + hi) / 2
+          if (fits(mid)) lo = mid; else hi = mid
+        }
+      }
+      k = lo
+    }
+    const next = meshes.map((_, i) => {
+      if (i >= meshes.length - LIGHT_PIN_MESHES) return small
+      const m = pinnedAt(i) ?? Math.max(0.05, k * rel[i])
+      return pinForPitch(m, large, small)
+    })
+    if (next.every((p, i) => p === pins[i])) break
+    pins = next
+  }
+
+  let binding = -1
+  let worst = -Infinity
+  const out = meshes.map((mesh, i) => {
+    const pinned = pinnedAt(i)
+    const module = pinned ?? Math.max(0.05, k * rel[i])
+    const pinDia = pins[i]
+    const wheelDia = diaAt(module, mesh, pinDia)
+    if (pinned === null) {
+      const slack = cap - wheelDia
+      if (-slack > worst) { worst = -slack; binding = i }
+    }
+    return {
+      module, pinDia, wheelDia,
+      toothMM: Math.PI * module - pinDia - Math.max(0, ctx.backlash),
+      locked: pinned !== null,
+    }
+  })
+  return { meshes: out, binding }
+}
+
 // ─── The motion work ──────────────────────────────────────────────────────────
 //
 // The two extra wheels that drive the HOUR HAND off the minute arbor at 12:1.
@@ -448,10 +668,13 @@ export function solveDrive(spec: ClockSpec, minPins: number): DriveSolution {
 /** The 12:1 split, and it is forced rather than chosen — see above. */
 export const MOTION_RATIOS: readonly [number, number] = [3, 4]
 
-/** k in the P₁ = 5k / P₂ = 4k family. 2 is the smallest that gives both pinions
- *  enough pins to be worth calling lanterns (8 and 10); 1 would ask for a
- *  four-pin one. A field, if anyone ever wants the motion work a size up. */
+/** k in the P₁ = 5k / P₂ = 4k family — FIXED at 2, the classic 10/30 and 8/32.
+ *  1 would ask for a four-pin pinion, and above 2 the counts only get bigger for
+ *  no gain now that the SIZE of the motion work is set by its centre distance:
+ *  with the counts fixed, `C = 10·k·m` makes the module fall out of the distance,
+ *  which is a continuum where k was a 50 mm staircase. */
 export const MOTION_SIZE = 2
+
 
 export interface MotionWork {
   /** Pins on the cannon pinion — the driver, fixed to the minute arbor. */
@@ -463,24 +686,56 @@ export interface MotionWork {
   /** Teeth on the hour wheel it drives, back on the minute arbor. */
   hourTeeth: number
   /** Minute arbor to intermediate arbor. ONE number: both meshes run at it, and
-   *  that is the whole constraint the counts satisfy. */
+   *  that is the whole constraint the counts satisfy. It is now the INPUT, and
+   *  the module below is what falls out of it. */
   centreDistanceMM: number
+  /** Tooth size, mm — `2C/(P+T)`, i.e. `C/(10k)`. The motion work is cut at its
+   *  own module rather than the great wheel's: it meshes with nothing in the
+   *  train (the cannon pinion is fixed TO the arbor, not geared to it), so the
+   *  only thing its tooth size has to satisfy is its own two meshes. */
+  module: number
+  /** Pin diameter for both of its lanterns — the clock's SMALL dowel. The motion
+   *  work drives the hands and a cannon-pinion clutch, which is next to no load
+   *  at all, so there is nothing here wanting the fat pin; and its module comes
+   *  from a distance a maker chose for clearance rather than for strength, so
+   *  the fat pin would just as likely be most of the tooth space. */
+  pinDia: number
+  /** Thickness of a tooth at the pitch line, `π·m − pin Ø − backlash`. */
+  toothMM: number
   /** 12, by construction — stated so a caller can check rather than trust. */
   ratio: number
 }
 
-export function solveMotionWork(module: number, size = MOTION_SIZE): MotionWork {
-  const m = Math.max(0.05, module)
-  const k = Math.max(1, Math.round(size))
+/**
+ * The motion work for a given arbor spacing.
+ *
+ * The counts are forced (see above) and fixed at the classic 10/30 and 8/32, so
+ * `C = m(P+T)/2 = 10·k·m` leaves exactly one free number — and stating it as the
+ * DISTANCE rather than as `k` is what makes it a continuum instead of a 50 mm
+ * staircase. It is also the number the plate is drilled from and the number that
+ * moves the stud clear of a big great wheel, which is what anyone is actually
+ * reaching for when they change it.
+ */
+export function solveMotionWork(
+  centreDistanceMM: number, pinDia: number, backlash = 0,
+): MotionWork {
+  const k = MOTION_SIZE
   const [r1, r2] = MOTION_RATIOS
   const cannonPins = 5 * k
   const minutePins = 4 * k
   const minuteTeeth = r1 * cannonPins
   const hourTeeth = r2 * minutePins
+  const C = Math.max(1, Number.isFinite(centreDistanceMM) ? centreDistanceMM : MOTION_CENTRE_MM)
+  // m(P+T)/2 = C either way round — the equality is the point, and it is what
+  // makes ONE distance serve both meshes.
+  const module = (2 * C) / (cannonPins + minuteTeeth)
+  const pin = Math.max(0.1, pinDia)
   return {
     cannonPins, minuteTeeth, minutePins, hourTeeth,
-    // m(P+T)/2 either way round — the equality is the point.
-    centreDistanceMM: (m * (cannonPins + minuteTeeth)) / 2,
+    centreDistanceMM: C,
+    module,
+    pinDia: pin,
+    toothMM: Math.PI * module - pin - Math.max(0, backlash),
     ratio: (minuteTeeth / cannonPins) * (hourTeeth / minutePins),
   }
 }
@@ -521,6 +776,8 @@ export type ClockBase = Pick<ShapeToolConfig, 'gear' | 'escapement' | 'pendulum'
 export interface ClockDesign {
   train: TrainSolution
   drive: DriveSolution
+  /** Tooth size at every mesh, drive end first — what replaced the one module. */
+  modules: ModuleFamily
   pendulumMM: number
   escRevSeconds: number
   /** The hour-hand gearing, when it was asked for. */
@@ -545,13 +802,78 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   const train = solveTrain(trainRatio(spec), spec.minPins, spec.lockedTeeth)
   const drive = solveDrive(spec, spec.minPins)
 
+  // Every mesh in the going train, DRIVE END FIRST — which is the order tooth
+  // size tapers in, and the order `solveModules` expects.
+  const meshChain: Mesh[] = [
+    { teeth: drive.teeth, pins: drive.pins },
+    ...train.meshes,
+  ]
+  // A clock designed before per-mesh modules carries `module` and no
+  // `maxWheelDia`. Read it as a UNIFORM family at that module — pinning every
+  // mesh is exactly what "one module for the whole train" means — so an old
+  // project opens cutting what it always cut, rather than being silently
+  // resized by a `maxWheelDia` it never had. Same trap as `linkAngles`.
+  const legacy = spec.maxWheelDia === undefined && Number.isFinite(spec.module)
+  const modules = solveModules(
+    meshChain,
+    spec.maxWheelDia ?? MAX_WHEEL_DIA,
+    legacy ? 1 : (spec.toothTaper ?? MODULE_TAPER),
+    {
+      pressureAngle: base.gear.pressureAngle,
+      backlash: Math.max(0, spec.backlash ?? base.gear.backlash),
+      pinDia: Math.max(0.1, spec.pinDia ?? base.gear.pinDia),
+      // Absent on a clock designed before there were two, and then every mesh
+      // gets the same pin — which is what it was cut with.
+      pinDiaFine: Math.max(0.1, spec.pinDiaFine ?? spec.pinDia ?? base.gear.pinDia),
+    },
+    legacy ? meshChain.map(() => spec.module!) : spec.lockedModules,
+  )
+  const mod = (i: number) => modules.meshes[i].module
+
   // Everything the TRAIN forces on a wheel, over the user's own Gear defaults.
   // Backlash and pin diameter are in that list rather than left to the defaults
   // because they are decisions about the CLOCK: every mesh in it runs on the
   // same play, and every lantern is pinned with the same rod — and on a
   // cycloidal wheel the pin diameter shapes the teeth, so wheels disagreeing
   // about it are cut for pins that are not in the clock.
-  const pinDia = Math.max(0.1, spec.pinDia ?? base.gear.pinDia)
+  const pin = (i: number) => modules.meshes[i].pinDia
+
+  // THE DRIVE WHEEL'S HUB IS THE DRUM, so it is the one hub in the clock that may
+  // not be grown: the run time was worked out from that diameter, and a hub wider
+  // than it puts the cord against the hub instead. `seatHub` treats `hubDia` as a
+  // FLOOR and raises it to seat the spokes — right for every other wheel, and
+  // exactly backwards here — so the drive wheel gives up SPOKES instead, taking
+  // the most it can seat within the drum.
+  //
+  // It bit as soon as tooth size started tapering. Spokes are `2.5·m` wide and
+  // the drive wheel is now the COARSEST mesh in the clock, so its spokes went
+  // from 10 mm to 17.5 mm on the default board and the hub floor nearly doubled:
+  // at 6 spokes it swallowed the drum outright, which reads as the drum simply no
+  // longer being drawn (nothing emits a hub circle of its own — the spoke windows
+  // are what makes it visible).
+  // `seatHub` takes the largest of three floors — the drum, the stock the arbor
+  // needs round it, and what the spokes need to land on — and only the last of
+  // those depends on the COUNT. So the rule is: give up spokes until they stop
+  // being the binding one. Where the drum is reachable that lands exactly on it;
+  // where it is not (a coarse enough wheel needs `HUB_RING · spokeW` round the
+  // bore whatever the count) it lands as close as the wheel allows, and the
+  // readout says the cord will ride against the hub. Most spokes at that
+  // minimum, not fewest — nothing is gained by dropping further.
+  const spokesInDrum = (module: number, teeth: number, wanted: number): number => {
+    const drum = Math.max(0, spec.drumDia)
+    const bore = base.gear.bore
+    const want = Math.max(0, Math.round(wanted))
+    if (want < 2) return want
+    let best = Infinity
+    let pick = want
+    for (let n = 2; n <= want; n++) {
+      const h = gearHub(module, teeth, bore, drum, n)
+      if (!h.spoked) continue
+      if (h.dia < best - 0.05) { best = h.dia; pick = n }
+      else if (h.dia <= best + 0.05) pick = n          // same hub, more spokes
+    }
+    return isFinite(best) ? pick : want
+  }
 
   // `pins` is the lantern this wheel DRIVES, on the next arbor; `carries` is the
   // one standing on its OWN arbor, driven by the wheel before it. The wheel is
@@ -559,10 +881,28 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   // to hold them, and the loose cheek emitted by the previous wheel caps the far
   // ends. One part fewer per arbor, and the pins cannot creep round the wheel
   // the way a pinion glued to an arbor can.
-  const wheel = (teeth: number, pins: number, carries = 0): ClockShapeParams => ({
+  //
+  // TWO MODULES REACH A WHEEL, and they are not the same one. `module` is this
+  // wheel's OWN mesh — its teeth against the lantern it drives. `carriedModule`
+  // belongs to the mesh BEFORE it, because the pins through this wheel's hub are
+  // the lantern that the previous wheel drives, and that pin circle is the
+  // previous mesh's pitch circle. They were the same number while a clock had one
+  // module; with a taper they never are, and using this wheel's own would put the
+  // pins on a circle no wheel is cut for.
+  //
+  // THE PIN COMES WITH THE MESH, exactly as the module does — a clock has two
+  // dowel sizes now, and a wheel cut for the fat one will not run on the thin
+  // one (a cycloidal face is the epicycloid of the pin circle offset by the pin
+  // RADIUS). So `pinDia` is this wheel's own mesh's, and `arborPinDia` — the
+  // holes drilled through its hub — is the PREVIOUS mesh's, matching the circle
+  // they sit on.
+  const wheel = (
+    module: number, teeth: number, pins: number, pinDia: number,
+    carries = 0, carriedModule = module, carriedPinDia = pinDia,
+  ): ClockShapeParams => ({
     type: 'gear', cx: 0, cy: 0,
     ...base.gear,
-    module: spec.module,
+    module,
     teeth,
     toothProfile: 'cycloidal',
     mateTeeth: pins,
@@ -571,10 +911,8 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
     emitPinion: true,
     ...(carries >= 2 ? {
       arborPins: carries,
-      // The carried pinion's PITCH circle — m·P — since both meshes are cut to
-      // the same module here.
-      arborPinCircleDia: spec.module * carries,
-      arborPinDia: pinDia,
+      arborPinCircleDia: carriedModule * carries,
+      arborPinDia: carriedPinDia,
     } : {}),
   })
 
@@ -589,7 +927,26 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   // the great arbor rather than along the train. Its ratio is 12 whatever the
   // great wheel does, so a great wheel not turning once an hour makes the hour
   // hand wrong — which the readout says, since nothing here can fix it.
-  const motion = spec.motionWork ? solveMotionWork(spec.module, spec.motionSize ?? MOTION_SIZE) : null
+  // The motion work hangs off the GREAT ARBOR, so it is cut at the great
+  // wheel's own module — mesh 1. It meshes with nothing in the train (the cannon
+  // pinion is fixed TO the arbor, not geared to it), so this is a choice rather
+  // than a constraint; matching its neighbour is the one that needs no field.
+  // Its spacing is a distance now. A clock designed before that says the same
+  // thing as `k` against the module it was cut at, which for such a clock is the
+  // one module the whole train shared — so `10·k·m` recovers it exactly.
+  const motionCentre = spec.motionCentreMM
+    ?? (spec.motionSize !== undefined ? 10 * spec.motionSize * mod(1) : MOTION_CENTRE_MM)
+  // The SMALL dowel, both meshes. The motion work turns the hands through a
+  // cannon-pinion clutch — next to no load — so nothing here wants the fat pin,
+  // and its module comes from a clearance distance rather than from strength, so
+  // a fat pin would as likely as not be most of the tooth space.
+  const motion = spec.motionWork
+    ? solveMotionWork(
+        motionCentre,
+        Math.max(0.1, spec.pinDiaFine ?? spec.pinDia ?? base.gear.pinDia),
+        Math.max(0, spec.backlash ?? base.gear.backlash),
+      )
+    : null
 
   const parts: ClockPart[] = [
     {
@@ -603,11 +960,21 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
       // readout reports, since then the cord would ride against the hub.
       key: 'drive', name: 'Drive Wheel',
       revSeconds: greatActual * (drive.teeth / drive.pins),
-      params: { ...wheel(drive.teeth, drive.pins), hubDia: Math.max(0, spec.drumDia) },
+      params: {
+        ...(wheel(mod(0), drive.teeth, drive.pins, pin(0)) as Extract<ClockShapeParams, { type: 'gear' }>),
+        hubDia: Math.max(0, spec.drumDia),
+        spokes: spokesInDrum(mod(0), drive.teeth, base.gear.spokes),
+        // …and drawn as a circle of its own, because it is the DRUM. Nothing
+        // else draws it reliably — the spoke windows imply the hub, but only
+        // where there is a window, and a solid wheel or a sliver-windowed one
+        // leaves no circle at all. It is a diameter the run time was worked out
+        // from, so it is worth cutting to rather than inferring.
+        hubCircle: true,
+      },
     },
     {
       key: 'great', name: 'Great Wheel', revSeconds: greatActual,
-      params: wheel(m1.teeth, m1.pins, drive.pins),
+      params: wheel(mod(1), m1.teeth, m1.pins, pin(1), drive.pins, mod(0), pin(0)),
     },
     // In CLOCK_PART_ORDER position: straight after the wheel whose arbor they
     // hang off. Each is emitted with the lantern it MESHES with, exactly as a
@@ -620,16 +987,17 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
         // emitted lantern is their cheek.
         key: 'minute' as const, name: 'Minute Wheel',
         revSeconds: greatActual * (motion.minuteTeeth / motion.cannonPins),
-        params: wheel(motion.minuteTeeth, motion.cannonPins, motion.minutePins),
+        params: wheel(motion.module, motion.minuteTeeth, motion.cannonPins, motion.pinDia,
+          motion.minutePins, motion.module, motion.pinDia),
       },
       {
         key: 'hour' as const, name: 'Hour Wheel',
         revSeconds: greatActual * motion.ratio,
-        params: wheel(motion.hourTeeth, motion.minutePins),
+        params: wheel(motion.module, motion.hourTeeth, motion.minutePins, motion.pinDia),
       },
     ] : []),
-    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(m2.teeth, m2.pins, m1.pins) },
-    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(m3.teeth, m3.pins, m2.pins) },
+    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(mod(2), m2.teeth, m2.pins, pin(2), m1.pins, mod(1), pin(1)) },
+    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(mod(3), m3.teeth, m3.pins, pin(3), m2.pins, mod(2), pin(2)) },
     {
       key: 'escapement', name: 'Escapement', revSeconds: escRev,
       params: {
@@ -640,8 +1008,8 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
         // and it is the one wheel that cannot work the pin circle out for
         // itself, having no module of its own.
         arborPins: m3.pins,
-        arborPinCircleDia: spec.module * m3.pins,
-        arborPinDia: pinDia,
+        arborPinCircleDia: mod(3) * m3.pins,
+        arborPinDia: pin(3),
       },
     },
     // Last, and on no arbor at all — it hangs from the anchor. Its LENGTH is the
@@ -659,7 +1027,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   ]
 
   return {
-    train, drive, parts, motion,
+    train, drive, parts, motion, modules,
     pendulumMM: pendulumLengthMM(spec.beatSeconds),
     escRevSeconds: escRev,
   }
@@ -676,6 +1044,15 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
  * one edge and trailing off the bottom. Centred, the block straddles the middle
  * whatever it does not fit.
  *
+ * THE PENDULUM IS NOT PACKED WITH THEM — it stands beside the stock. A seconds
+ * pendulum is 994 mm of rod against a 300 mm board, so packed in it took a row
+ * of its own a metre tall and pushed the entire train off the top of the stock
+ * on its way to centring the block: the one part that will never be cut from
+ * this board decided where every wheel went. It is not stock-sized furniture
+ * and there is nothing to gain by pretending it is, so it is set to the RIGHT
+ * of the board, hanging down from the top edge the way it hangs in the clock,
+ * and the wheels are then centred on the stock without it.
+ *
  * They are placed CLEAR of each other, never at their true centre distances —
  * these are parts to be cut, and two wheels drawn in mesh would overlap on the
  * stock. The spacings a plate is drilled from are reported by the panel instead.
@@ -689,10 +1066,16 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
  */
 export function layoutClock(
   parts: ClockPart[],
-  centre: { x: number; y: number },
-  maxWidth: number,
+  stock: { widthMM: number; heightMM: number },
+  margin: number,
   gap: number,
 ): ClockPart[] {
+  // The stock occupies [0,w]×[0,h] in path space whatever the XY origin says —
+  // `originWorldXY` is a display and G-code offset applied on the way out, and
+  // subtracting it here would move the whole clock by −origin.
+  const centre = { x: stock.widthMM / 2, y: stock.heightMM / 2 }
+  const maxWidth = Math.max(50, stock.widthMM - 2 * margin)
+
   const measured = parts.map((p) => {
     const geo = generateShapeParts(p.params)
     const box = geo ? getMultiBBox(geo.map((g) => g.d)) : null
@@ -700,11 +1083,13 @@ export function layoutClock(
   })
 
   type Item = (typeof measured)[number]
+  const packed = measured.filter((m) => m.part.key !== 'pendulum')
+
   interface Row { items: Item[]; w: number; h: number }
   const rows: Row[] = []
   let row: Row = { items: [], w: 0, h: 0 }
 
-  for (const m of measured) {
+  for (const m of packed) {
     const w = m.box ? m.box.maxX - m.box.minX : 0
     const h = m.box ? m.box.maxY - m.box.minY : 0
     const would = row.items.length === 0 ? w : row.w + gap + w
@@ -719,23 +1104,44 @@ export function layoutClock(
   if (row.items.length > 0) rows.push(row)
 
   const totalH = rows.reduce((t, r) => t + r.h, 0) + gap * Math.max(0, rows.length - 1)
-  let top = centre.y + totalH / 2      // rows stack DOWNWARD from the block's top edge
+  // Rows stack DOWNWARD from the block's top edge. Centred when the block fits,
+  // but a block TALLER than the stock starts at the top edge and trails off the
+  // bottom instead of straddling: five m4 wheels are 200 mm each on a 300 mm
+  // board, so centred, the first row sat entirely ABOVE the stock and the last
+  // entirely below it — the arrangement that gets the FEWEST of them onto the
+  // board. From the top edge, everything that fits is on it and the rest hangs
+  // off one end where it can be seen and dragged.
+  let top = Math.min(centre.y + totalH / 2, stock.heightMM - margin)
 
-  const out: ClockPart[] = []
+  // Params are at (0,0); shift so the part's bbox lands where we want it.
+  // `translateShapeParams` preserves the variant it is handed — its return type
+  // just cannot say so.
+  const placed = new Map<ClockPart, ClockPart>()
   for (const r of rows) {
     let x = centre.x - r.w / 2
     for (const { part, box } of r.items) {
-      if (!box) { out.push(part); continue }
-      // Params are at (0,0); shift so the part's bbox starts at the cursor and
-      // hangs from the row's top edge. `translateShapeParams` preserves the
-      // variant it is handed — its return type just cannot say so.
+      if (!box) continue
       const moved = translateShapeParams(part.params, x - box.minX, top - box.maxY) as ClockPartParams
-      out.push({ ...part, params: moved })
+      placed.set(part, { ...part, params: moved })
       x += (box.maxX - box.minX) + gap
     }
     top -= r.h + gap
   }
-  return out
+
+  // Beside the board, hanging from the height of its top edge — which is where a
+  // pendulum hangs, and keeps its bob down near the wheels rather than a metre
+  // above them.
+  let asideX = stock.widthMM + margin
+  for (const m of measured) {
+    if (m.part.key !== 'pendulum' || !m.box) continue
+    const moved = translateShapeParams(
+      m.part.params, asideX - m.box.minX, stock.heightMM - m.box.maxY,
+    ) as ClockPartParams
+    placed.set(m.part, { ...m.part, params: moved })
+    asideX += (m.box.maxX - m.box.minX) + gap
+  }
+
+  return parts.map((p) => placed.get(p) ?? p)
 }
 
 // ─── Assembled: where the arbors go, and where everything stands ──────────────
