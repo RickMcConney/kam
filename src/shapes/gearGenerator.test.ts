@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   carriedPinion, generateGearD, generateGearParts, gearDims, gearHub, gearMesh, gearMateParts,
-  gearMeshRefD, gearPose, moduleForRadius, FLANK_TOL, type GearSpec,
+  gearMeshRefD, gearPose, moduleForRadius, FLANK_TOL, __gearRingRaw, type GearSpec,
 } from './gearGenerator'
 import { generateShapeD } from './shapeGenerators'
 import { flattenPath, signedArea } from '../cam/pathFlattener'
@@ -628,5 +628,121 @@ describe('a wheel that carries its own pinion', () => {
     const c = carriedPinion({ ...carrier, arborPinCircleDia: undefined })!
     expect(c.pinCircleDia).toBeCloseTo(4 * 12, 9)
     expect(carriedPinion({ ...carrier, arborPinDia: undefined })!.pinDia).toBe(carrier.pinDia)
+  })
+})
+
+describe('back relief — the cycloidal tooth cut asymmetric', () => {
+  // A clock wheel turns one way, so one flank of each tooth never touches a pin.
+  // `backRelief` replaces that flank with a single arc from part-way across the
+  // tip land down to the root foot, to let the next pin into the space.
+  const cyc: GearSpec = {
+    ...base, module: 4, teeth: 24, backlash: 0.2, bore: 0, hubDia: 0, spokes: 0,
+    toothProfile: 'cycloidal', mateTeeth: 8, pinDia: 5,
+  }
+  const pitch = (2 * Math.PI) / 24
+  /** Angle within its own tooth, in (−pitch/2, pitch/2]; tooth 0 is centred on 0. */
+  const rel = (x: number, y: number) => {
+    const a = ((Math.atan2(y, x) + pitch / 2) % pitch + pitch) % pitch - pitch / 2
+    return a
+  }
+  /** Where the outline crosses radius `r`, one angle per tooth per side. */
+  const crossings = (ring: number[][], r: number, side: 1 | -1): number[] => {
+    const out: number[] = []
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const r1 = Math.hypot(ring[j][0], ring[j][1]), r2 = Math.hypot(ring[i][0], ring[i][1])
+      if ((r1 > r) === (r2 > r)) continue
+      const t = (r - r1) / (r2 - r1)
+      const a = rel(ring[j][0] + t * (ring[i][0] - ring[j][0]), ring[j][1] + t * (ring[i][1] - ring[j][1]))
+      if (Math.sign(a) === side) out.push(a)
+    }
+    return out.sort((p, q) => p - q)
+  }
+
+  it('leaves the acting flank exactly where the symmetric tooth put it', () => {
+    // This is the whole safety of the feature: the face that drives is the true
+    // offset epicycloid and the relief must not touch it. Measured as the angle
+    // the outline crosses each radius at, which is what a pin rides.
+    const sym = __gearRingRaw(cyc)
+    const cut = __gearRingRaw({ ...cyc, backRelief: 1 })
+    for (const r of [48.5, 49, 50, 51, 51.8]) {
+      const a = crossings(sym, r, -1), b = crossings(cut, r, -1)
+      expect(b.length, `acting flank lost at r=${r}`).toBe(a.length)
+      for (let i = 0; i < a.length; i++) expect(b[i]).toBeCloseTo(a[i], 9)
+    }
+  })
+
+  it('never leaves the tooth it was cut from — it can only remove material', () => {
+    // A symmetric back flank is exactly parallel to the approaching pin's own
+    // path, so all a pair has to spare on that side is the backlash: a relief
+    // standing a few hundredths proud of it would eat a sixth of that.
+    // Both rings RAW, before the root-fillet closing: that closing offsets the
+    // whole outline by its own vertex normals twice, so a filleted reference moves
+    // every vertex a little and the comparison would measure the resampling.
+    const sym = __gearRingRaw(cyc) as [number, number][]
+    const dims = gearDims(cyc.module, cyc.teeth, cyc.pressureAngle, cyc.backlash, { mateTeeth: 8, pinDia: 5 })
+    const outside = (x: number, y: number) => {
+      let best = Infinity
+      for (let i = 0, j = sym.length - 1; i < sym.length; j = i++) {
+        best = Math.min(best, ptSegDistSq(x, y, sym[j][0], sym[j][1], sym[i][0], sym[i][1]))
+      }
+      return pointInPolygon(x, y, sym) ? 0 : Math.sqrt(best)
+    }
+    for (const back of [0.25, 0.5, 1]) {
+      for (const [x, y] of __gearRingRaw({ ...cyc, backRelief: back })) {
+        const r = Math.hypot(x, y)
+        // The tip and root circles are common to both outlines, so a point of one
+        // reads as outside the other only by the sagitta of its own chords.
+        if (Math.abs(r - dims.outsideDia / 2) < 1e-6 || Math.abs(r - dims.rootDia / 2) < 1e-6) continue
+        expect(outside(x, y), `relief ${back} adds material at r=${r.toFixed(2)}`).toBeLessThan(1e-6)
+      }
+    }
+  })
+
+  it('carries the tip land to the middle of the tooth at full relief, and no further', () => {
+    // "From the middle of the tooth tip to its base" is what full relief means.
+    const dims = gearDims(cyc.module, cyc.teeth, cyc.pressureAngle, cyc.backlash, { mateTeeth: 8, pinDia: 5 })
+    const ra = dims.outsideDia / 2
+    const backHalf = (back: number) => {
+      let worst = -Infinity
+      for (const [x, y] of __gearRingRaw({ ...cyc, backRelief: back })) {
+        if (Math.hypot(x, y) < ra - 1e-6) continue
+        worst = Math.max(worst, rel(x, y))
+      }
+      return worst
+    }
+    // Symmetric: the land runs a real distance past the centreline.
+    expect(backHalf(0)).toBeGreaterThan(0.01)
+    // Full: it stops ON it, and never crosses to the acting flank's side.
+    expect(backHalf(1)).toBeCloseTo(0, 9)
+    // Half: part-way between the two.
+    expect(backHalf(0.5)).toBeGreaterThan(0)
+    expect(backHalf(0.5)).toBeLessThan(backHalf(0))
+  })
+
+  it('opens the tooth space, which is the point of it', () => {
+    const width = (back: number) => {
+      const ring = __gearRingRaw({ ...cyc, backRelief: back })
+      const a = crossings(ring, 50, 1)[0], b = crossings(ring, 50, -1)[0]
+      return (a - b) * 50                       // tooth thickness 2 mm above pitch
+    }
+    expect(width(1)).toBeLessThan(width(0) - 1)
+  })
+
+  it('mirrors the whole wheel when the acting flank is the other one', () => {
+    // Both flanks are conjugate — one for each direction — so the flag is a
+    // reflection of the wheel and nothing else. Nothing on the drawing says which
+    // is which, which is why `scripts/gear-back-relief-check.mts` runs the mesh.
+    const a = __gearRingRaw({ ...cyc, backRelief: 1, actingSense: -1 })
+    const b = __gearRingRaw({ ...cyc, backRelief: 1, actingSense: 1 })
+    expect(b.length).toBe(a.length)
+    const flipped = a.map(([x, y]) => [x, -y]).reverse()
+    for (let i = 0; i < a.length; i++) {
+      expect(b[i][0]).toBeCloseTo(flipped[i][0], 9)
+      expect(b[i][1]).toBeCloseTo(flipped[i][1], 9)
+    }
+  })
+
+  it('leaves an involute gear alone — relief is a cycloidal tooth form', () => {
+    expect(generateGearD({ ...base, backRelief: 1 })).toBe(generateGearD(base))
   })
 })

@@ -186,6 +186,22 @@ export function clockReadout(
   going(`${pinList.length > 1 ? `Ø${pinList.join(' and Ø')} pins` : `Ø${pinList[0]} pins`} and `
     + `${len(spec.backlash)} of backlash — ${len(play)} of play at each mesh, the wheels being the only `
     + 'half cut to a thickness. Which mesh takes which pin is below.')
+  // BACK RELIEF MAKES A WHEEL HANDED, which is the one thing about it a maker has
+  // to be told: the flank that does not act is cut away for pin clearance, so a
+  // wheel fitted the wrong way round has no acting face at all. Every wheel in a
+  // train alternates, so this cannot be stated as one direction for the clock.
+  const relieved = gears.filter(({ g }) => (g.backRelief ?? 0) > 0)
+  if (relieved.length > 0) going(
+    `Backs of the teeth cut away on ${relieved.length === gears.length ? 'every wheel' : relieved.map((r) => r.name).join(', ')}`
+    + ' for pin clearance, so each wheel runs ONE way only and neighbours turn opposite ways.'
+    + ' Cut side up as drawn, and do not flip a wheel over.')
+  // The two wheels of the motion work are the only ones in a clock the PINS
+  // drive, so their teeth lean the other way from every wheel around them. It
+  // looks like a mistake on the drawing and is not; saying so here is cheaper
+  // than being asked.
+  if (relieved.some(({ g }) => g.drivenByPins)) going(
+    'The motion work is the exception: its cannon pinion DRIVES the minute wheel and its'
+    + ' minute pinion the hour wheel, so those two lean the opposite way from the train.')
   // Named per WHEEL rather than against one module, the clock no longer having
   // one: the wheel knows its own, and the Tooth size section below says which
   // mesh each belongs to.

@@ -33,7 +33,7 @@ export type ShapeParams =
   // `arborPins`/`arborPinCircleDia`/`arborPinDia`: the lantern pinion this wheel
   // CARRIES on its own arbor — its pins go through the wheel's hub. Optional, and
   // absent on every gear drawn by hand; see GearSpec.
-  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; hubCircle?: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief?: number; actingSense?: 1 | -1; drivenByPins?: boolean; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; hubCircle?: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | {
       type: 'escapement'; cx: number; cy: number
@@ -70,7 +70,7 @@ export interface ShapeToolConfig {
     handle: BoardHandle; handleW: number; handleL: number; handleInset: number
     hole: boolean; holeDia: number; groove: boolean; grooveInset: number
   }
-  gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
+  gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief: number; actingSense: 1 | -1; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
   cam: { baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   escapement: {
     escType: EscapementType; teeth: number; wheelDia: number
@@ -109,9 +109,11 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   // hubDia follows: bore + 4·m is the least hub the axle wants, so 8 + 16 = 24.
   // Cycloidal defaults are a clock train, not machinery: 8 pins is a common wooden-
   // clock lantern pinion, and a 5 mm pin (1.25·m here) is a dowel that fits the
-  // 6.3 mm tooth space with room to pass. Inert until the profile is switched.
+  // 6.3 mm tooth space with room to pass. `backRelief` is full, since a clock
+  // wheel turns one way and its back flank does nothing but crowd the pin.
+  // Inert until the profile is switched.
   gear: {
-    module: 4, teeth: 24, toothProfile: 'involute', mateTeeth: 8, pinDia: 5, emitPinion: false,
+    module: 4, teeth: 24, toothProfile: 'involute', mateTeeth: 8, pinDia: 5, backRelief: 1, actingSense: -1, emitPinion: false,
     pressureAngle: 20, bore: 8, hubDia: 24, spokes: 5, backlash: 0.3, toothLabel: true, pitchCircle: false,
   },
   // A workbench cam clamp: Ø40 base with 12 mm of rise gives a 5.5° pressure angle

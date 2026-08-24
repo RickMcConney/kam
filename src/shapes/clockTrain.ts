@@ -896,8 +896,21 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   // RADIUS). So `pinDia` is this wheel's own mesh's, and `arborPinDia` — the
   // holes drilled through its hub — is the PREVIOUS mesh's, matching the circle
   // they sit on.
+  //
+  // Rotation sense per train arbor, off the escapement and alternating back —
+  // exactly what `clockPose` runs on, from the one definition.
+  const senses = trainSenses(base.escapement.clockwise === true)
+  const [sDrive, sGreat, sSecond, sThird] = senses
+  //
+  // WHICH FLANK ACTS IS FORCED BY THE TRAIN, and it is the one thing about back
+  // relief a wheel cannot be left to decide for itself: every mesh reverses the
+  // direction, so half the train turns one way and half the other, and relieving
+  // the wrong flank takes the ACTING face off a tooth that still looks like a
+  // clock wheel and still turns. `senses[k]` is the same alternation `clockPose`
+  // runs, off the escapement, so the drawing and the animation cannot disagree.
   const wheel = (
     module: number, teeth: number, pins: number, pinDia: number,
+    actingSense: 1 | -1,
     carries = 0, carriedModule = module, carriedPinDia = pinDia,
   ): ClockShapeParams => ({
     type: 'gear', cx: 0, cy: 0,
@@ -906,6 +919,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
     teeth,
     toothProfile: 'cycloidal',
     mateTeeth: pins,
+    actingSense,
     backlash: Math.max(0, spec.backlash ?? base.gear.backlash),
     pinDia,
     emitPinion: true,
@@ -961,7 +975,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
       key: 'drive', name: 'Drive Wheel',
       revSeconds: greatActual * (drive.teeth / drive.pins),
       params: {
-        ...(wheel(mod(0), drive.teeth, drive.pins, pin(0)) as Extract<ClockShapeParams, { type: 'gear' }>),
+        ...(wheel(mod(0), drive.teeth, drive.pins, pin(0), sDrive) as Extract<ClockShapeParams, { type: 'gear' }>),
         hubDia: Math.max(0, spec.drumDia),
         spokes: spokesInDrum(mod(0), drive.teeth, base.gear.spokes),
         // …and drawn as a circle of its own, because it is the DRUM. Nothing
@@ -974,7 +988,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
     },
     {
       key: 'great', name: 'Great Wheel', revSeconds: greatActual,
-      params: wheel(mod(1), m1.teeth, m1.pins, pin(1), drive.pins, mod(0), pin(0)),
+      params: wheel(mod(1), m1.teeth, m1.pins, pin(1), sGreat, drive.pins, mod(0), pin(0)),
     },
     // In CLOCK_PART_ORDER position: straight after the wheel whose arbor they
     // hang off. Each is emitted with the lantern it MESHES with, exactly as a
@@ -985,19 +999,36 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
         // Its arbor is the stud, and the pinion on it is the one driving the hour
         // wheel — so the minute wheel carries those pins, and the hour wheel's
         // emitted lantern is their cheek.
+        // ITS ACTING FLANK IS THE OTHER ONE. The pin DRIVES the wheel here — the
+        // only place in a clock where that happens — so the pin bears on the far
+        // side of the tooth from a wheel of the same rotation that is driving.
+        // The sense handed in is therefore the one `motionPose` hands `gearMesh`,
+        // inverted from the wheel's own rotation for exactly the same reason.
+        //
+        // `drivenByPins` cuts nothing and exists so a READOUT can say which way
+        // the wheel turns: with the backs of the teeth cut away these two lean
+        // the opposite way from every other wheel in the clock, and reporting the
+        // acting flank as a rotation had them named backwards.
         key: 'minute' as const, name: 'Minute Wheel',
         revSeconds: greatActual * (motion.minuteTeeth / motion.cannonPins),
-        params: wheel(motion.module, motion.minuteTeeth, motion.cannonPins, motion.pinDia,
-          motion.minutePins, motion.module, motion.pinDia),
+        params: {
+          ...(wheel(motion.module, motion.minuteTeeth, motion.cannonPins, motion.pinDia,
+            sGreat, motion.minutePins, motion.module, motion.pinDia) as Extract<ClockShapeParams, { type: 'gear' }>),
+          drivenByPins: true,
+        },
       },
       {
         key: 'hour' as const, name: 'Hour Wheel',
         revSeconds: greatActual * motion.ratio,
-        params: wheel(motion.module, motion.hourTeeth, motion.minutePins, motion.pinDia),
+        params: {
+          ...(wheel(motion.module, motion.hourTeeth, motion.minutePins, motion.pinDia,
+            sGreat === 1 ? -1 : 1) as Extract<ClockShapeParams, { type: 'gear' }>),
+          drivenByPins: true,
+        },
       },
     ] : []),
-    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(mod(2), m2.teeth, m2.pins, pin(2), m1.pins, mod(1), pin(1)) },
-    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(mod(3), m3.teeth, m3.pins, pin(3), m2.pins, mod(2), pin(2)) },
+    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(mod(2), m2.teeth, m2.pins, pin(2), sSecond, m1.pins, mod(1), pin(1)) },
+    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(mod(3), m3.teeth, m3.pins, pin(3), sThird, m2.pins, mod(2), pin(2)) },
     {
       key: 'escapement', name: 'Escapement', revSeconds: escRev,
       params: {
@@ -1603,7 +1634,6 @@ export function clockPose(
   const n = plate.arbors.length
   const wheelDeg = new Array<number>(n).fill(0)
   const pinionDeg = new Array<number>(n).fill(0)
-  const senses = new Array<1 | -1>(n).fill(1)
 
   const escPart = parts[n - 1]
   const esc = escPart.params.type === 'escapement' ? escapementPose(escPart.params, phase) : { wheelDeg: 0, anchorDeg: 0 }
@@ -1611,17 +1641,17 @@ export function clockPose(
   // The escape pinion, clocked with the escape wheel (free choice, see above).
   pinionDeg[n - 1] = esc.wheelDeg
 
-  // The escape wheel's own sense: `escapementPose` runs a clockwise wheel through
-  // falling angles. Each mesh reverses it, so wheel k turns against wheel k+1.
-  let sense: 1 | -1 = escPart.params.type === 'escapement' && escPart.params.clockwise ? -1 : 1
-  senses[n - 1] = sense
+  const senses = trainSenses(escPart.params.type === 'escapement' && escPart.params.clockwise === true, n)
 
   for (let k = n - 2; k >= 0; k--) {
-    sense = sense === 1 ? -1 : 1
-    senses[k] = sense
     const p = parts[k]
     if (p.params.type !== 'gear') continue
-    const mesh = gearMesh(p.params, sense)
+    // The wheel's OWN `actingSense` in preference to the alternation, because the
+    // two are the same fact and must not be able to disagree: it is the flank the
+    // play is taken up on AND the flank the teeth were cut to act with. It is
+    // stamped from `trainSenses` at design time, so this is the same number — but
+    // a wheel edited on its own, or one out of an older file, states its own.
+    const mesh = gearMesh(p.params, p.params.actingSense ?? senses[k])
     const th = (plate.arbors[k].toNext * 180) / Math.PI
     wheelDeg[k] = th + (mesh.matePhaseDeg + th - pinionDeg[k + 1]) / mesh.ratio
     pinionDeg[k] = wheelDeg[k]
@@ -1673,14 +1703,14 @@ function motionPose(
   // Minute wheel: on the intermediate arbor, its mate (the cannon pinion) lying
   // back along the branch. Driven, so it turns against the great wheel.
   const minuteSense: 1 | -1 = hostSense === 1 ? -1 : 1
-  const mm = gearMesh(motionParts.minute, minuteSense === 1 ? -1 : 1)
+  const mm = gearMesh(motionParts.minute, motionParts.minute.actingSense ?? (minuteSense === 1 ? -1 : 1))
   const thMinute = th + 180
   const minuteDeg = thMinute + (mm.matePhaseDeg + thMinute - cannonDeg) / mm.ratio
 
   // Hour wheel: back on the host arbor, its mate (the pinion beside the minute
   // wheel, clocked with it) out along the branch. Turns with the great wheel
   // again, which is why both hands go round the same way.
-  const hm = gearMesh(motionParts.hour, hostSense === 1 ? -1 : 1)
+  const hm = gearMesh(motionParts.hour, motionParts.hour.actingSense ?? (hostSense === 1 ? -1 : 1))
   const hourDeg = th + (hm.matePhaseDeg + th - minuteDeg) / hm.ratio
 
   return { minuteDeg, hourDeg, cannonDeg }
@@ -1696,6 +1726,28 @@ export const CLOCK_PART_ORDER: ClockPartKey[] =
 /** …and the subset that is the GOING TRAIN, arbor by arbor. The pendulum is on
  *  no arbor, so it is not here: `clockPlate` would try to mesh it. */
 export const TRAIN_PART_ORDER: ClockPartKey[] = ['drive', 'great', 'second', 'third', 'escapement']
+
+/**
+ * Which way each train arbor turns, CCW positive, taken off the escape wheel and
+ * alternated back down the chain — every external mesh reverses it.
+ *
+ * `escapementPose` runs a CLOCKWISE wheel through falling angles, which is where
+ * the −1 comes from. One definition because two things now need it and they must
+ * not disagree: `clockPose` takes up each mesh's play on the flank its own wheel
+ * is pushing, and `designClock` CUTS the teeth to it — a cycloidal tooth with
+ * back relief acts on one flank only, so a wheel handed the wrong sense has its
+ * acting face taken off and nothing errors.
+ */
+export function trainSenses(escClockwise: boolean, n = TRAIN_PART_ORDER.length): (1 | -1)[] {
+  const senses = new Array<1 | -1>(Math.max(1, n)).fill(1)
+  let sense: 1 | -1 = escClockwise ? -1 : 1
+  senses[senses.length - 1] = sense
+  for (let k = senses.length - 2; k >= 0; k--) {
+    sense = sense === 1 ? -1 : 1
+    senses[k] = sense
+  }
+  return senses
+}
 
 /**
  * Gather a clock back out of the document.

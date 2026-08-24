@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   getBBox, getMultiBBox, translateD, scaleAroundD, rotateAroundD, mirrorD, skewAroundD,
   extractCircles, extractRectInfo, isPlacementOnly, gestureForSteps, consolidateSteps,
-  foldPlacement, applyPlacementD, applyTransformSteps, transformPoint, type TransformStep,
+  foldPlacement, applyPlacementD, applyTransformSteps, transformPoint,
+  dragBoxEncloses, wholeGroupsOnly, type TransformStep,
 } from './selectionUtils'
 import type { ImportedPath } from '../store/pathsStore'
 
@@ -330,5 +331,46 @@ describe('transformPoint', () => {
 describe('skewAroundD', () => {
   it('shears about the anchor, leaving points on it fixed', () => {
     expect(skewAroundD(SQ, 0.5, 0, 0, 0)).toBe('M0,0 L10,0 L15,10 L5,10 Z')
+  })
+})
+
+describe('drag-box selection mode', () => {
+  it('takes only what it contains when the box is drawn right to left', () => {
+    expect(dragBoxEncloses({ sx: 300, ex: 100 })).toBe(true)
+    expect(dragBoxEncloses({ sx: 100, ex: 300 })).toBe(false)
+  })
+
+  it('reads x alone, so a box dragged straight down still has an answer', () => {
+    // Off the diagonal there would be no answer for a drag with no x travel, and
+    // the two named gestures (down-right, up-left) agree with x anyway.
+    expect(dragBoxEncloses({ sx: 200, ex: 200 })).toBe(false)
+  })
+})
+
+describe('wholeGroupsOnly', () => {
+  // A group is ONE object, so an enclosing box may only take it when every part
+  // is inside. Expansion runs first, and this takes back what it over-caught.
+  const grouped = (id: string, g?: string) =>
+    asPath(rect, { id, userGroups: g ? [g] : undefined })
+  const paths = [grouped('a', 'G'), grouped('b', 'G'), grouped('c')]
+
+  it('drops a group with a part left outside the box', () => {
+    // 'a' was caught, so expansion pulled 'b' in with it — but 'b' is outside.
+    expect(wholeGroupsOnly(['a', 'b'], [paths[0]], paths)).toEqual([])
+  })
+
+  it('keeps a group whose every part is inside', () => {
+    expect(wholeGroupsOnly(['a', 'b'], [paths[0], paths[1]], paths)).toEqual(['a', 'b'])
+  })
+
+  it('never drops an ungrouped path for a neighbour it has nothing to do with', () => {
+    expect(wholeGroupsOnly(['a', 'b', 'c'], [paths[2]], paths)).toEqual(['c'])
+  })
+
+  it('lets a hidden member out of the running rather than holding its group back', () => {
+    // A hidden path cannot be selected either way, so requiring it to be inside
+    // would make a group with one hidden part impossible to enclose at all.
+    const withHidden = [paths[0], asPath(rect, { id: 'b', userGroups: ['G'], visible: false }), paths[2]]
+    expect(wholeGroupsOnly(['a', 'b'], [withHidden[0]], withHidden)).toEqual(['a', 'b'])
   })
 })

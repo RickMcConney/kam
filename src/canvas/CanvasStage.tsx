@@ -40,7 +40,7 @@ import { SimulationLayer } from './layers/SimulationLayer'
 import SimulationPlayer from '../sim/SimulationPlayer'
 import { useSimStore } from '../store/simStore'
 import { HandleType, LiveTransform , RULER_W, RULER_H } from './types'
-import { getMultiBBox, applyTransformStep, extractCircles, type TransformStep, type CircleInfo } from './selectionUtils'
+import { getMultiBBox, applyTransformStep, extractCircles, dragBoxEncloses, wholeGroupsOnly, type TransformStep, type CircleInfo } from './selectionUtils'
 import type { BBox } from './selectionUtils'
 import {
   generateShapeD,
@@ -1585,8 +1585,19 @@ export default function CanvasStage() {
           const cncMin = screenToCNC(x1, y2, vp)  // y2 is lower on screen = lower CNC y
           const cncMax = screenToCNC(x2, y1, vp)  // y1 is higher on screen = higher CNC y
 
+          // WHICH WAY THE BOX WAS DRAWN CHOOSES WHAT IT CATCHES — the CAD
+          // convention, and the reason for it is that on a crowded drawing the two
+          // questions are genuinely different: "everything this line runs across"
+          // and "these things and nothing they overlap". Drawn rightwards it
+          // catches anything TOUCHED, which is what it always did; drawn back to
+          // the left it catches only what is wholly INSIDE. Taken from x alone,
+          // not from the diagonal, so every drag has an answer — a box dragged
+          // straight down has no other axis to ask, and the hand remembers left
+          // and right rather than a quadrant.
+          const enclose = dragBoxEncloses(dragBox)
+
           const { paths: allPaths } = usePathsStore.getState()
-          const intersecting = allPaths.filter((p) => {
+          const caught = allPaths.filter((p) => {
             if (!onCanvas(p)) return false
             // bbox from the per-path flatten cache (same 0.5 tolerance as
             // getBBox) — box-select over hundreds of paths used to re-flatten
@@ -1599,10 +1610,19 @@ export default function CanvasStage() {
               }
             }
             if (!isFinite(minX)) return false
-            return minX <= cncMax.x && maxX >= cncMin.x && minY <= cncMax.y && maxY >= cncMin.y
+            return enclose
+              ? minX >= cncMin.x && maxX <= cncMax.x && minY >= cncMin.y && maxY <= cncMax.y
+              : minX <= cncMax.x && maxX >= cncMin.x && minY <= cncMax.y && maxY >= cncMin.y
           })
           // Catching part of a group catches all of it — same rule as a click.
-          setSelectedIds(expandUserGroups(intersecting.map((p) => p.id), allPaths))
+          const ids = expandUserGroups(caught.map((p) => p.id), allPaths)
+          // …which is exactly what an ENCLOSING box must not do. A group is ONE
+          // object, so "wholly inside" is a question about the whole of it: expand
+          // first (a group half in the box would otherwise come back as its
+          // enclosed parts, which is not a thing the user can see or click), then
+          // drop any group with a part left outside. Hidden members are not in the
+          // running either way, so they cannot hold a group out of the selection.
+          setSelectedIds(enclose ? wholeGroupsOnly(ids, caught, allPaths) : ids)
         }
       }
       setDragBox(null)
@@ -2087,10 +2107,13 @@ export default function CanvasStage() {
       </Stage>}
 
 
-      {/* Drag-box selection overlay */}
+      {/* Drag-box selection overlay. SOLID means the box takes only what it wholly
+          contains, DASHED that touching is enough — the CAD convention, and the
+          only thing on screen that says which of the two a drag is going to do. */}
       {dragBox && dragBoxStyle && (
         <div
-          className="absolute border border-blue-400 bg-blue-400/10 pointer-events-none"
+          className={`absolute border border-blue-400 bg-blue-400/10 pointer-events-none ${
+            dragBoxEncloses(dragBox) ? '' : 'border-dashed'}`}
           style={dragBoxStyle}
         />
       )}

@@ -69,6 +69,38 @@ export interface GearSpec {
   /** Pin diameter of that lantern pinion, mm. The face is the pin-centre
    *  epicycloid offset by its RADIUS, so this changes the tooth shape. */
   pinDia: number
+  /** Cycloidal only. Cut the BACK of every tooth away as one curve, from part-way
+   *  across the tip land down to the root — see the BACK RELIEF section. A clock
+   *  runs one way only, so only one flank of a tooth ever touches a pin and the
+   *  other is free to be taken back for pin clearance.
+   *
+   *  It is the fraction of the tip land given up: 0 (or absent) leaves the
+   *  symmetric tooth every gear was cut with before this, and 1 starts the back
+   *  face at the MIDDLE of the tip, which is the whole of what can be removed
+   *  without eating the acting face. */
+  backRelief?: number
+  /** Cycloidal only, and only meaningful with `backRelief`: which flank of a tooth
+   *  a pin actually bears on, CCW positive. The relief is cut on the OTHER one, so
+   *  getting this backwards takes the acting face off and nothing errors.
+   *
+   *  −1 (the default) is the flank this generator draws from the true offset
+   *  epicycloid; +1 is its mirror, which is equally conjugate — a symmetric tooth
+   *  runs either way, which is exactly why the bit only starts to matter here.
+   *
+   *  For a wheel that DRIVES its lantern it is the wheel's own direction of
+   *  rotation; for one DRIVEN by pins (a motion work, where the cannon pinion
+   *  drives) it is the opposite, because the pin then bears on the far flank. */
+  actingSense?: 1 | -1
+  /** This wheel is DRIVEN by the pins rather than driving them — a motion work,
+   *  where the cannon pinion is fixed to the arbor and pushes the wheel round.
+   *
+   *  It cuts nothing. `actingSense` is the whole of the geometry; this says which
+   *  way to READ it, and without it a readout cannot: a driven wheel's teeth face
+   *  the opposite way from a driving wheel turning the same way, so reporting the
+   *  acting flank as a direction of rotation is right on four wheels of a clock
+   *  and backwards on the other two. Rotation is `drivenByPins ? −actingSense :
+   *  actingSense`, CCW positive — `gearRotationSense`. */
+  drivenByPins?: boolean
   /** Also emit the mating lantern pinion — its cheek disc and pin holes. Cycloidal
    *  only; the wheel's own parameters already say everything about it. */
   emitPinion: boolean
@@ -546,6 +578,7 @@ function toothedRing(m: number, z: number, alpha: number, backlash: number): Pt[
   const ring: Pt[] = []
   const at = (r: number, a: number) => ring.push([r * Math.cos(a), r * Math.sin(a)])
 
+
   for (let i = 0; i < z; i++) {
     const c = i * pitch
     // Rising flank: root → tip on the −φ side, which runs CCW. Its foot is
@@ -612,11 +645,33 @@ export function cycOf(spec: GearSpec): CycMate | undefined {
   // panel field it belongs to disappears along with it.
   const mateTeeth = Number.isFinite(spec.mateTeeth) ? spec.mateTeeth : 8
   const pinDia = Number.isFinite(spec.pinDia) ? spec.pinDia : 1.25 * Math.max(0.05, spec.module)
-  return { mateTeeth, pinDia }
+  const backRelief = Number.isFinite(spec.backRelief) ? clamp(spec.backRelief!, 0, 1) : 0
+  const actingSense: 1 | -1 = spec.actingSense === 1 ? 1 : -1
+  return { mateTeeth, pinDia, backRelief, actingSense }
 }
 
-/** The lantern pinion a cycloidal wheel is cut for. */
-export interface CycMate { mateTeeth: number; pinDia: number }
+/**
+ * Which way the wheel TURNS, CCW positive — as against which flank acts.
+ *
+ * The two are the same number on a wheel that drives its lantern and opposite on
+ * one the pins drive, and nothing in the geometry distinguishes them: the tooth
+ * is cut to the acting flank either way. So this is the one place the inversion
+ * lives, and any readout naming a direction goes through it.
+ */
+export function gearRotationSense(spec: GearSpec): 1 | -1 {
+  const acting: 1 | -1 = spec.actingSense === 1 ? 1 : -1
+  return spec.drivenByPins ? (acting === 1 ? -1 : 1) : acting
+}
+
+/** The lantern pinion a cycloidal wheel is cut for, plus the two things that make
+ *  its teeth asymmetric. The last two are absent on every gear cut before back
+ *  relief existed, which reads as the symmetric tooth it was. */
+export interface CycMate {
+  mateTeeth: number
+  pinDia: number
+  backRelief?: number
+  actingSense?: 1 | -1
+}
 
 /**
  * Radius of the describing circle: the pinion's FULL pitch radius.
@@ -719,9 +774,95 @@ function cycloidFace(rp: number, rho: number, ra: number, pinR: number): { r: nu
   return out.map(({ p }) => ({ r: rad(p), a: Math.atan2(p[1], p[0]) - a0 }))
 }
 
+// ─── Back relief ──────────────────────────────────────────────────────────────
+//
+// A CLOCK WHEEL TURNS ONE WAY, SO ONLY ONE FLANK OF A TOOTH IS EVER TOUCHED.
+// The other is drawn as the mirror of it only because a gear generator has no
+// reason to know which way the wheel will run — and mirroring it is not free:
+// the back of the tooth stands in the space the NEXT pin has to drop into.
+//
+// A lantern pin does not slide into its space along the tooth; it dives almost
+// radially at the line of centres and the corner it passes closest to is the
+// BACK CORNER OF THE TIP, which is the one part of the tooth that does nothing
+// at all. Traditional clock wheels are cut exactly this way — the acting face an
+// epicycloid, the back of the tooth one plain curve from the tip down to the
+// root, which is what gives a clock wheel its hooked, ratchet-like look.
+//
+// So `backRelief` replaces the whole back flank — mirrored face, radial run and
+// all — with ONE arc, from a point part-way across the tip land down to the foot
+// the radial run used to land on. Two things fix that arc and there is no third
+// parameter:
+//
+//   IT ENDS TANGENT TO THE RADIAL at the foot, so it leaves the root exactly as
+//   the run it replaces did and curves in only as it climbs. That is also the
+//   shape that keeps the tooth THICK where it is loaded: bending stress is at the
+//   root, and the arc hugs the original outline down there and takes its material
+//   from the tip, where the tooth carries nothing.
+//
+//   IT ONLY EVER REMOVES MATERIAL. Leaving the foot along the radial and bending
+//   toward the tooth's centreline from there, the arc stays inside the flank it
+//   replaces — below the pitch line trivially, since that flank is the radial run
+//   itself, and above it against the mirrored epicycloid, which leans in as it
+//   climbs but never as fast. That last part is a sweep result, not a proof: 6400
+//   combinations of module, count, pins, pin size, backlash and relief emit rings
+//   byte-identical with and without a clamp to the mirrored face, so the clamp was
+//   removed. It is worth knowing WHY it matters, because it is not the size of the
+//   number — a symmetric back flank is EXACTLY parallel to the approaching pin's
+//   own path, the two differing by the tooth space at every radius, so all a pair
+//   has to spare on that side is the backlash and a few hundredths would be a
+//   sixth of it. `gear-back-relief-check.mts` measures it on every case.
+//
+// WHICH FLANK IS THE BACK IS A BIT THAT FAILS SILENTLY (`actingSense`). Both
+// flanks are conjugate — one for each direction — so a symmetric wheel runs
+// either way and no mesh check can tell them apart. Relieve the wrong one and the
+// wheel still looks like a clock wheel and still turns; it simply has no acting
+// face left. `scripts/gear-back-relief-check.mts` is what settles it, by running
+// the real mesh at both settings and seeing which one the transmission error
+// survives.
+
+/**
+ * The relieved back of one tooth: the arc from the tip land at `aP` down to the
+ * root foot at `aQ`, tangent to the radial at that foot.
+ *
+ * The circle is determined by the three conditions and solved directly: its
+ * centre lies along the TANGENTIAL direction at the foot (perpendicular to the
+ * radial the arc leaves along), at the distance that makes it equidistant from
+ * both ends. Emitted from just after the tip point through the foot inclusive,
+ * which is the convention `arcInto` uses so the pieces chain.
+ */
+function backReliefArc(ra: number, aP: number, rf: number, aQ: number): Pt[] {
+  const P: Pt = [ra * Math.cos(aP), ra * Math.sin(aP)]
+  const Q: Pt = [rf * Math.cos(aQ), rf * Math.sin(aQ)]
+  const nx = -Math.sin(aQ), ny = Math.cos(aQ)          // tangential at the foot
+  const dx = Q[0] - P[0], dy = Q[1] - P[1]
+  const d2 = dx * dx + dy * dy
+  const nd = nx * dx + ny * dy
+  // Degenerate — the two ends line up with the radial, so there is no arc and a
+  // straight back face is the honest answer.
+  if (d2 < 1e-12 || Math.abs(nd) < 1e-9) return [Q]
+  const s = -d2 / (2 * nd)
+  const cx = Q[0] + s * nx, cy = Q[1] + s * ny
+  const R = Math.abs(s)
+  const a0 = Math.atan2(P[1] - cy, P[0] - cx)
+  const a1 = Math.atan2(Q[1] - cy, Q[0] - cx)
+  let sweep = a1 - a0
+  while (sweep > Math.PI) sweep -= 2 * Math.PI
+  while (sweep < -Math.PI) sweep += 2 * Math.PI
+  // Chord sagitta R·(Δ/2)²/2 held under FLANK_TOL, the same budget the flanks use.
+  const step = 2 * Math.sqrt((2 * FLANK_TOL) / Math.max(R, 1e-6))
+  const n = clamp(Math.ceil(Math.abs(sweep) / step), 4, 400)
+  const out: Pt[] = []
+  for (let i = 1; i <= n; i++) {
+    const a = a0 + (sweep * i) / n
+    out.push([cx + R * Math.cos(a), cy + R * Math.sin(a)])
+  }
+  return out
+}
+
 /** The cycloidal toothed outline, CCW, centred on the origin. */
 function cycloidalRing(spec: CycloidalSpec): Pt[] {
   const { m, z, backlash, mateTeeth, pinDia } = spec
+  const relief = clamp(spec.backRelief ?? 0, 0, 1)
   const rp = (m * z) / 2
   const psi = cycloidalHalfTooth(m, z, backlash, pinDia)
   const pinR = Math.max(0, pinDia) / 2
@@ -739,16 +880,31 @@ function cycloidalRing(spec: CycloidalSpec): Pt[] {
     // Radial run up to the pitch line. Its foot is already on the ring — the
     // previous tooth's root arc ended exactly there — so only the top is pushed.
     at(face[0].r, c - psi)
-    // Rising face, curving toward the tooth's centreline as it climbs.
+    // Rising face, curving toward the tooth's centreline as it climbs. THIS is
+    // the acting one; everything `actingSense` does is decide whether the whole
+    // ring is handed back mirrored.
     for (let k = 1; k < face.length; k++) at(face[k].r, c - psi + face[k].a)
     const tipA = face[face.length - 1].a
-    arcInto(ring, 0, 0, ra, ra, c - psi + tipA, c + psi - tipA)
-    // Falling face, then the radial run down — its foot placed by hand, for the
-    // same reason the involute generator places its own (arcInto skips its start
-    // point, and the root arc's start is not where the flank ended).
-    for (let k = face.length - 2; k >= 0; k--) at(face[k].r, c + psi - face[k].a)
-    at(rf, c + psi)
+    // Where the tip land ends. Relieved, it stops short of the far corner — all
+    // the way at the tooth's centreline when the relief is full.
+    const aBack = c + (psi - tipA) * (1 - relief)
+    arcInto(ring, 0, 0, ra, ra, c - psi + tipA, aBack)
+    if (relief > 0) {
+      for (const q of backReliefArc(ra, aBack, rf, c + psi)) ring.push(q)
+    } else {
+      // Falling face, then the radial run down — its foot placed by hand, for the
+      // same reason the involute generator places its own (arcInto skips its start
+      // point, and the root arc's start is not where the flank ended).
+      for (let k = face.length - 2; k >= 0; k--) at(face[k].r, c + psi - face[k].a)
+      at(rf, c + psi)
+    }
     arcInto(ring, 0, 0, rf, rf, c + psi, c + pitch - psi)
+  }
+  // The mirror through y = 0 is the same wheel run the other way: tooth centres
+  // sit at i·pitch, so reflecting maps tooth i onto tooth z−i and the outline
+  // lands back on itself. Reversed as well as reflected, to stay CCW.
+  if ((spec.actingSense ?? -1) > 0) {
+    return ring.map(([x, y]) => [x, -y] as Pt).reverse()
   }
   return ring
 }
@@ -843,7 +999,7 @@ function toothedOutline(
   // The cycloidal face depends on the mate, so those three go in the key: two
   // gears alike but for the pinion they are cut for have different teeth.
   const key = cyc
-    ? `c|${m}|${z}|${backlash}|${cyc.mateTeeth}|${cyc.pinDia}`
+    ? `c|${m}|${z}|${backlash}|${cyc.mateTeeth}|${cyc.pinDia}|${cyc.backRelief ?? 0}|${cyc.actingSense ?? -1}`
     : `i|${m}|${z}|${alpha}|${backlash}`
   const hit = TOOTH_CACHE.get(key)
   if (hit) return hit

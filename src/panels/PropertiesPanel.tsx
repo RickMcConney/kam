@@ -10,7 +10,7 @@ import { getMultiBBox, applyTransformStep, placementMat, type TransformStep } fr
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { spirographLoops, SPIRO_RATIO_RANGE, scaleShapeParams, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
-import { carriedPinion, gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { carriedPinion, gearDims, gearHub, gearLabel, gearMesh, gearRotationSense, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
 import { camDims } from '../shapes/camGenerator'
 import type { EscapementSpec } from '../shapes/escapementGenerator'
 import EscapementInfoButton from './EscapementInfoButton'
@@ -387,6 +387,14 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
       const mesh = gearMesh(params)
       const running = meshAnimPathId === id
       const rootDeepened = !!cyc && d.rootDia < params.module * (params.teeth - 2.5) - 0.01
+      const relief = Math.round(Math.max(0, Math.min(1, params.backRelief ?? 0)) * 100)
+      // The field is the wheel's ROTATION, which is what a maker knows and what
+      // decides which way up it goes on the arbor. The acting FLANK is the
+      // opposite one where the pins drive, so the two are not interchangeable and
+      // one conversion serves both directions.
+      const driven = !!params.drivenByPins
+      const turnsCW = gearRotationSense(params) === -1
+      const senseFor = (cw: boolean): 1 | -1 => (cw ? -1 : 1) * (driven ? -1 : 1) as 1 | -1
       const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
       // Regenerating a gear REPLACES its paths, so an edit made before the
       // single-stroke face has loaded would drop the number the gear already
@@ -417,6 +425,30 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           ? <EditField label="Pin" valueMM={params.mateTeeth} units="" min={2} integer onChange={(mateTeeth) => updateGear({ ...params, mateTeeth: Math.max(2, Math.round(mateTeeth)) })} />
           : <RawField  label="PA"  value={params.pressureAngle} min={5} max={35} step={0.5} suffix="°" onChange={(pressureAngle) => updateGear({ ...params, pressureAngle })} />}
         {cyc && <EditField label="PØ" valueMM={params.pinDia} units={u} min={0.1} onChange={(pinDia) => updateGear({ ...params, pinDia })} />}
+        {/* The back of each tooth, cut away as one curve from the tip down to the
+            root: a clock wheel turns one way, so that flank never touches a pin and
+            is only in the way of the next one arriving. `Runs` is which way, and it
+            is the risk — relieve the ACTING flank and the wheel still looks and
+            turns like a clock wheel with nothing left to drive with. */}
+        {cyc && <RawField label="Back" value={relief} min={0} max={100} step={10} suffix="%"
+          onChange={(v) => updateGear({ ...params, backRelief: Math.max(0, Math.min(1, v / 100)) })} />}
+        {cyc && relief > 0 && <label className="flex items-center gap-1.5">
+          <span className={labelCls}>Runs</span>
+          <select value={turnsCW ? 'cw' : 'ccw'} className={fieldCls}
+            onChange={(e) => updateGear({ ...params, actingSense: senseFor(e.target.value === 'cw') })}>
+            <option value="cw">CW</option>
+            <option value="ccw">CCW</option>
+          </select>
+        </label>}
+        {/* Whether the pins push this wheel or it pushes them. It cuts nothing —
+            it says which way to read the teeth, and the two motion-work wheels of
+            a clock are the only ones in it that lean the other way. */}
+        {cyc && relief > 0 && <label className="flex items-center gap-1.5 cursor-pointer" title="The pins drive this wheel — a motion work">
+          <span className={labelCls}>Driven</span>
+          <input type="checkbox" checked={driven}
+            onChange={(e) => updateGear({ ...params, drivenByPins: e.target.checked, actingSense: (params.actingSense === 1 ? -1 : 1) })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>}
         {/* The same field, and it means two different things. On a cycloidal
             wheel the mate SHAPES the teeth — the face is conjugate to one
             particular lantern. On an involute gear it changes nothing that gets
@@ -473,6 +505,10 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           </span></>}
           {rootDeepened && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} to clear the pins.</span></>}
           {cyc && <><br />Cut for a {params.mateTeeth}-pin lantern at Ø{N(params.pinDia)}.</>}
+          {cyc && relief > 0 && <><br />Back of each tooth cut away
+            {relief >= 100 ? ' to the middle of the tip' : ` by ${relief}% of the tip`} — turns
+            {turnsCW ? ' clockwise' : ' anticlockwise'} only.
+            {driven && ' Its pins DRIVE it, so the teeth lean the opposite way from a wheel that drives.'}</>}
           {/* The pinion on this wheel's OWN arbor, which it carries: the wheel is
               one of that lantern's two cheeks, so only one loose cheek is cut. */}
           {carried && <>

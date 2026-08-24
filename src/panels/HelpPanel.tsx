@@ -52,7 +52,7 @@ const SHORTCUTS: Section[] = [
 const FEATURES = [
   {
     title: 'Select tool',
-    desc: 'Click to select, drag empty area to box-select. Shift-click to toggle membership in a multi-selection. Drag handles to move, scale, or rotate. Hold Alt while dragging a corner handle to skew (shear) instead of scale.',
+    desc: 'Click to select, drag empty area to box-select — drag RIGHT and the box takes everything it touches (dashed), drag back LEFT and it takes only what lies wholly inside (solid). Shift-click to toggle membership in a multi-selection. Drag handles to move, scale, or rotate. Hold Alt while dragging a corner handle to skew (shear) instead of scale.',
   },
   {
     title: 'Export SVG',

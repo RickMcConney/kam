@@ -3,6 +3,58 @@ import { parseD, stringifyD, applyMat, type Mat6, type ImportedPath } from '../i
 import { splitCompoundPath } from './nodeUtils'
 import { generateShapeD, translateShapeParams, scaleShapeParams, shapeDisplayName, type ShapeParams } from '../shapes/shapeGenerators'
 import type { PathEditGesture } from '../timeline/events'
+import { outerGroupOf } from '../store/pathGroups'
+
+// ─── Drag-box selection ───────────────────────────────────────────────────────
+//
+// A rubber band answers one of two questions and they are not the same one. On a
+// crowded drawing "everything this box runs across" is what picks a row of parts
+// out of a nest; "these things and nothing they overlap" is what picks one wheel
+// out from under the arbor crossing it. CAD has settled which gesture means
+// which and the hand remembers it: drawn RIGHTWARDS the box catches anything it
+// TOUCHES, drawn back to the LEFT it catches only what lies wholly INSIDE.
+//
+// Read off x alone, not off the diagonal. Every drag then has an answer — a box
+// dragged straight down or straight up has no second axis to ask — and it is the
+// half of the gesture people actually remember.
+
+/** Whether a drag box selects only what it wholly contains (drawn right to left). */
+export function dragBoxEncloses(box: { sx: number; ex: number }): boolean {
+  return box.ex < box.sx
+}
+
+/**
+ * Drop from an expanded selection every user group with a part left outside.
+ *
+ * A group is ONE object — one chip, one row, one thing to drag — so "wholly
+ * inside" is a question about the whole of it. `expandUserGroups` has to run
+ * FIRST (a group half inside would otherwise come back as its enclosed parts,
+ * which is not something the user can see or click), and this then takes back the
+ * groups it should not have pulled in.
+ *
+ * `inside` is what the box actually caught. Anything not on the canvas is not in
+ * the running either way, so a hidden member cannot hold its group out.
+ */
+export function wholeGroupsOnly(
+  ids: string[],
+  inside: ImportedPath[],
+  paths: ImportedPath[],
+): string[] {
+  const caught = new Set(inside.map((p) => p.id))
+  const partial = new Set<string>()
+  for (const p of paths) {
+    if (!p.visible || p.hidden) continue
+    const g = outerGroupOf(p)
+    if (g && !caught.has(p.id)) partial.add(g)
+  }
+  if (partial.size === 0) return ids
+  const byId = new Map(paths.map((p) => [p.id, p]))
+  return ids.filter((id) => {
+    const p = byId.get(id)
+    const g = p && outerGroupOf(p)
+    return !(g && partial.has(g))
+  })
+}
 
 export interface BBox {
   minX: number; minY: number; maxX: number; maxY: number

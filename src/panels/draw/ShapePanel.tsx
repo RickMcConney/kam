@@ -5,7 +5,7 @@ import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { spirographLoops, spirographRadii, spirographCentrePen, SPIRO_RATIO_RANGE, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
-import { gearDims, gearHub, gearLabel, gearMesh, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
+import { gearDims, gearHub, gearLabel, gearMesh, gearRotationSense, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
 import { camDims } from '../../shapes/camGenerator'
 import type { EscapementSpec } from '../../shapes/escapementGenerator'
 import EscapementInfoButton from '../EscapementInfoButton'
@@ -15,7 +15,7 @@ import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/te
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
-import { NumInput, Select, Check, inputCls, labelCls, toolBtnCls } from './shared'
+import { NumInput, PlainInput, Select, Check, inputCls, labelCls, toolBtnCls } from './shared'
 
 
 const LS_TEXT_KEY = 'kam:textConfig'
@@ -235,6 +235,7 @@ function ShapeConfig({ type, config, onChange, units }: {
       const g = c.gear
       const set = (patch: Partial<ShapeToolConfig['gear']>) => onChange({ ...c, gear: { ...c.gear, ...patch } })
       const cyc = g.toothProfile === 'cycloidal' ? { mateTeeth: g.mateTeeth, pinDia: g.pinDia } : undefined
+      const relief = Math.round(Math.max(0, Math.min(1, g.backRelief ?? 0)) * 100)
       const pin = pinionDims({ ...g, cx: 0, cy: 0 })
       const pinLab = pinionLabel({ ...g, cx: 0, cy: 0 })
       const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, cyc)
@@ -262,6 +263,20 @@ function ShapeConfig({ type, config, onChange, units }: {
         {cyc ? (<>
           <NumInput label="Pins"   valueMM={g.mateTeeth} units="" min={2} integer onChange={(mateTeeth) => set({ mateTeeth: Math.max(2, Math.round(mateTeeth)) })} />
           <NumInput label="Pin Ø"  valueMM={g.pinDia} units={u} min={0.1} onChange={(pinDia) => set({ pinDia })} />
+          {/* A clock wheel turns one way, so one flank of each tooth never touches
+              a pin and can be cut back to let the next pin in. Which flank that is
+              is the whole risk: relieve the acting one and the wheel still looks
+              and turns like a clock wheel with no face left to drive with. */}
+          <PlainInput label="Back cut" value={relief} unit="%" min={0} max={100} step={10}
+            onChange={(v) => set({ backRelief: Math.max(0, Math.min(1, v / 100)) })} />
+          {/* The wheel's ROTATION, not the acting flank — the two are the same
+              number here because a gear drawn on its own DRIVES its lantern, and
+              opposite on a wheel the pins drive (see gearRotationSense). There is
+              no driven-wheel default: that case is a clock's motion work, which
+              the clock stamps, or a tick on the wheel's own properties. */}
+          {relief > 0 && <Select label="Runs" value={gearRotationSense({ ...g, cx: 0, cy: 0 }) === -1 ? 'cw' : 'ccw'}
+            options={[['cw', 'Clockwise'], ['ccw', 'Anticlockwise']]}
+            onChange={(v) => set({ actingSense: v === 'ccw' ? 1 : -1 })} />}
           {/* The mate, drawn from these same numbers — cheek, pin holes, arbor. */}
           <Check label="Pinion" checked={g.emitPinion} onChange={(emitPinion) => set({ emitPinion })} />
         </>) : (
@@ -327,6 +342,11 @@ function ShapeConfig({ type, config, onChange, units }: {
         {rootDeepened && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} to clear the pins.</p>}
         {cyc && <p className="text-label text-gray-400 dark:text-neutral-500">
           Faces cut for this {g.mateTeeth}-pin lantern pinion at Ø{L(g.pinDia)} — another pinion wants another wheel.
+          {relief > 0 && <><br />
+            Back of each tooth cut away{relief >= 100 ? ' to the middle of the tip' : ` by ${relief}% of the tip`} —
+            it turns {gearRotationSense({ ...g, cx: 0, cy: 0 }) === -1 ? 'clockwise' : 'anticlockwise'} ONLY, and
+            running it the other way turns the relieved side into the acting one.
+          </>}
         </p>}
         {cyc && g.emitPinion && pin && <p className="text-label text-gray-400 dark:text-neutral-500">
           Pinion: cheek {L(pin.cheekDia)} · pins on {L(pin.pinCircleDia)}
