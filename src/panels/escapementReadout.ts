@@ -12,6 +12,7 @@
 
 import { escapementDims, type EscapementSpec } from '../shapes/escapementGenerator'
 import type { ReadoutLine, Tone } from './readout'
+import { hubGrownWhy } from '../shapes/spokedWheel'
 
 // Re-exported so the escapement's three consumers keep one import.
 export { worstTone, type Tone, type ReadoutLine } from './readout'
@@ -83,7 +84,7 @@ export function escapementReadout(spec: EscapementSpec, len: (mm: number) => str
   if (d.faceTooSteep) {
     say(`Impulse faces at ${d.impulseAngleDeg.toFixed(0)}° are steep — less lift, or more drop.`, 'warn')
   }
-  if (d.hub.grown) say(`Hub grown to ${len(d.hub.dia)} to seat ${spec.spokes} spokes.`, 'note')
+  if (d.hub.grown) say(`Hub grown to ${len(d.hub.dia)} ${hubGrownWhy(d.hub, spec.spokes)}.`, 'note')
   if (spec.spokes >= 2 && !d.hub.spoked) {
     say(d.hub.maxSpokes >= 2
       ? `No room for ${spec.spokes} spokes — this wheel takes ${d.hub.maxSpokes}. Cut solid.`

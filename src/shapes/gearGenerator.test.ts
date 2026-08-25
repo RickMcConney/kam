@@ -267,6 +267,35 @@ describe('generateGearD', () => {
     expect(gearHub(2, 40, 20, 1, 0).dia).toBeCloseTo(20 + 4 * 2, 6)
   })
 
+  it('names the floor that grew the hub, so a field that did nothing says why', () => {
+    // The complaint this answers: every wheel has a bore floor under it, so a
+    // diameter typed below it changed nothing and nothing on screen said so.
+    const raised = gearHub(4, 24, 8, 10, 5)
+    expect(raised.dia).toBeCloseTo(24, 6)          // bore/2 + 0.8·(2.5·m)
+    expect(raised.grown).toBe(true)
+    expect(raised.grownFor).toBe('bore')
+    // At the floor exactly, the asked-for figure stands and nothing is reported.
+    expect(gearHub(4, 24, 8, 24, 5).grownFor).toBe(null)
+    // Above it, the field is the answer.
+    expect(gearHub(4, 24, 8, 40, 5).dia).toBeCloseTo(40, 6)
+    // A count that needs more circumference than the bore does names the spokes.
+    expect(gearHub(2, 40, 8, 5, 12).grownFor).toBe('spokes')
+  })
+
+  it('cuts the web at 2.5x module until a spoke width and rim are dialled in', () => {
+    const g = { ...base, module: 4, teeth: 24, bore: 8, hubDia: 0, spokes: 5 }
+    // Absent, 0 and the explicit 2.5·m are one and the same wheel.
+    const asAlways = generateGearD(g)
+    expect(generateGearD({ ...g, spokeWidth: 0, rimWidth: 0 })).toBe(asAlways)
+    expect(generateGearD({ ...g, spokeWidth: 10, rimWidth: 10 })).toBe(asAlways)
+    // A narrower spoke needs less hub to land on — the width reaches the floor.
+    expect(gearHub(4, 24, 8, 0, 5, 0, 5).dia).toBeCloseTo(2 * (4 + 0.8 * 5), 6)
+    expect(generateGearD({ ...g, spokeWidth: 5 })).not.toBe(asAlways)
+    // A thicker rim eats the web from outside: past a point there is none left,
+    // and the wheel says so rather than emitting slivers.
+    expect(gearHub(4, 24, 8, 0, 5, 0, undefined, 30).spoked).toBe(false)
+  })
+
   it('reports the real spoke ceiling instead of failing silently', () => {
     for (const [m, z, bore] of [[2, 24, 8], [2, 40, 8], [1, 60, 6], [5, 20, 30]] as const) {
       const { maxSpokes } = gearHub(m, z, bore, 0, 0)

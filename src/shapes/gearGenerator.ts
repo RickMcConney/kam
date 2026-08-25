@@ -127,6 +127,20 @@ export interface GearSpec {
   hubDia: number
   /** 0 for a solid web. */
   spokes: number
+  /** Spoke width, mm. Absent (or 0) is the classic `2.5·module`, which is what
+   *  every gear was cut with before the field existed — so an old project comes
+   *  out byte-identical and only a wheel someone has actually dialled in
+   *  differs. Stated in MILLIMETRES rather than in modules because it is a
+   *  question about the STOCK: how much wood is left holding the rim on, which
+   *  is decided by the material and the cutter, not by the tooth size. It is a
+   *  floor under the hub as well as the width of the web (see `gearHub`). */
+  spokeWidth?: number
+  /** Rim thickness under the root circle, mm — the stock between the bottom of
+   *  a tooth and the spoke windows. Absent (or 0) is `2.5·module`, as above.
+   *  Thickening it eats the web from the outside, so past a point there is no
+   *  room for windows at all and the wheel comes out solid, which `HubFit.
+   *  spoked` reports. */
+  rimWidth?: number
   /** Circular backlash at the mesh, mm — the play a PAIR of these will have.
    *  Each gear is thinned by half of it, so setting the same figure on both
    *  gears of a pair gives exactly that much play. */
@@ -189,8 +203,8 @@ export interface GearDims {
 const ADDENDUM = 1.0        // × module
 const DEDENDUM = 1.25       // × module
 const ROOT_FILLET = 0.38    // × module — the standard rack tip radius
-const RIM = 2.5             // × module — stock left under the root circle
-const SPOKE = 2.5           // × module — spoke width
+const RIM = 2.5             // × module — default stock left under the root circle
+const SPOKE = 2.5           // × module — default spoke width
 // Chord tolerance on the involute flank, mm. This is a wooden gear cut on a
 // router: it will be sanded, it will move with the seasons, and it is running
 // tenths of a millimetre of backlash — so a profile held to 0.02 mm is already
@@ -210,6 +224,20 @@ const inv = (a: number) => Math.tan(a) - a
 export type GearHub = HubFit
 
 /**
+ * The web's two thicknesses, resolved.
+ *
+ * Both were fixed multiples of the module and are now the spec's own figures
+ * when it gives them — a gear that says nothing is cut exactly as it always
+ * was. `0` reads as "say nothing" rather than as a zero-width spoke, because a
+ * zero-width spoke is not a thing anyone means and a field cleared to empty
+ * would otherwise emit a wheel with no web.
+ */
+export const gearSpokeW = (module: number, spokeWidth?: number) =>
+  spokeWidth != null && spokeWidth > 0 ? spokeWidth : SPOKE * Math.max(0.05, module)
+export const gearRimW = (module: number, rimWidth?: number) =>
+  rimWidth != null && rimWidth > 0 ? rimWidth : RIM * Math.max(0.05, module)
+
+/**
  * Resolve the hub.
  *
  * The rules live in `spokedWheel.ts`, stated in terms of the spoke width so the
@@ -221,13 +249,28 @@ export type GearHub = HubFit
 export function gearHub(
   module: number, teeth: number, bore: number, hubDia: number, spokes: number,
   /** Hub the carried pinion's pin holes need, if this wheel carries one — see
-   *  `carriedPinion`. Another FLOOR, and the two simply take the larger. */
+   *  `carriedPinion`. Another FLOOR, passed through so `seatHub` can say which
+   *  one bound rather than folding it in behind the user's own figure. */
   carriedHubDia = 0,
+  spokeWidth?: number, rimWidth?: number,
 ): GearHub {
   const m = Math.max(0.05, module)
   const z = Math.max(4, Math.round(teeth))
   const rf = Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
-  return seatHub(rf - RIM * m, clamp(bore / 2, 0, rf - 1), Math.max(hubDia, carriedHubDia), spokes, SPOKE * m)
+  return seatHub(
+    rf - gearRimW(m, rimWidth), clamp(bore / 2, 0, rf - 1),
+    hubDia, spokes, gearSpokeW(m, spokeWidth), carriedHubDia,
+  )
+}
+
+/** `gearHub` for a whole spec — every caller has one, and it is the only way to
+ *  be sure the carried pinion's floor and the web's own widths were all asked
+ *  for. */
+export function gearHubOf(spec: GearSpec): GearHub {
+  return gearHub(
+    spec.module, spec.teeth, spec.bore, spec.hubDia, spec.spokes,
+    carriedPinion(spec)?.hubDia ?? 0, spec.spokeWidth, spec.rimWidth,
+  )
 }
 
 /**
@@ -1196,10 +1239,10 @@ export function gearLabel(spec: GearSpec): GearLabel | null {
   // spoked adds exactly one constraint: the text has to fit BETWEEN the spoke's
   // sides. `hub.spoked` is the same test `spokeWindows` guards on, so it cannot
   // claim a spoke that was not drawn.
-  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0)
+  const hub = gearHubOf(spec)
   let s = fitInDisc(box.w, box.h, xl, rf - LABEL_CLEAR)
   if (hub.spoked) {
-    const hw = Math.min((SPOKE * m) / 2, (hub.dia / 2) * 0.9)   // as spokeWindows sizes it
+    const hw = Math.min(gearSpokeW(m, spec.spokeWidth) / 2, (hub.dia / 2) * 0.9)   // as spokeWindows sizes it
     s = Math.min(s, (2 * (hw - LABEL_CLEAR)) / box.h)
   }
   if (!(s > 0)) return null
@@ -1451,8 +1494,10 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
 
   // Windings stay as they were: these are holes in the blank, so CW, which is
   // what anything reading them as regions expects.
-  const hub = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0)
-  const windows = spokeWindows(Math.round(spec.spokes), rf - RIM * m, hub.dia / 2, SPOKE * m)
+  const hub = gearHubOf(spec)
+  const windows = spokeWindows(
+    Math.round(spec.spokes), rf - gearRimW(m, spec.rimWidth), hub.dia / 2, gearSpokeW(m, spec.spokeWidth),
+  )
   if (windows.length > 0) {
     out.push({ key: 'spokes', d: windows.map((r) => ringToD(place(r), false)).join(' ') })
   }
@@ -1478,7 +1523,7 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
   // window at all. For the drive wheel that circle is the drum, so inferring it
   // from whatever the spokes happen to leave is not good enough.
   if (spec.hubCircle) {
-    const hubR = gearHub(m, z, spec.bore, spec.hubDia, spec.spokes, carriedPinion(spec)?.hubDia ?? 0).dia / 2
+    const hubR = hub.dia / 2
     if (hubR > boreR + 0.25) out.push({ key: 'hub', d: ringToD(place(ellipseRing(0, 0, hubR, hubR)), false) })
   }
 

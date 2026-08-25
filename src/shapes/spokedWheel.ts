@@ -20,11 +20,21 @@ const SPOKE_GAP = 0.15
 const WEB = 0.6
 const HUB_RING = 0.8
 
+/** What raised the hub above the diameter that was asked for. */
+export type HubFloor = 'bore' | 'spokes' | 'pins'
+
 export interface HubFit {
   /** The diameter actually used. */
   dia: number
-  /** It had to be grown past what was asked for, to seat the spokes. */
+  /** It had to be grown past what was asked for. */
   grown: boolean
+  /** WHICH floor grew it, or null when the asked-for diameter stood. Named
+   *  rather than implied, because a hub field that does nothing is otherwise
+   *  indistinguishable from a hub field that is broken: the bore's own floor
+   *  (and a carried pinion's pin ring) sit under every wheel, so a typed
+   *  diameter below them changes nothing and there is nothing on the drawing
+   *  to say so. */
+  grownFor: HubFloor | null
   /** Windows will really be cut — false means the web has no room and the wheel
    *  comes out solid. */
   spoked: boolean
@@ -47,9 +57,21 @@ export interface HubFit {
  * so `hubDia` is treated as a FLOOR and raised to that when it falls short. The
  * hub can only grow until it meets the rim, which is the real ceiling on the
  * count (`maxSpokes`); past 2π/SPOKE_GAP spokes no hub is big enough at all.
+ *
+ * THERE ARE THREE FLOORS AND THE WINNER IS NAMED. The spokes are only one of
+ * them: the axle wants `HUB_RING·spokeW` of stock round it whatever the web
+ * does, and a wheel carrying a lantern's pin holes wants the ring those need.
+ * Folding them together before the comparison — which is what this did, by
+ * taking `max(asked, minR)` as the asked-for figure — meant a hub raised by the
+ * bore was reported as not grown at all, so the field silently ignored
+ * everything typed below it. They are compared separately now and `grownFor`
+ * says which one bound.
  */
 export function seatHub(
   rimInner: number, boreR: number, hubDia: number, spokes: number, spokeW: number,
+  /** Hub the pin holes of a carried lantern pinion need, if the wheel carries
+   *  one — a third floor, and the largest simply wins. */
+  carriedDia = 0,
 ): HubFit {
   const minR = boreR + HUB_RING * spokeW    // stock the axle needs round it
   const ceiling = rimInner - WEB * spokeW   // past this there is no web left
@@ -65,15 +87,45 @@ export function seatHub(
     if (Math.max(minR, seat(n)) <= ceiling) maxSpokes = n
   }
 
-  const asked = Math.max(minR, hubDia / 2)
+  const asked = Math.max(0, hubDia / 2)
   const n = Math.round(spokes)
-  if (n < 2) return { dia: 2 * asked, grown: false, spoked: false, maxSpokes }
+  const need = n >= 2 ? seat(n) : Infinity
 
-  const need = seat(n)
-  const r = Math.max(asked, isFinite(need) ? need : asked)
+  let r = asked
+  let grownFor: HubFloor | null = null
+  const floor = (v: number, why: HubFloor) => {
+    if (isFinite(v) && v > r) { r = v; grownFor = why }
+  }
+  floor(minR, 'bore')
+  floor(carriedDia / 2, 'pins')
+  floor(need, 'spokes')
+
   // 0.05 mm, not an epsilon: growing the hub by a few microns to seat the last
   // spoke is true but not worth telling anyone about.
-  return { dia: 2 * r, grown: r > asked + 0.025, spoked: isFinite(need) && r <= ceiling, maxSpokes }
+  const grown = r > asked + 0.025
+  return {
+    dia: 2 * r,
+    grown,
+    grownFor: grown ? grownFor : null,
+    spoked: n >= 2 && isFinite(need) && r <= ceiling,
+    maxSpokes,
+  }
+}
+
+/**
+ * Why the hub grew, as a phrase to follow "Hub grown to 24 mm ".
+ *
+ * One wording for all three panels, because the three floors are easy to
+ * confuse for each other and a message naming the wrong one is worse than none:
+ * a maker who reads "to seat 5 spokes" under a hub the BORE raised will go and
+ * change the spoke count, and nothing will move.
+ */
+export function hubGrownWhy(fit: HubFit, spokes: number): string {
+  switch (fit.grownFor) {
+    case 'spokes': return `to seat ${Math.round(spokes)} spokes`
+    case 'pins':   return 'to hold the pinion pin holes'
+    default:       return 'to leave stock round the bore'
+  }
 }
 
 /** The windows between the spokes, as CW holes. `seatHub` has already sized the

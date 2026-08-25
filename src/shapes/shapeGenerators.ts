@@ -33,7 +33,7 @@ export type ShapeParams =
   // `arborPins`/`arborPinCircleDia`/`arborPinDia`: the lantern pinion this wheel
   // CARRIES on its own arbor — its pins go through the wheel's hub. Optional, and
   // absent on every gear drawn by hand; see GearSpec.
-  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief?: number; actingSense?: 1 | -1; drivenByPins?: boolean; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; hubCircle?: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
+  | { type: 'gear'; cx: number; cy: number; module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief?: number; actingSense?: 1 | -1; drivenByPins?: boolean; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; spokeWidth?: number; rimWidth?: number; backlash: number; toothLabel: boolean; pitchCircle: boolean; hubCircle?: boolean; arborPins?: number; arborPinCircleDia?: number; arborPinDia?: number }
   | { type: 'cam'; cx: number; cy: number; baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   | {
       type: 'escapement'; cx: number; cy: number
@@ -70,7 +70,7 @@ export interface ShapeToolConfig {
     handle: BoardHandle; handleW: number; handleL: number; handleInset: number
     hole: boolean; holeDia: number; groove: boolean; grooveInset: number
   }
-  gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief: number; actingSense: 1 | -1; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
+  gear: { module: number; teeth: number; toothProfile: ToothProfile; mateTeeth: number; pinDia: number; backRelief: number; actingSense: 1 | -1; emitPinion: boolean; pressureAngle: number; bore: number; hubDia: number; spokes: number; spokeWidth?: number; rimWidth?: number; backlash: number; toothLabel: boolean; pitchCircle: boolean }
   cam: { baseDia: number; riseMM: number; sweepDeg: number; boreDia: number; handleLength: number; handleWidth: number }
   escapement: {
     escType: EscapementType; teeth: number; wheelDia: number
@@ -812,7 +812,14 @@ export function scaleShapeParams(
       if (Math.abs(asx - asy) > 0.001) return null
       const ncx = ax + sx * (p.cx - ax), ncy = ay + sy * (p.cy - ay)
       // Teeth and pressure angle are the pattern; module and bore are lengths.
-      return { ...p, cx: ncx, cy: ncy, module: p.module * asx, bore: p.bore * asx, hubDia: p.hubDia * asx, backlash: p.backlash * asx, pinDia: p.pinDia * asx }
+      // The web's two widths are lengths too when they have been dialled in;
+      // left absent they follow the module, so there is nothing to scale.
+      return {
+        ...p, cx: ncx, cy: ncy, module: p.module * asx, bore: p.bore * asx, hubDia: p.hubDia * asx,
+        backlash: p.backlash * asx, pinDia: p.pinDia * asx,
+        ...(p.spokeWidth != null ? { spokeWidth: p.spokeWidth * asx } : {}),
+        ...(p.rimWidth != null ? { rimWidth: p.rimWidth * asx } : {}),
+      }
     }
     case 'cam': {
       // A cam stretched on one axis is not an Archimedean spiral — the lift stops

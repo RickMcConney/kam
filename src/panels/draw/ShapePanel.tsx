@@ -5,7 +5,8 @@ import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { spirographLoops, spirographRadii, spirographCentrePen, SPIRO_RATIO_RANGE, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
 import { mazeGrid } from '../../shapes/mazeGenerator'
-import { gearDims, gearHub, gearLabel, gearMesh, gearRotationSense, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
+import { gearDims, gearHubOf, gearLabel, gearMesh, gearRimW, gearRotationSense, gearSpokeW, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../../shapes/gearGenerator'
+import { hubGrownWhy } from '../../shapes/spokedWheel'
 import { camDims } from '../../shapes/camGenerator'
 import type { EscapementSpec } from '../../shapes/escapementGenerator'
 import EscapementInfoButton from '../EscapementInfoButton'
@@ -240,7 +241,7 @@ function ShapeConfig({ type, config, onChange, units }: {
       const pinLab = pinionLabel({ ...g, cx: 0, cy: 0 })
       const d = gearDims(g.module, g.teeth, g.pressureAngle, g.backlash, cyc)
       const mesh = gearMesh({ ...g, cx: 0, cy: 0 })
-      const hub = gearHub(g.module, g.teeth, g.bore, g.hubDia, g.spokes)
+      const hub = gearHubOf({ ...g, cx: 0, cy: 0 })
       // A pin has to pass through the tooth space, or the pair cannot turn at all.
       // The root was driven below the ISO dedendum to clear a fat pin.
       const rootDeepened = !!cyc && d.rootDia < g.module * (g.teeth - 2.5) - 0.01
@@ -291,6 +292,13 @@ function ShapeConfig({ type, config, onChange, units }: {
         {/* A floor, not a fixed size — it grows to seat the spokes. */}
         <NumInput label="Hub Ø"   valueMM={g.hubDia} units={u} min={0} onChange={(hubDia) => set({ hubDia })} />
         <NumInput label="Spokes"  valueMM={g.spokes} units="" min={0} integer onChange={(spokes) => set({ spokes: Math.max(0, Math.round(spokes)) })} />
+        {/* The web's two thicknesses, in MILLIMETRES — how much wood is left
+            holding the rim on is a question about the stock and the cutter, not
+            about the tooth size. Both show their resolved value, so a gear that
+            has never been dialled in reads 2.5·module and follows the module as
+            it is stepped; typing 0 puts it back to that. */}
+        <NumInput label="Spoke W" valueMM={gearSpokeW(g.module, g.spokeWidth)} units={u} min={0} onChange={(v) => set({ spokeWidth: v > 0 ? v : undefined })} />
+        <NumInput label="Rim"     valueMM={gearRimW(g.module, g.rimWidth)} units={u} min={0} onChange={(v) => set({ rimWidth: v > 0 ? v : undefined })} />
         {/* Play at the MESH, so the same figure on both gears of a pair gives
             exactly that much — each is thinned by half. */}
         <NumInput label="Backlash" valueMM={g.backlash} units={u} min={0} step={0.05} onChange={(backlash) => set({ backlash })} />
@@ -320,7 +328,10 @@ function ShapeConfig({ type, config, onChange, units }: {
           Ø{L(g.pinDia)} pins take the whole {L(d.circularPitch)} circular pitch — there is no tooth left to drive with.
           Thinner pins, or a bigger module.
         </p>}
-        {hub.grown && <p className="text-label text-blue-400">Hub grown to {L(hub.dia)} to seat {g.spokes} spokes.</p>}
+        {hub.grown && <p className="text-label text-blue-400">Hub grown to {L(hub.dia)} {hubGrownWhy(hub, g.spokes)}.</p>}
+        {(!(g.spokeWidth! > 0) || !(g.rimWidth! > 0)) && <p className="text-label text-gray-400 dark:text-neutral-500">
+          {!(g.spokeWidth! > 0) && !(g.rimWidth! > 0) ? 'Spoke and rim follow the module' : !(g.spokeWidth! > 0) ? 'Spoke follows the module' : 'Rim follows the module'} at 2.5&times; — type a figure to pin it, 0 to let go.
+        </p>}
         {g.spokes >= 2 && !hub.spoked && (
           <p className="text-label text-yellow-500">
             {hub.maxSpokes >= 2 ? `No room for ${g.spokes} spokes — this gear takes ${hub.maxSpokes}. Cut solid.`

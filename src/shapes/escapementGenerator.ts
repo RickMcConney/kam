@@ -1369,9 +1369,12 @@ export function escapementDims(spec: EscapementSpec): EscapementDims {
   const carried = carriedPinion(spec)
   const hub = seatHub(
     rimInner, clamp(spec.bore / 2, 0, rRoot - 1),
-    // Two floors, and the larger wins: what the spokes need to land on, and what
-    // the carried pinion's pin holes need to fall in.
-    Math.max(spec.hubDia, carried?.hubDia ?? 0), spec.spokes, spokeWidth(spec),
+    // Three floors, and the largest wins: the stock the arbor wants round it,
+    // what the spokes need to land on, and what the carried pinion's pin holes
+    // need to fall in. They are passed separately so `HubFit.grownFor` can name
+    // the one that bound — folded together, a hub raised by a floor reads as a
+    // hub that simply ignored what was typed.
+    spec.hubDia, spec.spokes, spokeWidth(spec), carried?.hubDia ?? 0,
   )
 
   // The impulse face's inclination to the dead arc: the angle its chord makes

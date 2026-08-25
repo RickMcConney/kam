@@ -11,7 +11,7 @@ import {
   MIN_MESH_RATIO, MAX_MESH_RATIO, CLOCK_ROOT_BIT_DIA,
   type ClockAssembly, type ClockBase, type ClockMotion, type ClockSpec,
 } from '../shapes/clockTrain'
-import { carriedPinion as gearCarried, gearDims, gearHub, gearMesh, pinionDims } from '../shapes/gearGenerator'
+import { carriedPinion as gearCarried, gearDims, gearHubOf, gearMesh, pinionDims } from '../shapes/gearGenerator'
 import { carriedPinion as escCarried, escapementDims } from '../shapes/escapementGenerator'
 import { pendulumDims } from '../shapes/pendulumGenerator'
 import { worstTone, type ReadoutLine, type Tone } from './readout'
@@ -246,7 +246,7 @@ export function clockReadout(
   // time was worked out from that diameter, so the two must not disagree.
   const driveGear = design.parts.find((p) => p.key === 'drive')?.params
   if (driveGear?.type === 'gear') {
-    const hub = gearHub(driveGear.module, driveGear.teeth, driveGear.bore, driveGear.hubDia, driveGear.spokes)
+    const hub = gearHubOf(driveGear)
     weight(`Its hub is cut to the drum, ${len(spec.drumDia)} — the wheel is the drum's face, so the cord `
       + 'winds against it.')
     // THE ONE WHEEL THAT GIVES UP SPOKES RATHER THAN GROWING ITS HUB, since that

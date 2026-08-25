@@ -10,7 +10,8 @@ import { getMultiBBox, applyTransformStep, placementMat, type TransformStep } fr
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { spirographLoops, SPIRO_RATIO_RANGE, scaleShapeParams, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
-import { carriedPinion, gearDims, gearHub, gearLabel, gearMesh, gearRotationSense, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { carriedPinion, gearDims, gearHubOf, gearLabel, gearMesh, gearRimW, gearRotationSense, gearSpokeW, pinionDims, pinionLabel, TOOTH_LABEL_SIZE } from '../shapes/gearGenerator'
+import { hubGrownWhy } from '../shapes/spokedWheel'
 import { camDims } from '../shapes/camGenerator'
 import type { EscapementSpec } from '../shapes/escapementGenerator'
 import EscapementInfoButton from './EscapementInfoButton'
@@ -380,7 +381,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
       // under the hub, so the readout must ask for it or it reports a hub the
       // generator has already grown past.
       const carried = carriedPinion(params)
-      const hub = gearHub(params.module, params.teeth, params.bore, params.hubDia, params.spokes, carried?.hubDia ?? 0)
+      const hub = gearHubOf(params)
       const lab = gearLabel(params)
       const pin = pinionDims(params)
       const pinLab = pinionLabel(params)
@@ -466,6 +467,15 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
         <EditField label="Ø"   valueMM={params.bore} units={u} min={0} onChange={(bore) => updateGear({ ...params, bore })} />
         <EditField label="Hub" valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => updateGear({ ...params, hubDia })} />
         <EditField label="Spk" valueMM={params.spokes} units="" min={0} integer onChange={(spokes) => updateGear({ ...params, spokes: Math.max(0, Math.round(spokes)) })} />
+        {/* The web's two thicknesses, in MILLIMETRES: how much wood is left
+            holding the rim on is a question about the stock and the cutter, not
+            about the tooth size. Each shows its RESOLVED figure, so a gear that
+            has never been dialled in reads 2.5·module and goes on following the
+            module as it is stepped; 0 lets go of it again. */}
+        <EditField label="SpkW" valueMM={gearSpokeW(params.module, params.spokeWidth)} units={u} min={0}
+          onChange={(v) => updateGear({ ...params, spokeWidth: v > 0 ? v : undefined })} />
+        <EditField label="Rim"  valueMM={gearRimW(params.module, params.rimWidth)} units={u} min={0}
+          onChange={(v) => updateGear({ ...params, rimWidth: v > 0 ? v : undefined })} />
         <EditField label="Lash" valueMM={params.backlash} units={u} min={0} onChange={(backlash) => updateGear({ ...params, backlash })} />
         {/* Engraved, not cut: its own path, deleted or given an engrave op on
             its own. */}
@@ -491,7 +501,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           Meshes at {fromMM(d.pitchDia / 2, u as 'mm' | 'in').toFixed(2)} + partner pitch radius
           <br />
           Tooth {fromMM(d.toothThickness, u as 'mm' | 'in').toFixed(2)} at pitch
-          {hub.grown && <><br /><span className="text-blue-400">Hub grown to {fromMM(hub.dia, u as 'mm' | 'in').toFixed(2)} for {params.spokes} spokes.</span></>}
+          {hub.grown && <><br /><span className="text-blue-400">Hub grown to {fromMM(hub.dia, u as 'mm' | 'in').toFixed(2)} {hubGrownWhy(hub, params.spokes)}.</span></>}
           {params.spokes >= 2 && !hub.spoked && <><br /><span className="text-yellow-500">
             {hub.maxSpokes >= 2 ? `Max ${hub.maxSpokes} spokes here — cut solid.` : 'No room for spokes — cut solid.'}
           </span></>}
