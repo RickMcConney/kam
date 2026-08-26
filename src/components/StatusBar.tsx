@@ -7,6 +7,7 @@ import { RIGIDITY_INFO } from '../rigidity'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { BUILD_DATE } from '../version'
 import { shapeDisplayName, type ShapeType } from '../shapes/shapeGenerators'
+import { majorStepMM, minorStepMM, formatRulerLabel } from '../canvas/gridUtils'
 
 function modeLabel(activeTool: string, nodeEditPathId: string | null): string {
   if (nodeEditPathId) return 'Edit Points'
@@ -24,7 +25,9 @@ export default function StatusBar() {
   const statusMessage = useUIStore((s) => s.statusMessage)
   const clearStatus = useUIStore((s) => s.clearStatus)
   const cursorMM = useCanvasStore((s) => s.cursorMM)
-  const zoomPct = useCanvasStore((s) => s.zoomPct)
+  // Stored under the name zoomPct, but the value is the viewport scale in px/mm —
+  // which is what the grid step is chosen from (see gridUtils.majorStepMM).
+  const viewScale = useCanvasStore((s) => s.zoomPct)
   const darkMode = useUIStore((s) => s.darkMode)
   const { units, origin, widthMM, heightMM, thicknessMM, material, machineRigidity } = useWorkpieceStore()
 
@@ -51,6 +54,14 @@ export default function StatusBar() {
     : null
 
   const mode = modeLabel(activeTool, nodeEditPathId)
+
+  // One minor grid square — the spacing of the finest line on screen, and the value
+  // snapPoint() rounds to when snapping is on. Labelled "Grid", not "Snap": the grid
+  // has this size either way, and it is what the drawn lines are measuring.
+  const gridStepMM = minorStepMM(majorStepMM(viewScale, units), units)
+  // Plain "1/16", never ⅛ — the step steps through eighths, sixteenths and
+  // thirty-seconds as you zoom, and only some of those have a glyph.
+  const gridLabel = formatRulerLabel(gridStepMM, units, false) + (units === 'in' ? '"' : ' mm')
 
   // Auto-dismiss transient messages; errors/warnings linger longer. Keyed on
   // seq so re-showing the same text restarts the timer.
@@ -119,7 +130,12 @@ export default function StatusBar() {
       {/* Right section */}
       <div className="flex-1 min-w-0 flex items-center justify-end gap-4">
         {workspaceTab === '2d' && (
-          <span className="font-mono">{Math.round(zoomPct * 100)}%</span>
+          <span
+            className="font-mono"
+            title={`Grid square at this zoom — ${snapEnabled ? 'points snap to it (S turns snapping off)' : 'snapping is off (S)'}`}
+          >
+            Grid: {gridLabel}
+          </span>
         )}
         <span>FreazyKam {BUILD_DATE}</span>
       </div>

@@ -7,8 +7,12 @@ import {
   generateEscapementD, generateEscapementParts, wheelDiaForRadius, type EscapementType,
 } from './escapementGenerator'
 import { generatePendulumD, generatePendulumParts, lengthForHeight } from './pendulumGenerator'
+import {
+  generateTrackD, generateTrackParts, BRIO,
+  type TrackKind, type TrackEnd, type TrackGroove, type TrackHand,
+} from './trackGenerator'
 
-export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'pendulum' | 'text'
+export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'pendulum' | 'track' | 'text'
 
 export type ShapeParams =
   | { type: 'rectangle'; x: number; y: number; w: number; h: number }
@@ -51,6 +55,18 @@ export type ShapeParams =
     }
   // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
   | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
+  // A fit against pieces somebody else made, so the socket is DERIVED from the
+  // peg (see trackGenerator.ts) — `holeClear`/`throatClear` are the two slacks,
+  // and socket Ø, throat width and throat length are readouts.
+  | {
+      type: 'track'; cx: number; cy: number
+      kind: TrackKind; length: number; radius: number; sweepDeg: number
+      hand: TrackHand; crotch: number
+      width: number; gauge: number; grooveW: number; grooveMode: TrackGroove
+      endA: TrackEnd; endB: TrackEnd; endC: TrackEnd
+      pegDia: number; neckW: number; neckL: number
+      holeClear: number; throatClear: number
+    }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 export interface ShapeToolConfig {
   rectangle: { w: number; h: number }
@@ -81,6 +97,14 @@ export interface ShapeToolConfig {
     clockwise: boolean
   }
   pendulum: { length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
+  track: {
+    kind: TrackKind; length: number; radius: number; sweepDeg: number
+    hand: TrackHand; crotch: number
+    width: number; gauge: number; grooveW: number; grooveMode: TrackGroove
+    endA: TrackEnd; endB: TrackEnd; endC: TrackEnd
+    pegDia: number; neckW: number; neckL: number
+    holeClear: number; throatClear: number
+  }
   text: { text: string; fontSize: number; fontFamily: string }
 }
 
@@ -137,6 +161,18 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   // edge-on, so it is wider than it is tall. Both radii stay editable; this is
   // only which way round the default lies.
   pendulum: { length: 993.62, rodWidth: 12, bobRx: 60, bobRy: 45, bore: 5 },
+  // Real BRIO, straight out of the published dimensions: the A-track medium
+  // straight, male one end and female the other, which is the piece a set has
+  // most of. `holeClear`/`throatClear` reproduce the Ø16 socket and the 8 mm
+  // throat against the Ø11.5 peg on its 6 mm neck.
+  track: {
+    kind: 'straight', length: 144, radius: BRIO.radius, sweepDeg: BRIO.sweepDeg,
+    hand: 'left', crotch: BRIO.crotch,
+    width: BRIO.width, gauge: BRIO.gauge, grooveW: BRIO.grooveW, grooveMode: 'centreline',
+    endA: 'female', endB: 'male', endC: 'male',
+    pegDia: BRIO.pegDia, neckW: BRIO.neckW, neckL: BRIO.neckL,
+    holeClear: BRIO.holeClear, throatClear: BRIO.throatClear,
+  },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
 
@@ -398,6 +434,7 @@ export function generateShapeD(p: ShapeParams): string {
     case 'cam': return generateCamD(p)
     case 'escapement': return generateEscapementD(p)
     case 'pendulum': return generatePendulumD(p)
+    case 'track': return generateTrackD(p)
     case 'text': return generateTextD(p)
   }
 }
@@ -424,6 +461,10 @@ export interface ShapePart {
 }
 
 const CAM_PART_LABELS: Record<string, string> = { cam: 'Outline', bore: 'Bore' }
+
+// The outline is profiled and the grooves are not — a groove is a 3 mm deep
+// slot cut with a different tool, which is the gear's argument for parts.
+const TRACK_PART_LABELS: Record<string, string> = { body: 'Outline', groove: 'Grooves' }
 
 const PENDULUM_PART_LABELS: Record<string, string> = { rod: 'Rod', bore: 'Suspension Hole', bob: 'Bob' }
 
@@ -467,6 +508,13 @@ export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
       d: g.d,
     }))
   }
+  if (p.type === 'track') {
+    return generateTrackParts(p).map((g) => ({
+      part: g.key,
+      label: TRACK_PART_LABELS[g.key] ?? g.key,
+      d: g.d,
+    }))
+  }
   return null
 }
 
@@ -478,11 +526,14 @@ export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
 //   escapement the anchor's faces are loci of THIS wheel's teeth.
 //   pendulum   `length` IS the rate; dragging it bigger silently retimes the
 //              clock, which is the one thing a drawing cannot show.
+//   track      every number in it is a fit against pieces made by somebody
+//              else — scaled, it is a good drawing of something that connects
+//              to nothing.
 // Everything else scales: a cam has no mate and stays a valid spiral, and
 // dragging a board or a maze to fit the stock is the natural gesture.
 // The canvas suppresses the resize handles for these (their size is set by
 // their own parameters), so nothing has to refuse a gesture mid-drag.
-export const SCALE_LOCKED_SHAPES: ReadonlySet<ShapeType> = new Set<ShapeType>(['gear', 'escapement', 'pendulum'])
+export const SCALE_LOCKED_SHAPES: ReadonlySet<ShapeType> = new Set<ShapeType>(['gear', 'escapement', 'pendulum', 'track'])
 
 export function isScaleLocked(params: ShapeParams | undefined | null): boolean {
   return !!params && SCALE_LOCKED_SHAPES.has(params.type)
@@ -507,6 +558,7 @@ export function shapeDisplayName(type: ShapeType): string {
     case 'cam': return 'Cam'
     case 'escapement': return 'Escapement'
     case 'pendulum': return 'Pendulum'
+    case 'track': return 'Train Track'
     case 'text': return 'Text'
   }
 }
@@ -638,6 +690,11 @@ function dragParams(
         type: 'gear', cx, cy, ...config.gear,
         module: moduleForRadius(radius, config.gear.teeth),
       }
+    case 'track':
+      // Scale-locked, so CanvasStage places it from the config and never gets
+      // here (see SCALE_LOCKED_SHAPES). Answering with the designed piece is
+      // the only answer that is still a BRIO track.
+      return { type: 'track', cx, cy, ...config.track }
     case 'text': {
       // drag height → font size; left edge and lower y as baseline position
       const h = Math.abs(end.y - start.y)
@@ -687,6 +744,7 @@ export function shapeParamsFromConfig(
     case 'cam': return { type: 'cam', cx, cy, ...config.cam }
     case 'escapement': return { type: 'escapement', cx, cy, ...config.escapement }
     case 'pendulum': return { type: 'pendulum', cx, cy, ...config.pendulum }
+    case 'track': return { type: 'track', cx, cy, ...config.track }
     case 'text': return { type: 'text', x: cx, y: cy, text: config.text.text, fontSize: config.text.fontSize, fontFamily: config.text.fontFamily }
   }
 }
@@ -711,6 +769,7 @@ export function translateShapeParams(p: ShapeParams, dx: number, dy: number): Sh
     case 'cam': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'escapement': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'pendulum': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
+    case 'track': return { ...p, cx: p.cx + dx, cy: p.cy + dy }
     case 'text': return { ...p, x: p.x + dx, y: p.y + dy }
   }
 }
@@ -859,6 +918,12 @@ export function scaleShapeParams(
         bobRx: p.bobRx * asx, bobRy: p.bobRy * asx, bore: p.bore * asx,
       }
     }
+    case 'track':
+      // Unlike the gear, a track does not scale even uniformly: its every
+      // dimension is a fit against a piece cut by somebody else, and a 90%
+      // track is not a smaller track but a track that does not connect. So the
+      // params go and a plain path is left, which at least says what it is.
+      return null
     case 'text': {
       if (Math.abs(asx - asy) > 0.001) return null
       const nx = ax + sx * (p.x - ax), ny = ay + sy * (p.y - ay)

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ICON } from '../../theme'
-import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown, Clock, Weight } from 'lucide-react'
+import { Square, Circle, Ellipse, Hexagon, Star as StarIcon, PenTool, Type, Squircle, Heart, Pill, Signpost, Shield, Orbit, Grid3x3, CookingPot, Cog, Cloud, Anchor, Dices, ChevronDown, Clock, Weight, TrainTrack } from 'lucide-react'
 import { useUIStore } from '../../store/uiStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { spirographLoops, spirographRadii, spirographCentrePen, SPIRO_RATIO_RANGE, SCALE_LOCKED_SHAPES, type ShapeType, type ShapeToolConfig } from '../../shapes/shapeGenerators'
@@ -11,6 +11,7 @@ import { camDims } from '../../shapes/camGenerator'
 import type { EscapementSpec } from '../../shapes/escapementGenerator'
 import EscapementInfoButton from '../EscapementInfoButton'
 import { pendulumDims } from '../../shapes/pendulumGenerator'
+import { trackDims, BRIO } from '../../shapes/trackGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../../shapes/cuttingBoardGenerator'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import { PATH_COLOR } from '../../colors'
@@ -39,6 +40,7 @@ const SHAPES: { type: ShapeType; label: string; icon: React.ReactNode }[] = [
   { type: 'cam',       label: 'Cam',     icon: <Cloud size={ICON.md} /> },
   { type: 'escapement', label: 'Escape', icon: <Anchor size={ICON.md} /> },
   { type: 'pendulum', label: 'Pend',    icon: <Weight size={ICON.md} /> },
+  { type: 'track',    label: 'Track',   icon: <TrainTrack size={ICON.md} /> },
 ]
 
 const SHAPE_META: Record<string, { label: string; icon: React.ReactNode }> = Object.fromEntries(
@@ -489,6 +491,121 @@ function ShapeConfig({ type, config, onChange, units }: {
         </p>}
         {dm.handleTooShort && <p className="text-label text-yellow-500">
           Lever is inside the crest ({L(dm.maxDia / 2)}) — no leverage. Make it longer.
+        </p>}
+      </div>)
+    }
+    case 'track': {
+      const m = c.track
+      const set = (patch: Partial<ShapeToolConfig['track']>) => onChange({ ...c, track: { ...c.track, ...patch } })
+      const dm = trackDims({ ...m, cx: 0, cy: 0 })
+      const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
+      return (<div className="space-y-1">
+        <Select label="Kind" value={m.kind}
+          options={[['straight', 'Straight'], ['curve', 'Curve'], ['turnout', 'Turnout']]}
+          onChange={(kind) => set({ kind })} />
+        {m.kind !== 'curve' && (<>
+          {/* Face to face, which is also what the piece adds to a layout — the
+              peg lives inside its neighbour's socket. */}
+          <NumInput label="Length" valueMM={m.length} units={u} min={20} onChange={(length) => set({ length })} />
+          <div className="flex gap-1">
+            {BRIO.lengths.map((mm) => (
+              <button key={mm} type="button" onClick={() => set({ length: mm })}
+                className={`flex-1 rounded border px-1 py-0.5 text-label ${Math.abs(m.length - mm) < 0.01
+                  ? 'border-blue-500 bg-blue-500/20'
+                  : 'border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700'}`}>
+                {mm}
+              </button>
+            ))}
+          </div>
+        </>)}
+        {m.kind !== 'straight' && (<>
+          {/* To the CENTRELINE — the catalogue numbers are quoted off the inside
+              edge as often as not, so the panel says which this is and reads the
+              other two back. */}
+          <NumInput label="Radius" valueMM={m.radius} units={u} min={m.width / 2 + 1} onChange={(radius) => set({ radius })} />
+          <PlainInput label="Arc" value={m.sweepDeg} unit="°" min={1} max={350} step={5} onChange={(sweepDeg) => set({ sweepDeg })} />
+        </>)}
+        {m.kind === 'turnout' && (<>
+          {/* Not a mirror: a mirrored path drops its shapeParams and stops
+              being a turnout, so the hand has to be part of the recipe. */}
+          <Select label="Hand" value={m.hand}
+            options={[['left', 'Left'], ['right', 'Right']]}
+            onChange={(hand) => set({ hand })} />
+          {/* The crotch comes out of the union as a 41° notch — no bit cuts it
+              and it is short grain both sides. This is the fillet in it. */}
+          <NumInput label="Crotch" valueMM={m.crotch} units={u} min={0} onChange={(crotch) => set({ crotch })} />
+        </>)}
+        <Select label={m.kind === 'turnout' ? 'Toe' : 'End A'} value={m.endA}
+          options={[['female', 'Socket'], ['male', 'Peg'], ['plain', 'Square']]}
+          onChange={(endA) => set({ endA })} />
+        <Select label={m.kind === 'turnout' ? 'Main' : 'End B'} value={m.endB}
+          options={[['male', 'Peg'], ['female', 'Socket'], ['plain', 'Square']]}
+          onChange={(endB) => set({ endB })} />
+        {m.kind === 'turnout' &&
+          <Select label="Branch" value={m.endC}
+            options={[['male', 'Peg'], ['female', 'Socket'], ['plain', 'Square']]}
+            onChange={(endC) => set({ endC })} />}
+        {/* Centreline assumes the groove width IS the cutter; outline is a
+            pocket for anything narrower. See trackGenerator.ts. */}
+        <Select label="Grooves" value={m.grooveMode}
+          options={[['centreline', 'Centreline'], ['outline', 'Outline']]}
+          onChange={(grooveMode) => set({ grooveMode })} />
+        <NumInput label="Width"  valueMM={m.width} units={u} min={10} onChange={(width) => set({ width })} />
+        <NumInput label="Gauge"  valueMM={m.gauge} units={u} min={1} onChange={(gauge) => set({ gauge })} />
+        <NumInput label="GrooveW" valueMM={m.grooveW} units={u} min={0.5} onChange={(grooveW) => set({ grooveW })} />
+        <NumInput label="Peg Ø"  valueMM={m.pegDia} units={u} min={1} onChange={(pegDia) => set({ pegDia })} />
+        <NumInput label="Neck W" valueMM={m.neckW} units={u} min={0.5} onChange={(neckW) => set({ neckW })} />
+        <NumInput label="Neck L" valueMM={m.neckL} units={u} min={0.5} onChange={(neckL) => set({ neckL })} />
+        {/* The socket is derived from the peg plus these two slacks, so it can
+            never be edited out of step with what has to go into it. */}
+        <NumInput label="Hole clr" valueMM={m.holeClear} units={u} min={0.05} onChange={(holeClear) => set({ holeClear })} />
+        <NumInput label="Throat clr" valueMM={m.throatClear} units={u} min={0.05} onChange={(throatClear) => set({ throatClear })} />
+        <p className="text-label text-gray-400 dark:text-neutral-500">
+          {m.kind === 'curve'
+            ? <>Chord {L(dm.pitch)} · inner {L(dm.innerRadius)} / outer {L(dm.outerRadius)}</>
+            : <>Pitch {L(dm.pitch)} · {L(dm.overall)} overall</>}
+          <br />
+          {m.kind === 'curve' && <>{dm.closesCircle
+            ? <>{Math.round(dm.perCircle)} make a circle</>
+            : <>{dm.perCircle.toFixed(2)} to a circle — does not close</>}<br /></>}
+          {/* Where the branch's outer groove crosses the straight's inner one.
+              It falls out of the gauge alone, so a shallower branch does not
+              move it — only a bigger radius does. */}
+          {m.kind === 'turnout' && <>
+            Frog {L(dm.frogDist)} from the toe, {dm.frogDeg.toFixed(1)}° round the branch
+            <br />
+            Branch steps {L(dm.divergeOffset)} aside over {m.sweepDeg}°
+            <br />
+          </>}
+          Socket Ø {L(dm.socketDia)}, {L(dm.throatW)} throat {L(dm.throatL)} long
+          <br />
+          Peg reaches {L(dm.pegReach)} into a {L(dm.socketDepth)} socket
+          <br />
+          Grooves {L(m.grooveW)} × {BRIO.grooveDepth} deep in {BRIO.thickness} stock, {L(dm.railMargin)} of rail outside
+          <br />
+          Double-click to split outline / grooves.
+        </p>
+        {dm.grooveOffTrack && <p className="text-label text-yellow-500">
+          Grooves run off the edge — gauge {L(m.gauge)} with {L(m.grooveW)} slots needs {L(m.gauge + m.grooveW)} of width.
+        </p>}
+        {dm.socketBreachesGroove && <p className="text-label text-yellow-500">
+          Socket breaks into a groove — the centre spine is {L(dm.spineMargin)}. Wider gauge, or a smaller hole.
+        </p>}
+        {dm.socketsTooDeep && <p className="text-label text-yellow-500">
+          Sockets are deeper than the piece is long — nothing solid left between them.
+        </p>}
+        {dm.pegTooThin && <p className="text-label text-yellow-500">
+          Neck is as wide as the head — the peg has no shoulder to hold on.
+        </p>}
+        {dm.frogPastEnd && <p className="text-label text-yellow-500">
+          Main leg ends inside the frog — it needs {L(dm.frogDist)} to finish the crossing.
+        </p>}
+        {dm.frogPastSweep && <p className="text-label text-yellow-500">
+          Branch stops before the frog at {dm.frogDeg.toFixed(1)}° — the two routes never separate.
+        </p>}
+        {dm.heelsFoul && <p className="text-label text-yellow-500">
+          Branch is only {L(dm.divergeOffset)} aside — less than the {L(m.width)} width, so the two
+          heels are in each other's stock. More sweep, or a tighter radius.
         </p>}
       </div>)
     }

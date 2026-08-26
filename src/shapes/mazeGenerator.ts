@@ -27,6 +27,27 @@
 // long winding corridors with few junctions, which is what a marble run wants
 // (a Prim/Kruskal maze is short and bushy). `seed` makes it reproducible;
 // `loops` reopens that fraction of the dead ends into loops.
+//
+// ─── Where you go in, where you come out ─────────────────────────────────────
+//
+// Cell centres on the outer ring lie ON the boundary of the w × h box, so a
+// dead end that lands there is a corridor running to the edge of the maze and
+// stopping — indistinguishable from a way in. A DFS maze leaves a dozen of
+// them, and a maze with a dozen entrances has none: nothing says where to drop
+// the marble.
+//
+// So exactly two are chosen — an entrance on the top row, an exit on the bottom
+// — and every other border dead end is trimmed back a cell, ending inside the
+// maze where it reads as the dead end it is. Trimming only ever removes leaf
+// links, so a spanning tree stays a spanning tree: still exactly one route from
+// the entrance to the exit, and no corridor is left stranded from the rest.
+//
+// The two that remain get a LEAD: one pitch of extra groove running straight
+// out past the boundary, which is what makes them read as openings rather than
+// as the two dead ends they would otherwise still look like. It also gives the
+// marble somewhere to be dropped in and somewhere to leave. The lead continues
+// the corridor's own polyline wherever it can, so entering is one unbroken cut;
+// delete it with the point-edit tool if the design does not want it.
 
 function f(n: number): string { return String(+n.toFixed(4)) }
 
@@ -134,6 +155,86 @@ function carveMaze(cols: number, rows: number, seed: number, loops: number): Uin
     }
   }
   return open
+}
+
+// ─── Entrance, exit, and the border dead ends that impersonate them ──────────
+
+/** Cells whose centres lie on the boundary of the w × h box. */
+function isBorderCell(i: number, j: number, cols: number, rows: number): boolean {
+  return i === 0 || j === 0 || i === cols - 1 || j === rows - 1
+}
+
+function degreeOf(
+  i: number, j: number, idx: ReturnType<typeof makeEdgeIndex>, open: Uint8Array,
+): number {
+  let d = 0
+  for (let dir = 0; dir < 4; dir++) {
+    const e = idx.at(i, j, dir)
+    if (e >= 0 && open[e]) d++
+  }
+  return d
+}
+
+// The way in (top row) and the way out (bottom row). A cell that is ALREADY a
+// dead end is preferred: buildTrails starts a trail at every dead end, so the
+// lead there extends the end of a trail and the entry stays one continuous
+// groove instead of a stub that has to be plunged on its own. Corners are
+// skipped where there is room — a lead leaving a corner points as plausibly
+// along one edge as the other.
+function pickEnds(
+  cols: number, rows: number, idx: ReturnType<typeof makeEdgeIndex>,
+  open: Uint8Array, rnd: () => number,
+): { entrance: number; exit: number } {
+  const pickOn = (j: number): number => {
+    const lo = cols > 2 ? 1 : 0
+    const hi = cols > 2 ? cols - 2 : cols - 1
+    const leaves: number[] = []
+    const any: number[] = []
+    for (let i = lo; i <= hi; i++) {
+      any.push(j * cols + i)
+      if (degreeOf(i, j, idx, open) === 1) leaves.push(j * cols + i)
+    }
+    const pool = leaves.length ? leaves : any
+    return pool[Math.min(pool.length - 1, Math.floor(rnd() * pool.length))]
+  }
+  // Top row is j = rows−1: cell j maps to y = p.y + j·dy and p.y is the BOTTOM
+  // of the box (CNC Y-up).
+  return { entrance: pickOn(rows - 1), exit: pickOn(0) }
+}
+
+// Cut every border dead end except the two chosen ends back off the boundary.
+// Removing a leaf's one link isolates that cell (it simply gets no groove) and
+// can leave its neighbour a leaf in turn, so the neighbour is re-examined —
+// which only ever walks along the border, since an interior dead end is exactly
+// what a maze is supposed to have.
+function trimBorderEnds(
+  cols: number, rows: number, idx: ReturnType<typeof makeEdgeIndex>,
+  open: Uint8Array, keep: Set<number>,
+): void {
+  const queue: number[] = []
+  for (let j = 0; j < rows; j++)
+    for (let i = 0; i < cols; i++)
+      if (isBorderCell(i, j, cols, rows)) queue.push(j * cols + i)
+
+  while (queue.length) {
+    const n = queue.pop()!
+    const i = n % cols, j = (n - i) / cols
+    if (keep.has(n) || !isBorderCell(i, j, cols, rows)) continue
+    let deg = 0, edge = -1, step = 0
+    for (let dir = 0; dir < 4; dir++) {
+      const e = idx.at(i, j, dir)
+      if (e < 0 || !open[e]) continue
+      deg++; edge = e; step = idx.step[dir]
+    }
+    if (deg !== 1) continue
+    const nb = n + step
+    const ni = nb % cols, nj = (nb - ni) / cols
+    // Never take the last corridor off an entrance or exit — its lead has to
+    // join something.
+    if (keep.has(nb) && degreeOf(ni, nj, idx, open) <= 1) continue
+    open[edge] = 0
+    queue.push(nb)
+  }
 }
 
 // Decompose the corridor graph into trails — walks that use every link exactly
@@ -295,17 +396,55 @@ export function generateMazeD(p: {
   const r = Math.max(0, Math.min(p.corner, Math.min(dx, dy) / 2))
 
   const idx = makeEdgeIndex(cols, rows)
+
+  // A stream of its own, so which cells become the ends is decided from the
+  // seed without disturbing the one that carved the maze.
+  const ends = pickEnds(cols, rows, idx, open, mulberry32(p.seed + 0x51ed))
+  trimBorderEnds(cols, rows, idx, open, new Set([ends.entrance, ends.exit]))
+
+  const isEnd = (n: number) => n === ends.entrance || n === ends.exit
+  const deadEnd = (n: number) => degreeOf(n % cols, (n - (n % cols)) / cols, idx, open) === 1
+  // Which way is out of the maze from a chosen end: the bottom row leaves
+  // downward, the top row upward.
+  const outward = (n: number) => ((n - (n % cols)) / cols === 0 ? -1 : 1)
+  const centreOf = (n: number) => {
+    const i = n % cols
+    return { x: p.x + i * dx, y: p.y + ((n - i) / cols) * dy }
+  }
+
   const subpaths: string[] = []
   for (const trail of buildTrails(cols, rows, open)) {
     const nodes = collapseStraights(trail)
-    const pts = nodes.map((n) => {
-      const i = n % cols
-      return { x: p.x + i * dx, y: p.y + ((n - i) / cols) * dy }
-    })
+    const pts = nodes.map(centreOf)
     extendIntoJunction(pts, nodes, cols, idx, open, r)
+    // Lead-in / lead-out. Only attached to a trail that genuinely ENDS at the
+    // chosen cell: a trail that stops on a junction has had its tip pushed past
+    // the centre by extendIntoJunction, and running the lead on from there
+    // would kink it. Those cases fall through to the stub below.
+    const last = nodes.length - 1
+    if (isEnd(nodes[0]) && deadEnd(nodes[0]))
+      pts.unshift({ x: pts[0].x, y: pts[0].y + outward(nodes[0]) * dy })
+    if (isEnd(nodes[last]) && deadEnd(nodes[last]))
+      pts.push({ x: pts[pts.length - 1].x, y: pts[pts.length - 1].y + outward(nodes[last]) * dy })
     const d = trailD(pts, r)
     if (d) subpaths.push(d)
   }
+
+  // The chosen cell sits mid-corridor: its lead is a groove of its own. It runs
+  // one fillet tangent PAST the cell centre when the corridor carries on in the
+  // lead's own direction, or a turn filleted there leaves a ridge across the
+  // mouth of it — the same closure extendIntoJunction makes for a branch.
+  for (const n of [ends.entrance, ends.exit]) {
+    if (deadEnd(n)) continue
+    const i = n % cols, j = (n - i) / cols
+    const away = outward(n)
+    const inward = away < 0 ? 3 : 2          // dir index of "further into the maze"
+    const e = idx.at(i, j, inward)
+    const c = centreOf(n)
+    const tip = e >= 0 && open[e] ? r : 0
+    subpaths.push(`M${f(c.x)},${f(c.y + away * dy)} L${f(c.x)},${f(c.y - away * tip)}`)
+  }
+
   // Open subpaths, no Z — this is a skeleton of corridors, not an outline.
   return subpaths.join(' ')
 }

@@ -16,6 +16,7 @@ import { camDims } from '../shapes/camGenerator'
 import type { EscapementSpec } from '../shapes/escapementGenerator'
 import EscapementInfoButton from './EscapementInfoButton'
 import { pendulumDims } from '../shapes/pendulumGenerator'
+import { trackDims, BRIO } from '../shapes/trackGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
@@ -659,6 +660,123 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
             Friction may not hold {dm.pressureAngleDeg.toFixed(1)}° — bigger base, or less rise.
           </span></>}
           {dm.handleTooShort && <><br /><span className="text-yellow-500">Lever inside the crest — no leverage.</span></>}
+        </div>
+      </>)
+    }
+    case 'track': {
+      const dm = trackDims(params)
+      const N = (mm: number) => fromMM(mm, u as 'mm' | 'in').toFixed(2)
+      const sel = fieldCls + ' cursor-pointer'
+      return (<>
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Kind</span>
+          <select value={params.kind} className={sel}
+            onChange={(e) => update({ ...params, kind: e.target.value as typeof params.kind })}>
+            <option value="straight">Straight</option>
+            <option value="curve">Curve</option>
+            <option value="turnout">Turnout</option>
+          </select>
+        </div>
+        {params.kind !== 'curve' &&
+          <EditField label="Len" valueMM={params.length} units={u} min={20} onChange={(length) => update({ ...params, length })} />}
+        {params.kind !== 'straight' &&
+          <EditField label="R" valueMM={params.radius} units={u} min={params.width / 2 + 1} onChange={(radius) => update({ ...params, radius })} />}
+        {params.kind !== 'straight' &&
+          <RawField label="Arc" value={params.sweepDeg} min={1} max={350} step={5} suffix="°" onChange={(sweepDeg) => update({ ...params, sweepDeg })} />}
+        {params.kind === 'straight' && <span />}
+        {params.kind === 'turnout' && (<>
+          <div className="col-span-2 flex items-center gap-1.5">
+            <span className={labelCls}>Hand</span>
+            {/* Not a mirror — a mirrored path drops its params and stops being
+                a turnout, so which way it goes has to be part of the recipe. */}
+            <select value={params.hand} className={sel}
+              onChange={(e) => update({ ...params, hand: e.target.value as typeof params.hand })}>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+          <EditField label="Crtch" valueMM={params.crotch} units={u} min={0} onChange={(crotch) => update({ ...params, crotch })} />
+          <span />
+        </>)}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>{params.kind === 'turnout' ? 'Toe' : 'End A'}</span>
+          <select value={params.endA} className={sel}
+            onChange={(e) => update({ ...params, endA: e.target.value as typeof params.endA })}>
+            <option value="female">Socket</option>
+            <option value="male">Peg</option>
+            <option value="plain">Square</option>
+          </select>
+        </div>
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>{params.kind === 'turnout' ? 'Main' : 'End B'}</span>
+          <select value={params.endB} className={sel}
+            onChange={(e) => update({ ...params, endB: e.target.value as typeof params.endB })}>
+            <option value="male">Peg</option>
+            <option value="female">Socket</option>
+            <option value="plain">Square</option>
+          </select>
+        </div>
+        {params.kind === 'turnout' &&
+          <div className="col-span-2 flex items-center gap-1.5">
+            <span className={labelCls}>Branch</span>
+            <select value={params.endC} className={sel}
+              onChange={(e) => update({ ...params, endC: e.target.value as typeof params.endC })}>
+              <option value="male">Peg</option>
+              <option value="female">Socket</option>
+              <option value="plain">Square</option>
+            </select>
+          </div>}
+        <div className="col-span-2 flex items-center gap-1.5">
+          <span className={labelCls}>Grv</span>
+          <select value={params.grooveMode} className={sel}
+            onChange={(e) => update({ ...params, grooveMode: e.target.value as typeof params.grooveMode })}>
+            <option value="centreline">Centreline</option>
+            <option value="outline">Outline</option>
+          </select>
+        </div>
+        <EditField label="W"    valueMM={params.width} units={u} min={10} onChange={(width) => update({ ...params, width })} />
+        <EditField label="Gau"  valueMM={params.gauge} units={u} min={1} onChange={(gauge) => update({ ...params, gauge })} />
+        <EditField label="GrvW" valueMM={params.grooveW} units={u} min={0.5} onChange={(grooveW) => update({ ...params, grooveW })} />
+        <EditField label="Peg"  valueMM={params.pegDia} units={u} min={1} onChange={(pegDia) => update({ ...params, pegDia })} />
+        <EditField label="NckW" valueMM={params.neckW} units={u} min={0.5} onChange={(neckW) => update({ ...params, neckW })} />
+        <EditField label="NckL" valueMM={params.neckL} units={u} min={0.5} onChange={(neckL) => update({ ...params, neckL })} />
+        {/* The socket is the peg plus these two slacks — see trackGenerator.ts.
+            Editing either one moves the hole and the throat together, so the
+            joint can never be left half-adjusted. */}
+        <EditField label="Hole" valueMM={params.holeClear} units={u} min={0.05} onChange={(holeClear) => update({ ...params, holeClear })} />
+        <EditField label="Thrt" valueMM={params.throatClear} units={u} min={0.05} onChange={(throatClear) => update({ ...params, throatClear })} />
+        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+          {params.kind === 'curve'
+            ? <>Chord {N(dm.pitch)} · inner {N(dm.innerRadius)} / outer {N(dm.outerRadius)}</>
+            : <>Pitch {N(dm.pitch)} · {N(dm.overall)} overall</>}
+          <br />
+          {params.kind === 'curve' && <>{dm.closesCircle
+            ? <>{Math.round(dm.perCircle)} make a circle</>
+            : <>{dm.perCircle.toFixed(2)} to a circle — does not close</>}<br /></>}
+          {params.kind === 'turnout' && <>
+            Frog {N(dm.frogDist)} from the toe · branch steps {N(dm.divergeOffset)} aside
+            <br />
+          </>}
+          Socket Ø {N(dm.socketDia)} · throat {N(dm.throatW)} × {N(dm.throatL)}
+          <br />
+          Peg reaches {N(dm.pegReach)} into a {N(dm.socketDepth)} socket
+          <br />
+          Grooves {N(params.grooveW)} × {BRIO.grooveDepth} deep, {N(dm.railMargin)} {u} of rail outside
+          {dm.grooveOffTrack && <><br /><span className="text-yellow-500">Grooves run off the edge of the track.</span></>}
+          {dm.socketBreachesGroove && <><br /><span className="text-yellow-500">
+            Socket breaks into a groove — {N(dm.spineMargin)} {u} of spine left.
+          </span></>}
+          {dm.socketsTooDeep && <><br /><span className="text-yellow-500">Sockets are deeper than the piece is long.</span></>}
+          {dm.pegTooThin && <><br /><span className="text-yellow-500">Neck is as wide as the head — no shoulder.</span></>}
+          {dm.frogPastEnd && <><br /><span className="text-yellow-500">
+            Main leg ends inside the frog — it needs {N(dm.frogDist)}.
+          </span></>}
+          {dm.frogPastSweep && <><br /><span className="text-yellow-500">
+            Branch stops before the frog at {dm.frogDeg.toFixed(1)}° — the routes never separate.
+          </span></>}
+          {dm.heelsFoul && <><br /><span className="text-yellow-500">
+            Branch is only {N(dm.divergeOffset)} aside — the two heels are in each other's stock.
+          </span></>}
         </div>
       </>)
     }

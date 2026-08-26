@@ -68,7 +68,7 @@ const FEATURES = [
   },
   {
     title: 'Shape tools',
-    desc: 'Pick a shape from the Draw tab. Click the canvas to place it at the default size, or drag to size it interactively. Tick From centre and a drag grows outward from where it started instead of running corner to corner — drag repeatedly from one point for concentric shapes. A gear, escapement or pendulum ignores the drag and places at the size its own parameters give it — those are set by module and tooth count, or by the beat, not by how far you drag. Edit parameters in the Properties panel.',
+    desc: 'Pick a shape from the Draw tab. Click the canvas to place it at the default size, or drag to size it interactively. Tick From centre and a drag grows outward from where it started instead of running corner to corner — drag repeatedly from one point for concentric shapes. A gear, escapement, pendulum or train track ignores the drag and places at the size its own parameters give it — those are set by module and tooth count, by the beat, or by the piece it has to connect to, not by how far you drag. Edit parameters in the Properties panel.',
   },
   {
     title: 'Pen tool',
@@ -91,8 +91,12 @@ const FEATURES = [
     desc: 'Under CAM Operations, the Path Tools row reshapes geometry rather than cutting it: Boolean (union, intersect, subtract), Offset, Pattern (linear or circular array), Tabs (holding tabs) and Corners (round, chamfer, dogbone).',
   },
   {
-    title: 'Timeline',
-    desc: 'The strip under the canvas records every action — shapes, edits, CAM operations, tabs, and stock changes — as chips. Click or drag across chips to travel to any point in time; the timeline is saved with the project. Undo (Ctrl+Z) steps back and discards the future when you make a new edit; clicking the timeline instead INSERTS new edits, keeping later events replayable on top. Hover a chip and click its ✕ to remove that action from history, or use the fold button to flatten old history into a snapshot. Both are permanent.',
+    title: 'Objects strip',
+    desc: 'The strip under the canvas holds one chip per thing in the document — every path, every clock, every operation. Click a chip to select what it stands for and reopen the editor that made it: a gear chip its module and tooth count, a boolean chip its union or subtract, a pocket chip its depth. Editing a thing changes its chip instead of adding another, and hovering a chip and clicking its ✕ deletes the thing itself. A group, a multi-part shape or a whole Generate is one chip; tabs and corner treatments get their own, attached to the path they belong to.',
+  },
+  {
+    title: 'Ops strip',
+    desc: 'The Ops tab of the same strip is the program rather than the document: one chip per toolpath, in the order the machine will run them, which is the order G-code is written in. Operations sharing a tool are drawn as one coloured band with a marker at every tool change; drag a chip or a whole band to reorder. When the program visits a tool more than once a −N TC button appears and gathers that tool\'s operations into one step so you load it once. Hover a chip to hide an operation (hidden operations are left out of exported G-code) or to delete it.',
   },
 ]
 

@@ -4,7 +4,7 @@ import {
   Shapes, Wrench, Square, Squircle, Signpost, Circle, Ellipse, Hexagon,
   Star, Heart, Pill, Shield, Orbit, Grid3x3, CookingPot, Cog, Snail, Type, PenTool, Copy, Import, SquaresUnite,
   SquareSquare, LayoutGrid, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
-  X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare, Group,
+  X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare, Group, TrainTrack,
 } from 'lucide-react'
 import { usePathsStore, clearCorners, outerGroupOf, type ImportedPath } from '../store/pathsStore'
 import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
@@ -38,7 +38,7 @@ const SHAPE_ICONS: Record<string, ChipIcon> = {
   rectangle: Square, roundrect: Squircle, inroundrect: Signpost, circle: Circle,
   ellipse: Ellipse, polygon: Hexagon, star: Star, heart: Heart, slot: Pill,
   shield: Shield, spirograph: Orbit, maze: Grid3x3, board: CookingPot, gear: Cog,
-  cam: Snail, escapement: Anchor, pendulum: Weight, text: Type,
+  cam: Snail, escapement: Anchor, pendulum: Weight, track: TrainTrack, text: Type,
 }
 
 // … and the CAM operations menu (MachinePanel AddOperationMenu)

@@ -44,7 +44,7 @@ const FRAC_CHARS: Record<string, string> = {
   '1/8': '⅛', '3/8': '⅜', '5/8': '⅝', '7/8': '⅞',
 }
 
-function formatInch(mm: number): string {
+function formatInch(mm: number, unicodeFractions: boolean): string {
   // Round to nearest 1/32"
   const n32 = Math.round((mm / 25.4) * 32)
   if (n32 === 0) return '0'
@@ -57,13 +57,30 @@ function formatInch(mm: number): string {
   const g    = gcd(rem, 32)
   const num  = rem / g
   const den  = 32 / g
-  const frac = FRAC_CHARS[`${num}/${den}`] ?? `${num}/${den}`
-  return whole > 0 ? `${sign}${whole}${frac}` : `${sign}${frac}`
+  const plain = `${num}/${den}`
+  const frac = unicodeFractions ? FRAC_CHARS[plain] ?? plain : plain
+  if (whole === 0) return `${sign}${frac}`
+  // A glyph sits tight against the whole number (2¾); typed-out text needs a space
+  // or "23/4" reads as twenty-three quarters.
+  return unicodeFractions && FRAC_CHARS[plain]
+    ? `${sign}${whole}${frac}`
+    : `${sign}${whole} ${frac}`
 }
 
-/** Format a CNC-relative mm value as a ruler label in the given display unit. */
-export function formatRulerLabel(mm: number, units: 'mm' | 'in'): string {
-  if (units === 'in') return formatInch(mm)
+/**
+ * Format a CNC-relative mm value as a ruler label in the given display unit.
+ *
+ * `unicodeFractions` picks ½/¼/⅛ glyphs where one exists. Only the tick labels
+ * want that: sixteenths and thirty-seconds have no glyph, so a run of values
+ * comes out half typeset and half typed ("⅛, 3/16, ¼"). Anywhere a single value
+ * has to read the same at every zoom, pass false and get plain text throughout.
+ */
+export function formatRulerLabel(
+  mm: number,
+  units: 'mm' | 'in',
+  unicodeFractions = true,
+): string {
+  if (units === 'in') return formatInch(mm, unicodeFractions)
   if (Math.abs(mm) < 0.001) return '0'
   // Use the fewest decimal places that round-trip the value (avoids "10.5" → "11").
   for (const d of [0, 1, 2, 3] as const) {
