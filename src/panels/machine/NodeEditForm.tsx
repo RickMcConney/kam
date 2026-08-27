@@ -159,7 +159,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
     <FormShell title="Corners" onClose={onClose}>
       {/* Selected path */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Path</div>
         {activePath ? (
           <PathChip path={activePath} label="selected" />
         ) : (
@@ -171,7 +171,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
 
       {/* Corner treatment section */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Corner Treatment</label>
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Corner Treatment</div>
         <div className="grid grid-cols-2 gap-1">
           {CORNER_TREATMENTS.map(({ type, label, desc }) => (
             <button
@@ -195,10 +195,10 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
       <div>
         {form.treatmentType !== 'none' && (
           <>
-            <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+            <label htmlFor="nodeedit-f3" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
               {form.treatmentType === 'dogbone' ? 'Tool Radius' : 'Radius'}
             </label>
-            <LengthInput
+            <LengthInput id="nodeedit-f3"
               valueMM={form.radiusMM}
               minMM={0.01}
               stepMM={0.5}
@@ -207,7 +207,7 @@ export function NodeEditForm({ onClose }: { onClose: () => void }) {
             />
           </>
         )}
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
           {form.treatmentType === 'none'
             ? 'Removes the treatment from the picked corners (or all corners if none are picked), restoring the original sharp corners.'
             : 'Click corner markers on the canvas to pick specific corners; with none picked, all sharp corners are treated. Treated corners (green) stay pickable — re-applying replaces their treatment. Use Undo to revert.'}

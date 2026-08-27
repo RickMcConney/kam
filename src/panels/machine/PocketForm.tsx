@@ -326,10 +326,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           The ids are what saved projects store, so they stay as they are. */}
       <ToggleRow label="Strategy" options={['hybrid', 'raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ hybrid: 'auto', adaptive2: 'adaptive' }} />
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="pocket-f1" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {adaptiveStrategy ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
-        <input
+        <input id="pocket-f1"
           type="range" min={adaptiveStrategy ? 5 : 10} max={adaptiveStrategy ? 60 : 90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
@@ -341,7 +341,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           direction matters for its own sake (grain, for instance). */}
       {(form.strategy === 'raster' || form.strategy === 'hybrid') && (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          <label htmlFor="pocket-angle" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
             Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{autoPassAngle ? 'auto' : `${form.passAngleDeg}°`}</span>
           </label>
           {form.strategy === 'hybrid' && (
@@ -349,11 +349,12 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
               <input type="checkbox" id="pocket-auto-angle" checked={form.autoAngle}
                 onChange={(e) => up('autoAngle', e.target.checked)} className="accent-blue-500" />
               <label htmlFor="pocket-auto-angle" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-                Auto <span className="text-gray-500 dark:text-neutral-500">(longest passes per area)</span>
+                Auto <span className="text-gray-600 dark:text-neutral-400">(longest passes per area)</span>
               </label>
             </div>
           )}
           <input
+            id="pocket-angle"
             type="range" min={0} max={180} step={5}
             value={form.passAngleDeg}
             disabled={autoPassAngle}
@@ -368,16 +369,16 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         maxDepthMM={selectedTool?.maxDepthMM} tool={selectedTool} startZMM={startZ.zMM} />
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Stock Allowance</label>
-        <LengthInput valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
+        <label htmlFor="pocket-stock-allowance" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Stock Allowance</label>
+        <LengthInput id="pocket-stock-allowance" valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
           onChangeMM={(v) => up('allowanceMM', v)} />
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Stock left on walls; negative grows the pocket.</p>
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">Stock left on walls; negative grows the pocket.</p>
       </div>
       <div className="flex items-center gap-2">
         <input type="checkbox" id="pocket-ramp-in" checked={form.rampIn}
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="pocket-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+          Ramp In <span className="text-gray-600 dark:text-neutral-400 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
       <FormError msg={errorMsg} />

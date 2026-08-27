@@ -75,7 +75,7 @@ function TeethRow({ label, teeth, locked, onLock, title }: {
           : `Solved: ${teeth} teeth. Click to hold it and let the others move`}
         className={`p-1 rounded border flex-shrink-0 transition-colors ${locked
           ? 'border-blue-500 bg-blue-500/20 text-blue-500'
-          : 'border-gray-400 dark:border-neutral-600 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300'}`}
+          : 'border-gray-400 dark:border-neutral-600 text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300'}`}
       >
         {locked ? <Lock size={11} /> : <LockOpen size={11} />}
       </button>
@@ -358,7 +358,7 @@ export default function ClockPanel() {
         </span>
         <button
           onClick={() => setClockPanelOpen(false)}
-          className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none"
+          className="text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none"
         >
           ✕
         </button>

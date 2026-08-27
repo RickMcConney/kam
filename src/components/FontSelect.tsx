@@ -185,7 +185,7 @@ export default function FontSelect({ value, onChange, previewText, className = '
             {previewSVG
               ? <span className="text-gray-800 dark:text-neutral-200"
                   dangerouslySetInnerHTML={{ __html: previewSVG }} />
-              : <span className="text-label text-gray-400 dark:text-neutral-500 italic">
+              : <span className="text-label text-gray-600 dark:text-neutral-400 italic">
                   {hoveredFamily ? 'Loading…' : 'Hover a font to preview'}
                 </span>
             }

@@ -167,7 +167,7 @@ function OpChip({ op, dragging, compact, onGrab }: {
           {op.status === 'generating' && <Loader2 size={10} className="animate-spin text-blue-400" />}
           {op.status === 'needs-update' && <AlertCircle size={10} className="text-amber-600 dark:text-amber-500" />}
           {op.status === 'error' && <AlertCircle size={10} className="text-red-600 dark:text-red-500" />}
-          {hidden && <EyeOff size={10} className="text-gray-400 dark:text-neutral-500" />}
+          {hidden && <EyeOff size={10} className="text-gray-600 dark:text-neutral-400" />}
         </>}
         {compact && op.status === 'generating' && <Loader2 size={10} className="animate-spin text-blue-400" />}
       </span>
@@ -386,7 +386,7 @@ export default function OperationsPanel() {
             <div className="absolute top-1 bottom-1 w-0.5 bg-blue-500 rounded pointer-events-none z-10" style={{ left: dropX }} />
           )}
           {operations.length === 0 ? (
-            <span className="self-center text-[13px] text-gray-400 dark:text-neutral-500">
+            <span className="self-center text-[13px] text-gray-600 dark:text-neutral-400">
               No operations yet — generate a toolpath from CAM Operations in the Draw tab.
             </span>
           ) : (

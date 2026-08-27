@@ -28,7 +28,7 @@ const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body tr
 function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
   return (
     <div className="px-3 py-2 space-y-2 border-b border-gray-300 dark:border-neutral-700">
-      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">CAM Operations</p>
+      <p className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider">CAM Operations</p>
       <div className="grid grid-cols-3 gap-1">
         {([
           ['profile', 'Profile', 'Cut along path edge', <Circle size={ICON.md} />],
@@ -47,7 +47,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           </button>
         ))}
       </div>
-      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Path Tools</p>
+      <p className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider">Path Tools</p>
       <div className="grid grid-cols-3 gap-1">
         {([
           ['boolean', 'Boolean', 'Union, intersect, or subtract paths', <SquaresUnite size={ICON.md} />],

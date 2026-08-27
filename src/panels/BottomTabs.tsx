@@ -19,7 +19,7 @@ export function BottomTabs() {
         'px-2 py-0.5 text-[13px] rounded transition-colors',
         bottomTab === id
           ? 'bg-white dark:bg-neutral-700 text-gray-800 dark:text-neutral-100 shadow-sm'
-          : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
+          : 'text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200',
       ].join(' ')}
     >
       {label}

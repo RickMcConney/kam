@@ -401,7 +401,7 @@ export default function TimelinePanel() {
     return (
       <div className="border-t border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0 select-none">
         <button
-          className="flex items-center gap-1 px-2 h-7 text-[13px] text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
+          className="flex items-center gap-1 px-2 h-7 text-[13px] text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200"
           onClick={() => setTimelineOpen(true)}
           title="Show objects"
         >
@@ -412,7 +412,7 @@ export default function TimelinePanel() {
     )
   }
 
-  const btnCls = 'p-1 rounded text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-700 disabled:opacity-30 disabled:pointer-events-none'
+  const btnCls = 'p-1 rounded text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-700 disabled:opacity-30 disabled:pointer-events-none'
   const selSet = new Set(selectedIds)
 
   return (
@@ -428,7 +428,7 @@ export default function TimelinePanel() {
           className="timeline-strip flex-1 flex items-center gap-1 overflow-x-auto px-1 min-w-0 h-full cursor-pointer"
         >
           {chips.length === 0 && (
-            <span className="ml-1.5 text-[13px] text-gray-400 dark:text-neutral-500">
+            <span className="ml-1.5 text-[13px] text-gray-600 dark:text-neutral-400">
               Nothing yet — draw or import a path and it appears here.
             </span>
           )}
@@ -443,7 +443,7 @@ export default function TimelinePanel() {
           ))}
         </div>
 
-        <span className="text-[13px] text-gray-500 dark:text-neutral-400 font-mono px-1 flex-shrink-0">
+        <span className="text-[13px] text-gray-600 dark:text-neutral-400 font-mono px-1 flex-shrink-0">
           {chips.length}
         </span>
         <button className={btnCls} title="Hide objects" onClick={() => setTimelineOpen(false)}>

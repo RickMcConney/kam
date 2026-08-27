@@ -126,7 +126,7 @@ export default function HelpPanel() {
           <h2 className="text-base font-semibold text-gray-900 dark:text-neutral-100">FreazyKam Help</h2>
           <button
             onClick={() => setHelpOpen(false)}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-neutral-200 transition-colors"
+            className="text-gray-600 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors"
           >
             <X size={18} />
           </button>
@@ -143,7 +143,7 @@ export default function HelpPanel() {
             <div className="grid grid-cols-2 gap-x-8 gap-y-5">
               {SHORTCUTS.map((section) => (
                 <div key={section.title}>
-                  <div className="text-xs font-medium text-gray-500 dark:text-neutral-500 mb-1.5">{section.title}</div>
+                  <div className="text-xs font-medium text-gray-600 dark:text-neutral-400 mb-1.5">{section.title}</div>
                   <table className="w-full text-sm">
                     <tbody>
                       {section.rows.map((row) => (

@@ -67,7 +67,7 @@ export default function ExportPreflightDialog({
             <RigIcon size={30} className={rig.color} />
             <span><span className={rig.color}>{rig.label}</span> · G-code review</span>
           </h2>
-          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 dark:hover:text-neutral-200 transition-colors">
+          <button onClick={onCancel} className="text-gray-600 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors">
             <X size={18} />
           </button>
         </div>
@@ -107,7 +107,7 @@ export default function ExportPreflightDialog({
 
               {/* Machine settings */}
               <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Machine</h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-neutral-400 mb-1">Machine</h3>
                 <Row label="Post-processor" value={machine.profileName} />
                 <Row label="Output units" value={machine.outputUnits === 'in' ? 'inch' : 'mm'} />
                 <Row label="Work origin (XY)" value={machine.origin.replace(/-/g, ' ')} />
@@ -125,14 +125,14 @@ export default function ExportPreflightDialog({
 
               {/* Stock */}
               <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Stock</h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-neutral-400 mb-1">Stock</h3>
                 <Row label="Size" value={`${fmtLen(stock.widthMM, units, 1)} × ${fmtLen(stock.heightMM, units, 1)}`} />
                 <Row label="Thickness" value={fmtLen(stock.thicknessMM, units, 1)} />
               </section>
 
               {/* Job summary */}
               <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">Job</h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-neutral-400 mb-1">Job</h3>
                 <Row label="Operations" value={String(job.operationCount)} />
                 <Row label="Estimated run time" value={fmtDuration(job.estimatedTimeS)} />
                 {ext && <Row label="Deepest cut" value={fmtLen(job.deepestCutMM, units, 1)} />}
@@ -140,7 +140,7 @@ export default function ExportPreflightDialog({
 
               {/* Tools */}
               <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-neutral-500 mb-1">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-neutral-400 mb-1">
                   Tools ({job.tools.length})
                 </h3>
                 <div className="flex flex-col gap-0.5">
@@ -155,7 +155,7 @@ export default function ExportPreflightDialog({
                 </div>
               </section>
 
-              <p className="text-[12px] text-gray-400 dark:text-neutral-500 leading-relaxed border-t border-gray-200 dark:border-neutral-700 pt-3">
+              <p className="text-[12px] text-gray-600 dark:text-neutral-400 leading-relaxed border-t border-gray-200 dark:border-neutral-700 pt-3">
                 Simulation is not a substitute for a dry run. Verify the work origin, Z-zero, and tool before cutting.
               </p>
             </>
@@ -166,15 +166,16 @@ export default function ExportPreflightDialog({
         <div className="flex flex-col gap-2 px-5 py-3 border-t border-gray-200 dark:border-neutral-700 flex-shrink-0">
           {canSplit && splitByTool && (
             <div className="flex items-center gap-2">
-              <label className="text-[13px] text-gray-600 dark:text-neutral-400 whitespace-nowrap">File prefix</label>
+              <label htmlFor="export-file-prefix" className="text-[13px] text-gray-600 dark:text-neutral-400 whitespace-nowrap">File prefix</label>
               <input
+                id="export-file-prefix"
                 value={prefix}
                 onChange={(e) => setPrefix(e.target.value)}
                 placeholder="gcode"
                 autoFocus
                 className="flex-1 min-w-0 text-sm bg-gray-100 dark:bg-neutral-700 text-gray-900 dark:text-neutral-100 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
-              <span className="text-[12px] text-gray-400 dark:text-neutral-500 font-mono whitespace-nowrap">_1_tool.gcode</span>
+              <span className="text-[12px] text-gray-600 dark:text-neutral-400 font-mono whitespace-nowrap">_1_tool.gcode</span>
             </div>
           )}
           <div className="flex items-center justify-between gap-3">

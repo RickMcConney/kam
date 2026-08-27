@@ -66,17 +66,17 @@ export default function GcodeViewer({ fill = false }: { fill?: boolean }) {
       {/* Header */}
       <div className="flex items-center px-3 py-1 border-b border-gray-300 dark:border-neutral-700 flex-shrink-0 bg-gray-50 dark:bg-neutral-900">
         <span className="text-body text-gray-500 dark:text-neutral-400 font-medium">G-code Viewer</span>
-        <span className="ml-2 text-body text-gray-400 dark:text-neutral-500">{gcodeLines.length} lines</span>
+        <span className="ml-2 text-body text-gray-600 dark:text-neutral-400">{gcodeLines.length} lines</span>
         <button
           onClick={copyToClipboard}
-          className="ml-auto text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+          className="ml-auto text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
           title="Copy to clipboard"
         >
           {copied ? <Check size={ICON.sm} className="text-green-500" /> : <Copy size={ICON.sm} />}
         </button>
         <button
           onClick={toggleGcodeViewer}
-          className="ml-2 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+          className="ml-2 text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
           title="Close"
         >
           <X size={ICON.sm} />
@@ -112,10 +112,10 @@ export default function GcodeViewer({ fill = false }: { fill?: boolean }) {
                     isActive ? 'bg-yellow-500/20' : 'hover:bg-gray-100 dark:hover:bg-neutral-800',
                   ].join(' ')}
                 >
-                  <span className="text-gray-400 dark:text-neutral-500 shrink-0 text-right select-none mr-3" style={{ minWidth: `${lineNumCh}ch` }}>
+                  <span className="text-gray-600 dark:text-neutral-400 shrink-0 text-right select-none mr-3" style={{ minWidth: `${lineNumCh}ch` }}>
                     {lineIdx + 1}
                   </span>
-                  <span className={isActive ? 'text-yellow-100' : 'text-gray-400 dark:text-neutral-500'}>
+                  <span className={isActive ? 'text-yellow-100' : 'text-gray-600 dark:text-neutral-400'}>
                     {line}
                   </span>
                 </div>

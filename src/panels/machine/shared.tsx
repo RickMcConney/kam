@@ -1,6 +1,6 @@
 // Shared widgets used by the operation forms (extracted from MachinePanel — tofix.md R1).
 // ─── Shared sub-components ───────────────────────────────────────────────────
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useId } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { FRACTION_HINT } from '../../components/parseNumeric'
 import { ICON } from '../../theme'
@@ -56,7 +56,7 @@ export function FormShell({ title, onClose, children }: { title: string; onClose
     <div className="border border-gray-400 dark:border-neutral-600 rounded-lg mx-3 mt-3 mb-2 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 bg-gray-200 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-600">
         <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{title}</span>
-        <button onClick={onClose} className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none">✕</button>
+        <button onClick={onClose} className="text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none">✕</button>
       </div>
       <div className="p-3 space-y-2.5">{children}</div>
     </div>
@@ -71,7 +71,7 @@ export function PathChip({ path, label }: { path: ImportedPath; label?: string }
     <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
       <span className="truncate">{path.name}</span>
-      {label && <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">({label})</span>}
+      {label && <span className="text-gray-600 dark:text-neutral-400 flex-shrink-0">({label})</span>}
     </div>
   )
 }
@@ -83,9 +83,9 @@ export function PathListSection({ count, children }: { count: number; children: 
   if (count === 0) return null
   return (
     <div className="pt-1 border-t border-gray-300 dark:border-neutral-700">
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+      <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
         Paths{count > 1 && <span className="normal-case text-gray-500 dark:text-neutral-400"> ({count})</span>}
-      </label>
+      </div>
       <div className="space-y-0.5">{children}</div>
     </div>
   )
@@ -113,10 +113,12 @@ export function ToolSelector({ tools, value, onChange }: {
   onChange: (id: string) => void
 }) {
   const units = useWorkpieceStore((s) => s.units)
+  const id = useId()
   return (
     <div>
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Tool</label>
+      <label className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1" htmlFor={id}>Tool</label>
       <select
+        id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={tools.length === 0}
@@ -138,10 +140,11 @@ export function ToggleRow<T extends string>({ label, options, value, onChange, l
   onChange: (v: T) => void
   labels?: Partial<Record<T, string>>
 }) {
+  const groupId = useId()
   return (
     <div>
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{label}</label>
-      <div className="flex gap-1">
+      <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1" id={groupId}>{label}</div>
+      <div className="flex gap-1" role="group" aria-labelledby={groupId}>
         {options.map((o) => (
           <button key={o} onClick={() => onChange(o)}
             className={[
@@ -171,7 +174,9 @@ export const FIELD_CLS = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gr
 // wrong (an inch-mode `min={0.1}` is a 2.54 mm floor, not 0.1 mm). Form state stays in mm
 // throughout; only the display changes, so saved defaults and generated toolpaths are
 // unaffected by the toggle.
-export function LengthInput({ valueMM, onChangeMM, minMM, maxMM, stepMM = 0.5, className }: {
+export function LengthInput({ id, valueMM, onChangeMM, minMM, maxMM, stepMM = 0.5, className }: {
+  /** Forwarded to the underlying input so a <label htmlFor> can point at it. */
+  id?: string
   valueMM: number
   onChangeMM: (mm: number) => void
   minMM?: number
@@ -182,6 +187,7 @@ export function LengthInput({ valueMM, onChangeMM, minMM, maxMM, stepMM = 0.5, c
   const units = useWorkpieceStore((s) => s.units)
   return (
     <NumericInput
+      id={id}
       value={fromMM(valueMM, units)}
       min={minMM === undefined ? undefined : fromMM(minMM, units)}
       max={maxMM === undefined ? undefined : fromMM(maxMM, units)}
@@ -199,14 +205,14 @@ export function AutoStepField({ label, valueMM }: { label: string; valueMM: numb
   const units = useWorkpieceStore((s) => s.units)
   return (
     <div>
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+      <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
         {label} <span className="text-blue-500 dark:text-blue-400 normal-case">(auto)</span>
-      </label>
+      </div>
       <div className="flex items-center gap-1">
         <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
           {lenValue(valueMM, units)}
         </div>
-        <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>
+        <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{units}</span>
       </div>
     </div>
   )
@@ -251,15 +257,17 @@ export function StartRow({ value, onChange, resolved, opId }: {
   const mode = value ?? { mode: 'auto' as const }
   const selected = mode.mode === 'op' ? `op:${mode.opId}` : mode.mode
 
+  const startId = useId()
   return (
     <div>
-      <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+      <label className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1" htmlFor={startId}>
         Start <span className={`normal-case ${resolved.zMM < 0 ? 'text-blue-500 dark:text-blue-400' : 'text-gray-500 dark:text-neutral-400'}`}>
           Z {fmtLen(resolved.zMM, units)}
         </span>
       </label>
       <div className="flex items-center gap-1">
         <select
+          id={startId}
           value={selected}
           onChange={(e) => {
             const v = e.target.value
@@ -290,7 +298,7 @@ export function StartRow({ value, onChange, resolved, opId }: {
           overlapping earlier cut) vs "reaches uncut stock" (overlapping, but this cut
           extends past its edge). */}
       {mode.mode === 'auto' && (
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">{resolved.label}</p>
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">{resolved.label}</p>
       )}
       {mode.mode === 'manual' && mode.zMM < 0 && (
         <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
@@ -328,11 +336,13 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
   // Guard against plunging past the bottom of the stock into the spoilboard.
   const pastStockMM = thicknessMM > 0 ? totalDepthMM - thicknessMM : 0
   const cutsPastStock = pastStockMM > 0.001
+  const depthId = useId()
+  const stepId = useId()
   return (
     <div className="grid grid-cols-2 gap-2">
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth</label>
-        <LengthInput valueMM={depthMM} minMM={0.01} stepMM={0.5} onChangeMM={onDepth} />
+        <label className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1" htmlFor={depthId}>Depth</label>
+        <LengthInput id={depthId} valueMM={depthMM} minMM={0.01} stepMM={0.5} onChangeMM={onDepth} />
         {depthExceeds && (
           <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">
             <AlertCircle size={10} className="shrink-0" />
@@ -350,8 +360,8 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
         <AutoStepField label="Step Down" valueMM={autoStepDownMM} />
       ) : (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
-          <LengthInput valueMM={stepDownMM} minMM={0.01} stepMM={0.5} onChangeMM={onStep} />
+          <label className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1" htmlFor={stepId}>Step Down</label>
+          <LengthInput id={stepId} valueMM={stepDownMM} minMM={0.01} stepMM={0.5} onChangeMM={onStep} />
         </div>
       )}
     </div>

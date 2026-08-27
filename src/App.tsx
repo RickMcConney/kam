@@ -40,7 +40,7 @@ function MainWorkspace() {
   const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab)
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <main className="flex-1 flex flex-col overflow-hidden">
       {/* Tab bar */}
       <div className="flex border-b border-gray-300 dark:border-neutral-700 bg-gray-200 dark:bg-neutral-800 flex-shrink-0">
         {WORKSPACE_TABS.map((tab) => (
@@ -51,7 +51,7 @@ function MainWorkspace() {
               'px-4 py-1.5 text-body border-r border-gray-300 dark:border-neutral-700 transition-colors',
               workspaceTab === tab.id
                 ? 'bg-gray-50 dark:bg-neutral-900 text-gray-900 dark:text-neutral-100 border-b-2 border-b-blue-500 -mb-px'
-                : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-800',
+                : 'text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-800',
             ].join(' ')}
           >
             {tab.label}
@@ -64,13 +64,13 @@ function MainWorkspace() {
         {/* Canvas + overlays */}
         <div className="flex-1 relative overflow-hidden">
           {workspaceTab === '2d' && (
-            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 dark:text-neutral-500 text-sm">Loading canvas…</div>}>
+            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-600 dark:text-neutral-400 text-sm">Loading canvas…</div>}>
               <CanvasStage />
             </Suspense>
           )}
 
           {workspaceTab === '3d' && (
-            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 dark:text-neutral-500 text-sm">Loading 3D view…</div>}>
+            <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-600 dark:text-neutral-400 text-sm">Loading 3D view…</div>}>
               <ThreeView />
             </Suspense>
           )}
@@ -84,7 +84,7 @@ function MainWorkspace() {
           </Suspense>
         )}
       </div>
-    </div>
+    </main>
   )
 }
 

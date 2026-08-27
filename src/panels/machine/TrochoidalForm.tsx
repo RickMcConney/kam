@@ -198,31 +198,31 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       <ToggleRow label="Direction" options={['climb', 'conventional'] as CuttingDirection[]} value={form.direction} onChange={(v) => up('direction', v)} />
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Loop Amplitude</label>
-          <LengthInput valueMM={form.trochRadiusMM} minMM={0.1} stepMM={0.1}
+          <label htmlFor="troch-loop-amplitude" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Loop Amplitude</label>
+          <LengthInput id="troch-loop-amplitude" valueMM={form.trochRadiusMM} minMM={0.1} stepMM={0.1}
             onChangeMM={(v) => up('trochRadiusMM', v)} />
         </div>
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step / Loop</label>
-          <LengthInput valueMM={form.trochStepMM} minMM={0.01} stepMM={0.05}
+          <label htmlFor="troch-step-loop" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Step / Loop</label>
+          <LengthInput id="troch-step-loop" valueMM={form.trochStepMM} minMM={0.01} stepMM={0.05}
             onChangeMM={(v) => up('trochStepMM', v)} />
         </div>
       </div>
-      <p className="text-label text-gray-400 dark:text-neutral-500 -mt-1">
+      <p className="text-label text-gray-600 dark:text-neutral-400 -mt-1">
         Cuts {fmtLen(form.trochRadiusMM * 2, units)} wide · {selectedTool ? Math.round(form.trochStepMM / selectedTool.diameterMM * 100) : '—'}% tool dia per loop
       </p>
       <div className="flex items-center gap-2">
         <input type="checkbox" id="troch-ramp-in" checked={form.rampIn}
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="troch-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(spiral down over 2× dia, 50% feed)</span>
+          Ramp In <span className="text-gray-600 dark:text-neutral-400 normal-case">(spiral down over 2× dia, 50% feed)</span>
         </label>
       </div>
       <div className="flex items-center gap-2">
         <input type="checkbox" id="troch-finishing" checked={form.finishingPass}
           onChange={(e) => up('finishingPass', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="troch-finishing" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Finishing pass <span className="text-gray-500 dark:text-neutral-500 normal-case">(clean sweep after loops)</span>
+          Finishing pass <span className="text-gray-600 dark:text-neutral-400 normal-case">(clean sweep after loops)</span>
         </label>
       </div>
       <FormError msg={errorMsg} />

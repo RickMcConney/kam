@@ -1,3 +1,4 @@
+import React, { useId } from 'react'
 import { Copy, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { ICON } from '../theme'
 import {
@@ -12,7 +13,7 @@ const inputCls =
 const textareaCls =
   'w-full bg-gray-100 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-800 dark:text-neutral-200 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y min-h-[64px]'
 
-const labelCls = 'block text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1'
+const labelCls = 'block text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1'
 
 function Field({
   label,
@@ -21,13 +22,16 @@ function Field({
 }: {
   label: string
   hint?: string
-  children: React.ReactNode
+  /** Exactly one form control — Field owns the id and injects it, so the label
+   *  can point at it without every call site having to invent one. */
+  children: React.ReactElement
 }) {
+  const id = useId()
   return (
     <div>
-      <label className={labelCls}>{label}</label>
-      {hint && <p className="text-label text-gray-400 dark:text-neutral-500 mb-1">{hint}</p>}
-      {children}
+      <label className={labelCls} htmlFor={id}>{label}</label>
+      {hint && <p className="text-label text-gray-600 dark:text-neutral-400 mb-1">{hint}</p>}
+      {React.cloneElement(children, { id } as Partial<unknown>)}
     </div>
   )
 }
@@ -125,15 +129,15 @@ export default function PostProcessorPanel() {
       {/* Profile list sidebar */}
       <div className="w-52 flex flex-col flex-shrink-0 border-r border-gray-300 dark:border-neutral-700">
         <div className="flex items-center justify-between px-3 py-2 border-b border-gray-300 dark:border-neutral-700 flex-shrink-0">
-          <span className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Profiles</span>
+          <span className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider">Profiles</span>
           <div className="flex gap-1">
-            <button onClick={addProfile} title="New profile" className="p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors">
+            <button onClick={addProfile} title="New profile" className="p-0.5 rounded text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors">
               <Plus size={ICON.sm} />
             </button>
-            <button onClick={() => duplicateProfile(activeId)} title="Duplicate profile" className="p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors">
+            <button onClick={() => duplicateProfile(activeId)} title="Duplicate profile" className="p-0.5 rounded text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors">
               <Copy size={ICON.sm} />
             </button>
-            <button onClick={() => deleteProfile(activeId)} disabled={profiles.length <= 1} title={profiles.length <= 1 ? 'Cannot delete the last profile' : 'Delete profile'} className="p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            <button onClick={() => deleteProfile(activeId)} disabled={profiles.length <= 1} title={profiles.length <= 1 ? 'Cannot delete the last profile' : 'Delete profile'} className="p-0.5 rounded text-gray-600 dark:text-neutral-400 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
               <Trash2 size={ICON.sm} />
             </button>
           </div>
@@ -149,7 +153,7 @@ export default function PostProcessorPanel() {
               ].join(' ')}
             >
               <div className="font-medium truncate">{p.name}</div>
-              <div className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">{p.unitMode}</div>
+              <div className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">{p.unitMode}</div>
             </button>
           ))}
         </div>
@@ -161,7 +165,7 @@ export default function PostProcessorPanel() {
           <span className="flex items-center gap-2">
             <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">{active.name}</span>
             {active.builtin && (
-              <span className="text-label text-gray-400 dark:text-neutral-500 border border-gray-300 dark:border-neutral-600 rounded px-1.5 py-0.5 uppercase tracking-wider">Built-in</span>
+              <span className="text-label text-gray-600 dark:text-neutral-400 border border-gray-300 dark:border-neutral-600 rounded px-1.5 py-0.5 uppercase tracking-wider">Built-in</span>
             )}
           </span>
           <span className="flex items-center gap-3">
@@ -169,12 +173,12 @@ export default function PostProcessorPanel() {
               <button
                 onClick={() => resetProfile(active.id)}
                 title="Reset this built-in profile to its factory defaults"
-                className="flex items-center gap-1 text-label text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+                className="flex items-center gap-1 text-label text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
               >
                 <RotateCcw size={ICON.sm} /> Reset
               </button>
             )}
-            <span className="text-label text-gray-400 dark:text-neutral-500">
+            <span className="text-label text-gray-600 dark:text-neutral-400">
               Placeholders: {'{x}'} {'{y}'} {'{z}'} {'{f}'} {'{s}'}
             </span>
           </span>

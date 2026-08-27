@@ -188,13 +188,13 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     <FormShell title={editOp ? 'Edit 3D Profile' : 'New 3D Profile'} onClose={onClose}>
       {/* STL source path */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">STL Model</label>
+        <label htmlFor="p3d-stl-model" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">STL Model</label>
         {stlPaths.length === 0 ? (
           <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> Import an STL file first
           </p>
         ) : (
-          <select
+          <select id="p3d-stl-model"
             value={form.pathId}
             onChange={(e) => up('pathId', e.target.value)}
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
@@ -210,10 +210,10 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
       {/* ── Roughing pass (optional) ─────────────────────────────────────────── */}
       <div className="border border-gray-400 dark:border-neutral-700 rounded p-2 space-y-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            Roughing Tool <span className="normal-case text-gray-400 dark:text-neutral-600">(optional)</span>
+          <label htmlFor="p3d-roughing-tool-optional" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
+            Roughing Tool <span className="normal-case text-gray-600 dark:text-neutral-400">(optional)</span>
           </label>
-          <select
+          <select id="p3d-roughing-tool-optional"
             value={form.roughingToolId}
             onChange={(e) => up('roughingToolId', e.target.value)}
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
@@ -228,19 +228,19 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         {hasRoughing && (
           <>
             <div>
-              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+              <label htmlFor="p3d-roughing-stepover" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
                 Roughing Stepover
               </label>
               <div className="flex items-center gap-1">
-                <NumericInput
+                <NumericInput id="p3d-roughing-stepover"
                   value={form.roughingStepoverPercent}
                   min={5} max={100} step={5}
                   onChange={(v) => up('roughingStepoverPercent', v)}
                   className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
-                <span className="text-label text-gray-400 dark:text-neutral-500">%</span>
+                <span className="text-label text-gray-600 dark:text-neutral-400">%</span>
                 {roughingTool && (
-                  <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">
+                  <span className="text-label text-gray-600 dark:text-neutral-400 ml-1">
                     ({fmtLen(roughingTool.diameterMM * form.roughingStepoverPercent / 100, units)})
                   </span>
                 )}
@@ -250,19 +250,19 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
               <AutoStepField label="Roughing Step Down" valueMM={effectiveStepDownMM(roughingTool, form.roughingStepDownMM, form.maxDepthMM)} />
             ) : (
               <div>
-                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+                <label htmlFor="p3d-roughing-step-down" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
                   Roughing Step Down
                 </label>
-                <LengthInput valueMM={form.roughingStepDownMM} minMM={0.1} maxMM={50} stepMM={0.5}
+                <LengthInput id="p3d-roughing-step-down" valueMM={form.roughingStepDownMM} minMM={0.1} maxMM={50} stepMM={0.5}
                   onChangeMM={(v) => up('roughingStepDownMM', v)} />
               </div>
             )}
             <div>
-              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+              <label htmlFor="p3d-roughing-angle" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
                 Roughing Angle
               </label>
               <div className="flex items-center gap-1">
-                <input
+                <input id="p3d-roughing-angle"
                   type="number"
                   value={form.roughingRasterAngleDeg === '' ? '' : form.roughingRasterAngleDeg}
                   min={-180} max={180} step={15}
@@ -270,14 +270,14 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                   onChange={(e) => up('roughingRasterAngleDeg', e.target.value === '' ? '' : Number(e.target.value))}
                   className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
-                <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
+                <span className="text-label text-gray-600 dark:text-neutral-400">°</span>
               </div>
             </div>
             <div>
-              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+              <label htmlFor="p3d-stock-allowance" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
                 Stock Allowance
               </label>
-              <LengthInput valueMM={form.roughingStockAllowanceMM} minMM={0} maxMM={2} stepMM={0.1}
+              <LengthInput id="p3d-stock-allowance" valueMM={form.roughingStockAllowanceMM} minMM={0} maxMM={2} stepMM={0.1}
                 onChangeMM={(v) => up('roughingStockAllowanceMM', v)} />
             </div>
             <p className="text-label text-blue-400 dark:text-blue-500">
@@ -289,10 +289,10 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
       {/* ── Finishing bit ────────────────────────────────────────────────────── */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="p3d-f7" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {hasRoughing ? 'Finishing Tool' : 'Tool'}
         </label>
-        <select
+        <select id="p3d-f7"
           value={form.toolId}
           onChange={(e) => handleToolChange(e.target.value)}
           disabled={ballNoseTools.length === 0}
@@ -312,19 +312,19 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
       {/* Stepover */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="p3d-xy" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {hasRoughing ? 'Finishing Stepover' : 'Stepover'} (XY)
         </label>
         <div className="flex items-center gap-1">
-          <NumericInput
+          <NumericInput id="p3d-xy"
             value={form.stepoverPercent}
             min={1} max={100} step={5}
             onChange={(v) => up('stepoverPercent', v)}
             className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
           />
-          <span className="text-label text-gray-400 dark:text-neutral-500">%</span>
+          <span className="text-label text-gray-600 dark:text-neutral-400">%</span>
           {selectedTool && (
-            <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">
+            <span className="text-label text-gray-600 dark:text-neutral-400 ml-1">
               ({fmtLen(selectedTool.diameterMM * form.stepoverPercent / 100, units)})
             </span>
           )}
@@ -333,22 +333,22 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
 
       {/* Raster angle */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Angle</label>
+        <label htmlFor="p3d-angle" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Angle</label>
         <div className="flex items-center gap-1">
-          <NumericInput
+          <NumericInput id="p3d-angle"
             value={form.rasterAngleDeg}
             min={-90} max={90} step={15}
             onChange={(v) => up('rasterAngleDeg', v)}
             className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
           />
-          <span className="text-label text-gray-400 dark:text-neutral-500">°</span>
+          <span className="text-label text-gray-600 dark:text-neutral-400">°</span>
         </div>
       </div>
 
       {/* Max depth */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
-        <LengthInput valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
+        <label htmlFor="p3d-max-depth" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Max Depth</label>
+        <LengthInput id="p3d-max-depth" valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
           onChangeMM={(v) => up('maxDepthMM', v)} />
         {selectedTool && form.maxDepthMM > selectedTool.maxDepthMM && (
           <p className="text-label text-amber-600 dark:text-amber-500 flex items-center gap-1 mt-0.5">

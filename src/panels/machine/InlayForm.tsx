@@ -427,8 +427,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       )}
       {/* Roughing tool */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Roughing Tool (End Mill)</label>
-        <select
+        <label htmlFor="inlay-roughing-tool-end" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Roughing Tool (End Mill)</label>
+        <select id="inlay-roughing-tool-end"
           value={form.pocketToolId}
           onChange={(e) => {
             const t = tools.find((x) => x.id === e.target.value)
@@ -446,8 +446,8 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       </div>
       {/* Finish tool */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Finishing Tool</label>
-        <select
+        <label htmlFor="inlay-finishing-tool" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Finishing Tool</label>
+        <select id="inlay-finishing-tool"
           value={form.vbitToolId}
           onChange={(e) => up('vbitToolId', e.target.value)}
           className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
@@ -459,43 +459,43 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           ))}
         </select>
         {finishIsNone && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">No finish pass — flat walls left by the roughing tool (corners at its radius).</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">No finish pass — flat walls left by the roughing tool (corners at its radius).</p>
         )}
         {vbitTool?.type === 'vbit' && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">V-bit — sloped bevel walls</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">V-bit — sloped bevel walls</p>
         )}
         {vbitTool && vbitTool.type !== 'vbit' && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{fmtLen(vbitTool.diameterMM, units)}</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{fmtLen(vbitTool.diameterMM, units)}</p>
         )}
       </div>
       {vbitTool?.type === 'vbit' && (
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           V-bit angle: {vbitTool.vbitAngleDeg ?? 60}° (set on tool)
         </p>
       )}
       {/* Depth */}
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Inlay Depth</label>
-          <LengthInput valueMM={form.pocketDepthMM} minMM={0.5} stepMM={0.5}
+          <label htmlFor="inlay-inlay-depth" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Inlay Depth</label>
+          <LengthInput id="inlay-inlay-depth" valueMM={form.pocketDepthMM} minMM={0.5} stepMM={0.5}
             onChangeMM={(v) => up('pocketDepthMM', v)} />
         </div>
         {autoFeedEnabled && pocketTool ? (
           <AutoStepField label="Step Down" valueMM={effectiveStepDownMM(pocketTool, form.stepDownMM, form.pocketDepthMM)} />
         ) : (
           <div>
-            <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Step Down</label>
-            <LengthInput valueMM={form.stepDownMM} minMM={0.1} stepMM={0.5}
+            <label htmlFor="inlay-step-down" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Step Down</label>
+            <LengthInput id="inlay-step-down" valueMM={form.stepDownMM} minMM={0.1} stepMM={0.5}
               onChangeMM={(v) => up('stepDownMM', v)} />
           </div>
         )}
       </div>
       {/* Stepover */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="inlay-stepover" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
-        <input type="range" min={10} max={90} step={5} value={form.stepoverPercent}
+        <input id="inlay-stepover" type="range" min={10} max={90} step={5} value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
           className="w-full accent-blue-500"
         />
@@ -503,19 +503,19 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       {/* Glue + clearance */}
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Glue Gap</label>
-          <LengthInput valueMM={form.glueLineMM} minMM={0} stepMM={0.05}
+          <label htmlFor="inlay-glue-gap" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Glue Gap</label>
+          <LengthInput id="inlay-glue-gap" valueMM={form.glueLineMM} minMM={0} stepMM={0.05}
             onChangeMM={(v) => up('glueLineMM', v)} />
         </div>
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Clearance</label>
-          <LengthInput valueMM={form.clearanceMM} minMM={-1} maxMM={1} stepMM={0.05}
+          <label htmlFor="inlay-clearance" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Clearance</label>
+          <LengthInput id="inlay-clearance" valueMM={form.clearanceMM} minMM={-1} maxMM={1} stepMM={0.05}
             onChangeMM={(v) => up('clearanceMM', v)} />
         </div>
       </div>
       {!editOp && (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Generate</label>
+          <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Generate</div>
           <div className="flex gap-1">
             {(['female', 'male'] as const).map((r) => (
               <button key={r} onClick={() => up('role', r)}
@@ -529,7 +529,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
               </button>
             ))}
           </div>
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-1">
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-1">
             {isEndmillMode
               ? (form.role === 'female' ? 'Socket only — flat pocket, corners rounded to bit radius.' : 'Plug only — flat-sided plug, corners rounded to bit radius.')
               : (form.role === 'female' ? 'Socket only — pocket + V-carved walls.' : 'Plug only — V-carved bevel + profile cutout.')}
@@ -548,7 +548,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
               Invert
             </label>
           </div>
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
             {form.invert
               ? 'The inner shapes are the plug — they end up in the male board’s wood on a field of the female’s.'
               : 'The field around the inner shapes is the plug — the shapes end up in the female board’s wood.'}
@@ -561,7 +561,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         <input type="checkbox" id="inlay-ramp-in" checked={form.rampIn}
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="inlay-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+          Ramp In <span className="text-gray-600 dark:text-neutral-400 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
 
@@ -571,7 +571,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
           <input type="checkbox" id="inlay-mirror" checked={form.mirrorX}
             onChange={(e) => up('mirrorX', e.target.checked)} className="accent-blue-500" />
           <label htmlFor="inlay-mirror" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-            Mirror <span className="text-gray-500 dark:text-neutral-500 normal-case">(flip horizontally — for asymmetric shapes inserted reversed)</span>
+            Mirror <span className="text-gray-600 dark:text-neutral-400 normal-case">(flip horizontally — for asymmetric shapes inserted reversed)</span>
           </label>
         </div>
       )}

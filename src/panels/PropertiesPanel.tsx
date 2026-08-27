@@ -22,14 +22,14 @@ import { NumericInput } from '../components/NumericInput'
 import FontSelect from '../components/FontSelect'
 
 const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
-const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-5 flex-shrink-0'
+const labelCls = 'text-gray-600 dark:text-neutral-400 text-label w-5 flex-shrink-0'
 
 function ReadField({ label, value, units }: { label: string; value: string; units?: string }) {
   return (
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
       <span className={fieldCls + ' tabular-nums'}>{value}</span>
-      {units && <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>}
+      {units && <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{units}</span>}
     </div>
   )
 }
@@ -110,7 +110,7 @@ function RawField({ label, value, onChange, suffix, step = 0.01, min, max }: {
 // from nothing.
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mt-2 mb-1">
+    <p className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider mt-2 mb-1">
       {children}
     </p>
   )
@@ -165,7 +165,7 @@ function RotationField({ liveAngle, baseAngle, onApply }: { liveAngle: number | 
         }}
         className={fieldCls}
       />
-      <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+      <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
     </div>
   )
 }
@@ -294,7 +294,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           <button
             onClick={() => update({ ...params, seed: 1 + Math.floor(Math.random() * 999999) })}
             title="New maze"
-            className="p-1 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
+            className="p-1 rounded text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
           >
             <Dices size={14} />
           </button>
@@ -463,7 +463,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           <input type="checkbox" checked={!!params.emitPinion}
             onChange={(e) => updateGear({ ...params, emitPinion: e.target.checked })}
             className="accent-blue-500 w-3.5 h-3.5" />
-          <span className="text-label text-gray-400 dark:text-neutral-500">Emit the lantern pinion</span>
+          <span className="text-label text-gray-600 dark:text-neutral-400">Emit the lantern pinion</span>
         </label>}
         <EditField label="Ø"   valueMM={params.bore} units={u} min={0} onChange={(bore) => updateGear({ ...params, bore })} />
         <EditField label="Hub" valueMM={params.hubDia} units={u} min={0} onChange={(hubDia) => updateGear({ ...params, hubDia })} />
@@ -494,7 +494,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
         </label>
         {/* Base Ø is m·z·cos α — derived from the three above it, so it is a
             readout, not a field. */}
-        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+        <div className="col-span-2 text-label text-gray-600 dark:text-neutral-400 leading-tight">
           {cyc ? <>Pitch {N(d.pitchDia)} · Describing {N(d.describingDia)}</> : <>Pitch {N(d.pitchDia)} · Base {N(d.baseDia)}</>}
           <br />
           OD {fromMM(d.outsideDia, u as 'mm' | 'in').toFixed(2)} · Root {fromMM(d.rootDia, u as 'mm' | 'in').toFixed(2)} {u}
@@ -510,7 +510,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           {params.toothLabel && !lab && isFontLoaded(SINGLE_LINE_FONT_FAMILY) && <><br /><span className="text-yellow-500">No room beside the bore for a legible marking — none engraved.</span></>}
           {params.pitchCircle && <><br /><span className="text-yellow-500">Pitch circle is a reference — delete before cutting.</span></>}
           {d.pointed && <><br /><span className="text-yellow-500">Teeth pointed — OD reduced.</span></>}
-          {!cyc && d.undercut && <><br /><span className="text-gray-400 dark:text-neutral-500">Undercut — roots hobbed, flank waisted below the base circle.</span></>}
+          {!cyc && d.undercut && <><br /><span className="text-gray-600 dark:text-neutral-400">Undercut — roots hobbed, flank waisted below the base circle.</span></>}
           {cyc && d.pinTooFat && <><br /><span className="text-red-400">
             Ø{N(params.pinDia)} pins take the whole {N(d.circularPitch)} pitch — no tooth left to drive with. Thinner pins, or a bigger module.
           </span></>}
@@ -627,7 +627,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
         <EditField label="Bob W" valueMM={params.bobRx * 2} units={u} min={1} onChange={(w) => update({ ...params, bobRx: w / 2 })} />
         <EditField label="Bob H" valueMM={params.bobRy * 2} units={u} min={1} onChange={(h) => update({ ...params, bobRy: h / 2 })} />
         <EditField label="Hole"  valueMM={params.bore} units={u} min={0} onChange={(bore) => update({ ...params, bore })} />
-        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-snug">
+        <div className="col-span-2 text-label text-gray-600 dark:text-neutral-400 leading-snug">
           Beats {dm.beatSeconds.toFixed(4)} s · period {dm.periodSeconds.toFixed(4)} s
           <br />
           Rod {L(dm.rodLength)} {u} overall · Len is the hole to the BOB CENTRE
@@ -650,7 +650,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
         <EditField label="LvrW" valueMM={params.handleWidth} units={u} min={0.5} onChange={(handleWidth) => update({ ...params, handleWidth })} />
         {/* Rise is per REVOLUTION — the spiral's slope. What it lifts is that over
             its own sweep, which is the number worth reading back. */}
-        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+        <div className="col-span-2 text-label text-gray-600 dark:text-neutral-400 leading-tight">
           Stroke {N(dm.usableStroke)} over {params.sweepDeg}° · {N(dm.liftPerDeg)} {u}/°
           <br />
           Base {N(dm.baseDia)} → crest {N(dm.maxDia)}
@@ -726,26 +726,33 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
               <option value="plain">Square</option>
             </select>
           </div>}
-        <div className="col-span-2 flex items-center gap-1.5">
-          <span className={labelCls}>Grv</span>
-          <select value={params.grooveMode} className={sel}
-            onChange={(e) => update({ ...params, grooveMode: e.target.value as typeof params.grooveMode })}>
-            <option value="centreline">Centreline</option>
-            <option value="outline">Outline</option>
-          </select>
-        </div>
         <EditField label="W"    valueMM={params.width} units={u} min={10} onChange={(width) => update({ ...params, width })} />
         <EditField label="Gau"  valueMM={params.gauge} units={u} min={1} onChange={(gauge) => update({ ...params, gauge })} />
-        <EditField label="GrvW" valueMM={params.grooveW} units={u} min={0.5} onChange={(grooveW) => update({ ...params, grooveW })} />
         <EditField label="Peg"  valueMM={params.pegDia} units={u} min={1} onChange={(pegDia) => update({ ...params, pegDia })} />
         <EditField label="NckW" valueMM={params.neckW} units={u} min={0.5} onChange={(neckW) => update({ ...params, neckW })} />
         <EditField label="NckL" valueMM={params.neckL} units={u} min={0.5} onChange={(neckL) => update({ ...params, neckL })} />
-        {/* The socket is the peg plus these two slacks — see trackGenerator.ts.
-            Editing either one moves the hole and the throat together, so the
-            joint can never be left half-adjusted. */}
-        <EditField label="Hole" valueMM={params.holeClear} units={u} min={0.05} onChange={(holeClear) => update({ ...params, holeClear })} />
-        <EditField label="Thrt" valueMM={params.throatClear} units={u} min={0.05} onChange={(throatClear) => update({ ...params, throatClear })} />
-        <div className="col-span-2 text-label text-gray-400 dark:text-neutral-500 leading-tight">
+        {/* The socket is the peg plus this one slack — see trackGenerator.ts.
+            Editing it moves the hole and the throat together, so the joint can
+            never be left half-adjusted. */}
+        <EditField label="Clr" valueMM={params.clearance} units={u} min={0.05} onChange={(clearance) => update({ ...params, clearance })} />
+        {/* Sleeper marks — the one cosmetic thing on a track, and so the one
+            thing on it that may be turned off. A piece saved before they
+            existed has no pitch, so ticking them on seeds one. */}
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <span className={labelCls}>Trd</span>
+          <input type="checkbox" checked={!!params.treads}
+            onChange={(e) => update({
+              ...params,
+              treads: e.target.checked,
+              treadPitch: params.treadPitch ?? BRIO.treadPitch,
+            })}
+            className="accent-blue-500 w-3.5 h-3.5" />
+        </label>
+        {params.treads
+          ? <EditField label="Ptch" valueMM={params.treadPitch} units={u} min={1} onChange={(treadPitch) => update({ ...params, treadPitch })} />
+          : <span />}
+
+        <div className="col-span-2 text-label text-gray-600 dark:text-neutral-400 leading-tight">
           {params.kind === 'curve'
             ? <>Chord {N(dm.pitch)} · inner {N(dm.innerRadius)} / outer {N(dm.outerRadius)}</>
             : <>Pitch {N(dm.pitch)} · {N(dm.overall)} overall</>}
@@ -761,13 +768,17 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           <br />
           Peg reaches {N(dm.pegReach)} into a {N(dm.socketDepth)} socket
           <br />
-          Grooves {N(params.grooveW)} × {BRIO.grooveDepth} deep, {N(dm.railMargin)} {u} of rail outside
+          Grooves {N(BRIO.grooveW)} × {BRIO.grooveDepth} deep — centrelines, {N(dm.railMargin)} {u} of rail outside
+          {params.treads && <><br />{dm.treadCount} treads at {N(dm.treadSpacing)} {u}</>}
           {dm.grooveOffTrack && <><br /><span className="text-yellow-500">Grooves run off the edge of the track.</span></>}
           {dm.socketBreachesGroove && <><br /><span className="text-yellow-500">
             Socket breaks into a groove — {N(dm.spineMargin)} {u} of spine left.
           </span></>}
           {dm.socketsTooDeep && <><br /><span className="text-yellow-500">Sockets are deeper than the piece is long.</span></>}
           {dm.pegTooThin && <><br /><span className="text-yellow-500">Neck is as wide as the head — no shoulder.</span></>}
+          {dm.treadsCrowded && <><br /><span className="text-yellow-500">
+            Treads {N(dm.treadSpacing)} {u} apart are closer than the flange slot — a hatch, not sleepers.
+          </span></>}
           {dm.frogPastEnd && <><br /><span className="text-yellow-500">
             Main leg ends inside the frog — it needs {N(dm.frogDist)}.
           </span></>}
@@ -1039,7 +1050,7 @@ export default function PropertiesPanel() {
       'border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-1 min-h-0 overflow-y-auto transition-shadow duration-300',
       flashing ? 'ring-2 ring-inset ring-blue-500' : '',
     ].join(' ')}>
-      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">
+      <p className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1.5">
         {selectedPaths.length === 1 ? selectedPaths[0].name : `${selectedPaths.length} paths`}
       </p>
 

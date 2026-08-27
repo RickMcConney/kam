@@ -3,6 +3,8 @@ import { ChevronUp, ChevronDown } from 'lucide-react'
 import { parseNumeric, isPartialFraction } from './parseNumeric'
 
 interface NumericInputProps {
+  /** Forwarded to the real <input> so a <label htmlFor> can point at it. */
+  id?: string
   value: number
   min?: number
   max?: number
@@ -18,7 +20,7 @@ interface NumericInputProps {
 
 // Numeric input that holds local text state while focused so intermediate
 // states like "-", "3.", or "" don't reset to the last valid value on every keystroke.
-export function NumericInput({ value, min, max, step, integer, onChange, className, title, unit }: NumericInputProps) {
+export function NumericInput({ id, value, min, max, step, integer, onChange, className, title, unit }: NumericInputProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
 
@@ -61,6 +63,7 @@ export function NumericInput({ value, min, max, step, integer, onChange, classNa
   const box = (
     <span className={`flex items-center ${boxCls}`}>
       <input
+        id={id}
         type="text"
         inputMode="decimal"
         value={editing ? draft : fmt(value)}
@@ -111,7 +114,7 @@ export function NumericInput({ value, min, max, step, integer, onChange, classNa
             type="button" tabIndex={-1} aria-label="Increase"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => bump(1)}
-            className="text-gray-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400"
+            className="text-gray-600 dark:text-neutral-400 hover:text-blue-500 dark:hover:text-blue-400"
           >
             <ChevronUp size={11} />
           </button>
@@ -119,7 +122,7 @@ export function NumericInput({ value, min, max, step, integer, onChange, classNa
             type="button" tabIndex={-1} aria-label="Decrease"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => bump(-1)}
-            className="text-gray-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400"
+            className="text-gray-600 dark:text-neutral-400 hover:text-blue-500 dark:hover:text-blue-400"
           >
             <ChevronDown size={11} />
           </button>
@@ -137,7 +140,7 @@ export function NumericInput({ value, min, max, step, integer, onChange, classNa
   return (
     <span title={title} className={`flex items-center gap-1 ${wrap}`}>
       {box}
-      <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{unit}</span>
+      <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{unit}</span>
     </span>
   )
 }

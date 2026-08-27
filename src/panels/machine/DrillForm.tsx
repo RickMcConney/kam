@@ -375,7 +375,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     <FormShell title={editOp ? `Edit Drill${editBatch.length > 1 ? ` — ${editBatch.length} paths` : ''}` : 'New Drill'} onClose={handleClose}>
       {/* Mode toggle — read-only when editing */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Mode</label>
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Mode</div>
         <div className="flex gap-1">
           {(['peck', 'helical'] as const).map((m) => (
             <button key={m} onClick={() => { if (!editOp && m !== form.drillMode) up('drillMode', m) }}
@@ -395,7 +395,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       {/* Peck: auto-placing — just show count + clear */}
       {form.drillMode === 'peck' && (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Drill Points</label>
+          <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Drill Points</div>
           {editOp ? (
             <p className="text-body text-gray-700 dark:text-neutral-300 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1">
               {editHoleCount} stored point{editHoleCount !== 1 ? 's' : ''}
@@ -406,20 +406,20 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
               <span className="text-body text-gray-700 dark:text-neutral-300">
                 {pendingDrillPoints.length} point{pendingDrillPoints.length !== 1 ? 's' : ''}
               </span>
-              <button onClick={clearDrillPoints} className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300">
+              <button onClick={clearDrillPoints} className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300">
                 <X size={ICON.xs} />
               </button>
             </div>
           ) : sessionPeckOp ? (
-            <p className="text-label text-gray-400 dark:text-neutral-500">
+            <p className="text-label text-gray-600 dark:text-neutral-400">
               {sessionPeckOp.points.length} point{sessionPeckOp.points.length !== 1 ? 's' : ''} in the generated operation — Update regenerates them, or click the canvas to start a new set.
             </p>
           ) : peckFromCircles ? (
-            <p className="text-label text-gray-400 dark:text-neutral-500">
+            <p className="text-label text-gray-600 dark:text-neutral-400">
               {holeCount} hole centre{holeCount !== 1 ? 's' : ''} from {selectedHoles.length === 1 ? selectedHoles[0].path.name : `${selectedHoles.length} selected paths`} — or click the canvas to place points instead.
             </p>
           ) : (
-            <p className="text-label text-gray-400 dark:text-neutral-500">Click on the canvas to place drill points — a click near a circle uses its centre.</p>
+            <p className="text-label text-gray-600 dark:text-neutral-400">Click on the canvas to place drill points — a click near a circle uses its centre.</p>
           )}
           {peckToolWarning && (
             <p className="text-label text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
@@ -432,11 +432,11 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
       {/* Helical: list all selected circles */}
       {form.drillMode === 'helical' && (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
             Source Circles {!editOp && holeCount > 0 && <span className="normal-case text-gray-500 dark:text-neutral-400">
               ({holeCount} hole{holeCount !== 1 ? 's' : ''}{selectedHoles.length > 1 ? ` on ${selectedHoles.length} paths — one operation each` : ''})
             </span>}
-          </label>
+          </div>
           {editOp && editHoles ? (
             <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 space-y-0.5">
               <div>

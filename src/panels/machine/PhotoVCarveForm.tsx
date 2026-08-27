@@ -184,13 +184,13 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
     <FormShell title={editOp ? 'Edit Photo V-Carve' : 'New Photo V-Carve'} onClose={onClose}>
       {/* Source image */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Image</label>
+        <label htmlFor="photov-image" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Image</label>
         {imagePaths.length === 0 ? (
           <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
             <AlertCircle size={ICON.sm} /> Import a PNG, JPEG or WebP first
           </p>
         ) : (
-          <select
+          <select id="photov-image"
             value={form.pathId}
             onChange={(e) => up('pathId', e.target.value)}
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500"
@@ -201,7 +201,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           </select>
         )}
         {rect && (
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
             {fmtLen(rect.widthMM, units, 1)} × {fmtLen(rect.heightMM, units, 1)} on the stock — resize it on the canvas
           </p>
         )}
@@ -214,7 +214,7 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
         </p>
       )}
       {selectedTool?.type === 'vbit' && (
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           V-bit angle: {angleDeg}° (set on tool)
         </p>
       )}
@@ -225,10 +225,10 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           Lines have no direction of their own, so 180° is 0° again and the range covers
           every distinct raster orientation. */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="photov-angle" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
         </label>
-        <input
+        <input id="photov-angle"
           type="range" min={0} max={180} step={5}
           value={form.passAngleDeg}
           onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}
@@ -239,13 +239,13 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
       {/* Depth range — the greyscale maps onto this band */}
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth at White</label>
-          <LengthInput valueMM={form.minDepthMM} minMM={0} stepMM={0.1}
+          <label htmlFor="photov-depth-at-white" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Depth at White</label>
+          <LengthInput id="photov-depth-at-white" valueMM={form.minDepthMM} minMM={0} stepMM={0.1}
             onChangeMM={(v) => up('minDepthMM', v)} />
         </div>
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Depth at Black</label>
-          <LengthInput valueMM={form.maxDepthMM} minMM={0.05} stepMM={0.1}
+          <label htmlFor="photov-depth-at-black" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Depth at Black</label>
+          <LengthInput id="photov-depth-at-black" valueMM={form.maxDepthMM} minMM={0.05} stepMM={0.1}
             onChangeMM={(v) => up('maxDepthMM', v)} />
         </div>
       </div>
@@ -253,19 +253,19 @@ export function PhotoVCarveForm({ onClose, editOp }: { onClose: () => void; edit
           darkest lines just meet and nothing is cut twice. Shown, not editable: the depth
           above is the resolution control, and this is what it bought. */}
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           Line Spacing <span className="text-blue-500 dark:text-blue-400 normal-case">(from depth)</span>
-        </label>
+        </div>
         <div className="flex items-center gap-1">
           <div className="flex-1 bg-gray-100 dark:bg-neutral-800 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-500 dark:text-neutral-400 min-w-0 font-mono">
             {lenValue(spacingMM, units)}
           </div>
-          <span className="flex-shrink-0 text-label text-gray-400 dark:text-neutral-500 select-none">{units}</span>
+          <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{units}</span>
           {lineCount > 0 && (
-            <span className="text-label text-gray-400 dark:text-neutral-500 ml-1">({lineCount} lines)</span>
+            <span className="text-label text-gray-600 dark:text-neutral-400 ml-1">({lineCount} lines)</span>
           )}
         </div>
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
           Grooves run {fmtLen(grooveWidthMM(form.minDepthMM, angleDeg), units)}–{fmtLen(spacingMM, units)} wide, so a shallower
           carve is a finer one. A deeper carve has more contrast and fewer, wider lines.
         </p>

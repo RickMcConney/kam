@@ -237,10 +237,10 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
           silently does nothing is worse than an absent one. */}
       {form.side !== 'centerline' && (
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Stock Allowance</label>
-          <LengthInput valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
+          <label htmlFor="profile-stock-allowance" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Stock Allowance</label>
+          <LengthInput id="profile-stock-allowance" valueMM={form.allowanceMM} minMM={-5} maxMM={5} stepMM={0.05}
             onChangeMM={(v) => up('allowanceMM', v)} />
-          <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
             {allowanceHint}
           </p>
         </div>
@@ -249,7 +249,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
         <input type="checkbox" id="profile-ramp-in" checked={form.rampIn}
           onChange={(e) => up('rampIn', e.target.checked)} className="accent-blue-500" />
         <label htmlFor="profile-ramp-in" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer">
-          Ramp In <span className="text-gray-500 dark:text-neutral-500 normal-case">(2× dia, 50% feed)</span>
+          Ramp In <span className="text-gray-600 dark:text-neutral-400 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
       <FormError msg={errorMsg} />

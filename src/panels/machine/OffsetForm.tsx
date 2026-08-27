@@ -107,9 +107,9 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
   return (
     <FormShell title={editCtx ? 'Edit Offset' : 'Offset'} onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {editCtx ? 'Source paths' : 'Paths'}
-        </label>
+        </div>
         {canApply ? (
           <div className="space-y-0.5">
             {sourcePaths.map((p) => <PathChip key={p.id} path={p} label={editCtx ? 'source' : 'selected'} />)}
@@ -121,10 +121,10 @@ export function OffsetForm({ onClose, editCtx }: { onClose: () => void; editCtx?
         )}
       </div>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Distance</label>
-        <LengthInput valueMM={form.distanceMM} stepMM={0.5}
+        <label htmlFor="offset-distance" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Distance</label>
+        <LengthInput id="offset-distance" valueMM={form.distanceMM} stepMM={0.5}
           onChangeMM={(v) => up('distanceMM', v)} className={inputCls} />
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Positive = outset, negative = inset</p>
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">Positive = outset, negative = inset</p>
       </div>
       <ToggleRow label="Corner Style" options={['miter', 'round', 'square'] as OffsetCornerStyle[]} value={form.cornerStyle} onChange={(v) => up('cornerStyle', v)} />
       {error && <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5"><AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}</p>}

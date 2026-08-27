@@ -6,13 +6,14 @@
 // through NumericInput, never a bare <input type="number">, or the browser eats
 // the '/' keystroke and a typed fraction can never be entered.
 
+import { useId } from 'react'
 import { fromMM, toMM } from '../../store/workpieceStore'
 import { NumericInput } from '../../components/NumericInput'
 
 export const inputCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0'
-export const labelCls = 'text-gray-400 dark:text-neutral-500 text-label w-14 flex-shrink-0'
+export const labelCls = 'text-gray-600 dark:text-neutral-400 text-label w-14 flex-shrink-0'
 export const selectCls = inputCls + ' cursor-pointer'
-export const noteCls = 'text-label text-gray-400 dark:text-neutral-500'
+export const noteCls = 'text-label text-gray-600 dark:text-neutral-400'
 
 /**
  * A number field. `integer` marks a COUNT — teeth, spokes, pins — which is
@@ -25,11 +26,13 @@ export function NumInput({ label, valueMM, units, onChange, min = 0.1, max, step
 }) {
   const display = integer ? valueMM : fromMM(valueMM, units as 'mm' | 'in')
   const s = step ?? (integer ? 1 : units === 'in' ? 0.0625 : 1)
+  const id = useId()
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className={labelCls}>{label}</span>
+      <label className={labelCls} htmlFor={id}>{label}</label>
       <NumericInput
+        id={id}
         value={display}
         min={min}
         max={max}
@@ -48,11 +51,12 @@ export function PlainInput({ label, value, unit, onChange, min, max, step }: {
   label: string; value: number; unit?: string; onChange: (v: number) => void
   min?: number; max?: number; step?: number
 }) {
+  const id = useId()
   return (
     <div className="flex items-center gap-1.5">
-      <span className={labelCls}>{label}</span>
-      <NumericInput value={value} min={min} max={max} step={step} onChange={onChange} className={inputCls} />
-      {unit && <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">{unit}</span>}
+      <label className={labelCls} htmlFor={id}>{label}</label>
+      <NumericInput id={id} value={value} min={min} max={max} step={step} onChange={onChange} className={inputCls} />
+      {unit && <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">{unit}</span>}
     </div>
   )
 }
@@ -60,10 +64,11 @@ export function PlainInput({ label, value, unit, onChange, min, max, step }: {
 export function Select<T extends string>({ label, value, options, onChange }: {
   label: string; value: T; options: [T, string][]; onChange: (v: T) => void
 }) {
+  const id = useId()
   return (
     <div className="flex items-center gap-1.5">
-      <span className={labelCls}>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value as T)} className={selectCls}>
+      <label className={labelCls} htmlFor={id}>{label}</label>
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value as T)} className={selectCls}>
         {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>
     </div>
@@ -80,10 +85,17 @@ export function Check({ label, checked, onChange, title }: { label: string; chec
   )
 }
 
+// Border/fill for a tool tile, split out so the shape cell can put it on a
+// container div whose children are the actual buttons.
+export const toolBtnState = (active: boolean) =>
+  active
+    ? 'border-blue-500 bg-blue-500/20'
+    : 'border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700'
+
+// justify-center so a tile stays centred when the grid stretches it to match a
+// taller sibling (the shape cell is taller: it carries a chevron strip).
 export const toolBtnCls = (active: boolean) =>
   [
-    'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border',
-    active
-      ? 'border-blue-500 bg-blue-500/20'
-      : 'border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700',
+    'flex flex-col items-center justify-center gap-0.5 py-1.5 rounded text-body transition-colors border',
+    toolBtnState(active),
   ].join(' ')

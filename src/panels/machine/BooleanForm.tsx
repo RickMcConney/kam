@@ -95,9 +95,9 @@ export function BooleanForm({ onClose, editCtx }: { onClose: () => void; editCtx
   return (
     <FormShell title={editCtx ? 'Edit Boolean' : 'Boolean'} onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {editCtx ? 'Source paths' : <>Paths {sourcePaths.length > 0 && <span className="normal-case text-gray-500 dark:text-neutral-400">({sourcePaths.length} selected)</span>}</>}
-        </label>
+        </div>
         {canApply ? (
           <div className="space-y-0.5">
             {sourcePaths.map((p, i) => (

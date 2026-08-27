@@ -179,14 +179,14 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         </p>
       )}
       {selectedTool?.type === 'vbit' && (
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           V-bit angle: {angleDeg}° (set on tool)
         </p>
       )}
       <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Max Depth</label>
-        <LengthInput valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
+        <label htmlFor="vcarve-max-depth" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Max Depth</label>
+        <LengthInput id="vcarve-max-depth" valueMM={form.maxDepthMM} minMM={0.1} stepMM={0.5}
           onChangeMM={(v) => up('maxDepthMM', v)} />
         {/* Reach from stock top: starting on a pocket floor adds that much to the total. */}
         {selectedTool && form.maxDepthMM - startZ.zMM > selectedTool.maxDepthMM && (
@@ -195,7 +195,7 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             Exceeds tool Max Z ({fmtLen(selectedTool.maxDepthMM, units)})
           </p>
         )}
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
           Cuts at most {fmtLen((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2, units)} wide at full depth.
         </p>
       </div>

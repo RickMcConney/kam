@@ -137,9 +137,9 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
   return (
     <FormShell title={editCtx ? 'Edit Pattern' : 'Pattern'} onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {editCtx ? 'Source paths' : 'Paths'}
-        </label>
+        </div>
         {canApply ? (
           <div className="space-y-0.5">
             {selectedPaths.map((p) => <PathChip key={p.id} path={p} label={editCtx ? 'source' : 'selected'} />)}
@@ -160,8 +160,8 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
             ['Y Gap', fromMM(form.linParams.ySpacingMM, u as 'mm' | 'in'), (v: number) => upLin('ySpacingMM', toMM(v, u as 'mm' | 'in')), 0, u === 'in' ? 0.0625 : 1, u],
           ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
             <div key={lbl}>
-              <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
-              <NumericInput value={val} min={min} step={step} unit={suffix || undefined}
+              <label htmlFor="pattern-f2" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">{lbl}</label>
+              <NumericInput id="pattern-f2" value={val} min={min} step={step} unit={suffix || undefined}
                 onChange={fn}
                 className={inputCls} />
             </div>
@@ -177,8 +177,8 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
               ['End°',   form.cirParams.endAngleDeg,   (v: number) => upCir('endAngleDeg', v),   -360, 5, '°'],
             ] as [string, number, (v: number) => void, number, number, string][]).map(([lbl, val, fn, min, step, suffix]) => (
               <div key={lbl}>
-                <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{lbl}</label>
-                <NumericInput value={val} min={min} step={step} unit={suffix || undefined}
+                <label htmlFor="pattern-f3" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">{lbl}</label>
+                <NumericInput id="pattern-f3" value={val} min={min} step={step} unit={suffix || undefined}
                   onChange={fn}
                   className={inputCls} />
               </div>

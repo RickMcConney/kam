@@ -59,7 +59,7 @@ export function TabsForm({ onClose }: { onClose: () => void }) {
   return (
     <FormShell title="Tabs" onClose={onClose}>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Path</label>
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Path</div>
         {singlePath ? (
           <PathChip path={singlePath} label="selected" />
         ) : (
@@ -68,40 +68,40 @@ export function TabsForm({ onClose }: { onClose: () => void }) {
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Count</label>
-          <NumericInput value={form.count} min={1} max={20} step={1} integer
+          <label htmlFor="tabs-count" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Count</label>
+          <NumericInput id="tabs-count" value={form.count} min={1} max={20} step={1} integer
             onChange={(v) => up('count', v)}
             className={inputCls} />
         </div>
         <div>
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Height</label>
-          <LengthInput valueMM={form.heightMM} minMM={0.1} stepMM={0.5}
+          <label htmlFor="tabs-height" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Height</label>
+          <LengthInput id="tabs-height" valueMM={form.heightMM} minMM={0.1} stepMM={0.5}
             onChangeMM={(v) => up('heightMM', v)} className={inputCls} />
         </div>
       </div>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Length</label>
-        <LengthInput valueMM={form.lengthMM} minMM={0.5} stepMM={1}
+        <label htmlFor="tabs-length" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Length</label>
+        <LengthInput id="tabs-length" valueMM={form.lengthMM} minMM={0.5} stepMM={1}
           onChangeMM={(v) => up('lengthMM', v)} className={inputCls} />
-        <p className="text-label text-gray-400 dark:text-neutral-500 mt-0.5">Tab width along the path edge</p>
+        <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">Tab width along the path edge</p>
       </div>
       <GenerateBtn disabled={!singlePath} generating={false} onClick={handleApply} label="Apply Tabs" />
       {pathTabs.length > 0 && (
         <div className="space-y-1">
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider">
+          <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider">
             Current Tabs <span className="normal-case text-gray-500 dark:text-neutral-400">({pathTabs.length})</span>
-          </label>
+          </div>
           {pathTabs.map((tab, i) => (
             <div key={tab.id} className="flex items-center gap-1.5 text-body text-gray-700 dark:text-neutral-300 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1">
               <span className="flex-1">Tab {i + 1} — {(tab.t * 100).toFixed(0)}% along path</span>
               <button onClick={() => handleDelete(tab.id)}
-                className="p-0.5 rounded hover:bg-red-900/40 text-gray-400 dark:text-neutral-500 hover:text-red-400 transition-colors flex-shrink-0">
+                className="p-0.5 rounded hover:bg-red-900/40 text-gray-600 dark:text-neutral-400 hover:text-red-400 transition-colors flex-shrink-0">
                 <Trash2 size={ICON.xs} />
               </button>
             </div>
           ))}
           <button onClick={handleClearAll}
-            className="w-full py-1 rounded text-label border border-gray-400 dark:border-neutral-600 text-gray-400 dark:text-neutral-500 hover:text-red-400 hover:border-red-400 transition-colors">
+            className="w-full py-1 rounded text-label border border-gray-400 dark:border-neutral-600 text-gray-600 dark:text-neutral-400 hover:text-red-400 hover:border-red-400 transition-colors">
             Clear All Tabs
           </button>
         </div>

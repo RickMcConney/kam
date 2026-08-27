@@ -81,7 +81,7 @@ export default function Sidebar() {
   }
 
   return (
-    <div
+    <aside
       className="bg-gray-200 dark:bg-neutral-800 border-r border-gray-300 dark:border-neutral-700 flex flex-row flex-shrink-0 overflow-hidden"
       style={{ width }}
     >
@@ -99,7 +99,7 @@ export default function Sidebar() {
             <button
               onClick={() => setSetupPanelOpen(false)}
               title="Close setup"
-              className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
+              className="text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 transition-colors"
             >
               <X size={ICON.sm} />
             </button>
@@ -180,6 +180,6 @@ export default function Sidebar() {
         title="Drag to resize sidebar"
         className="w-1.5 flex-shrink-0 cursor-col-resize bg-transparent hover:bg-blue-500/40 transition-colors"
       />
-    </div>
+    </aside>
   )
 }

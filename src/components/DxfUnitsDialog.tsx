@@ -30,7 +30,7 @@ export default function DxfUnitsDialog() {
         </div>
         <button
           onClick={() => setPending(null)}
-          className="w-full text-sm text-gray-400 hover:text-gray-600 dark:hover:text-neutral-300 transition-colors"
+          className="w-full text-sm text-gray-600 hover:text-gray-800 dark:hover:text-neutral-300 transition-colors"
         >
           Cancel
         </button>

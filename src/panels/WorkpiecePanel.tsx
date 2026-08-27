@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useId } from 'react'
 import { ICON } from '../theme'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import InfoPopover from '../components/InfoPopover'
@@ -31,11 +31,13 @@ function DimInput({
 }) {
   const displayVal = fromMM(valueMM, units)
   const step = units === 'in' ? 0.0625 : 1
+  const rowId = useId()
 
   return (
     <div className="flex items-center gap-2 mb-1.5">
-      <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
+      <label htmlFor={rowId} className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
       <NumericInput
+        id={rowId}
         value={displayVal}
         min={min}
         step={step}
@@ -90,7 +92,7 @@ function OriginSelector({
           })
         )}
       </div>
-      <p className="text-body text-gray-400 dark:text-neutral-500 capitalize">
+      <p className="text-body text-gray-600 dark:text-neutral-400 capitalize">
         {value.replace(/-/g, ' ')}
       </p>
     </div>
@@ -163,6 +165,7 @@ export default function WorkpiecePanel() {
     setTableLimitWidth, setTableLimitHeight, setTableLimitDepth, setSafeHeight,
     setMachineRigidity, setMaxFeed, setMinSpindleRpm, setMaxSpindleRpm, setSpindleType, setAutoFeedEnabled,
   } = useWorkpieceStore()
+  const feedId = useId()
 
   return (
     <div className="flex flex-col">
@@ -173,7 +176,7 @@ export default function WorkpiecePanel() {
       </Section>
 
       <Section title="Work Origin">
-        <p className="text-body text-gray-400 dark:text-neutral-500 mb-2">
+        <p className="text-body text-gray-600 dark:text-neutral-400 mb-2">
           Select the X=0, Y=0 reference point on the stock.
           {zOrigin === 'bottom'
             ? ' Z=0 is the bottom of the stock (top surface is at +thickness).'
@@ -181,7 +184,7 @@ export default function WorkpiecePanel() {
         </p>
         <OriginSelector value={origin} onChange={setOrigin} />
         <div className="mt-3">
-          <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">Z Origin</label>
+          <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Z Origin</div>
           <div className="inline-grid grid-cols-2 gap-1 w-full">
             {([['top', 'Top of stock'], ['bottom', 'Bottom of stock']] as const).map(([val, label]) => {
               const active = zOrigin === val
@@ -216,9 +219,9 @@ export default function WorkpiecePanel() {
             </option>
           ))}
         </select>
-        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1.5">
+        <p className="text-body text-gray-600 dark:text-neutral-400 mt-1.5">
           Hardness factor: {MATERIAL_INFO[material].hardness.toFixed(1)}
-          <span className="text-gray-400 dark:text-neutral-600"> (used for auto feeds &amp; speeds)</span>
+          <span className="text-gray-600 dark:text-neutral-400"> (used for auto feeds &amp; speeds)</span>
         </p>
       </Section>
 
@@ -248,10 +251,11 @@ export default function WorkpiecePanel() {
 
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-1">
-            <label className="text-gray-500 dark:text-neutral-400 text-body">Machine Rigidity</label>
+            <label htmlFor="stock-rigidity" className="text-gray-500 dark:text-neutral-400 text-body">Machine Rigidity</label>
             <InfoPopover text={RIGIDITY_HELP} />
           </div>
           <select
+            id="stock-rigidity"
             value={machineRigidity}
             onChange={(e) => setMachineRigidity(parseInt(e.target.value))}
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
@@ -265,8 +269,9 @@ export default function WorkpiecePanel() {
         </div>
 
         <div className="flex items-center gap-2">
-          <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">Max Feed Rate</label>
+          <label htmlFor="stock-max-feed" className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">Max Feed Rate</label>
           <NumericInput
+            id="stock-max-feed"
             value={fromMM(maxFeedMmMin, units)}
             min={1}
             step={units === 'in' ? 1 : 50}
@@ -275,13 +280,14 @@ export default function WorkpiecePanel() {
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none font-mono"
           />
         </div>
-        <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
+        <p className="text-body text-gray-600 dark:text-neutral-400 mt-1">
           Hard ceiling — generated feeds never exceed this, even when auto is off.
         </p>
 
         <div className="mt-3 mb-1">
-          <label className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Spindle / Router</label>
+          <label htmlFor="stock-spindle" className="block text-gray-500 dark:text-neutral-400 text-body mb-1">Spindle / Router</label>
           <select
+            id="stock-spindle"
             value={spindleType}
             onChange={(e) => setSpindleType(e.target.value as SpindleType)}
             className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1.5 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none"
@@ -291,7 +297,7 @@ export default function WorkpiecePanel() {
             ))}
           </select>
           {SPINDLE_INFO[spindleType].dial && (
-            <p className="text-body text-gray-400 dark:text-neutral-500 mt-1">
+            <p className="text-body text-gray-600 dark:text-neutral-400 mt-1">
               Spindle speeds also show the equivalent dial setting (1–6) in the tool table and simulation.
             </p>
           )}
@@ -302,8 +308,9 @@ export default function WorkpiecePanel() {
           ['Max Spindle', maxSpindleRpm, setMaxSpindleRpm] as const,
         ]).map(([label, value, onChange]) => (
           <div key={label} className="flex items-center gap-2 mt-3">
-            <label className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
+            <label htmlFor={`${feedId}-${label}`} className="text-gray-500 dark:text-neutral-400 text-body w-24 shrink-0">{label}</label>
             <NumericInput
+              id={`${feedId}-${label}`}
               value={value}
               min={1000}
               step={1000}
@@ -317,7 +324,7 @@ export default function WorkpiecePanel() {
       </Section>
 
       <Section title="Machine Limits">
-        <p className="text-body text-gray-400 dark:text-neutral-500 mb-2">
+        <p className="text-body text-gray-600 dark:text-neutral-400 mb-2">
           Maximum travel for pre-export validation.
         </p>
         <DimInput

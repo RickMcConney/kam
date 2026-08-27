@@ -116,15 +116,15 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
 
   return (
     <FormShell title={editOp ? 'Edit Surface' : 'New Surface'} onClose={onClose}>
-      <div className="text-label text-gray-400 dark:text-neutral-500 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1.5">
+      <div className="text-label text-gray-600 dark:text-neutral-400 bg-gray-50 dark:bg-neutral-900 rounded px-2 py-1.5">
         Covers stock: {fmtLen(widthMM, units)} × {fmtLen(heightMM, units)}
       </div>
       <ToolSelector tools={endMills} value={form.toolId} onChange={handleToolChange} />
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="surface-stepover" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           Stepover <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
         </label>
-        <input
+        <input id="surface-stepover"
           type="range" min={10} max={90} step={5}
           value={form.stepoverPercent}
           onChange={(e) => up('stepoverPercent', parseInt(e.target.value))}
@@ -132,10 +132,10 @@ export function SurfaceForm({ onClose, editOp }: { onClose: () => void; editOp?:
         />
       </div>
       <div>
-        <label className="block text-label text-gray-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label htmlFor="surface-angle" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           Angle <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.passAngleDeg}°</span>
         </label>
-        <input
+        <input id="surface-angle"
           type="range" min={0} max={180} step={5}
           value={form.passAngleDeg}
           onChange={(e) => up('passAngleDeg', parseInt(e.target.value))}

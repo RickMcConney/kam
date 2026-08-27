@@ -58,7 +58,7 @@ export default function SaveDialog() {
           <h2 className="text-base font-semibold text-gray-900 dark:text-neutral-100">{meta.title}</h2>
           <button
             onClick={closeSaveDialog}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-neutral-200 transition-colors"
+            className="text-gray-600 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors"
           >
             <X size={18} />
           </button>
@@ -66,9 +66,10 @@ export default function SaveDialog() {
 
         {/* Body */}
         <div className="px-5 py-4 flex flex-col gap-2">
-          <label className="text-sm text-gray-600 dark:text-neutral-400">File name</label>
+          <label htmlFor="save-file-name" className="text-sm text-gray-600 dark:text-neutral-400">File name</label>
           <div className="flex items-center">
             <input
+              id="save-file-name"
               ref={inputRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}

@@ -9,7 +9,7 @@ import {
 import { generatePendulumD, generatePendulumParts, lengthForHeight } from './pendulumGenerator'
 import {
   generateTrackD, generateTrackParts, BRIO,
-  type TrackKind, type TrackEnd, type TrackGroove, type TrackHand,
+  type TrackKind, type TrackEnd, type TrackHand,
 } from './trackGenerator'
 
 export type ShapeType = 'rectangle' | 'roundrect' | 'inroundrect' | 'circle' | 'ellipse' | 'polygon' | 'star' | 'heart' | 'slot' | 'shield' | 'spirograph' | 'maze' | 'board' | 'gear' | 'cam' | 'escapement' | 'pendulum' | 'track' | 'text'
@@ -56,16 +56,17 @@ export type ShapeParams =
   // cx,cy is the SUSPENSION POINT — see pendulumGenerator.ts.
   | { type: 'pendulum'; cx: number; cy: number; length: number; rodWidth: number; bobRx: number; bobRy: number; bore: number }
   // A fit against pieces somebody else made, so the socket is DERIVED from the
-  // peg (see trackGenerator.ts) — `holeClear`/`throatClear` are the two slacks,
-  // and socket Ø, throat width and throat length are readouts.
+  // peg (see trackGenerator.ts) — `clearance` is the one slack, and socket Ø,
+  // throat width and throat length are readouts.
   | {
       type: 'track'; cx: number; cy: number
       kind: TrackKind; length: number; radius: number; sweepDeg: number
       hand: TrackHand; crotch: number
-      width: number; gauge: number; grooveW: number; grooveMode: TrackGroove
+      width: number; gauge: number
       endA: TrackEnd; endB: TrackEnd; endC: TrackEnd
       pegDia: number; neckW: number; neckL: number
-      holeClear: number; throatClear: number
+      clearance: number
+      treads: boolean; treadPitch: number
     }
   | { type: 'text'; x: number; y: number; text: string; fontSize: number; fontFamily: string }
 export interface ShapeToolConfig {
@@ -100,10 +101,11 @@ export interface ShapeToolConfig {
   track: {
     kind: TrackKind; length: number; radius: number; sweepDeg: number
     hand: TrackHand; crotch: number
-    width: number; gauge: number; grooveW: number; grooveMode: TrackGroove
+    width: number; gauge: number
     endA: TrackEnd; endB: TrackEnd; endC: TrackEnd
     pegDia: number; neckW: number; neckL: number
-    holeClear: number; throatClear: number
+    clearance: number
+    treads: boolean; treadPitch: number
   }
   text: { text: string; fontSize: number; fontFamily: string }
 }
@@ -163,15 +165,19 @@ export const DEFAULT_SHAPE_CONFIG: ShapeToolConfig = {
   pendulum: { length: 993.62, rodWidth: 12, bobRx: 60, bobRy: 45, bore: 5 },
   // Real BRIO, straight out of the published dimensions: the A-track medium
   // straight, male one end and female the other, which is the piece a set has
-  // most of. `holeClear`/`throatClear` reproduce the Ø16 socket and the 8 mm
-  // throat against the Ø11.5 peg on its 6 mm neck.
+  // most of. `clearance` is the one slack in the joint: at 2 it puts a Ø15.5
+  // socket and a 10 mm throat round the Ø11.5 peg on its 6 mm neck.
   track: {
     kind: 'straight', length: 144, radius: BRIO.radius, sweepDeg: BRIO.sweepDeg,
     hand: 'left', crotch: BRIO.crotch,
-    width: BRIO.width, gauge: BRIO.gauge, grooveW: BRIO.grooveW, grooveMode: 'centreline',
+    width: BRIO.width, gauge: BRIO.gauge,
     endA: 'female', endB: 'male', endC: 'male',
     pegDia: BRIO.pegDia, neckW: BRIO.neckW, neckL: BRIO.neckL,
-    holeClear: BRIO.holeClear, throatClear: BRIO.throatClear,
+    clearance: BRIO.clearance,
+    // Decoration, and the only thing on a track that is: marked by default
+    // because an unmarked piece reads as a plank, off in one click when it is
+    // one.
+    treads: true, treadPitch: BRIO.treadPitch,
   },
   text: { text: 'Hello', fontSize: 10, fontFamily: 'Roboto' },
 }
@@ -464,7 +470,9 @@ const CAM_PART_LABELS: Record<string, string> = { cam: 'Outline', bore: 'Bore' }
 
 // The outline is profiled and the grooves are not — a groove is a 3 mm deep
 // slot cut with a different tool, which is the gear's argument for parts.
-const TRACK_PART_LABELS: Record<string, string> = { body: 'Outline', groove: 'Grooves' }
+// ...and the treads are a third: a V bit a millimetre down, which is neither of
+// the other two operations either.
+const TRACK_PART_LABELS: Record<string, string> = { body: 'Outline', groove: 'Grooves', tread: 'Treads' }
 
 const PENDULUM_PART_LABELS: Record<string, string> = { rod: 'Rod', bore: 'Suspension Hole', bob: 'Bob' }
 

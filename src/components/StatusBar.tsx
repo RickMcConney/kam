@@ -78,7 +78,7 @@ export default function StatusBar() {
     : 'text-blue-500 dark:text-blue-400'
 
   return (
-    <div className="h-7 bg-gray-100 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-[15px] text-gray-500 dark:text-neutral-400 select-none flex-shrink-0">
+    <footer className="h-7 bg-gray-100 dark:bg-neutral-900 border-t border-gray-300 dark:border-neutral-700 flex items-center px-3 text-[15px] text-gray-600 dark:text-neutral-400 select-none flex-shrink-0">
       {/* Left section */}
       <div className="flex-1 min-w-0 flex items-center gap-4">
         <span>Mode: {mode}</span>
@@ -105,14 +105,19 @@ export default function StatusBar() {
       {/* Center section — material/stock + machine rigidity, always shown (2D and
           3D) so the current setup is visible at a glance. */}
       <div className="flex items-center gap-3 px-4 flex-shrink-0">
-        {/* Material + stock size; swatch matches the workpiece fill. */}
+        {/* Material + stock size; swatch matches the workpiece fill.
+            Width is deliberately left to the content: this cluster does change
+            width when the persisted store rehydrates, but reserving its
+            worst-case width (~20rem, for "Aluminum" plus a 24ch stock string
+            like "609.6 × 304.8 × 19.05 mm") was measured to make no difference
+            to CLS — 0.00001 either way — and cost ~90px of blank bar. */}
         <span className="flex items-center gap-1.5" title="Stock material and size">
           <span
             className="inline-block w-3 h-3 rounded-sm border border-black/20 dark:border-white/25"
             style={{ backgroundColor: swatch }}
           />
           <span>{MATERIAL_INFO[material].label}</span>
-          <span className="text-gray-400 dark:text-neutral-600">·</span>
+          <span className="text-gray-600 dark:text-neutral-400">·</span>
           <span className="font-mono">{dims}</span>
         </span>
 
@@ -134,11 +139,20 @@ export default function StatusBar() {
             className="font-mono"
             title={`Grid square at this zoom — ${snapEnabled ? 'points snap to it (S turns snapping off)' : 'snapping is off (S)'}`}
           >
-            Grid: {gridLabel}
+            {/* Fixed-width value box, 6ch = the longest label this can produce
+                ("0.1 mm", "200 mm", "6 1/4\""). Keeps the number from jittering
+                as the step changes on zoom. Not a CLS fix: measured load CLS is
+                0.00001 with or without it — Lighthouse's "avoid large layout
+                shifts" entry for this element is a diagnostic listing of a
+                sub-pixel wobble, not a real shift. */}
+            Grid: <span className="inline-block min-w-[6ch] text-right">{gridLabel}</span>
           </span>
         )}
-        <span>FreazyKam {BUILD_DATE}</span>
+        {/* nowrap because the centre cluster is flex-shrink-0: on a narrow window
+            this is what gets squeezed, and wrapping would break it onto a second
+            line inside the h-7 bar. */}
+        <span className="flex-shrink-0 whitespace-nowrap">FreazyKam {BUILD_DATE}</span>
       </div>
-    </div>
+    </footer>
   )
 }

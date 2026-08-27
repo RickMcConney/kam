@@ -39,10 +39,10 @@ export default function PathsPanel() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Path list */}
-      <p className="px-3 pt-2 pb-1 text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Paths</p>
+      <p className="px-3 pt-2 pb-1 text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider">Paths</p>
 
       {paths.length === 0 ? (
-        <div className="px-3 py-6 text-body text-gray-400 dark:text-neutral-500 text-center">
+        <div className="px-3 py-6 text-body text-gray-600 dark:text-neutral-400 text-center">
           <Layers size={ICON.lg} className="mx-auto mb-2 opacity-30" />
           No paths yet. Use the Import button in the toolbar.
         </div>
@@ -71,16 +71,16 @@ export default function PathsPanel() {
                   ].join(' ')}
                   onClick={() => toggleGroupCollapsed(groupId)}
                 >
-                  <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">
+                  <span className="text-gray-600 dark:text-neutral-400 flex-shrink-0">
                     {collapsed ? <ChevronRight size={ICON.sm} /> : <ChevronDown size={ICON.sm} />}
                   </span>
-                  <span className="text-gray-400 dark:text-neutral-500 flex-shrink-0">
+                  <span className="text-gray-600 dark:text-neutral-400 flex-shrink-0">
                     {collapsed ? <Folder size={ICON.sm} /> : <FolderOpen size={ICON.sm} />}
                   </span>
                   <span className="flex-1 text-body truncate text-gray-700 dark:text-neutral-300 font-medium" title={groupName}>
                     {groupName}
                   </span>
-                  <span className="text-xs text-gray-400 dark:text-neutral-500 flex-shrink-0 mr-1">
+                  <span className="text-xs text-gray-600 dark:text-neutral-400 flex-shrink-0 mr-1">
                     {members.length}
                   </span>
                   <button
@@ -147,9 +147,9 @@ export default function PathsPanel() {
               onClick={(e) => selectPath(selectedIds.includes(p.id) && selectedIds.length === 1 ? null : p.id, e.shiftKey)}
             >
               {p.stlSrc
-                ? <Box size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
+                ? <Box size={ICON.sm} className="flex-shrink-0 text-gray-600 dark:text-neutral-400" />
                 : p.imageSrc
-                  ? <Image size={ICON.sm} className="flex-shrink-0 text-gray-400 dark:text-neutral-500" />
+                  ? <Image size={ICON.sm} className="flex-shrink-0 text-gray-600 dark:text-neutral-400" />
                   : <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
               }
               <span className="flex-1 text-body truncate text-gray-800 dark:text-neutral-200">{p.name}</span>

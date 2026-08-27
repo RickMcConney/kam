@@ -206,7 +206,7 @@ export default function SimulationPlayer() {
         <span>Z: <Slot ch={W_Z}>{pos ? progLen(pos.z, inch) : '—'}</Slot> {programUnits}</span>
         {/* 'rapid' is the feed's VALUE, not a replacement label — swapping the label out
             was half the flicker, and it moved the clock beside it. */}
-        <span className={curSeg?.rapid ? 'text-gray-400 dark:text-neutral-500' : ''}>
+        <span className={curSeg?.rapid ? 'text-gray-600 dark:text-neutral-400' : ''}>
           F: <Slot ch={wFeed}>
             {!curSeg ? '—' : curSeg.rapid ? 'rapid' : progFeed(curSeg.feedRateMmMin, inch)}
           </Slot>
@@ -287,7 +287,7 @@ export default function SimulationPlayer() {
             const ui = useUIStore.getState()
             if (ui.workspaceTab === '3d') ui.setWorkspaceTab('2d')
           }}
-          className="text-gray-400 dark:text-neutral-500 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors p-0.5"
+          className="text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 transition-colors p-0.5"
         >
           <X size={ICON.sm} />
         </button>

@@ -131,7 +131,7 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
           onChange={(e) => up({ rpm: parseFloat(e.target.value) || 0 })}
           className={cellCls + ' text-right'} />
         {dialLabel && (
-          <div className="text-label text-gray-400 dark:text-neutral-500 text-right px-1 mt-0.5">{dialLabel}</div>
+          <div className="text-label text-gray-600 dark:text-neutral-400 text-right px-1 mt-0.5">{dialLabel}</div>
         )}
       </td>
       <td className="px-2 py-1">
@@ -156,7 +156,7 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
             className={cellCls + ' text-right'}
           />
         ) : (
-          <span className="text-gray-400 dark:text-neutral-600 px-1">—</span>
+          <span className="text-gray-600 dark:text-neutral-400 px-1">—</span>
         )}
       </td>
       <td className="px-2 py-1 text-center">
@@ -164,7 +164,7 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
             delete and leave selectedToolId pointing at the removed tool. */}
         <button onClick={(e) => { e.stopPropagation(); if (canDelete) deleteTool(tool.id) }} disabled={!canDelete}
           title={canDelete ? 'Delete tool' : 'Cannot delete the last tool'}
-          className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+          className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-600 dark:text-neutral-400 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
           <Trash2 size={ICON.sm} />
         </button>
       </td>
@@ -215,15 +215,15 @@ export default function ToolLibraryPanel() {
                   className={`px-2 py-1.5 ${col.numeric ? 'text-right' : 'text-left'} text-label font-semibold uppercase tracking-wider whitespace-nowrap select-none ${
                     col.sort
                       ? 'cursor-pointer hover:text-gray-600 dark:hover:text-neutral-300 ' +
-                        (sortBy?.key === col.sort ? 'text-gray-600 dark:text-neutral-300' : 'text-gray-400 dark:text-neutral-500')
-                      : 'text-gray-400 dark:text-neutral-500'
+                        (sortBy?.key === col.sort ? 'text-gray-600 dark:text-neutral-300' : 'text-gray-600 dark:text-neutral-400')
+                      : 'text-gray-600 dark:text-neutral-400'
                   }`}>
                   {col.label}
                   {(col.key === 'diameterMM' || col.key === 'maxDepthMM') && (
-                    <span className="ml-0.5 text-gray-400 dark:text-neutral-500 normal-case font-normal tracking-normal">{lenUnit}</span>
+                    <span className="ml-0.5 text-gray-600 dark:text-neutral-400 normal-case font-normal tracking-normal">{lenUnit}</span>
                   )}
                   {(col.key === 'xyFeedMmMin' || col.key === 'zFeedMmMin') && (
-                    <span className="ml-0.5 text-gray-400 dark:text-neutral-500 normal-case font-normal tracking-normal">{feedUnit}</span>
+                    <span className="ml-0.5 text-gray-600 dark:text-neutral-400 normal-case font-normal tracking-normal">{feedUnit}</span>
                   )}
                   {sortBy && sortBy.key === col.sort && (
                     sortBy.dir === 'asc'
@@ -233,7 +233,7 @@ export default function ToolLibraryPanel() {
                 </th>
               ))}
               <th title="V-bit full included angle (V-bit only)"
-                className="px-2 py-1.5 text-right text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider whitespace-nowrap select-none">
+                className="px-2 py-1.5 text-right text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider whitespace-nowrap select-none">
                 Angle<span className="ml-0.5 normal-case font-normal tracking-normal">°</span>
               </th>
               <th className="px-2 py-1.5 w-8" />

@@ -17,7 +17,7 @@ import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/te
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
-import { NumInput, PlainInput, Select, Check, inputCls, labelCls, toolBtnCls } from './shared'
+import { NumInput, PlainInput, Select, Check, inputCls, labelCls, toolBtnCls, toolBtnState } from './shared'
 
 
 const LS_TEXT_KEY = 'kam:textConfig'
@@ -102,7 +102,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             onChange={(angle) => onChange({ ...c, heart: { ...c.heart, angle } })}
             className={inputCls}
           />
-          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
         </div>
       </div>)
     case 'slot':
@@ -153,7 +153,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           />
           <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{p.toFixed(2)}</span>
         </div>
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           Ring {fmtLen(R, u as 'mm' | 'in')} / wheel {fmtLen(r, u as 'mm' | 'in')} · R/r {loops}
           <br />
           centre at p {spirographCentrePen(loops).toFixed(2)}
@@ -177,7 +177,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           <button
             onClick={() => set({ seed: 1 + Math.floor(Math.random() * 999999) })}
             title="New maze"
-            className="p-1 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
+            className="p-1 rounded text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700 flex-shrink-0"
           >
             <Dices size={ICON.sm} />
           </button>
@@ -191,7 +191,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         </div>
         {/* The pitch is what the walls are actually left at — it rounds up from
             Spacing to fit whole cells, so show it rather than the request. */}
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           {g.cols} × {g.rows} cells · pitch {fmtLen(g.dx, u as 'mm' | 'in')} × {fmtLen(g.dy, u as 'mm' | 'in')}
           <br />
           Wall = pitch − cutter Ø
@@ -227,7 +227,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         </>)}
         <Check label="Groove" checked={b.groove} onChange={(groove) => set({ groove })} />
         {b.groove && <NumInput label="Inset" valueMM={b.grooveInset} units={u} onChange={(grooveInset) => set({ grooveInset })} />}
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           Size is the cutting field; a paddle adds to it.
           <br />
           Double-click to split outline / groove / hole.
@@ -287,7 +287,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             <span className={labelCls}>Pressure</span>
             <NumericInput value={g.pressureAngle} min={5} max={35} step={0.5}
               onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} />
-            <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+            <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
           </div>
         )}
         <NumInput label="Bore Ø"  valueMM={g.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
@@ -310,7 +310,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         <Check label="Pitch ○" checked={g.pitchCircle} onChange={(pitchCircle) => set({ pitchCircle })} />
         {/* Base Ø is m·z·cos α — derived, never dialled in, so it is shown
             rather than offered as a field. */}
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           {cyc
             ? <>Pitch {L(d.pitchDia)} · Describing {L(d.describingDia)}</>
             : <>Pitch {L(d.pitchDia)} · Base {L(d.baseDia)}</>}
@@ -331,7 +331,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           Thinner pins, or a bigger module.
         </p>}
         {hub.grown && <p className="text-label text-blue-400">Hub grown to {L(hub.dia)} {hubGrownWhy(hub, g.spokes)}.</p>}
-        {(!(g.spokeWidth! > 0) || !(g.rimWidth! > 0)) && <p className="text-label text-gray-400 dark:text-neutral-500">
+        {(!(g.spokeWidth! > 0) || !(g.rimWidth! > 0)) && <p className="text-label text-gray-600 dark:text-neutral-400">
           {!(g.spokeWidth! > 0) && !(g.rimWidth! > 0) ? 'Spoke and rim follow the module' : !(g.spokeWidth! > 0) ? 'Spoke follows the module' : 'Rim follows the module'} at 2.5&times; — type a figure to pin it, 0 to let go.
         </p>}
         {g.spokes >= 2 && !hub.spoked && (
@@ -342,7 +342,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         )}
         {g.toothLabel && lab && (lab.sizeMM < TOOTH_LABEL_SIZE - 0.05
           ? <p className="text-label text-blue-400">Engraves &ldquo;{lab.text}&rdquo; at {L(lab.sizeMM)} — all the spoke will take.</p>
-          : <p className="text-label text-gray-400 dark:text-neutral-500">Engraves &ldquo;{lab.text}&rdquo; along the right-hand spoke.</p>)}
+          : <p className="text-label text-gray-600 dark:text-neutral-400">Engraves &ldquo;{lab.text}&rdquo; along the right-hand spoke.</p>)}
         {g.toothLabel && !lab && labFontReady &&
           <p className="text-label text-yellow-500">No room beside the bore for a legible marking — none engraved.</p>}
         {g.pitchCircle && <p className="text-label text-yellow-500">
@@ -350,10 +350,10 @@ function ShapeConfig({ type, config, onChange, units }: {
           {cyc && g.emitPinion ? ' They run through the pin centres and are tangent at the right spacing.' : ''}
         </p>}
         {d.pointed && <p className="text-label text-yellow-500">Teeth come to a point — OD reduced.</p>}
-        {!cyc && d.undercut && <p className="text-label text-gray-400 dark:text-neutral-500">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots hobbed with an undercut, flank waisted below the base circle.</p>}
+        {!cyc && d.undercut && <p className="text-label text-gray-600 dark:text-neutral-400">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots hobbed with an undercut, flank waisted below the base circle.</p>}
 
         {rootDeepened && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} to clear the pins.</p>}
-        {cyc && <p className="text-label text-gray-400 dark:text-neutral-500">
+        {cyc && <p className="text-label text-gray-600 dark:text-neutral-400">
           Faces cut for this {g.mateTeeth}-pin lantern pinion at Ø{L(g.pinDia)} — another pinion wants another wheel.
           {relief > 0 && <><br />
             Back of each tooth cut away{relief >= 100 ? ' to the middle of the tip' : ` by ${relief}% of the tip`} —
@@ -361,7 +361,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             running it the other way turns the relieved side into the acting one.
           </>}
         </p>}
-        {cyc && g.emitPinion && pin && <p className="text-label text-gray-400 dark:text-neutral-500">
+        {cyc && g.emitPinion && pin && <p className="text-label text-gray-600 dark:text-neutral-400">
           Pinion: cheek {L(pin.cheekDia)} · pins on {L(pin.pinCircleDia)}
           <br />
           Cut TWO cheeks — the wheel runs between them, so it must be thinner than their gap.
@@ -386,7 +386,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>{label}</span>
           <NumericInput value={value} min={min} max={max} step={step} onChange={oc} className={inputCls} />
-          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
         </div>
       )
       return (<div className="space-y-1">
@@ -434,7 +434,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         <NumInput label="Bob W"   valueMM={pd.bobRx * 2} units={u} min={1} onChange={(w) => set({ bobRx: w / 2 })} />
         <NumInput label="Bob H"   valueMM={pd.bobRy * 2} units={u} min={1} onChange={(h) => set({ bobRy: h / 2 })} />
         <NumInput label="Hole Ø"  valueMM={pd.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           Beats {dm.beatSeconds.toFixed(4)} s · period {dm.periodSeconds.toFixed(4)} s
           <br />
           Rod {L(dm.rodLength)} overall · hangs from the hole
@@ -445,7 +445,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             oscillation above the bob centre. It always runs fast; the rating nut
             is what fixes it. Saying so is the honest version of a beat readout
             quoted to four places. */}
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           A real rod runs a little fast — regulate by raising the bob.
         </p>
         {dm.boreTooBig && <p className="text-label text-yellow-500">
@@ -470,12 +470,12 @@ function ShapeConfig({ type, config, onChange, units }: {
           <span className={labelCls}>Sweep</span>
           <NumericInput value={m.sweepDeg} min={5} max={360} step={5}
             onChange={(sweepDeg) => set({ sweepDeg })} className={inputCls} />
-          <span className="text-gray-400 dark:text-neutral-500 text-label flex-shrink-0">°</span>
+          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
         </div>
         <NumInput label="Bore Ø"  valueMM={m.boreDia} units={u} min={0} onChange={(boreDia) => set({ boreDia })} />
         <NumInput label="Lever"   valueMM={m.handleLength} units={u} min={1} onChange={(handleLength) => set({ handleLength })} />
         <NumInput label="Lever W" valueMM={m.handleWidth} units={u} min={0.5} onChange={(handleWidth) => set({ handleWidth })} />
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           Stroke {L(dm.usableStroke)} over {m.sweepDeg}° · {L(dm.liftPerDeg)}/°
           <br />
           Base {L(dm.baseDia)} → crest {L(dm.maxDia)}
@@ -545,22 +545,25 @@ function ShapeConfig({ type, config, onChange, units }: {
           <Select label="Branch" value={m.endC}
             options={[['male', 'Peg'], ['female', 'Socket'], ['plain', 'Square']]}
             onChange={(endC) => set({ endC })} />}
-        {/* Centreline assumes the groove width IS the cutter; outline is a
-            pocket for anything narrower. See trackGenerator.ts. */}
-        <Select label="Grooves" value={m.grooveMode}
-          options={[['centreline', 'Centreline'], ['outline', 'Outline']]}
-          onChange={(grooveMode) => set({ grooveMode })} />
         <NumInput label="Width"  valueMM={m.width} units={u} min={10} onChange={(width) => set({ width })} />
         <NumInput label="Gauge"  valueMM={m.gauge} units={u} min={1} onChange={(gauge) => set({ gauge })} />
-        <NumInput label="GrooveW" valueMM={m.grooveW} units={u} min={0.5} onChange={(grooveW) => set({ grooveW })} />
         <NumInput label="Peg Ø"  valueMM={m.pegDia} units={u} min={1} onChange={(pegDia) => set({ pegDia })} />
         <NumInput label="Neck W" valueMM={m.neckW} units={u} min={0.5} onChange={(neckW) => set({ neckW })} />
         <NumInput label="Neck L" valueMM={m.neckL} units={u} min={0.5} onChange={(neckL) => set({ neckL })} />
-        {/* The socket is derived from the peg plus these two slacks, so it can
+        {/* The socket is derived from the peg plus this one slack, so it can
             never be edited out of step with what has to go into it. */}
-        <NumInput label="Hole clr" valueMM={m.holeClear} units={u} min={0.05} onChange={(holeClear) => set({ holeClear })} />
-        <NumInput label="Throat clr" valueMM={m.throatClear} units={u} min={0.05} onChange={(throatClear) => set({ throatClear })} />
-        <p className="text-label text-gray-400 dark:text-neutral-500">
+        <NumInput label="Clearance" valueMM={m.clearance} units={u} min={0.05} onChange={(clearance) => set({ clearance })} />
+        {/* The sleeper marks — decoration, and the only thing on the piece that
+            is not a fit against somebody else's track. Each one runs edge to
+            edge in one line; where it crosses a groove the bit is over a 3 mm
+            hole and cuts nothing. */}
+        <Check label="Treads" checked={m.treads} onChange={(treads) => set({ treads })}
+          title="Sleeper marks engraved right across the run" />
+        {/* The pitch is also the standoff from each end face — that is what puts
+            the joint between two pieces where a mark would have been. */}
+        {m.treads &&
+          <NumInput label="Tread pitch" valueMM={m.treadPitch} units={u} min={1} onChange={(treadPitch) => set({ treadPitch })} />}
+        <p className="text-label text-gray-600 dark:text-neutral-400">
           {m.kind === 'curve'
             ? <>Chord {L(dm.pitch)} · inner {L(dm.innerRadius)} / outer {L(dm.outerRadius)}</>
             : <>Pitch {L(dm.pitch)} · {L(dm.overall)} overall</>}
@@ -581,12 +584,13 @@ function ShapeConfig({ type, config, onChange, units }: {
           <br />
           Peg reaches {L(dm.pegReach)} into a {L(dm.socketDepth)} socket
           <br />
-          Grooves {L(m.grooveW)} × {BRIO.grooveDepth} deep in {BRIO.thickness} stock, {L(dm.railMargin)} of rail outside
+          Grooves {L(BRIO.grooveW)} × {BRIO.grooveDepth} deep in {BRIO.thickness} stock, {L(dm.railMargin)} of rail outside
           <br />
-          Double-click to split outline / grooves.
+          {m.treads && <>{dm.treadCount} treads, {L(dm.treadSpacing)} apart and off each face<br /></>}
+          Grooves are centrelines — cut them with a {L(BRIO.grooveW)} bit. Double-click to split outline / grooves / treads.
         </p>
         {dm.grooveOffTrack && <p className="text-label text-yellow-500">
-          Grooves run off the edge — gauge {L(m.gauge)} with {L(m.grooveW)} slots needs {L(m.gauge + m.grooveW)} of width.
+          Grooves run off the edge — gauge {L(m.gauge)} with {L(BRIO.grooveW)} slots needs {L(m.gauge + BRIO.grooveW)} of width.
         </p>}
         {dm.socketBreachesGroove && <p className="text-label text-yellow-500">
           Socket breaks into a groove — the centre spine is {L(dm.spineMargin)}. Wider gauge, or a smaller hole.
@@ -596,6 +600,9 @@ function ShapeConfig({ type, config, onChange, units }: {
         </p>}
         {dm.pegTooThin && <p className="text-label text-yellow-500">
           Neck is as wide as the head — the peg has no shoulder to hold on.
+        </p>}
+        {dm.treadsCrowded && <p className="text-label text-yellow-500">
+          Treads {L(dm.treadSpacing)} apart are closer than the flange slot is wide — that reads as a hatch.
         </p>}
         {dm.frogPastEnd && <p className="text-label text-yellow-500">
           Main leg ends inside the frog — it needs {L(dm.frogDist)} to finish the crossing.
@@ -714,7 +721,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <span className="text-body font-semibold text-gray-700 dark:text-neutral-300">Shapes</span>
           <button
             onClick={() => { setShapesPanelOpen(false); if (isShapeTool) setActiveTool('select') }}
-            className="text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none"
+            className="text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-300 text-sm leading-none"
           >
             ✕
           </button>
@@ -757,7 +764,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
   // ── Normal draw tool row ───────────────────────────────────────────────────
   return (
     <div className="px-3 py-2 space-y-2 border-b border-gray-300 dark:border-neutral-700">
-      <p className="text-label font-semibold text-gray-400 dark:text-neutral-500 uppercase tracking-wider">Draw</p>
+      <p className="text-label font-semibold text-gray-600 dark:text-neutral-400 uppercase tracking-wider">Draw</p>
       <div className="grid grid-cols-3 gap-1">
         <button
           onClick={() => setActiveTool(activeTool === 'pen' ? 'select' : 'pen')}
@@ -775,11 +782,18 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <span style={{ color: PATH_COLOR }}><Type size={ICON.md} /></span>
           <span className="text-label text-gray-500 dark:text-neutral-400">Text</span>
         </button>
-        <div className={`relative ${toolBtnCls(isShapeTool)}`}>
+        {/* Split control: the tile activates the last shape, the strip below opens
+            the picker. The chevron used to float in the tile's top-right corner at
+            19px square, on top of the full-width tile — two touch-target failures at
+            once (under 24x24, and zero spacing between overlapping targets). Stacked
+            instead of side-by-side because the sidebar resizes down to 180px, where a
+            cell is ~48px: a 24px chevron column would leave 24px for a 32px icon.
+            Full width costs ~24px of height and keeps the label legible at any size. */}
+        <div className={`flex flex-col rounded text-body transition-colors border ${toolBtnState(isShapeTool)}`}>
           <button
             onClick={() => setActiveTool(activeTool === lastShapeType ? 'select' : lastShapeType)}
-            title={`${lastShape.label} — click the chevron to pick a different shape`}
-            className="flex flex-col items-center gap-0.5 w-full"
+            title={`${lastShape.label} — click the chevron below to pick a different shape`}
+            className="flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5"
           >
             <span style={{ color: PATH_COLOR }}>{lastShape.icon}</span>
             <span className="text-label text-gray-500 dark:text-neutral-400">{lastShape.label}</span>
@@ -787,7 +801,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
           <button
             onClick={() => setShapesPanelOpen(true)}
             title="Pick a different shape"
-            className="absolute top-0.5 right-0.5 p-0.5 rounded text-gray-400 dark:text-neutral-500 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700"
+            className="h-6 flex items-center justify-center border-t border-inherit rounded-b text-gray-600 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-200 hover:bg-gray-200/70 dark:hover:bg-neutral-700"
           >
             <ChevronDown size={ICON.sm} />
           </button>
@@ -796,7 +810,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
 
       {isShapeTool && (
         <div className="space-y-1.5 pt-0.5">
-          <p className="text-label text-gray-400 dark:text-neutral-500 font-medium capitalize">{activeTool} defaults</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 font-medium capitalize">{activeTool} defaults</p>
           <ShapeConfig type={activeTool as ShapeType} config={shapeToolConfig} onChange={updateConfig} units={units} />
           {!SCALE_LOCKED_SHAPES.has(activeTool as ShapeType) &&
             <FromCentreCheck checked={shapeFromCenter} onChange={setShapeFromCenter} />}
@@ -805,7 +819,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
 
       {activeTool === 'text' && (
         <div className="space-y-1.5 pt-0.5">
-          <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Text defaults</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 font-medium">Text defaults</p>
           {!fontReady && <p className="text-label text-yellow-500">Loading font…</p>}
           <ShapeConfig type="text" config={shapeToolConfig} onChange={updateConfig} units={units} />
           <FromCentreCheck checked={shapeFromCenter} onChange={setShapeFromCenter} />
@@ -814,7 +828,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
 
       {activeTool === 'pen' && (
         <div className="space-y-1.5 pt-0.5">
-          <p className="text-label text-gray-400 dark:text-neutral-500 font-medium">Curve type</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400 font-medium">Curve type</p>
           <div className="grid grid-cols-3 gap-1">
             {([
               ['linear',       'Linear' ],
@@ -832,7 +846,7 @@ export default function ShapePanel({ fill = false }: { fill?: boolean }) {
               </button>
             ))}
           </div>
-          <p className="text-label text-gray-400 dark:text-neutral-500">Alt: toggle linear / curve</p>
+          <p className="text-label text-gray-600 dark:text-neutral-400">Alt: toggle linear / curve</p>
         </div>
       )}
     </div>

@@ -44,7 +44,7 @@ function ToolbarButton({
         'disabled:opacity-40 disabled:cursor-not-allowed',
         active
           ? 'bg-blue-600 text-white hover:bg-blue-500'
-          : 'text-gray-500 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-600',
+          : 'text-gray-600 dark:text-neutral-400 hover:text-gray-800 dark:hover:text-neutral-200 hover:bg-gray-300 dark:hover:bg-neutral-600',
       ].join(' ')}
     >
       {icon}
@@ -73,10 +73,10 @@ function UnitToggle() {
           transform: isIn ? 'translateX(100%)' : 'translateX(0)',
         }}
       />
-      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${!isIn ? 'text-white' : 'text-gray-500 dark:text-neutral-400'}`}>
+      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${!isIn ? 'text-white' : 'text-gray-600 dark:text-neutral-300'}`}>
         mm
       </span>
-      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${isIn ? 'text-white' : 'text-gray-500 dark:text-neutral-400'}`}>
+      <span className={`relative z-10 flex-1 text-center text-xs font-semibold transition-colors ${isIn ? 'text-white' : 'text-gray-600 dark:text-neutral-300'}`}>
         in
       </span>
     </div>
@@ -168,7 +168,7 @@ export default function Toolbar() {
   const hasToolpaths = operations.some((o) => o.status === 'done' && o.visible)
 
   return (
-    <div className="h-10 bg-gray-200 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
+    <header className="h-10 bg-gray-200 dark:bg-neutral-800 border-b border-gray-300 dark:border-neutral-700 flex items-center px-2 gap-0.5 flex-shrink-0 select-none">
 
 
       {/* File */}
@@ -273,6 +273,6 @@ export default function Toolbar() {
 
       {/* DXF units prompt modal (uiStore-driven; shared with canvas drop) */}
       <DxfUnitsDialog />
-    </div>
+    </header>
   )
 }

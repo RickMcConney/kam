@@ -32,9 +32,10 @@
 // standard to be typed in — it is derived from the peg plus two clearances, and
 // the hole is centred on where a butted peg's head lands. That makes the fit
 // impossible to get wrong by editing one number and forgetting the other, and it
-// is why `holeClear`/`throatClear` are parameters while socket Ø and throat
-// length are readouts. Against real BRIO they come out at 2.25 mm radial and
-// 1 mm per side, which reproduces the Ø16 hole and the 8 mm throat.
+// is why `clearance` is the parameter while socket Ø, throat width and throat
+// length are readouts. ONE number does both slacks: the head in the hole and the
+// neck in the throat are the same joint and want the same fit, and two numbers
+// for it were two ways to say the same thing and one more to get wrong.
 //
 // **THE PEG'S NECK RUNS ALL THE WAY TO THE HEAD'S CENTRE, not to its edge.**
 // `neckL` is the VISIBLE neck — face to where the head starts — so the head sits
@@ -43,14 +44,36 @@
 // exactly one point and the union would be a bar and a disc touching at a
 // corner; run through to the centre it is a bone. Same trick for the throat.
 //
-// **THE GROOVE IS EMITTED AS A SEPARATE PART, in one of two forms.**
-// `centreline` gives the open polyline down the middle of each groove — cut it
-// with a 6 mm bit in one pass and the width is right by construction, and the
-// bit sweeping past the end face carries the groove out to it. `outline` gives
-// the closed 6 mm ring to pocket at 3 mm with whatever is in the spindle, which
-// leaves a bit-radius corner at each mouth where a flange never runs. Different
-// tool, different operation from the outline, which is the same reason the gear
-// hands over parts rather than one compound path.
+// **THE GROOVE IS EMITTED AS A SEPARATE PART, and as a CENTRELINE.** It is the
+// open polyline down the middle of each groove: cut it with a 6 mm bit in one
+// pass and the width is right by construction, and the bit sweeping past the end
+// face carries the groove out to it, which is why nothing needs a lead-in. So
+// the piece states no groove width at all — the width IS the cutter, and the
+// only thing the drawing owes it is where its middle runs. Different tool,
+// different operation from the outline, which is the same reason the gear hands
+// over parts rather than one compound path.
+//
+// **THE ROW IS MEASURED FROM THE END FACE, ONE PITCH IN, so that the JOINT
+// ITSELF READS AS A MARK.** Marks sit at one pitch, two pitches, three pitches
+// from the face, and the last one stands a pitch back from the far face — so two
+// pieces butted together carry the rhythm across the joint with no break in it,
+// and the line where they meet does the work of the mark that would have been
+// there. That is the whole reason the row is not centred on the piece: centred,
+// every joint in a layout is a gap of its own width, and the eye finds it.
+//
+// A mark that meets a SOCKET is not dropped — it is cut by the hole and comes
+// out as the two pieces of it that are still in wood, which is what the clip
+// does with everything else. Dropped, it leaves a gap of two pitches at one end
+// of the piece and that is the one thing this layout exists to avoid.
+//
+// **A MARK RUNS EDGE TO EDGE, IN ONE UNBROKEN LINE.** It is not broken at the
+// grooves and it is not held off the profile: a sleeper crosses the whole track
+// and the mark says so, for one plunge. Where it passes a groove the bit is over
+// a 3 mm hole and cuts nothing, so what appears in the wood is the two bands
+// outboard of the rails and the spine between them — which is the same cut as
+// stopping and restarting at every groove edge, with four fewer plunges in it.
+// Trimmed back to the bands it becomes a row of ticks floating in a 4 mm strip,
+// which is what the first cut of this did.
 //
 // A track is SCALE-LOCKED. Every number in it is a fit against pieces made by
 // somebody else — a track scaled to 90% is a very good drawing of something that
@@ -65,7 +88,6 @@ export type TrackHand = 'left' | 'right'
 /** What each end carries. `plain` is a square end — a buffer stop, or a blank to
  *  cut a joint into by hand. */
 export type TrackEnd = 'male' | 'female' | 'plain'
-export type TrackGroove = 'centreline' | 'outline'
 
 export interface TrackSpec {
   cx: number; cy: number
@@ -86,9 +108,6 @@ export interface TrackSpec {
   width: number
   /** Groove centre to groove centre. 26 on real track. */
   gauge: number
-  /** Groove width — the flange slot. 6 on real track. */
-  grooveW: number
-  grooveMode: TrackGroove
   /** The low-X (straight) or low-angle (curve) end; a turnout's TOE. */
   endA: TrackEnd
   /** The far end; a turnout's straight heel. */
@@ -101,10 +120,14 @@ export interface TrackSpec {
   neckW: number
   /** VISIBLE neck: the end face to where the head starts. */
   neckL: number
-  /** How much bigger the socket's radius is than the peg head's. */
-  holeClear: number
-  /** How much wider the throat is than the neck, PER SIDE. */
-  throatClear: number
+  /** The slack in the joint, and the only number that sets it: the socket's
+   *  radius over the peg head's, and the throat's half-width over the neck's. */
+  clearance: number
+  /** Engrave the sleeper marks right across the run. */
+  treads: boolean
+  /** Mark to mark along the run, and the standoff from each end face with it —
+   *  which is what carries the row across a joint unbroken. */
+  treadPitch: number
 }
 
 /** Real BRIO, for the panel defaults and for anyone resetting a piece back to
@@ -114,17 +137,79 @@ export const BRIO = {
   width: 40, thickness: 12,
   grooveW: 6, grooveDepth: 3, gauge: 26,
   pegDia: 11.5, neckW: 6, neckL: 7,
-  holeClear: 2.25, throatClear: 1,
+  /** One slack for both halves of the joint. Real BRIO is 2.25 radial and 1 per
+   *  side — a Ø16 hole and an 8 mm throat — which two numbers can hit and one
+   *  cannot; at 2 the hole comes out Ø15.5 and the throat 10 wide, and the peg
+   *  still goes in with room to be pulled and bent. */
+  clearance: 2,
   radius: 182, sweepDeg: 45,
   /** Enough to take the notch off the crotch without bridging the two heels. */
   crotch: 6,
   /** The catalogue straights: mini, middle, short, medium, long. */
   lengths: [54, 72, 108, 144, 216],
+  /** Sleeper marks, measured off a real 216 long straight: 12 apart, which is
+   *  also the standoff from each end face. */
+  treadPitch: 12,
 } as const
 
 /** How far a feature reaches into the body before the boolean, so a union or a
  *  difference never runs along a coincident edge. */
 const EMBED = 0.5
+
+/** The shortest piece of a tread mark worth emitting. Below this it is a tick
+ *  the length of the bit that cuts it — a dot on the canvas and a plunge in the
+ *  G-code — so a band that has been clipped down to nothing drops out entirely
+ *  rather than being drawn as a blemish. */
+const MIN_TREAD = 0.5
+
+/** The joint slack, made safe. A `.fkam` saved when the hole and the throat had
+ *  a clearance each carries neither name, so it falls back to the standard
+ *  rather than to NaN — and a socket sized NaN is a piece with no socket. */
+function clearanceOf(s: TrackSpec): number {
+  // Only a MISSING figure falls back. A negative one is a legitimate thing to
+  // draw — it is an interference fit, and the joint test uses it to prove that
+  // asking clipper whether two butted pieces overlap can answer yes.
+  return Number.isFinite(s.clearance) ? s.clearance : BRIO.clearance
+}
+
+/** The tread pitch, made safe. A `.fkam` saved before the marks existed has no
+ *  figure for it, and a track loaded out of one has to be able to have them
+ *  turned on without the piece coming back blank — so a missing or nonsense
+ *  figure falls back to the standard rather than to NaN. */
+function treadPitch(s: TrackSpec): number {
+  return Number.isFinite(s.treadPitch) && s.treadPitch > 0 ? s.treadPitch : BRIO.treadPitch
+}
+
+/**
+ * Where the marks go along one leg: one pitch in from the face, and every pitch
+ * after that until one pitch short of the far face. Measured from the face and
+ * not spread over the piece — that is what makes the joint between two pieces
+ * land where a mark would have been, so a layout marks out unbroken. Nothing
+ * displaces a mark: one that meets a socket is cut by the hole like any other
+ * feature, since losing it would leave a two-pitch gap at that end.
+ */
+function stations(s: TrackSpec, len: number, from = 0): number[] {
+  const pitch = treadPitch(s)
+  const out: number[] = []
+  for (let k = 1; k * pitch <= len - pitch + 1e-9; k++) {
+    if (k * pitch >= from) out.push(k * pitch)
+  }
+  return out
+}
+
+/** Every station on the piece — both legs of a turnout — which is what the panel
+ *  counts. Built from the same function that lays the marks, so the readout
+ *  cannot say one thing while the geometry does another. */
+function allStations(s: TrackSpec): number[] {
+  if (!s.treads) return []
+  if (s.kind === 'curve') return stations(s, curveRadius(s) * curveSweep(s))
+  const straight = stations(s, Math.max(1, s.length))
+  if (s.kind !== 'turnout') return straight
+  const R = curveRadius(s)
+  // The branch is measured round its own arc, and may not start before the frog.
+  const frogArc = R * Math.asin(clamp(Math.sqrt(2 * R * s.gauge) / (R + s.gauge / 2), -1, 1))
+  return [...straight, ...stations(s, R * curveSweep(s), frogArc)]
+}
 
 // ─── Dimensions and fit ───────────────────────────────────────────────────────
 
@@ -179,14 +264,26 @@ export interface TrackDims {
   frogPastSweep: boolean
   /** The two heels are still in each other's stock. */
   heelsFoul: boolean
+
+  // ── treads ──
+  /** How many sleeper marks the piece carries, both legs of a turnout counted. */
+  treadCount: number
+  /** Mark to mark — the pitch, made safe; nothing is stretched to fit. */
+  treadSpacing: number
+  /** The marks are closer together than they are long — a hatch, not sleepers. */
+  treadsCrowded: boolean
 }
 
 export function trackDims(s: TrackSpec): TrackDims {
   const half = s.gauge / 2
-  const hw = s.grooveW / 2
+  // The flange slot is the CUTTER's width, not the drawing's — the piece states
+  // no groove width — so the standard one is what the fit readouts are quoted
+  // against, the same way thickness and groove depth are.
+  const hw = BRIO.grooveW / 2
   const headCentre = s.neckL + s.pegDia / 2
-  const socketDia = s.pegDia + 2 * s.holeClear
-  const throatW = s.neckW + 2 * s.throatClear
+  const clear = clearanceOf(s)
+  const socketDia = s.pegDia + 2 * clear
+  const throatW = s.neckW + 2 * clear
   const sweep = curveSweep(s)
   const R = curveRadius(s)
 
@@ -204,6 +301,11 @@ export function trackDims(s: TrackSpec): TrackDims {
   const frogDeg = (Math.asin(clamp(frogDist / (R + s.gauge / 2), -1, 1)) * 180) / Math.PI
   const divergeOffset = R * (1 - Math.cos(sweep))
 
+  // Counted off the same layout the marks are cut from, both legs of a turnout
+  // included — so the readout cannot say one thing while the piece does another.
+  const treadN = allStations(s).length
+  const railMargin = s.width / 2 - half - hw
+
   return {
     bodyLength,
     pitch,
@@ -218,9 +320,9 @@ export function trackDims(s: TrackSpec): TrackDims {
     throatW,
     throatL: headCentre - socketDia / 2,
     socketDepth,
-    headClearance: s.holeClear,
-    neckClearance: s.throatClear,
-    railMargin: s.width / 2 - half - hw,
+    headClearance: clear,
+    neckClearance: clear,
+    railMargin,
     spineMargin: half - hw - socketDia / 2,
     grooveOffTrack: half + hw > s.width / 2,
     socketBreachesGroove: socketDia / 2 > half - hw || throatW / 2 > half - hw,
@@ -237,6 +339,13 @@ export function trackDims(s: TrackSpec): TrackDims {
     // Two end faces inside 40 mm of each other have no stock between them to be
     // two pieces of track, whatever the drawing looks like.
     heelsFoul: s.kind === 'turnout' && divergeOffset < s.width,
+
+    treadCount: treadN,
+    treadSpacing: treadPitch(s),
+    // A mark is the whole width of the track now, so "closer than they are long"
+    // is no test at all; the flange slot is the smallest feature on the piece
+    // and marks tighter than that stop reading as sleepers.
+    treadsCrowded: treadN > 0 && treadPitch(s) < BRIO.grooveW,
   }
 }
 
@@ -416,35 +525,131 @@ function grooveLines(s: TrackSpec): Pt[][] {
   ]
 }
 
-/** Groove outlines, as closed rings — square-ended, because the groove has to
- *  reach the face. */
-function grooveRings(s: TrackSpec): Pt[][] {
-  const half = s.gauge / 2
-  const hw = s.grooveW / 2
-  const straight = (L: number): Pt[][] => [
-    rectRing(0, half - hw, L, s.grooveW),
-    rectRing(0, -half - hw, L, s.grooveW),
-  ]
-  if (s.kind === 'straight') return straight(Math.max(1, s.length))
+// ─── Treads ───────────────────────────────────────────────────────────────────
+//
+// A sleeper mark is one straight chord drawn clean across the run and then cut
+// back to what is solid. Everything the marks have to respect is already a ring
+// somebody else built — the body, the sockets, the grooves — so the whole of the
+// work is a segment clipped against those, and a curve, a crotch fillet, a peg
+// and a socket all come out right without any of them being named here.
+
+/** Even-odd point-in-polygon. Everything clipped against comes out of
+ *  `boolRings`, which returns outer rings only, so even-odd and
+ *  winding agree and the cheaper of the two will do. */
+function inRings(p: Pt, rings: Pt[][]): boolean {
+  let inside = false
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [xi, yi] = r[i]
+      const [xj, yj] = r[j]
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside
+    }
+  }
+  return inside
+}
+
+/** Where a + t·(dx,dy) crosses the edge q0→q1, or null if it misses it. */
+function edgeParam(a: Pt, dx: number, dy: number, q0: Pt, q1: Pt): number | null {
+  const ex = q1[0] - q0[0], ey = q1[1] - q0[1]
+  const den = dx * ey - dy * ex
+  if (Math.abs(den) < 1e-12) return null
+  const wx = q0[0] - a[0], wy = q0[1] - a[1]
+  const t = (wx * ey - wy * ex) / den
+  const u = (wx * dy - wy * dx) / den
+  return t < 0 || t > 1 || u < 0 || u > 1 ? null : t
+}
+
+/**
+ * The parts of a→b that lie inside `rings`. Every crossing is a breakpoint; each
+ * interval between two of them is wholly in or wholly out, so its MIDPOINT
+ * decides the lot — which is what makes this immune to the near-tangent contacts
+ * a mark makes with an edge it only grazes.
+ */
+function clipSegment(a: Pt, b: Pt, rings: Pt[][]): Pt[][] {
+  const dx = b[0] - a[0], dy = b[1] - a[1]
+  const ts = [0, 1]
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const t = edgeParam(a, dx, dy, r[j], r[i])
+      if (t !== null) ts.push(t)
+    }
+  }
+  ts.sort((p, q) => p - q)
+  const out: Pt[][] = []
+  for (let i = 1; i < ts.length; i++) {
+    const t0 = ts[i - 1], t1 = ts[i]
+    if (t1 - t0 < 1e-9) continue
+    const tm = (t0 + t1) / 2
+    if (!inRings([a[0] + dx * tm, a[1] + dy * tm], rings)) continue
+    const p0: Pt = [a[0] + dx * t0, a[1] + dy * t0]
+    const p1: Pt = [a[0] + dx * t1, a[1] + dy * t1]
+    // Two intervals either side of a crossing that changed nothing (an edge the
+    // chord grazes) are one piece of mark, and joining them here is what keeps
+    // it from being emitted as two lines with a plunge between them.
+    const prev = out[out.length - 1]
+    if (prev && Math.hypot(prev[1][0] - p0[0], prev[1][1] - p0[1]) < 1e-9) prev[1] = p1
+    else out.push([p0, p1])
+  }
+  return out
+}
+
+/** What a mark may be drawn on: the body, with every socket taken out of it.
+ *  Nothing is eroded — a sleeper end runs out to the profile and is meant to
+ *  touch it. Pegs are not in `bodyRings` at all, which is the answer wanted: a
+ *  mark across a peg is a mark across the one part of the piece that has to
+ *  slide into somebody else's socket. */
+function treadField(s: TrackSpec): Pt[][] {
+  let keep = bodyRings(s)
+  for (const { fr, end } of connectors(s)) {
+    if (end !== 'female') continue
+    keep = boolRings('difference', keep, socketRings(fr, s))
+  }
+  return keep
+}
+
+/** The sleeper marks, as open polylines right across the run. */
+function treadLines(s: TrackSpec): Pt[][] {
+  if (!s.treads) return []
+  const keep = treadField(s)
+  if (keep.length === 0) return []
+  // Drawn PAST both edges of the track and trimmed back to the profile by the
+  // clip, so no branch of this has to work out where the wood ends. The grooves
+  // are not clipped against at all: one crossed is a hole the bit passes over,
+  // and breaking the line there would be the same cut with two more plunges.
+  const edge = s.width
+
+  const out: Pt[][] = []
+  const add = (a: Pt, b: Pt) => {
+    for (const seg of clipSegment(a, b, keep)) {
+      if (Math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) >= MIN_TREAD) out.push(seg)
+    }
+  }
+  // v is ACROSS the run in both frames — +y on a straight, outward on a curve —
+  // which is what lets one span serve a straight leg and an arc.
+  const across = (x: number) => add([x, -edge], [x, edge])
+  const radial = (cy: number, R: number, a: number) => {
+    const c = Math.cos(a), sn = Math.sin(a)
+    add([(R - edge) * c, cy + (R - edge) * sn], [(R + edge) * c, cy + (R + edge) * sn])
+  }
+
   if (s.kind === 'curve') {
     const R = curveRadius(s)
     const sweep = curveSweep(s)
-    return [
-      sectorRing(0, 0, R + half - hw, R + half + hw, -sweep / 2, sweep / 2),
-      sectorRing(0, 0, R - half - hw, R - half + hw, -sweep / 2, sweep / 2),
-    ]
+    for (const t of stations(s, R * sweep)) radial(0, R, -sweep / 2 + t / R)
+    return out
   }
-  // UNIONED, unlike the centrelines. Four rings that overlap at the throat and
-  // cross at the frog are four regions a pocket would cut twice — and worse,
-  // under an even-odd fill the crossing at the frog reads as a HOLE and is left
-  // standing, which is a lump in the middle of the one place a flange is
-  // already unsupported. The union has no hole in it: no two of these four
-  // rings meet twice, so there is no cycle to enclose one (pinned in the test).
-  const { cy, R, a0, a1 } = branchArc(s)
-  return boolRings('union', straight(Math.max(1, s.length)), [
-    sectorRing(0, cy, R - half - hw, R - half + hw, a0, a1),
-    sectorRing(0, cy, R + half - hw, R + half + hw, a0, a1),
-  ])
+
+  const L = Math.max(1, s.length)
+  for (const t of stations(s, L)) across(t)
+  if (s.kind !== 'turnout') return out
+
+  // The branch gets its own row, but only PAST THE FROG: before it the two
+  // routes are still in each other's stock, and a radial mark laid there runs
+  // across the straight route at an angle to everything already marked on it.
+  const { cy, R, a0, sweep } = branchArc(s)
+  const frogArc = (R * trackDims(s).frogDeg * Math.PI) / 180
+  for (const t of stations(s, R * sweep, frogArc)) radial(cy, R, a0 + t / R)
+  return out
 }
 
 // ─── Emission ─────────────────────────────────────────────────────────────────
@@ -493,10 +698,21 @@ export function generateTrackParts(s: TrackSpec): TrackPart[] {
     d: shiftRings(outline, dx, dy).map((r) => ringToD(r, true)).join(' '),
   }]
 
-  const raw = s.grooveMode === 'outline' ? grooveRings(s) : grooveLines(s)
-  const grooves = shiftRings(flip ? mirrorRings(raw) : raw, dx, dy)
-    .map((r) => (s.grooveMode === 'outline' ? ringToD(r, true) : polyToD(r)))
+  const raw = grooveLines(s)
+  const grooves = shiftRings(flip ? mirrorRings(raw) : raw, dx, dy).map(polyToD)
   if (grooves.length > 0) parts.push({ key: 'groove', d: grooves.join(' ') })
+
+  // Its own part, like the grooves and for the same reason: a sleeper mark is
+  // scratched with a V bit a millimetre down and has nothing to do with either
+  // the profiled outline or the 3 mm slots. Always open polylines — a mark is a
+  // line to follow, never a region to clear.
+  const treads = treadLines(s)
+  if (treads.length > 0) {
+    parts.push({
+      key: 'tread',
+      d: shiftRings(flip ? mirrorRings(treads) : treads, dx, dy).map(polyToD).join(' '),
+    })
+  }
 
   return parts
 }

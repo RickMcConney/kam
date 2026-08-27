@@ -32,7 +32,7 @@ export default function InfoPopover({ text }: { text: string }) {
         type="button"
         aria-label="More info"
         onClick={toggle}
-        className="inline-flex text-gray-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer"
+        className="inline-flex text-gray-600 dark:text-neutral-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors cursor-pointer"
       >
         <Info size={ICON.xs} />
       </button>
