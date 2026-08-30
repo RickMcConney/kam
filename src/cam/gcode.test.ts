@@ -88,24 +88,24 @@ describe('generateGcode — header and footer', () => {
 describe('generateGcode — motion emission', () => {
   it('emits rapids via G0 and cuts via G1 with 2-decimal mm coords', () => {
     const g = gen([makeOp([rapid(10, 10, 5), cut(10, 10, -2), cut(20, 10, -2)])])
-    expect(g).toContain('G0 X10.00 Y10.00 Z5.00')
-    expect(g).toContain('G1 X20.00 Y10.00 Z-2.00 F1000')
+    expect(g).toContain('G0 X10.000 Y10.000 Z5.000')
+    expect(g).toContain('G1 X20.000 Y10.000 Z-2.000 F1000')
   })
 
   it('uses plunge feed for pure-Z descents and xy feed for lateral cuts', () => {
     const g = gen([makeOp([rapid(10, 10, 5), cut(10, 10, -2), cut(20, 10, -2)])])
-    expect(g).toContain('G1 X10.00 Y10.00 Z-2.00 F300')  // zFeedMmMin
-    expect(g).toContain('G1 X20.00 Y10.00 Z-2.00 F1000') // xyFeedMmMin
+    expect(g).toContain('G1 X10.000 Y10.000 Z-2.000 F300')  // zFeedMmMin
+    expect(g).toContain('G1 X20.000 Y10.000 Z-2.000 F1000') // xyFeedMmMin
   })
 
   it('applies feedScale to the cut feed', () => {
     const g = gen([makeOp([rapid(0, 0, 5), cut(0, 0, -1), cut(15, 0, -1, { feedScale: 0.5 })])])
-    expect(g).toContain('G1 X15.00 Y0.00 Z-1.00 F500')
+    expect(g).toContain('G1 X15.000 Y0.000 Z-1.000 F500')
   })
 
   it('skips zero-motion duplicate segments', () => {
     const g = gen([makeOp([rapid(0, 0, 5), cut(0, 0, -1), cut(10, 0, -1), cut(10, 0, -1)])])
-    const dupLines = g.split('\n').filter((l) => l.startsWith('G1 X10.00 Y0.00'))
+    const dupLines = g.split('\n').filter((l) => l.startsWith('G1 X10.000 Y0.000'))
     expect(dupLines.length).toBe(1)
   })
 })
@@ -117,7 +117,7 @@ describe('generateGcode — arcs', () => {
       cut(10, 0, -1),
       cut(-10, 0, -1, { arc: { cx: 0, cy: 0, cw: false } }),
     ])])
-    expect(g).toContain('G3 X-10.00 Y0.00 Z-1.00 I-10.00 J0.00 F1000')
+    expect(g).toContain('G3 X-10.000 Y0.000 Z-1.000 I-10.000 J0.000 F1000')
   })
 
   it('emits a full-circle arc even though start equals end', () => {
@@ -126,7 +126,7 @@ describe('generateGcode — arcs', () => {
       cut(10, 0, -1),
       cut(10, 0, -1, { arc: { cx: 0, cy: 0, cw: true } }),
     ])])
-    expect(g).toContain('G2 X10.00 Y0.00 Z-1.00 I-10.00 J0.00 F1000')
+    expect(g).toContain('G2 X10.000 Y0.000 Z-1.000 I-10.000 J0.000 F1000')
   })
 
   it('runs helical arcs (Z changing) at plunge feed', () => {
@@ -135,7 +135,68 @@ describe('generateGcode — arcs', () => {
       cut(10, 0, 0),
       cut(10, 0, -3, { arc: { cx: 0, cy: 0, cw: true } }),
     ])])
-    expect(g).toContain('G2 X10.00 Y0.00 Z-3.00 I-10.00 J0.00 F300')
+    expect(g).toContain('G2 X10.000 Y0.000 Z-3.000 I-10.000 J0.000 F300')
+  })
+
+  // Grbl and FluidNC reject an arc whose two radii disagree (gcode.c):
+  //   delta_r = |r_end - r_start|; fail when delta_r > 0.005mm AND > 0.001*r.
+  // The 0.001*r term means big arcs are forgiving and small ones get a flat 5µm
+  // budget — which is why error 33 ("Gcode invalid target") showed up only on
+  // tight corner arcs in a real job. Both radii are measured from the centre the
+  // CONTROLLER reconstructs: (last emitted point) + (I,J), rounded as written.
+  const arcRadiusMismatchMM = (gcode: string): number => {
+    let x = 0, y = 0, worst = 0
+    for (const raw of gcode.split('\n')) {
+      const line = raw.replace(/[;(].*$/, '').trim()
+      if (!line) continue
+      const num = (w: string) => {
+        const m = new RegExp(`${w}(-?\\d*\\.?\\d+)`).exec(line)
+        return m ? parseFloat(m[1]) : null
+      }
+      const nx = num('X') ?? x, ny = num('Y') ?? y
+      if (/\bG[23]\b/.test(line)) {
+        const cx = x + (num('I') ?? 0), cy = y + (num('J') ?? 0)
+        worst = Math.max(worst, Math.abs(Math.hypot(nx - cx, ny - cy) - Math.hypot(x - cx, y - cy)))
+      }
+      x = nx; y = ny
+    }
+    return worst
+  }
+
+  it('keeps a small arc inside the radius tolerance Grbl rejects on', () => {
+    // r ~= 3.97mm at an awkward centre, the shape that failed: every coordinate
+    // and both offsets land mid-way between output steps, so each one rounds.
+    const cx = 344.0043, cy = 231.6287, r = 3.96709
+    const a0 = 2.4183, a1 = 0.9042
+    const sx = cx + r * Math.cos(a0), sy = cy + r * Math.sin(a0)
+    const ex = cx + r * Math.cos(a1), ey = cy + r * Math.sin(a1)
+    const g = gen([makeOp([
+      rapid(sx, sy, 5),
+      cut(sx, sy, -1),
+      cut(ex, ey, -1, { arc: { cx, cy, cw: false } }),
+    ])])
+    // Still a real arc, not silently expanded to chords.
+    expect(g).toMatch(/\bG3 /)
+    // Grbl's own test, applied to the bytes actually written.
+    const dr = arcRadiusMismatchMM(g)
+    expect(dr <= 0.005 || dr <= 0.001 * r).toBe(true)
+  })
+
+  it('expands an arc it cannot express within tolerance instead of emitting it', () => {
+    // An arc whose endpoints are not equidistant from its centre cannot be
+    // written as G2/G3 at any precision — the controller would reject the block
+    // outright (error 33) and abort the job mid-cut. Chords are always accepted,
+    // so the emitter degrades to them rather than shipping a file that stops.
+    // Start sits at r=10 from the centre, end at r=10.5.
+    const g = gen([makeOp([
+      rapid(10, 0, 5),
+      cut(10, 0, -1),
+      cut(0, 10.5, -1, { arc: { cx: 0, cy: 0, cw: false } }),
+    ])])
+    expect(g).not.toMatch(/\bG[23] /)
+    expect(g).toContain('arc expanded to lines')
+    // The move still happens, and still ends where it was asked to.
+    expect(g).toContain('X0.000 Y10.500 Z-1.000')
   })
 
   it('expands arcs to G1 chords when the post cannot output arcs', () => {
@@ -146,10 +207,10 @@ describe('generateGcode — arcs', () => {
     ])], { ...POST, outputArcs: false })
     expect(g).not.toContain('G2 ')
     expect(g).not.toContain('G3 ')
-    const chords = g.split('\n').filter((l) => l.startsWith('G1 ') && !l.includes('Z-1.00 F300'))
+    const chords = g.split('\n').filter((l) => l.startsWith('G1 ') && !l.includes('Z-1.000 F300'))
     expect(chords.length).toBeGreaterThan(10)
     // last chord lands on the arc endpoint
-    expect(chords[chords.length - 1]).toContain('X-10.00 Y0.00')
+    expect(chords[chords.length - 1]).toContain('X-10.000 Y0.000')
   })
 })
 
@@ -157,19 +218,19 @@ describe('generateGcode — origin and Z datum', () => {
   it('shifts XY by the workpiece origin offset', () => {
     useWorkpieceStore.setState({ origin: 'center' }) // org = (50, 40)
     const g = gen([makeOp([rapid(60, 50, 5), cut(60, 50, -1), cut(50, 40, -1)])])
-    expect(g).toContain('G0 X10.00 Y10.00 Z5.00')
-    expect(g).toContain('G1 X0.00 Y0.00 Z-1.00')
+    expect(g).toContain('G0 X10.000 Y10.000 Z5.000')
+    expect(g).toContain('G1 X0.000 Y0.000 Z-1.000')
     expect(g).toContain('; Origin: center  offset X50.000 Y40.000')
   })
 
   it('bottom-of-stock Z origin lifts emitted Z by the stock thickness', () => {
     useWorkpieceStore.setState({ zOrigin: 'bottom' }) // thickness 12 → zOff +12
     const g = gen([makeOp([rapid(0, 0, 5), cut(0, 0, 0), cut(10, 0, -12)])])
-    expect(g).toContain('G0 X0.00 Y0.00 Z17.00')  // 5 + 12
-    expect(g).toContain('G1 X0.00 Y0.00 Z12.00')  // top surface
-    expect(g).toContain('G1 X10.00 Y0.00 Z0.00')  // stock bottom = Z0
+    expect(g).toContain('G0 X0.000 Y0.000 Z17.000')  // 5 + 12
+    expect(g).toContain('G1 X0.000 Y0.000 Z12.000')  // top surface
+    expect(g).toContain('G1 X10.000 Y0.000 Z0.000')  // stock bottom = Z0
     // hardcoded retract in endGcode is shifted too
-    expect(g).toContain('G0 Z22.00')
+    expect(g).toContain('G0 Z22.000')
   })
 
   it('converts coordinates and feeds to inches in an inch post', () => {
@@ -177,8 +238,8 @@ describe('generateGcode — origin and Z datum', () => {
       [makeOp([rapid(25.4, 0, 25.4), cut(25.4, 0, -25.4), cut(50.8, 0, -25.4)])],
       { ...POST, unitMode: 'in', startGcode: 'G20\nG90' },
     )
-    expect(g).toContain('G0 X1.000 Y0.000 Z1.000')
-    expect(g).toContain('G1 X2.000 Y0.000 Z-1.000 F39') // 1000 mm/min ≈ 39.37 in/min
+    expect(g).toContain('G0 X1.0000 Y0.0000 Z1.0000')
+    expect(g).toContain('G1 X2.0000 Y0.0000 Z-1.0000 F39') // 1000 mm/min ≈ 39.37 in/min
   })
 })
 
@@ -201,7 +262,7 @@ describe('generateGcode — tool changes', () => {
     expect(lines.slice(changeIdx - 3, changeIdx)).toEqual(expect.arrayContaining(['M5', 'M0']))
     expect(lines.slice(changeIdx)).toContain('M3 S24000')
     // cuts after the change use the second tool's feed
-    expect(g).toContain('G1 X30.00 Y0.00 Z-1.00 F600')
+    expect(g).toContain('G1 X30.000 Y0.000 Z-1.000 F600')
   })
 })
 
@@ -212,7 +273,7 @@ describe('generateGcode — arc reconstruction of dense chords', () => {
     const g = gen([makeOp(segs)])
     const cuts = g.split('\n').filter((l) => l.startsWith('G1 '))
     expect(cuts.length).toBe(2) // plunge + one straight move
-    expect(cuts[1]).toBe('G1 X50.00 Y0.00 Z-1.00 F1000')
+    expect(cuts[1]).toBe('G1 X50.000 Y0.000 Z-1.000 F1000')
   })
 
   it('collapses chords that approximate a circle into G2/G3 arcs', () => {
@@ -400,8 +461,8 @@ describe('generateGcodePerTool — the motion survives the split', () => {
 
   it('sends each half of a 3D profile to its own tool, and only its own', () => {
     const [rough, finish] = split([make3d()])
-    expect(cutLines(rough.gcode)).toEqual(['G1 X0.00 Y0.00 Z-3.00 F300', 'G1 X10.00 Y0.00 Z-3.00 F1000'])
-    expect(cutLines(finish.gcode)).toEqual(['G1 X20.00 Y0.00 Z-1.00 F200', 'G1 X30.00 Y0.00 Z-1.00 F600'])
+    expect(cutLines(rough.gcode)).toEqual(['G1 X0.000 Y0.000 Z-3.000 F300', 'G1 X10.000 Y0.000 Z-3.000 F1000'])
+    expect(cutLines(finish.gcode)).toEqual(['G1 X20.000 Y0.000 Z-1.000 F200', 'G1 X30.000 Y0.000 Z-1.000 F600'])
   })
 
   it('turns the handover marker into a plain positioning move', () => {
@@ -413,7 +474,7 @@ describe('generateGcodePerTool — the motion survives the split', () => {
       expect(f.gcode).not.toContain('\nM0')
     }
     // It survives as the rapid that positions the finishing tool for its first cut.
-    expect(finish.gcode).toContain('G0 X10.00 Y0.00 Z5.00')
+    expect(finish.gcode).toContain('G0 X10.000 Y0.000 Z5.000')
   })
 
   it('gives every file its own spindle speed and its own end block', () => {

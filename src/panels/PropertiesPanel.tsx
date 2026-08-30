@@ -19,6 +19,7 @@ import { pendulumDims } from '../shapes/pendulumGenerator'
 import { trackDims, BRIO } from '../shapes/trackGenerator'
 import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HANDLE_DEFAULTS } from '../shapes/cuttingBoardGenerator'
 import { NumericInput } from '../components/NumericInput'
+import { UnitLabel, SliderValue } from '../components/UnitColumn'
 import FontSelect from '../components/FontSelect'
 
 const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
@@ -29,7 +30,7 @@ function ReadField({ label, value, units }: { label: string; value: string; unit
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
       <span className={fieldCls + ' tabular-nums'}>{value}</span>
-      {units && <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{units}</span>}
+      <UnitLabel>{units}</UnitLabel>
     </div>
   )
 }
@@ -61,6 +62,7 @@ function EditField({
         step={step}
         integer={integer}
         unit={integer ? undefined : units}
+        unitCol
         onChange={(v) => onChange(integer ? v : toMM(v, units as 'mm' | 'in'))}
         className={fieldCls}
       />
@@ -82,7 +84,7 @@ function RawField({ label, value, onChange, suffix, step = 0.01, min, max }: {
   return (
     <div className="flex items-center gap-1.5">
       <span className={labelCls}>{label}</span>
-      <NumericInput value={value} min={min} max={max} step={step} unit={suffix} onChange={onChange} className={fieldCls} />
+      <NumericInput value={value} min={min} max={max} step={step} unit={suffix} unitCol onChange={onChange} className={fieldCls} />
     </div>
   )
 }
@@ -165,7 +167,7 @@ function RotationField({ liveAngle, baseAngle, onApply }: { liveAngle: number | 
         }}
         className={fieldCls}
       />
-      <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
+      <UnitLabel>°</UnitLabel>
     </div>
   )
 }
@@ -265,7 +267,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
             onKeyUp={() => regenerateAffectedMany(groupIds())}
             className="flex-1 w-0 accent-blue-500"
           />
-          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{spirographLoops(params.ratio)}</span>
+          <SliderValue>{spirographLoops(params.ratio)}</SliderValue>
         </div>
         <div className="col-span-2 flex items-center gap-1.5">
           <span className={labelCls}>p</span>
@@ -276,7 +278,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
             onKeyUp={() => regenerateAffectedMany(groupIds())}
             className="flex-1 w-0 accent-blue-500"
           />
-          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{params.p.toFixed(2)}</span>
+          <SliderValue>{params.p.toFixed(2)}</SliderValue>
         </div>
       </>)
     case 'maze':
@@ -310,7 +312,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
             onKeyUp={() => regenerateAffectedMany(groupIds())}
             className="flex-1 w-0 accent-blue-500"
           />
-          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{Math.round(params.loops * 100)}%</span>
+          <SliderValue>{Math.round(params.loops * 100)}%</SliderValue>
         </div>
       </>)
     case 'board': {

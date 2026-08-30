@@ -125,6 +125,12 @@ interface TimelineState {
   // usable timeline (v1 files, corrupt/newer-version logs).
   resetToCurrentState: () => void
   markSaved: () => void
+  // Force "unsaved". -1 is the store's own idiom for "no event matches the last
+  // save" (see amend/undo below). Needed after an autosave restore: loadProject
+  // ends by marking the document clean, which is right for a file on disk and
+  // wrong for a recovered snapshot — that document matches nothing on disk, and
+  // reporting it as saved would stop the next snapshot from being offered back.
+  markUnsaved: () => void
   // Install a timeline from a saved project (v2 .fkam). The stores must
   // already hold the state at `cursor` (the file's snapshot block) — nothing is
   // replayed here. Returns false when the timeline is invalid or from a newer
@@ -480,6 +486,8 @@ export const useTimelineStore = create<TimelineState>()((set, get) => ({
   },
 
   markSaved: () => set({ savedSeq: get().cursor }),
+
+  markUnsaved: () => set({ savedSeq: -1 }),
 
   goTo: (seq) => {
     const s = get()

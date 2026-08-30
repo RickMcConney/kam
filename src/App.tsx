@@ -10,6 +10,7 @@ import { usePathsStore } from './store/pathsStore'
 import { openProjectFile, newProject } from './io/projectLoad'
 import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
+import RestoreDialog from './components/RestoreDialog'
 import EscapementInfoPanel from './panels/EscapementInfoPanel'
 import ClockInfoPanel from './panels/ClockInfoPanel'
 import { useWorkpieceStore } from './store/workpieceStore'
@@ -19,6 +20,8 @@ import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
 import { installSimAutoReload } from './sim/simAutoReload'
 import { installPathClipboard } from './io/pathClipboard'
+import { installAutosave, armAutosave, readSnapshot, clearSnapshot } from './io/autosave'
+import { useRestoreStore } from './store/restoreStore'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const ThreeView = lazy(() => import('./three/ThreeView'))
@@ -176,6 +179,29 @@ function usePathClipboard() {
   useEffect(() => installPathClipboard(), [])
 }
 
+// Crash / tab-discard recovery — see io/autosave.ts for why this exists.
+//
+// Order matters: installAutosave() subscribes immediately but writes nothing
+// until armed, and arming waits on the boot-time read. Otherwise the empty
+// document this mounts over would overwrite the snapshot before it is offered.
+function useAutosave() {
+  useEffect(() => {
+    const dispose = installAutosave()
+    void (async () => {
+      const snap = await readSnapshot()
+      // A snapshot of a document that WAS saved is just a stale mirror of a file
+      // on disk, so it is dropped rather than offered back.
+      if (snap && snap.dirty && (snap.pathCount > 0 || snap.opCount > 0)) {
+        useRestoreStore.getState().setOffer(snap) // RestoreDialog arms once answered
+      } else {
+        if (snap) await clearSnapshot()
+        armAutosave()
+      }
+    })()
+    return dispose
+  }, [])
+}
+
 function useDarkMode() {
   const darkMode = useUIStore((s) => s.darkMode)
   useEffect(() => {
@@ -188,6 +214,7 @@ export default function App() {
   useSurfaceWorkpieceSync()
   useSimAutoReload()
   usePathClipboard()
+  useAutosave()
   useDarkMode()
   const activeTool = useUIStore(s => s.activeTool)
   useEffect(() => {
@@ -206,6 +233,7 @@ export default function App() {
       </div>
       <StatusBar />
       <SaveDialog />
+      <RestoreDialog />
       {/* Floats over everything and takes no focus — it is a readout being
           watched while a spinner is held down, not a dialog. */}
       <EscapementInfoPanel />

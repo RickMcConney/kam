@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import { parseNumeric, isPartialFraction } from './parseNumeric'
+import { UNIT_COL_W } from './UnitColumn'
 
 interface NumericInputProps {
   /** Forwarded to the real <input> so a <label htmlFor> can point at it. */
@@ -16,11 +17,18 @@ interface NumericInputProps {
   /** Unit shown after the field ('mm', 'in', 'mm/min', 'RPM', '°'). Owned by this
    *  component so the box and its unit can never drift apart between panels. */
   unit?: string
+  /** Reserve the unit column at a FIXED width, and keep it even when there is no
+   *  unit at all. A panel that stacks rows of mixed kinds — 'mm' on one, a bare
+   *  count on the next — otherwise ends every row at a different x, because the
+   *  unit is what the box stops short of. Opt-in: a form whose fields all carry
+   *  the same unit has nothing to line up and does not want the empty gutter. */
+  unitCol?: boolean
 }
+
 
 // Numeric input that holds local text state while focused so intermediate
 // states like "-", "3.", or "" don't reset to the last valid value on every keystroke.
-export function NumericInput({ id, value, min, max, step, integer, onChange, className, title, unit }: NumericInputProps) {
+export function NumericInput({ id, value, min, max, step, integer, onChange, className, title, unit, unitCol }: NumericInputProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
 
@@ -136,11 +144,11 @@ export function NumericInput({ id, value, min, max, step, integer, onChange, cla
   // the box with absolute positioning and a pr-8 gutter). A field with no unit stays a
   // single element deep, exactly as it was.
   const wrap = grows ? 'min-w-0 flex-1 w-full' : ''
-  if (!unit) return <span title={title} className={`flex ${wrap}`}>{box}</span>
+  if (!unit && !unitCol) return <span title={title} className={`flex ${wrap}`}>{box}</span>
   return (
     <span title={title} className={`flex items-center gap-1 ${wrap}`}>
       {box}
-      <span className="flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none">{unit}</span>
+      <span className={`flex-shrink-0 text-label text-gray-600 dark:text-neutral-400 select-none ${unitCol ? UNIT_COL_W : ''}`}>{unit}</span>
     </span>
   )
 }

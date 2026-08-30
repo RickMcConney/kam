@@ -265,7 +265,25 @@ export function generateGcode(
       lastToolId = firstToolId
     }
 
-    const coordDecimals = profile.unitMode === 'in' ? 3 : 2
+    // 3 dp in mm (1 µm), 4 dp in inches (0.1 mil). This is NOT cosmetic: Grbl and
+    // FluidNC reject an arc whose two radii disagree, and at 2 dp the rounding
+    // alone blows the budget. The check (gcode.c) fails the block when
+    //     |r_end - r_start| > 0.005mm  AND  |r_end - r_start| > 0.001 * r
+    // so the effective tolerance on a small arc is a flat 5 µm — while rounding
+    // start, end and the centre offsets to 0.01 mm can shift the two radii by
+    // ~15 µm between them. Large arcs were saved by the 0.001*r term and small
+    // ones were not, which is why "Gcode invalid target" (error 33) only ever
+    // showed up on tight corner arcs.
+    const coordDecimals = profile.unitMode === 'in' ? 4 : 3
+    const rnd = (n: number) => Number(n.toFixed(coordDecimals))
+    // Grbl's tolerance is in mm regardless of the file's unit mode — it converts
+    // before checking — so the guard below has to convert back to compare.
+    const toMM = profile.unitMode === 'in' ? MM_PER_IN : 1
+    // The last coordinates actually WRITTEN, in output units. An arc's centre must
+    // be expressed relative to these and not to the true position: the controller
+    // starts the arc from the rounded point it was last told to go to, so I/J
+    // measured from the unrounded one is off by the rounding error every time.
+    let emitX = NaN, emitY = NaN
     let prevX = NaN, prevY = NaN, prevZ = NaN
     let currentTool = firstTool
     let currentFeeds = firstFeeds
@@ -315,25 +333,54 @@ export function generateGcode(
       if (!posChanged && !seg.arc) { prevX = seg.x; prevY = seg.y; prevZ = seg.z; continue }
 
       // Convert workpiece-local → machine-relative by subtracting origin offset
-      const x = f(toOut(seg.x - org.x, profile), coordDecimals)
-      const y = f(toOut(seg.y - org.y, profile), coordDecimals)
-      const z = f(toOut(seg.z + zOff, profile), coordDecimals)
+      const xn = rnd(toOut(seg.x - org.x, profile))
+      const yn = rnd(toOut(seg.y - org.y, profile))
+      const zn = rnd(toOut(seg.z + zOff, profile))
+      const x = xn.toFixed(coordDecimals)
+      const y = yn.toFixed(coordDecimals)
+      const z = zn.toFixed(coordDecimals)
+
+      // I/J are offsets from the arc START to the centre — and "start" means the
+      // point the controller is at, i.e. the rounded coordinates last emitted.
+      // Rounding these too means the centre the controller reconstructs
+      // (emitX+ii, emitY+jj) is EXACTLY the one this radius check reasons about,
+      // so r_start is exact by construction and only the endpoint can drift.
+      let arcOk = false
+      let ii = '', jj = ''
+      if (seg.arc) {
+        const iN = rnd(toOut(seg.arc.cx - org.x, profile) - emitX)
+        const jN = rnd(toOut(seg.arc.cy - org.y, profile) - emitY)
+        const rStart = Math.hypot(iN, jN)
+        const rEnd = Math.hypot(xn - (emitX + iN), yn - (emitY + jN))
+        const dR = Math.abs(rEnd - rStart) * toMM
+        // Grbl's own test, at half the tolerance so a file that squeaks through
+        // here is not relying on the last micron of the controller's budget.
+        arcOk = dR <= 0.0025 || dR <= 0.0005 * rStart * toMM
+        ii = iN.toFixed(coordDecimals)
+        jj = jN.toFixed(coordDecimals)
+      }
 
       if (seg.rapid) {
         lines.push(sub(profile.rapidTemplate, { x, y, z }))
-      } else if (seg.arc && profile.outputArcs) {
-        // Arc move (G2/G3). I/J are offsets from the arc START point to the center.
-        const ii = f(toOut(seg.arc.cx - prevX, profile), coordDecimals)
-        const jj = f(toOut(seg.arc.cy - prevY, profile), coordDecimals)
+      } else if (seg.arc && profile.outputArcs && arcOk) {
         const isHelical = seg.z !== prevZ
         const feedMm = (isHelical || currentTool.xyFeedMmMin === 0) ? currentFeeds.plungeMmMin : currentFeeds.xyFeedMmMin
         const feed = Math.round(toOut(feedMm, profile))
         const template = seg.arc.cw ? profile.arcCWTemplate : profile.arcCCWTemplate
         lines.push(sub(template, { x, y, z, i: ii, j: jj, f: feed }))
       } else if (seg.arc) {
-        // outputArcs disabled — expand arc to G1 linear approximation
+        // Either the post can't output arcs, or the rounded arc failed the radius
+        // check above and the controller would reject it (error 33). Both expand
+        // to a G1 chord approximation, which is always accepted.
+        if (profile.outputArcs) c('arc expanded to lines: radius mismatch at output precision')
         const { cx, cy, cw } = seg.arc
-        const r = Math.hypot(prevX - cx, prevY - cy)
+        // Two radii, not one. They are equal for an arc the fitter produced, but
+        // an inconsistent one arrives here precisely BECAUSE they differ, and
+        // sweeping at the start radius would end the move short of the commanded
+        // endpoint — 0.5mm out on the arc that first exercised this path.
+        // Interpolating between them lands on both ends exactly.
+        const r0 = Math.hypot(prevX - cx, prevY - cy)
+        const r1 = Math.hypot(seg.x - cx, seg.y - cy)
         let a0 = Math.atan2(prevY - cy, prevX - cx)
         let a1 = Math.atan2(seg.y - cy, seg.x - cx)
         const isFullCircle = Math.abs(prevX - seg.x) < 0.001 && Math.abs(prevY - seg.y) < 0.001
@@ -350,8 +397,14 @@ export function generateGcode(
         for (let k = 1; k <= steps; k++) {
           const t = k / steps
           const a = a0 + (a1 - a0) * t
-          const ax = f(toOut(cx + r * Math.cos(a) - org.x, profile), coordDecimals)
-          const ay = f(toOut(cy + r * Math.sin(a) - org.y, profile), coordDecimals)
+          const rt = r0 + (r1 - r0) * t
+          // The radius lerp above already lands t=1 on the commanded endpoint;
+          // emitting its string verbatim just keeps cos/sin/atan2 round-off from
+          // flipping the last digit, so the move ends on the exact coordinates
+          // the next segment will measure its own I/J against.
+          const last = k === steps && !isFullCircle
+          const ax = last ? x : f(toOut(cx + rt * Math.cos(a) - org.x, profile), coordDecimals)
+          const ay = last ? y : f(toOut(cy + rt * Math.sin(a) - org.y, profile), coordDecimals)
           const az = f(toOut(prevZ + (seg.z - prevZ) * t, profile), coordDecimals)
           lines.push(sub(profile.cutTemplate, { x: ax, y: ay, z: az, f: feed }))
         }
@@ -371,6 +424,7 @@ export function generateGcode(
       }
 
       prevX = seg.x; prevY = seg.y; prevZ = seg.z
+      emitX = xn; emitY = yn
     }
     lines.push('')
   }
@@ -380,7 +434,7 @@ export function generateGcode(
     // "G0 Z10" becomes "G0 Z22" when bottom-of-stock (T=12) is selected.
     const endBlock = zOff
       ? (() => {
-          const decs = profile.unitMode === 'in' ? 3 : 2
+          const decs = profile.unitMode === 'in' ? 4 : 3
           const zOffOut = toOut(zOff, profile)
           return profile.endGcode.replace(/\bZ(-?[\d.]+)/g, (_, n) => `Z${f(parseFloat(n) + zOffOut, decs)}`)
         })()

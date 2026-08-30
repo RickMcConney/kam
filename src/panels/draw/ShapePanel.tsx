@@ -17,7 +17,7 @@ import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../../shapes/te
 import { PATH_COLOR } from '../../colors'
 import { NumericInput } from '../../components/NumericInput'
 import FontSelect from '../../components/FontSelect'
-import { NumInput, PlainInput, Select, Check, inputCls, labelCls, toolBtnCls, toolBtnState } from './shared'
+import { NumInput, PlainInput, Select, Check, UnitSpacer, SliderValue, inputCls, labelCls, toolBtnCls, toolBtnState } from './shared'
 
 
 const LS_TEXT_KEY = 'kam:textConfig'
@@ -101,8 +101,9 @@ function ShapeConfig({ type, config, onChange, units }: {
             min={1} max={179} step={5}
             onChange={(angle) => onChange({ ...c, heart: { ...c.heart, angle } })}
             className={inputCls}
+            unit="°"
+            unitCol
           />
-          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
         </div>
       </div>)
     case 'slot':
@@ -134,12 +135,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             }}
             className="flex-1 w-0 accent-blue-500"
           />
-          <NumericInput value={loops} min={SPIRO_RATIO_RANGE.min} max={SPIRO_RATIO_RANGE.max} step={1}
-            onChange={(v) => {
-              const ratio = spirographLoops(v)
-              onChange({ ...c, spirograph: { ...c.spirograph, ratio, p: Math.min(p, ratio) } })
-            }}
-            className={`${inputCls} w-12 flex-none`} />
+          <SliderValue>{loops}</SliderValue>
         </div>
         {/* max = loops leaves headroom past spirographCentrePen — where the
             curve fills right to the middle — without much dead travel beyond it,
@@ -151,7 +147,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             onChange={(e) => onChange({ ...c, spirograph: { ...c.spirograph, p: parseFloat(e.target.value) } })}
             className="flex-1 w-0 accent-blue-500"
           />
-          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{p.toFixed(2)}</span>
+          <SliderValue>{p.toFixed(2)}</SliderValue>
         </div>
         <p className="text-label text-gray-600 dark:text-neutral-400">
           Ring {fmtLen(R, u as 'mm' | 'in')} / wheel {fmtLen(r, u as 'mm' | 'in')} · R/r {loops}
@@ -187,7 +183,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           <input type="range" min={0} max={1} step={0.05} value={loops}
             onChange={(e) => set({ loops: parseFloat(e.target.value) })}
             className="flex-1 w-0 accent-blue-500" />
-          <span className="text-gray-500 dark:text-neutral-400 text-label font-mono tabular-nums w-8 text-right flex-shrink-0">{Math.round(loops * 100)}%</span>
+          <SliderValue>{Math.round(loops * 100)}%</SliderValue>
         </div>
         {/* The pitch is what the walls are actually left at — it rounds up from
             Spacing to fit whole cells, so show it rather than the request. */}
@@ -286,8 +282,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           <div className="flex items-center gap-1.5">
             <span className={labelCls}>Pressure</span>
             <NumericInput value={g.pressureAngle} min={5} max={35} step={0.5}
-              onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} />
-            <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
+              onChange={(pressureAngle) => set({ pressureAngle })} className={inputCls} unit="°" unitCol />
           </div>
         )}
         <NumInput label="Bore Ø"  valueMM={g.bore} units={u} min={0} onChange={(bore) => set({ bore })} />
@@ -385,8 +380,7 @@ function ShapeConfig({ type, config, onChange, units }: {
       }) => (
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>{label}</span>
-          <NumericInput value={value} min={min} max={max} step={step} onChange={oc} className={inputCls} />
-          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
+          <NumericInput value={value} min={min} max={max} step={step} onChange={oc} className={inputCls} unit="°" unitCol />
         </div>
       )
       return (<div className="space-y-1">
@@ -469,8 +463,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         <div className="flex items-center gap-1.5">
           <span className={labelCls}>Sweep</span>
           <NumericInput value={m.sweepDeg} min={5} max={360} step={5}
-            onChange={(sweepDeg) => set({ sweepDeg })} className={inputCls} />
-          <span className="text-gray-600 dark:text-neutral-400 text-label flex-shrink-0">°</span>
+            onChange={(sweepDeg) => set({ sweepDeg })} className={inputCls} unit="°" unitCol />
         </div>
         <NumInput label="Bore Ø"  valueMM={m.boreDia} units={u} min={0} onChange={(boreDia) => set({ boreDia })} />
         <NumInput label="Lever"   valueMM={m.handleLength} units={u} min={1} onChange={(handleLength) => set({ handleLength })} />
@@ -623,6 +616,7 @@ function ShapeConfig({ type, config, onChange, units }: {
           <input type="text" value={c.text.text} placeholder="Enter text…"
             onChange={(e) => onChange({ ...c, text: { ...c.text, text: e.target.value } })}
             className={inputCls} />
+          <UnitSpacer />
         </div>
         <NumInput label="Size" valueMM={c.text.fontSize} units={u} min={0.1} onChange={(fontSize) => onChange({ ...c, text: { ...c.text, fontSize } })} />
         <div className="flex items-center gap-1.5">
@@ -633,6 +627,7 @@ function ShapeConfig({ type, config, onChange, units }: {
             onChange={(family) => onChange({ ...c, text: { ...c.text, fontFamily: family } })}
             className="flex-1 w-0"
           />
+          <UnitSpacer />
         </div>
       </div>)
   }
