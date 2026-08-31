@@ -1,5 +1,5 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -9,12 +9,13 @@ import { useToolpathStore, batchOf, type AnyOperation, type PocketOperation } fr
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { useUIStore } from '../../store/uiStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useSelectedPaths } from '../../store/pathsStore'
+import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import type { PocketStrategy } from '../../cam/pocket'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
+import { reviseGroupBatch } from './reviseBatch'
 import { entryHintAt } from '../../cam/startOptimizer'
 
 interface PocketFormState {
@@ -39,8 +40,11 @@ interface PocketFormState {
 export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: PocketOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, updateOperation, replaceGeneratedOperations, operations } = useToolpathStore()
+  // PICK ORDER, not z-order: operations are cut in the order they were created
+  // (see cam/startOptimizer), so the order the paths were clicked in IS the order the
+  // machine will run them. Selecting three circles 1, 2, 3 cuts them 1, 2, 3.
+  const selPaths = useSelectedPathsInOrder()
+  const { addOperations, setSegments, updateOperation, replaceGeneratedOperations, reviseBatchPaths, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM } = useWorkpieceStore()
 
@@ -59,7 +63,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // Legacy ops (saved before start heights existed) stay on stock top rather than
     // silently deepening when re-generated; new ops default to auto.
     startFrom: editOp.startFrom ?? { mode: 'stock' },
-    invert: false,
+    // The operation records which half of a nested selection it came from, so the
+    // checkbox reopens saying what this pocket actually did. Un-inverted for anything
+    // saved before the field existed, which is what those pockets were.
+    invert: editOp.invert ?? false,
   } : { ...mergeWithDefaults(load('pocket'), {
     toolId: defaultTool?.id ?? '',
     // 'hybrid' — shown as "Auto". Note this is only the default for a FIRST pocket: the
@@ -99,8 +106,26 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       ? [{ op, boundary, islands: paths.filter((p) => op.islandIds.includes(p.id)) }]
       : []
   })
+  // While a batch is open for editing the canvas selection is the set of paths it clears —
+  // shift-click one in, shift-click one out, Regenerate to apply. Which of them is the
+  // boundary and which are islands is not the user's to say: the selection is re-read by
+  // the SAME containment rule the first Generate used, so a path shift-clicked inside an
+  // existing pocket becomes an island of it. See reviseGroupBatch.
+  // Flipping Invert Pocket while editing changes nothing about the SELECTION but
+  // everything about how it reads, so it has to force the regroup that an unchanged
+  // selection otherwise skips. Without this the checkbox moved and the pocket did not.
+  const invertChanged = !!editOp && form.invert !== (editOp.invert ?? false)
+  const rev = reviseGroupBatch(
+    editGroups, editOp ? selPaths : [],
+    (sel) => groupPathsByContainment(sel, { invert: form.invert }),
+    { force: invertChanged },
+  )
+  const editRevised = [
+    ...rev.keep.map((k) => ({ op: k.member.op as PocketOperation | undefined, boundary: k.group.boundary, islands: k.group.islands })),
+    ...rev.add.map((g) => ({ op: undefined as PocketOperation | undefined, boundary: g.boundary, islands: g.islands })),
+  ]
   const groups = editOp
-    ? editGroups
+    ? editRevised
     : groupPathsByContainment(selPaths, { invert: form.invert })
         .map((g) => ({ ...g, op: undefined }))
   // Only worth asking about when the selection actually nests. Once inverted the checkbox
@@ -186,16 +211,54 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     // lets React paint the 'generating' state, so the old setTimeout(…,0) yield is unnecessary.
     try {
       if (editOp) {
-        for (const { op, boundary, islands } of editGroups) {
+        // Paths the selection added to this batch, or took out of it, land HERE — on the
+        // Regenerate click, in one store action. A boundary that KEPT its operation but
+        // gained or lost an island needs no new operation, only the `islandIds` the loop
+        // below writes anyway.
+        let cuts = rev.keep.map((k) => ({ op: k.member.op, boundary: k.group.boundary, islands: k.group.islands }))
+        if (rev.drop.length > 0 || rev.add.length > 0) {
+          const newIds = reviseBatchPaths({
+            anchorId: editOp.id,
+            deleteIds: rev.drop.map((m) => m.op.id),
+            add: rev.add.map(({ boundary, islands }) => ({
+              name: `Pocket: ${boundary.name} (${tool.name})`,
+              type: 'pocket' as const,
+              toolId: form.toolId,
+              strategy: form.strategy,
+              pathId: boundary.id,
+              islandIds: islands.map((p) => p.id),
+              depthMM: form.depthMM,
+              stepDownMM: form.stepDownMM,
+              stepoverPercent: form.stepoverPercent,
+              passAngleDeg: form.passAngleDeg,
+              autoAngle: form.autoAngle,
+              direction: form.direction,
+              rampIn: form.rampIn,
+              allowanceMM: form.allowanceMM,
+              invert: form.invert,
+              startFrom: form.startFrom,
+            })),
+          })
+          const live = useToolpathStore.getState().operations
+          cuts = [...cuts, ...rev.add.flatMap((g, i) => {
+            const op = live.find((o) => o.id === newIds[i]) as PocketOperation | undefined
+            return op ? [{ op, boundary: g.boundary, islands: g.islands }] : []
+          })]
+        }
+        for (const { op, boundary, islands } of cuts) {
           // Chain each op to where the previous one finishes, at generation time — so no
           // regeneration is needed before simulating or exporting.
           const hint = entryHintAt(op.id)
           updateOperation(op.id, {
             entryHint: hint,
             toolId: form.toolId, strategy: form.strategy,
+            // Written every time, not only when revising: a kept boundary whose island set
+            // changed keeps its operation, and this is the only thing about it that moves.
+            islandIds: islands.map((p) => p.id),
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg,
             direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
+            invert: form.invert,
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation>)
           try {
@@ -217,6 +280,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             if (isWorkCancelled(err)) break
             reportError(op.id, err)
           }
+        }
+        // See ProfileForm: the chip that opened this form may be the one just deselected.
+        if (rev.drop.some((m) => m.op.id === editOp.id) && cuts.length > 0) {
+          useUIStore.getState().setRequestEditOpId(cuts[0].op.id)
         }
       } else {
         // Every new op goes in ONE addOperations call: a Generate over several selected
@@ -242,6 +309,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             direction: form.direction,
             rampIn: form.rampIn,
             allowanceMM: form.allowanceMM,
+            invert: form.invert,
             startFrom: form.startFrom,
           }) - 1
         })
@@ -273,6 +341,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             depthMM: form.depthMM, stepDownMM: form.stepDownMM,
             stepoverPercent: form.stepoverPercent, passAngleDeg: form.passAngleDeg, autoAngle: form.autoAngle,
             direction: form.direction, rampIn: form.rampIn, allowanceMM: form.allowanceMM,
+            invert: form.invert,
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation> : { entryHint: hint, status: 'generating' })
           try {
@@ -308,8 +377,11 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       )}
       <ToolSelector tools={cutters} value={form.toolId} onChange={handleToolChange} />
       {/* Nested outlines alternate solid/hole, so there are two valid readings of the same
-          selection and only the user knows which one is the part. */}
-      {!editOp && nested && (
+          selection and only the user knows which one is the part. Shown when EDITING too:
+          the operation stores which reading it used (`invert`), so the box reopens saying
+          what this pocket did, and flipping it re-reads the same paths the other way up.
+          It was hidden here while it was inert. */}
+      {nested && (
         <div className="flex items-center gap-2">
           <input type="checkbox" id="pocket-invert" checked={form.invert}
             onChange={(e) => up('invert', e.target.checked)} className="accent-blue-500" />
@@ -392,12 +464,17 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       {/* Below the button — see PathListSection. Islands keep their label because that
           is a real distinction; nothing else needs one. */}
       <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
-        {groups.map(({ boundary, islands }) => (
+        {groups.map(({ boundary, islands }, gi) => (
           <div key={boundary.id} className="space-y-0.5">
-            <PathChip path={boundary} />
-            {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+            <PathChip path={boundary} index={groups.length > 1 ? gi + 1 : undefined}
+              state={rev.addedIds.has(boundary.id) ? 'added' : undefined} />
+            {islands.map((p) => (
+              <PathChip key={p.id} path={p} label="island" state={rev.addedIds.has(p.id) ? 'added' : undefined} />
+            ))}
           </div>
         ))}
+        {rev.removed.map((p) => <PathChip key={p.id} path={p} state="removed" />)}
+        {editOp && <PathRevisionHint added={rev.addedIds.size} removed={rev.removed.length} />}
       </PathListSection>
     </FormShell>
   )

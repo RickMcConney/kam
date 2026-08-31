@@ -7,7 +7,7 @@ import {
   X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare, Group, TrainTrack,
 } from 'lucide-react'
 import { usePathsStore, clearCorners, outerGroupOf, type ImportedPath } from '../store/pathsStore'
-import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
+import { useToolpathStore, pathIdsOf, type AnyOperation } from '../store/toolpathStore'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { shapeDisplayName } from '../shapes/shapeGenerators'
 import { useUIStore } from '../store/uiStore'
@@ -340,6 +340,13 @@ export default function TimelinePanel() {
 
     if (chip.opIds) {
       // Any member opens the form; it edits the whole batch through `batchOf`.
+      // Select what that form edits — the paths of every member — for the same two
+      // reasons the program strip does: the canvas shows which geometry the chip cuts,
+      // and ProfileForm and DrillForm read their path list back out of the selection.
+      const ops = useToolpathStore.getState().operations.filter((o) => chip.opIds!.includes(o.id))
+      const live = new Set(usePathsStore.getState().paths.map((p) => p.id))
+      const ids = [...new Set(ops.flatMap(pathIdsOf))].filter((id) => live.has(id))
+      if (ids.length > 0) usePathsStore.getState().setSelectedIds(ids)
       ui.setRequestEditOpId(chip.opIds[0])
       return
     }

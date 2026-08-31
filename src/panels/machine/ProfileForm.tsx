@@ -1,5 +1,6 @@
 // ─── Profile form ─────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
+import { reviseBatch } from './reviseBatch'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -8,7 +9,8 @@ import { useToolStore, type CuttingDirection } from '../../store/toolStore'
 import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type ProfileOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useSelectedPaths } from '../../store/pathsStore'
+import { useUIStore } from '../../store/uiStore'
+import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
@@ -29,8 +31,11 @@ interface ProfileFormState {
 export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?: ProfileOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, updateOperation, deleteOperation, operations } = useToolpathStore()
+  // PICK ORDER, not z-order: operations are cut in the order they were created
+  // (see cam/startOptimizer), so the order the paths were clicked in IS the order the
+  // machine will run them. Selecting three circles 1, 2, 3 cuts them 1, 2, 3.
+  const selPaths = useSelectedPathsInOrder()
+  const { addOperations, setSegments, updateOperation, deleteOperation, reviseBatchPaths, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
@@ -72,7 +77,13 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     const path = paths.find((p) => p.id === op.pathId)
     return path ? [{ op, path }] : []
   })
-  const selectedPaths = editOp ? editPairs.map((e) => e.path) : selPaths
+  // While a batch is open for editing, the canvas selection is the set of paths it
+  // covers — shift-click one in, shift-click one out. Only the Regenerate click below
+  // acts on it; an empty selection means the user clicked away, not that the batch
+  // should be emptied. See reviseBatch.
+  const rev = reviseBatch(editPairs, (e) => e.path, editOp ? selPaths : [])
+  const selectedPaths = editOp ? [...rev.keep.map((e) => e.path), ...rev.add] : selPaths
+  const addedIds = new Set(rev.add.map((p) => p.id))
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Outside cuts reach a full diameter past the path (radius of offset + radius of tool),
   // centerline half that, inside not at all. An allowance moves the toolpath further off
@@ -128,7 +139,34 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
     let failed = false
     try {
       if (editOp) {
-        for (const { op, path } of editPairs) {
+        // Paths the selection added to this batch, or took out of it, land HERE — on the
+        // Regenerate click, in one store action — and never while the selection is made.
+        let pairs = rev.keep
+        if (rev.drop.length > 0 || rev.add.length > 0) {
+          const newIds = reviseBatchPaths({
+            anchorId: editOp.id,
+            deleteIds: rev.drop.map((e) => e.op.id),
+            add: rev.add.map((path) => ({
+              name: `Profile: ${path.name} (${tool.name})`,
+              type: 'profile' as const,
+              toolId: form.toolId,
+              pathId: path.id,
+              side: form.side,
+              depthMM: form.depthMM,
+              stepDownMM: form.stepDownMM,
+              direction: form.direction,
+              rampIn: form.rampIn,
+              allowanceMM: form.allowanceMM,
+              startFrom: form.startFrom,
+            })),
+          })
+          const live = useToolpathStore.getState().operations
+          pairs = [...rev.keep, ...rev.add.flatMap((path, i) => {
+            const op = live.find((o) => o.id === newIds[i]) as ProfileOperation | undefined
+            return op ? [{ op, path }] : []
+          })]
+        }
+        for (const { op, path } of pairs) {
           // Chain to where the previous operation finishes, at generation time.
           const hint = entryHintAt(op.id)
           updateOperation(op.id, {
@@ -151,6 +189,12 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
             reportError(op.id, err)
             failed = true
           }
+        }
+        // The chip that opened this form may be the one just deselected. Re-anchor on a
+        // member that still exists, or the form falls back to "New Profile" holding a
+        // selection it has already cut.
+        if (rev.drop.some((e) => e.op.id === editOp.id) && pairs.length > 0) {
+          useUIStore.getState().setRequestEditOpId(pairs[0].op.id)
         }
       } else {
         // One addOperations call for the whole selection: one timeline chip, one shared
@@ -261,7 +305,12 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
       />
       {/* Below the button — see PathListSection. */}
       <PathListSection count={selectedPaths.length}>
-        {selectedPaths.map((p) => <PathChip key={p.id} path={p} />)}
+        {selectedPaths.map((p, i) => (
+          <PathChip key={p.id} path={p} index={selectedPaths.length > 1 ? i + 1 : undefined}
+            state={addedIds.has(p.id) ? 'added' : undefined} />
+        ))}
+        {rev.drop.map(({ path }) => <PathChip key={path.id} path={path} state="removed" />)}
+        {editOp && <PathRevisionHint added={rev.add.length} removed={rev.drop.length} />}
       </PathListSection>
     </FormShell>
   )

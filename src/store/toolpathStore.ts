@@ -84,6 +84,12 @@ export interface PocketOperation extends BaseOperation {
   autoAngle?: boolean
   rampIn: boolean
   allowanceMM?: number   // finish allowance: stock left on all walls (negative grows the pocket)
+  // Which half of a nested selection this pocket came from. It is not derivable from
+  // `pathId`/`islandIds` afterwards — a boundary and its islands look the same whichever
+  // parity produced them — so without it the form reopened un-inverted and the checkbox
+  // said the opposite of what the operation had done. Absent on ops saved before this and
+  // on every un-inverted pocket; read as false.
+  invert?: boolean
 }
 
 export interface DrillOperation extends BaseOperation {
@@ -241,6 +247,16 @@ interface ToolpathState {
   // call it already made, not deleting one thing and creating another — so it amends the
   // op.add chip that defined `anchorId` rather than appending delete + add chips.
   replaceGeneratedOperations: (args: { anchorId: string; deleteIds: string[]; add: AddPayload[] }) => string[]
+  // Add paths to / remove paths from the set one Generate click covers. The unit that
+  // HAS a path list is the BATCH, not the operation: a profile and a drill each hold a
+  // single `pathId`, so a path added to the set is a new OPERATION and a path taken out
+  // of it is a deleted one. Members that stay keep their ids, because other things point
+  // at them — a `startFrom: { mode: 'op' }` reference, and the operation's place in the
+  // program — and the new members land BESIDE their siblings rather than at the end of
+  // the list, so adding a hole that was missed does not move that drilling to the end of
+  // the job. Amends the op.add that defined the batch, for the same reason a depth edit
+  // does: it is an argument to the call already made, not a second call.
+  reviseBatchPaths: (args: { anchorId: string; deleteIds: string[]; add: AddPayload[] }) => string[]
   setSegments: (id: string, segments: MotionSegment[]) => void
   setError: (id: string, error: string) => void
   // Settles operations whose generation was abandoned (see workers/abortGeneration).
@@ -427,6 +443,57 @@ export const useToolpathStore = create<ToolpathState>()((set, get) => ({
     if (!tl.amendOpAddEvent(anchorId, { removeIds: deleteIds, add: created.map(serializeOp) })) {
       // No defining chip to amend (loaded or compacted project): record it plainly. Two
       // entries, but correct — better than a chip that replay can't reproduce.
+      if (deleteIds.length > 0) tl.record({ kind: 'op.delete', opIds: deleteIds })
+      if (created.length > 0) {
+        const [first, ...rest] = created
+        tl.record({
+          kind: 'op.add',
+          op: serializeOp(first),
+          ...(rest.length > 0 ? { linked: rest.map(serializeOp) } : {}),
+        })
+      }
+    }
+    get().revalidateStartHeights()
+    return created.map((o) => o.id)
+  },
+
+  reviseBatchPaths: ({ anchorId, deleteIds, add }) => {
+    const anchor = get().operations.find((o) => o.id === anchorId)
+    if (!anchor) return []
+    const remove = new Set(deleteIds)
+    const kept = batchOf(anchor, get().operations).filter((o) => !remove.has(o.id))
+    const keptIds = new Set(kept.map((o) => o.id))
+    // A batchId only exists once there is something to be batched WITH: an operation
+    // created alone has none, and a second path joining it is the moment one is needed.
+    const batchId = anchor.batchId ?? (kept.length + add.length > 1 ? uid('batch') : undefined)
+    // Built exactly as addOperations builds them — see replaceGeneratedOperations.
+    const created = add.map((op) => ({
+      ...op, id: uid('op'), status: 'pending', segments: [],
+      color: OP_TYPE_COLORS[op.type] ?? '#94a3b8', visible: true,
+      ...(batchId ? { batchId } : {}),
+    } as AnyOperation))
+    set((s) => {
+      const src = s.operations
+      // Where the new members go: after the LAST surviving member of the batch, or, when
+      // the revision replaced every one of them, where the batch itself stood.
+      let at = src.findIndex((o) => o.id === anchorId)
+      for (let i = 0; i < src.length; i++) if (keptIds.has(src[i].id)) at = i
+      const out: AnyOperation[] = []
+      for (let i = 0; i < src.length; i++) {
+        const o = src[i]
+        // Stamping the survivors is what makes a batch out of an operation that was
+        // created alone; every other case already agrees with `batchId`.
+        if (!remove.has(o.id)) {
+          out.push(batchId && keptIds.has(o.id) && o.batchId !== batchId
+            ? { ...o, batchId } as AnyOperation : o)
+        }
+        if (i === at) out.push(...created)
+      }
+      return { operations: out }
+    })
+    const tl = useTimelineStore.getState()
+    if (!tl.amendOpAddEvent(anchorId, { removeIds: deleteIds, add: created.map(serializeOp) })) {
+      // No defining chip to amend (loaded or compacted project) — see above.
       if (deleteIds.length > 0) tl.record({ kind: 'op.delete', opIds: deleteIds })
       if (created.length > 0) {
         const [first, ...rest] = created

@@ -66,13 +66,56 @@ export function FormShell({ title, onClose, children }: { title: string; onClose
 // `label` is only for a distinction the list can't otherwise show — "island" against a
 // boundary. Plain membership needs no label: everything in the list is selected, so
 // saying so on every row is noise.
-export function PathChip({ path, label }: { path: ImportedPath; label?: string }) {
+// `state` marks a path the next Generate will ADD to the operation or take AWAY from it —
+// see reviseBatch. A chip with no state is one that is simply there, which is every chip
+// outside an edit whose selection has been changed.
+export function PathChip({ path, label, state, index }: {
+  path: ImportedPath
+  label?: string
+  state?: 'added' | 'removed'
+  /** Position in CUT order, 1-based. Set on the top-level entries of a list of more than
+   *  one, so the order the paths were picked in — which is the order they will be cut
+   *  (see useSelectedPathsInOrder) — can be read off the form instead of the G-code. */
+  index?: number
+}) {
+  const tone = state === 'added'
+    ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/40'
+    : state === 'removed'
+      ? 'text-gray-500 dark:text-neutral-500 bg-gray-100 dark:bg-neutral-800 line-through'
+      : 'text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800'
   return (
-    <div className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1 flex items-center gap-1.5">
+    <div className={`text-body rounded px-2 py-1 flex items-center gap-1.5 ${tone}`}>
+      {state && <span className="flex-shrink-0 no-underline">{state === 'added' ? '+' : '−'}</span>}
+      {index !== undefined && (
+        <span className="flex-shrink-0 tabular-nums text-gray-500 dark:text-neutral-400 no-underline">{index}.</span>
+      )}
       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
       <span className="truncate">{path.name}</span>
       {label && <span className="text-gray-600 dark:text-neutral-400 flex-shrink-0">({label})</span>}
     </div>
+  )
+}
+
+// What the pending revision will do, under the path list of a form that is EDITING a
+// batch. With nothing pending it says how to make something pending instead: the
+// mechanism is a shift-click on the canvas, which nothing else in the form would tell
+// you about.
+export function PathRevisionHint({ added, removed }: { added: number; removed: number }) {
+  if (added === 0 && removed === 0) {
+    return (
+      <p className="text-label text-gray-600 dark:text-neutral-400 normal-case mt-1">
+        Shift-click on the canvas to add or remove paths, then Regenerate.
+      </p>
+    )
+  }
+  const bits = [
+    added > 0 ? `${added} path${added > 1 ? 's' : ''} added` : '',
+    removed > 0 ? `${removed} removed` : '',
+  ].filter(Boolean).join(', ')
+  return (
+    <p className="text-label text-amber-600 dark:text-amber-400 normal-case mt-1">
+      {bits} — Regenerate Toolpath to apply.
+    </p>
   )
 }
 

@@ -1,5 +1,6 @@
 // ─── Trochoidal form ──────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
+import { reviseBatch } from './reviseBatch'
 import { useState } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
@@ -7,7 +8,8 @@ import { useToolStore, type CuttingDirection } from '../../store/toolStore'
 import { useToolpathStore, batchOf, type CutSide, type AnyOperation, type TrochoidalOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useSelectedPaths } from '../../store/pathsStore'
+import { useUIStore } from '../../store/uiStore'
+import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
@@ -28,8 +30,11 @@ interface TrochoidalFormState {
 export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editOp?: TrochoidalOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, updateOperation, deleteOperation, operations } = useToolpathStore()
+  // PICK ORDER, not z-order: operations are cut in the order they were created
+  // (see cam/startOptimizer), so the order the paths were clicked in IS the order the
+  // machine will run them. Selecting three circles 1, 2, 3 cuts them 1, 2, 3.
+  const selPaths = useSelectedPathsInOrder()
+  const { addOperations, setSegments, updateOperation, deleteOperation, reviseBatchPaths, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, units } = useWorkpieceStore()
 
@@ -67,7 +72,11 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     const path = paths.find((p) => p.id === op.pathId)
     return path ? [{ op, path }] : []
   })
-  const selectedPaths = editOp ? editPairs.map((e) => e.path) : selPaths
+  // While a batch is open for editing the canvas selection is the set of paths it cuts —
+  // see ProfileForm and reviseBatch. Only the Regenerate click below acts on it.
+  const rev = reviseBatch(editPairs, (e) => e.path, editOp ? selPaths : [])
+  const selectedPaths = editOp ? [...rev.keep.map((e) => e.path), ...rev.add] : selPaths
+  const addedIds = new Set(rev.add.map((p) => p.id))
   const selectedTool = tools.find((t) => t.id === form.toolId)
   const updating = !editOp && selectedPaths.length > 0 && selectedPaths.every((p) => session.liveOpId(p.id))
 
@@ -93,7 +102,35 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
     let failed = false
     try {
       if (editOp) {
-        for (const { op, path } of editPairs) {
+        // Paths the selection added to this batch, or took out of it, land HERE — on the
+        // Regenerate click, in one store action. See ProfileForm.
+        let pairs = rev.keep
+        if (rev.drop.length > 0 || rev.add.length > 0) {
+          const newIds = reviseBatchPaths({
+            anchorId: editOp.id,
+            deleteIds: rev.drop.map((e) => e.op.id),
+            add: rev.add.map((path) => ({
+              name: `Trochoidal: ${path.name} (${tool.name})`,
+              type: 'trochoidal' as const,
+              toolId: form.toolId,
+              pathId: path.id,
+              side: form.side,
+              depthMM: form.depthMM,
+              stepDownMM: form.stepDownMM,
+              direction: form.direction,
+              trochStepMM: form.trochStepMM,
+              trochRadiusMM: form.trochRadiusMM,
+              finishingPass: form.finishingPass,
+              rampIn: form.rampIn,
+            })),
+          })
+          const live = useToolpathStore.getState().operations
+          pairs = [...rev.keep, ...rev.add.flatMap((path, i) => {
+            const op = live.find((o) => o.id === newIds[i]) as TrochoidalOperation | undefined
+            return op ? [{ op, path }] : []
+          })]
+        }
+        for (const { op, path } of pairs) {
           // Chain to where the previous operation finishes, at generation time.
           const hint = entryHintAt(op.id)
           updateOperation(op.id, {
@@ -117,6 +154,10 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
             reportError(op.id, err)
             failed = true
           }
+        }
+        // See ProfileForm: the chip that opened this form may be the one just deselected.
+        if (rev.drop.some((e) => e.op.id === editOp.id) && pairs.length > 0) {
+          useUIStore.getState().setRequestEditOpId(pairs[0].op.id)
         }
       } else {
         // One addOperations call for the whole selection — see PocketForm.
@@ -234,7 +275,12 @@ export function TrochoidalForm({ onClose, editOp }: { onClose: () => void; editO
       />
       {/* Below the button — see PathListSection. */}
       <PathListSection count={selectedPaths.length}>
-        {selectedPaths.map((p) => <PathChip key={p.id} path={p} />)}
+        {selectedPaths.map((p, i) => (
+          <PathChip key={p.id} path={p} index={selectedPaths.length > 1 ? i + 1 : undefined}
+            state={addedIds.has(p.id) ? 'added' : undefined} />
+        ))}
+        {rev.drop.map(({ path }) => <PathChip key={path.id} path={path} state="removed" />)}
+        {editOp && <PathRevisionHint added={rev.add.length} removed={rev.drop.length} />}
       </PathListSection>
     </FormShell>
   )

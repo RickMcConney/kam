@@ -1,5 +1,6 @@
 // ─── Drill form ───────────────────────────────────────────────────────────────
-import { FormShell, ToolSelector, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, FormError, useGenerateError, discardFailedOps } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, FormError, useGenerateError, discardFailedOps } from './shared'
+import { reviseBatch } from './reviseBatch'
 import { useState, useEffect, useRef } from 'react'
 import { ICON } from '../../theme'
 import { AlertCircle, X } from 'lucide-react'
@@ -26,7 +27,7 @@ interface DrillFormState {
 export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: DrillOperation }) {
   const { tools } = useToolStore()
   const { paths, selectedIds } = usePathsStore()
-  const { addOperation, addOperations, setSegments, updateOperation, operations } = useToolpathStore()
+  const { addOperation, addOperations, setSegments, updateOperation, reviseBatchPaths, operations } = useToolpathStore()
   const { activeTool, setActiveTool, pendingDrillPoints, clearDrillPoints } = useUIStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, units, widthMM, heightMM } = useWorkpieceStore()
@@ -91,18 +92,43 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   // path, boring all of that path's holes. A path is not one hole — a pinion's pin
   // ring is eight circles under one id — and the op stays tied to its path so a hole
   // that moves takes its drilling with it.
-  const selectedHoles = editOp ? [] : paths
-    .filter((p) => selectedIds.includes(p.id))
+  //
+  // Walked in PICK ORDER, not z-order: operations are cut in the order they were created
+  // (see cam/startOptimizer), so clicking circle 1, then 2, then 3 drills them 1, 2, 3.
+  // Within ONE path the holes keep the order the outline gives them and the travel
+  // optimizer is free to re-order them — a pin ring was selected as a ring, not as eight
+  // separate picks, so there is no order of the user's to honour there.
+  const byId = new Map(paths.map((p) => [p.id, p]))
+  const selectionHoles = selectedIds
+    .flatMap((id) => { const p = byId.get(id); return p ? [p] : [] })
     .flatMap((p) => {
       const holes = extractCircles(p)
       return holes.length > 0 ? [{ path: p, holes }] : []
     })
+  const selectedHoles = editOp ? [] : selectionHoles
   const holeCount = selectedHoles.reduce((n, g) => n + g.holes.length, 0)
 
   // Editing covers every operation created by the same Generate click — drilling the
   // holes of five selected paths at once is one decision, so changing the depth or the
   // tool afterwards is one edit. See ProfileForm; `batchOf` is the shared rule.
   const editBatch = editOp ? (batchOf(editOp, operations) as DrillOperation[]) : []
+
+  // Which paths this batch drills, and which the selection would have it drill instead:
+  // shift-click a circle in, shift-click one out, Regenerate to apply. Only paths with
+  // circles take part — a selection with nothing round in it has no hole to bore.
+  //
+  // A PECK OPERATION WHOSE POINTS WERE PLACED BY HAND HAS NO SOURCE PATH, so the
+  // selection has nothing to say about it: the whole batch has to be path-read before any
+  // of this is live, or clicking a path would silently convert hand-placed points into
+  // circle-drilling. Adding a point to those is the drill tool's job, not the selection's.
+  const editPairs = editBatch.flatMap((op) => {
+    const path = op.pathId ? paths.find((p) => p.id === op.pathId) : undefined
+    return path ? [{ op, path }] : []
+  })
+  const pathBatch = editBatch.length > 0 && editBatch.every((op) => !!op.pathId)
+  const rev = reviseBatch(editPairs, (e) => e.path, pathBatch ? selectionHoles.map((h) => h.path) : [])
+  const holesFor = (pathId: string) => selectionHoles.find((h) => h.path.id === pathId)?.holes ?? []
+  const revisedCount = rev.keep.length + rev.add.length
 
   // The holes one op stored. `helicalHoles` is the list; the singular fields are what
   // an op saved before that list carries.
@@ -163,10 +189,56 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
     setGenerating(true)
 
     if (editOp) {
+      // Paths the selection added to this batch, or took out of it, land HERE — on the
+      // Regenerate click, in one store action — and never while the selection is made.
+      let members: DrillOperation[] = editBatch
+      if (rev.drop.length > 0 || rev.add.length > 0) {
+        const newIds = reviseBatchPaths({
+          anchorId: editOp.id,
+          deleteIds: rev.drop.map((e) => e.op.id),
+          add: rev.add.map((path) => {
+            const holes = holesFor(path.id)
+            const suffix = holes.length > 1 ? ` ×${holes.length}` : ''
+            return form.drillMode === 'helical' ? {
+              name: `Helical Drill: ${path.name} (${selectedTool.name})${suffix}`,
+              type: 'drill' as const,
+              toolId: form.toolId,
+              drillMode: 'helical' as const,
+              points: [],
+              pathId: path.id,
+              helicalHoles: holes,
+              helicalCenterX: holes[0].cx,
+              helicalCenterY: holes[0].cy,
+              helicalRadius: Math.max(0, holes[0].radiusMM - selectedTool.diameterMM / 2),
+              depthMM: form.depthMM,
+              stepDownMM: form.stepDownMM,
+              startFrom: form.startFrom,
+            } : {
+              name: `Peck Drill: ${path.name} (${selectedTool.name}) ×${holes.length}`,
+              type: 'drill' as const,
+              toolId: form.toolId,
+              drillMode: 'peck' as const,
+              points: holes.map((h) => ({ x: h.cx, y: h.cy })),
+              pathId: path.id,
+              depthMM: form.depthMM,
+              stepDownMM: form.stepDownMM,
+              startFrom: form.startFrom,
+            }
+          }),
+        })
+        const live = useToolpathStore.getState().operations
+        members = [
+          ...rev.keep.map((e) => e.op),
+          ...newIds.flatMap((id) => {
+            const op = live.find((o) => o.id === id)
+            return op && op.type === 'drill' ? [op] : []
+          }),
+        ]
+      }
       // Every op of the batch takes the edit — one form, one depth, one tool, however
       // many paths the Generate click covered. Each keeps its OWN holes or points: they
       // are what that op was built from, and the form never edits them.
-      for (const op of editBatch) {
+      for (const op of members) {
         // Chain to where the previous operation finishes, at generation time. Peck
         // ordering uses it; the helical mode ignores it, but recording it still keeps the
         // operation from being regenerated for a hint before the next simulate.
@@ -178,7 +250,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         } as Partial<AnyOperation>)
       }
       setTimeout(() => {
-        for (const op of editBatch) {
+        for (const op of members) {
           const hint = entryHintAt(op.id)
           const holes = holesOf(op)
           try {
@@ -195,6 +267,12 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
           } catch (err) {
             reportError(op.id, err)
           }
+        }
+        // The chip that opened this form may be the one just deselected. Re-anchor on a
+        // member that still exists, or the form falls back to "New Drill" holding a
+        // selection it has already bored.
+        if (rev.drop.some((e) => e.op.id === editOp.id) && members.length > 0) {
+          useUIStore.getState().setRequestEditOpId(members[0].id)
         }
         setGenerating(false)
         save('drill', form)
@@ -449,7 +527,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
             </div>
           ) : selectedHoles.length > 0 ? (
             <div className="space-y-0.5">
-              {selectedHoles.map(({ path, holes }) => {
+              {selectedHoles.map(({ path, holes }, hi) => {
                 // Every subpath of one path is one operation, so the sizes it spans
                 // matter: a set that mixes diameters bores each at its own radius.
                 const dias = [...new Set(holes.map((h) => +(h.radiusMM * 2).toFixed(2)))]
@@ -457,6 +535,10 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
                 return (
                   <div key={path.id} className="text-body text-gray-800 dark:text-neutral-200 bg-gray-100 dark:bg-neutral-800 rounded px-2 py-1">
                     <div className="flex items-center gap-1.5">
+                      {/* Cut order — the order the paths were picked in. */}
+                      {selectedHoles.length > 1 && (
+                        <span className="flex-shrink-0 tabular-nums text-gray-500 dark:text-neutral-400">{hi + 1}.</span>
+                      )}
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: path.color }} />
                       {path.name}
                       {holes.length > 1 && <span className="text-gray-500 dark:text-neutral-400 text-label">×{holes.length}</span>}
@@ -494,6 +576,25 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}
       />
+      {/* Which paths this batch bores, and what the selection would change about that.
+          Below the button, where every other form puts its path list. */}
+      {editOp && rev.keep.length + rev.add.length + rev.drop.length > 0 && (
+        <PathListSection count={revisedCount}>
+          {rev.keep.map(({ op, path }, i) => (
+            <PathChip key={path.id} path={path} index={revisedCount > 1 ? i + 1 : undefined}
+              label={`×${holesOf(op)?.length ?? op.points.length}`} />
+          ))}
+          {/* After the kept members, which is where reviseBatchPaths splices them in. */}
+          {rev.add.map((p, i) => (
+            <PathChip key={p.id} path={p} state="added" index={revisedCount > 1 ? rev.keep.length + i + 1 : undefined}
+              label={`×${holesFor(p.id).length}`} />
+          ))}
+          {rev.drop.map(({ op, path }) => (
+            <PathChip key={path.id} path={path} state="removed" label={`×${holesOf(op)?.length ?? op.points.length}`} />
+          ))}
+          {pathBatch && <PathRevisionHint added={rev.add.length} removed={rev.drop.length} />}
+        </PathListSection>
+      )}
     </FormShell>
   )
 }

@@ -4,7 +4,7 @@ import {
   Image as ImageIcon,
   FileCode, Wrench, Loader2, AlertCircle, Eye, EyeOff, ArrowRightLeft, Combine, GripVertical, X,
 } from 'lucide-react'
-import { useToolpathStore, pathIdsOf, GCODE_IMPORT_TOOL_ID, type AnyOperation } from '../store/toolpathStore'
+import { useToolpathStore, batchOf, pathIdsOf, GCODE_IMPORT_TOOL_ID, type AnyOperation } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useToolStore, type Tool } from '../store/toolStore'
 import { useUIStore } from '../store/uiStore'
@@ -329,10 +329,17 @@ export default function OperationsPanel() {
       }
       // No travel: a plain click. Select the paths the operation is built from — so the
       // canvas shows WHICH geometry this chip cuts — and open its edit form.
-      const op = useToolpathStore.getState().operations.find((o) => o.id === d.ids[0])
+      //
+      // The whole BATCH's paths, not this one operation's. This strip is the program, so
+      // it draws a chip per operation, but the form the click opens edits every operation
+      // the same Generate click made (`batchOf`) — and ProfileForm and DrillForm read
+      // their path list back OUT of the selection, where one member's path would read as
+      // "the other four were taken away".
+      const ops = useToolpathStore.getState().operations
+      const op = ops.find((o) => o.id === d.ids[0])
       if (op) {
         const live = new Set(usePathsStore.getState().paths.map((p) => p.id))
-        const ids = pathIdsOf(op).filter((id) => live.has(id))
+        const ids = [...new Set(batchOf(op, ops).flatMap(pathIdsOf))].filter((id) => live.has(id))
         if (ids.length > 0) usePathsStore.getState().setSelectedIds(ids)
       }
       const ui = useUIStore.getState()

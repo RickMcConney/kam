@@ -1,5 +1,5 @@
 // ─── V-Carve form ────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -8,11 +8,13 @@ import { useToolStore } from '../../store/toolStore'
 import { useToolpathStore, batchOf, type AnyOperation, type VCarveOperation } from '../../store/toolpathStore'
 import { useFormDefaultsStore, mergeWithDefaults } from '../../store/formDefaultsStore'
 import { usePathsStore } from '../../store/pathsStore'
-import { useSelectedPaths } from '../../store/pathsStore'
+import { useUIStore } from '../../store/uiStore'
+import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { groupPathsByContainment } from './containment'
+import { reviseGroupBatch } from './reviseBatch'
 
 interface VCarveFormState {
   toolId: string
@@ -23,8 +25,11 @@ interface VCarveFormState {
 export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: VCarveOperation }) {
   const { tools } = useToolStore()
   const { paths } = usePathsStore()
-  const selPaths = useSelectedPaths()
-  const { addOperations, setSegments, updateOperation, operations } = useToolpathStore()
+  // PICK ORDER, not z-order: operations are cut in the order they were created
+  // (see cam/startOptimizer), so the order the paths were clicked in IS the order the
+  // machine will run them. Selecting three circles 1, 2, 3 cuts them 1, 2, 3.
+  const selPaths = useSelectedPathsInOrder()
+  const { addOperations, setSegments, updateOperation, reviseBatchPaths, operations } = useToolpathStore()
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
@@ -57,8 +62,16 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       ? [{ op, boundary, islands: paths.filter((p) => op.islandIds.includes(p.id)) }]
       : []
   })
+  // While a batch is open for editing the canvas selection is the set of paths it carves,
+  // re-read for boundaries and islands by the same containment rule the first Generate
+  // used — see PocketForm and reviseGroupBatch.
+  const rev = reviseGroupBatch(editGroups, editOp ? selPaths : [], (sel) => groupPathsByContainment(sel))
+  const editRevised = [
+    ...rev.keep.map((k) => ({ op: k.member.op as VCarveOperation | undefined, boundary: k.group.boundary, islands: k.group.islands })),
+    ...rev.add.map((g) => ({ op: undefined as VCarveOperation | undefined, boundary: g.boundary, islands: g.islands })),
+  ]
   const groups = editOp
-    ? editGroups
+    ? editRevised
     : groupPathsByContainment(selPaths).map((g) => ({ ...g, op: undefined }))
   const selectedTool = tools.find((t) => t.id === form.toolId)
   // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
@@ -97,12 +110,39 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     ).zMM
     try {
       if (editOp) {
-        for (const { op, boundary, islands } of editGroups) {
+        // Paths the selection added to this batch, or took out of it, land HERE — on the
+        // Regenerate click, in one store action. See PocketForm.
+        let cuts = rev.keep.map((k) => ({ op: k.member.op, boundary: k.group.boundary, islands: k.group.islands }))
+        if (rev.drop.length > 0 || rev.add.length > 0) {
+          const newIds = reviseBatchPaths({
+            anchorId: editOp.id,
+            deleteIds: rev.drop.map((m) => m.op.id),
+            add: rev.add.map(({ boundary, islands }) => ({
+              name: `V-Carve: ${boundary.name} (${tool.name})`,
+              type: 'vcarve' as const,
+              toolId: form.toolId,
+              pathId: boundary.id,
+              islandIds: islands.map((p) => p.id),
+              maxDepthMM: form.maxDepthMM,
+              angleDeg,
+              startFrom: form.startFrom,
+            })),
+          })
+          const live = useToolpathStore.getState().operations
+          cuts = [...cuts, ...rev.add.flatMap((g, i) => {
+            const op = live.find((o) => o.id === newIds[i]) as VCarveOperation | undefined
+            return op ? [{ op, boundary: g.boundary, islands: g.islands }] : []
+          })]
+        }
+        for (const { op, boundary, islands } of cuts) {
           // Chain to where the previous operation finishes, at generation time.
           const hint = entryHintAt(op.id)
           updateOperation(op.id, {
             entryHint: hint,
             toolId: form.toolId, angleDeg, maxDepthMM: form.maxDepthMM,
+            // Written every time — see PocketForm: a kept boundary whose island set changed
+            // keeps its operation, and this is the only thing about it that moves.
+            islandIds: islands.map((p) => p.id),
             startFrom: form.startFrom, status: 'generating',
           } as Partial<AnyOperation>)
           try {
@@ -115,6 +155,10 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             if (isWorkCancelled(err)) break
             reportError(op.id, err)
           }
+        }
+        // See ProfileForm: the chip that opened this form may be the one just deselected.
+        if (rev.drop.some((m) => m.op.id === editOp.id) && cuts.length > 0) {
+          useUIStore.getState().setRequestEditOpId(cuts[0].op.id)
         }
       } else {
         // One addOperations call for the whole selection — see PocketForm.
@@ -209,12 +253,17 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
       {/* Below the button — see PathListSection. Islands keep their label because that
           is a real distinction; nothing else needs one. */}
       <PathListSection count={groups.reduce((n, g) => n + 1 + g.islands.length, 0)}>
-        {groups.map(({ boundary, islands }) => (
+        {groups.map(({ boundary, islands }, gi) => (
           <div key={boundary.id} className="space-y-0.5">
-            <PathChip path={boundary} />
-            {islands.map((p) => <PathChip key={p.id} path={p} label="island" />)}
+            <PathChip path={boundary} index={groups.length > 1 ? gi + 1 : undefined}
+              state={rev.addedIds.has(boundary.id) ? 'added' : undefined} />
+            {islands.map((p) => (
+              <PathChip key={p.id} path={p} label="island" state={rev.addedIds.has(p.id) ? 'added' : undefined} />
+            ))}
           </div>
         ))}
+        {rev.removed.map((p) => <PathChip key={p.id} path={p} state="removed" />)}
+        {editOp && <PathRevisionHint added={rev.addedIds.size} removed={rev.removed.length} />}
       </PathListSection>
     </FormShell>
   )
