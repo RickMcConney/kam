@@ -32,17 +32,11 @@ function supportsFsAccess(): boolean {
   return getPicker() !== null
 }
 
-// In-memory file handle so a re-export overwrites the same G-code file silently. Handles
-// aren't serializable, so it's never persisted; New/Open project clears it via
-// clearFileHandles() to force a fresh prompt.
-//
-// There is deliberately no equivalent for the project file: saving a project always opens the
-// picker, so the name can be changed on any save (see saveProjectNative).
-let gcodeHandle: FsFileHandle | null = null
-
-export function clearFileHandles() {
-  gcodeHandle = null
-}
+// No file handle is remembered between exports — for G-code or for the project. Every
+// save opens the OS picker, which is the one place that already names the file, chooses
+// the folder and confirms an overwrite. Caching the handle bought a silent re-export but
+// pinned the name to whatever the first export chose, so a second set of toolpaths could
+// not be sent to a second file from inside the app.
 
 async function writeFile(handle: FsFileHandle, content: string) {
   const w = await handle.createWritable()
@@ -84,23 +78,23 @@ async function saveProjectNative(): Promise<boolean> {
   }
 }
 
-async function exportGcodeNative(saveAs: boolean): Promise<boolean> {
+async function exportGcodeNative(): Promise<boolean> {
   const picker = getPicker()
   if (!picker) return false
   try {
     // Open the picker FIRST, while the click's user-activation is still live —
     // before the async toolpath optimization, which would otherwise expire the
     // gesture and make showSaveFilePicker throw.
-    if (!gcodeHandle || saveAs) {
-      const suggested = sanitizeFileName(useProjectStore.getState().name || 'gcode')
-      gcodeHandle = await picker({
-        suggestedName: `${suggested}.gcode`,
-        types: [{ description: 'G-code', accept: { 'text/plain': ['.gcode', '.nc', '.ngc', '.tap'] } }],
-      })
-    }
+    const suggested = sanitizeFileName(useProjectStore.getState().name || 'gcode')
+    const handle = await picker({
+      suggestedName: `${suggested}.gcode`,
+      types: [{ description: 'G-code', accept: { 'text/plain': ['.gcode', '.nc', '.ngc', '.tap'] } }],
+    })
     const { operations, toolsById, profile } = await buildGcodeInputs()
-    const gcode = generateGcode(operations, toolsById, stripExt(gcodeHandle.name), profile)
-    await writeFile(gcodeHandle, gcode)
+    // Name the program from the file the user actually chose, so the header comment the
+    // operator reads on the machine matches the filename.
+    const gcode = generateGcode(operations, toolsById, stripExt(handle.name), profile)
+    await writeFile(handle, gcode)
     return true
   } catch (e) {
     if (isAbort(e)) return true
@@ -111,16 +105,16 @@ async function exportGcodeNative(saveAs: boolean): Promise<boolean> {
 
 // ─── Public entry points ────────────────────────────────────────────────────
 // Use the native OS save dialog where available (Chromium), otherwise fall back
-// to the in-app filename modal (Firefox/Safari). A project save always prompts for the
-// filename; for G-code export `saveAs` forces a fresh picker even when a handle exists.
+// to the in-app filename modal (Firefox/Safari). Both a project save and a G-code export
+// always prompt for the filename, so either can be written somewhere new at any time.
 
 export async function triggerProjectSave(): Promise<void> {
   if (supportsFsAccess() && await saveProjectNative()) return
   useSaveDialogStore.getState().openSaveDialog('project')
 }
 
-export async function triggerGcodeExport(saveAs = false): Promise<void> {
-  if (supportsFsAccess() && await exportGcodeNative(saveAs)) return
+export async function triggerGcodeExport(): Promise<void> {
+  if (supportsFsAccess() && await exportGcodeNative()) return
   useSaveDialogStore.getState().openSaveDialog('gcode')
 }
 

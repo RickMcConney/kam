@@ -12,7 +12,6 @@ import { useCanvasStore } from '../store/canvasStore'
 import { useTabStore, type Tab } from '../store/tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { migrateProvenance } from './migrateProvenance'
-import { clearFileHandles } from './fileSystem'
 import type { ImportedPath } from '../store/pathsStore'
 import type { AnyOperation } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
@@ -132,9 +131,6 @@ export function loadProject(data: ProjectData, fileName?: string) {
     ].filter(Boolean).join(' and ')
     useUIStore.getState().showStatus(`Upgraded an older project — ${bits} can be edited from their chips again.`, 'info')
   }
-  // Drop the remembered G-code target so a later export doesn't overwrite the previous
-  // project's file. (Project saves always prompt, so they need no such reset.)
-  clearFileHandles()
   regenerateAll()
 }
 
@@ -158,7 +154,6 @@ export function newProject() {
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
   useTimelineStore.getState().resetToCurrentState()
-  clearFileHandles()
   useCanvasStore.getState().requestFit()
   // Workpiece settings (size, origin, thickness, material) are persisted in
   // localStorage and intentionally kept across new projects.

@@ -45,6 +45,9 @@ export default function ExportPreflightDialog({
   const canSplit = job.tools.length > 1
   const projectName = useProjectStore((s) => s.name)
   const [splitByTool, setSplitByTool] = useState(false)
+  // Only the split export names its own files: it writes a whole set into a folder the
+  // directory picker can't name them in. A single-file export is named in the OS save
+  // dialog instead, so it gets no field here.
   const [prefix, setPrefix] = useState(() => (projectName === 'Untitled Project' ? '' : projectName))
 
   // Esc closes the dialog. (Enter is intentionally not bound — Export should be a
