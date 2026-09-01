@@ -168,15 +168,21 @@ describe('a compound path is classified, not mistaken for text', () => {
 describe('a socket bigger than the engine argument limit still generates', () => {
   it('survives a segment count past the spread-argument cap', async () => {
     const { generateInlayFemale } = await import('./inlay')
-    // A 230 × 170 socket with twenty islands, 2 mm bit, 0.4 mm steps, 10% stepover: about
-    // 175k segments, comfortably past V8's ~125k argument ceiling. Area, depth and stepover
+    // A 230 × 170 socket with twenty islands, 2 mm bit, 0.3 mm steps, 10% stepover: about
+    // 176k segments, comfortably past V8's ~125k argument ceiling. Area, depth and stepover
     // are what drive the count, which is why this bit the big detailed jobs and left a
     // plain shallow square alone.
+    //
+    // The step was 0.4 mm and the assertion 150k until the isTravelSafe boundary fixes (see
+    // pocket/travelSafety.test.ts) stopped the raster lifting at the end of every second
+    // row: the same socket came out at 132k, still past the cap but with the margin gone,
+    // and a test that only just exercises the thing it names stops exercising it on the
+    // next change. The step was cut instead of the assertion.
     const tool: Tool = { ...ENDMILL, id: 'em2', diameterMM: 2 }
     const islands: string[] = []
     for (let i = 0; i < 5; i++) for (let j = 0; j < 4; j++) islands.push(circle(35 + i * 45, 35 + j * 45, 9, 48))
     const r = await generateInlayFemale('M15,15 L245,15 L245,185 L15,185 Z', tool, VBIT, {
-      ...PARAMS, angleDeg: 30, pocketDepthMM: 6, stepDownMM: 0.4,
+      ...PARAMS, angleDeg: 30, pocketDepthMM: 6, stepDownMM: 0.3,
       stepoverPercent: 10, islandDs: islands,
     })
     expect(r.endmillSegs.length).toBeGreaterThan(150_000)

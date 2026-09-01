@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { zPasses, pointInPolygon, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq, toolRadiusAtHeight } from './geom'
+import { zPasses, pointInPolygon, pointOnRing, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq, toolRadiusAtHeight } from './geom'
 import type { Pt2 } from './pathFlattener'
 import type { Tool } from '../store/toolStore'
 
@@ -95,6 +95,41 @@ describe('pointInPolygon', () => {
     const ell: Pt2[] = [[0, 0], [10, 0], [10, 5], [5, 5], [5, 10], [0, 10]]
     expect(pointInPolygon(2, 8, ell)).toBe(true)
     expect(pointInPolygon(8, 8, ell)).toBe(false) // inside the notch
+  })
+})
+
+describe('pointOnRing', () => {
+  const square: Pt2[] = [[0, 0], [10, 0], [10, 10], [0, 10]]
+
+  // The reason this function exists: pointInPolygon settles a point lying exactly ON the
+  // outline by the half-open crossing rule, so the answer depends on which wall it is —
+  // and a raster's scanline endpoints are built by intersecting the very ring they are
+  // then tested against. Every one of them lands on it.
+  it('answers both walls the same, where pointInPolygon does not', () => {
+    expect(pointInPolygon(0, 5, square)).toBe(true)   // left wall reads inside
+    expect(pointInPolygon(10, 5, square)).toBe(false) // right wall reads outside
+    expect(pointOnRing(0, 5, square)).toBe(true)
+    expect(pointOnRing(10, 5, square)).toBe(true)
+  })
+
+  it('finds a point on every edge and on a vertex', () => {
+    expect(pointOnRing(5, 0, square)).toBe(true)
+    expect(pointOnRing(5, 10, square)).toBe(true)
+    expect(pointOnRing(10, 10, square)).toBe(true)
+  })
+
+  it('is not a containment test — the interior is not ON the ring', () => {
+    expect(pointOnRing(5, 5, square)).toBe(false)
+    expect(pointOnRing(0, -5, square)).toBe(false)
+  })
+
+  it('holds the tolerance to floating-point slop, not a machining allowance', () => {
+    expect(pointOnRing(10 + 1e-9, 5, square)).toBe(true)
+    expect(pointOnRing(10.001, 5, square)).toBe(false) // a micron out is already out
+  })
+
+  it('closes the ring, so the last-to-first edge counts', () => {
+    expect(pointOnRing(0, 5, square)).toBe(true) // the [0,10]→[0,0] edge
   })
 })
 

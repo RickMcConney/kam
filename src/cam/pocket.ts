@@ -18,7 +18,8 @@ import type { MotionSegment } from '../store/toolpathStore'
 import type { Tool } from '../store/toolStore'
 import {
   _perfReset, _perfLog, _timed, closedPath, cutPathsAtDepth, emitLinkedContourRings, offsetRing,
-  restCleanupRings, type PocketParams, type PocketPlanner, type PocketStrategy,
+  restCleanupRings, POCKET_FLATTEN_TOL_MM,
+  type PocketParams, type PocketPlanner, type PocketStrategy,
 } from './pocket/shared'
 import { planRasterPocket } from './pocket/raster'
 import { planContourPocket } from './pocket/contour'
@@ -42,10 +43,21 @@ const PLANNERS: Record<PocketStrategy, PocketPlanner> = {
 // open ground, contour around the islands, and it is what a user would have picked.
 const DECLINE_FALLBACK: PocketStrategy = 'hybrid'
 
-// Non-fatal notes from the last generatePocket call — a strategy fallback, today. Drained
-// by the caller (the worker handler) so it can be shown to the user; harnesses ignore it.
-const _notes: string[] = []
-export function takePocketNotes(): string[] { return _notes.splice(0, _notes.length) }
+/**
+ * A non-fatal note from the last generatePocket call — a strategy fallback, today.
+ *
+ * `kind` rather than a string the caller matches on, because the two callers want to say
+ * different things: the status bar is one truncating line and takes `short`, while a form's
+ * banner has room for a sentence and knows the user-facing name of the strategy the user
+ * actually picked (the toggle shows hybrid as "auto"). Naming strategies is the UI's job,
+ * so the wording lives there and this only says what happened.
+ */
+export interface PocketNote { kind: 'strategy-fallback'; short: string }
+
+// Drained by the caller (the worker handler) so it can be shown to the user; harnesses
+// ignore it.
+const _notes: PocketNote[] = []
+export function takePocketNotes(): PocketNote[] { return _notes.splice(0, _notes.length) }
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -54,7 +66,7 @@ export function generatePocket(
   tool: Tool,
   params: PocketParams,
 ): MotionSegment[] {
-  const flat = flattenPath(boundaryD, 0.05)
+  const flat = flattenPath(boundaryD, POCKET_FLATTEN_TOL_MM)
   // A pocket clears an AREA, and an open subpath does not bound one. Left to itself
   // `splitSelfIntersecting` closes it mouth-to-mouth and everything downstream then
   // clears a region the user never drew — a U-shaped path came out as a filled square,
@@ -81,7 +93,7 @@ export function generatePocket(
 
   let islands: Pt2[][] = []
   for (const islandD of params.islandDs) {
-    const islandFlat = flattenPath(islandD, 0.05)
+    const islandFlat = flattenPath(islandD, POCKET_FLATTEN_TOL_MM)
     // An island is uncut material inside the pocket, so it bounds an area too — an open
     // one leaves stock in a shape nobody asked for, in the middle of the cut.
     requireClosedSubpaths(islandFlat, {
@@ -170,7 +182,7 @@ export function generatePocket(
       // threshold it crossed, not the total it would have reached (5.0x on the dog against
       // the 2.0x quoted); finishing the march for an exact number would cost the user the
       // wait this gate exists to save.
-      _notes.push('Reverted to Auto, Alt click to force')
+      _notes.push({ kind: 'strategy-fallback', short: 'Reverted to Auto, Alt click to force' })
       plan = _timed('plan', () => PLANNERS[DECLINE_FALLBACK](boundary, localIslands, tool, params,
         subProgress(bLo, bLo + bSpan * PLAN_SHARE, 'Planning')))
     }

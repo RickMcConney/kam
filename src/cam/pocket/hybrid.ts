@@ -3,7 +3,7 @@ import { pointInPolygon, stripClosingDuplicate } from '../geom'
 import { differenceD, inflatePathsD, intersectD, unionD, EndType, JoinType, FillRule } from 'clipper2-ts'
 import type { MotionSegment } from '../../store/toolpathStore'
 import { type PocketPlan, type PocketPlanner, _timed, emitLinkedContourRings, growIslands, offsetRing } from './shared'
-import { planRasterPocket } from './raster'
+import { LINK_MARGIN_MM, planRasterPocket } from './raster'
 import { planContourOutermost } from './contour'
 
 // ─── Hybrid: raster the open areas, contour the rest ─────────────────────────────
@@ -175,12 +175,35 @@ export const planHybridPocket: PocketPlanner = (boundary, islands, tool, params,
       }
     }
 
-    // The raster stops exactly where the contour families' SWATH ends — one tool radius
-    // beyond their outermost ring, not one stepover. Above 50% the stepover exceeds the
-    // radius, and the difference was left as a hairline annulus for the march to walk: a
-    // long thin ring is the most expensive thing it can be handed, and it was what still
-    // cost 11k segments at 55-60% after the split itself was fixed.
-    const keepout = growIslands(grownIslands, toolRadius, JoinType.Round)
+    // The raster stops where the contour families' SWATH ends — one tool radius beyond
+    // their outermost ring, not one stepover. Above 50% the stepover exceeds the radius, and
+    // the difference was left as a hairline annulus for the march to walk: a long thin ring
+    // is the most expensive thing it can be handed, and it was what still cost 11k segments
+    // at 55-60% after the split itself was fixed.
+    //
+    // OVERLAPPED, because a raster does not reach its own boundary and this boundary is a
+    // SEAM with no finishing pass to cover what it misses. Two terms, and the second is the
+    // bigger one:
+    //
+    //   LINK_MARGIN_MM   the fill deliberately stops that far short (see raster.ts)
+    //   stepoverMM       the first scanline lands somewhere in [0, stepover] of the fill
+    //                    boundary — generateScanlines phases the grid from a bbox edge, not
+    //                    from the outline — so the tool's swath stops that much short too
+    //
+    // Against a real wall both are free: the finishing contour cuts at the tool-centre limit
+    // and sweeps a full width, so it takes the whole band. Here nothing does, and what
+    // survives is a hairline annulus round the island — which rest cleanup then traces both
+    // edges of, hundreds of mm of wavy path for tens of mm2 of stock. That is the failure
+    // the comment above already records, and it is why the topology argument ("adding
+    // contours round an island cannot leave stock a plain raster would have cleared") only
+    // holds if the seam is overlapped by everything the raster fails to reach.
+    //
+    // Overlapping costs air: the raster passes over ground the contour family already cut.
+    // Going NEGATIVE is fine and happens above ~45% stepover — it just means the raster
+    // area reaches inside the outermost contour ring. It cannot reach the island itself: a
+    // family has at least MIN_CONTOUR_RINGS rings, so its outermost is at least
+    // toolRadius + stepover out, and this pulls back by at most stepover + LINK_MARGIN_MM.
+    const keepout = growIslands(grownIslands, toolRadius - LINK_MARGIN_MM - stepoverMM, JoinType.Round)
     if (keepout.length === 0) return null
 
     // The open areas: the pocket with those keep-outs removed.

@@ -68,7 +68,7 @@ export async function regenerateOperation(opId: string): Promise<void> {
       setSegments(opId, pocket.segments)
       // No op-name prefix: StatusBar truncates, and a name like
       // 'Pocket: Path 1 (1/8" End Mill)' consumes the whole line before the note starts.
-      for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
+      for (const note of pocket.notes) useUIStore.getState().showStatus(note.short, 'warn')
 
     } else if (op.type === 'drill') {
       // Both modes re-read their holes from the source path when they have one, so a

@@ -4,7 +4,7 @@ import { useMemo, useState, useId } from 'react'
 import { NumericInput } from '../../components/NumericInput'
 import { FRACTION_HINT } from '../../components/parseNumeric'
 import { ICON } from '../../theme'
-import { AlertCircle, Loader2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import type { Tool, ToolType } from '../../store/toolStore'
 import { useWorkpieceStore, fromMM, toMM, fmtLen, lenValue, inchStepFor } from '../../store/workpieceStore'
 import { useGenProgressStore } from '../../store/genProgressStore'
@@ -420,6 +420,25 @@ export function DepthRow({ depthMM, stepDownMM, onDepth, onStep, maxDepthMM, too
  * nothing, so whether a failure was explained depended on which form you were in. One
  * definition, rendered by every form, directly above its Generate button.
  */
+/**
+ * A form's non-fatal banner: the Generate worked, but not the way the user asked for it.
+ *
+ * Amber and a triangle, so it cannot be mistaken for FormError below it — nothing failed
+ * and nothing needs fixing, but a strategy the user chose on purpose was not the one that
+ * ran, and silently machining something else is how a surprise ends up on the spindle.
+ * Also published to the status bar, which is where an AUTOMATIC regeneration reports (no
+ * form is open then, because nobody clicked anything) — but that is one truncating
+ * transient line, so a user watching the panel they just clicked in would miss it.
+ */
+export function FormNotice({ msg }: { msg: string | null }) {
+  if (!msg) return null
+  return (
+    <p className="text-body text-amber-700 dark:text-amber-400 flex items-start gap-1.5">
+      <AlertTriangle size={ICON.sm} className="mt-0.5 shrink-0" />{msg}
+    </p>
+  )
+}
+
 export function FormError({ msg }: { msg: string | null }) {
   if (!msg) return null
   return (

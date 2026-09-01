@@ -76,6 +76,28 @@ export function pointInPolygon(px: number, py: number, poly: Pt2[]): boolean {
   return inside
 }
 
+/**
+ * Is the point ON the ring's outline, to within `tolMM`?
+ *
+ * Companion to `pointInPolygon`, which uses the standard half-open crossing rule and so
+ * answers a point lying exactly ON the outline by which SIDE it sits on: the left wall of
+ * an axis-aligned rectangle reads inside, the right wall reads outside. That tie-break is
+ * arbitrary, and geometry built by intersecting a ring lands its endpoints exactly on it —
+ * so `pointInPolygon || pointOnRing` is what a caller means when it asks whether a point is
+ * within a closed region it derived that region's own points from.
+ *
+ * The tolerance is a floating-point equality one (round-tripping a point through a
+ * rotation costs ~1e-13 mm), not a geometric allowance — never widen it into one.
+ * Ring may be open or closed; the i/j indexing closes it either way.
+ */
+export function pointOnRing(px: number, py: number, poly: Pt2[], tolMM = 1e-6): boolean {
+  const tol2 = tolMM * tolMM
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    if (ptSegDistSq(px, py, poly[j][0], poly[j][1], poly[i][0], poly[i][1]) <= tol2) return true
+  }
+  return false
+}
+
 // Cumulative arc length at each vertex of a polyline, plus the total.
 export function arcLengths(pts: Pt2[]): { lens: number[]; total: number } {
   const lens: number[] = [0]

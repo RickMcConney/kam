@@ -1,7 +1,9 @@
 import {   type Pt2 } from '../pathFlattener'
 import {   pointInPolygon } from '../geom'
+import { JoinType } from 'clipper2-ts'
+import { buildPocketClearance } from './clearance'
 import type { MotionSegment } from '../../store/toolpathStore'
-import { type PocketPlan, type PocketPlanner, type TravelSafetyObstacles, compoundFinishRings, emitCutTransition, emitRampDescent, growIslands, insetRing, isTravelSafe, rampLeadIn } from './shared'
+import { type PocketPlan, type PocketPlanner, type TravelSafetyObstacles, POCKET_FLATTEN_TOL_MM, compoundFinishRings, emitCutTransition, emitRampDescent, growIslands, insetRing, isTravelSafe, rampLeadIn } from './shared'
 
 // ─── Raster utilities ──────────────────────────────────────────────────────────
 
@@ -316,6 +318,35 @@ function buildRasterPath(
   return current
 }
 
+// How far short of the tool-centre limit the raster FILL stops (mm).
+//
+// A row-to-row link is a straight line between two row ends, and those ends sit ON the
+// limit ring — which is a POLYGON, flattened from the drawn curve to POCKET_FLATTEN_TOL_MM.
+// A straight line between two points on such a polygon cuts across whatever vertices lie
+// between them, by up to that same tolerance. So on any curved wall the link reports as
+// leaving the region by a few tens of microns, and `isTravelSafe` — whose RING_EPS_MM is a
+// 1 um floating-point tolerance — correctly refuses it. On one real project
+// (scratch/ovals.fkam: an ellipse pocket, two elliptical islands, rows at 140 degrees)
+// that was 40 retracts for a pocket that needs a handful.
+//
+// Measured, not assumed: flattening ten times finer (0.05 -> 0.005) took the same file's
+// grazes from a median of 35 um to 3 um, so the excursion is the flattening, not the
+// curvature — a chord across a convex pocket wall lies INSIDE it and violates nothing.
+//
+// The answer is not a looser test, which would trade a real gouge for these. It is to move
+// the FILL: stopping it short by more than the flattening error means a straight link
+// between two row ends cannot reach the limit at all, whatever the wall is doing. The
+// sliver that leaves standing against every wall and island is removed by the FINISHING
+// CONTOUR that always follows the fill — it cuts at the true limit and sweeps a full tool
+// width there, so a margin this size is well inside what it already takes. Nothing reaches
+// the finished part, and travel is still judged against the true limit, unchanged.
+//
+// Four times the flattening tolerance. The sweep on ovals.fkam bears the factor out: 41
+// retracts at 0, 22 at 1x, 10 at 2x, 5 at 4x, and no further gain at 6x or 10x — the
+// margin has absorbed every chord by then. A link needing more than this is still refused
+// and still lifts, so the margin can only ever remove an air move, never add a gouge.
+export const LINK_MARGIN_MM = 4 * POCKET_FLATTEN_TOL_MM
+
 export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params): PocketPlan | null => {
   const safeZ = params.safeHeightMM ?? 5
   const stepoverMM = tool.diameterMM * (params.stepoverPercent / 100)
@@ -327,8 +358,18 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   // split self-intersecting path are treated as one compound shape — avoids miter
   // spikes at shared crossing vertices that would otherwise make the finishing
   // contour cut through the original island material.
-  const islandExclusions = growIslands(islands, tool.diameterMM)
-  const islandFinish = growIslands(islands, toolRadius)
+  //
+  // ROUND, because these are the rings TRAVEL is judged against and a round offset is what
+  // the tool-centre limit actually is (insetRing's own note says as much). At a convex
+  // corner of an island the tool rolls around it on an arc of the offset radius; a miter
+  // join squares that corner off, so the ring claims a bite of up to r(sqrt2 - 1) — 1.24 mm
+  // on a 6 mm cutter — that the tool can legally cross. Every short hop past an island
+  // corner was refused for it. The FILL and the FINISHING rings below are left mitered:
+  // those are cut geometry, and changing them would move the toolpath rather than the
+  // decision about it.
+  const islandFinish = growIslands(islands, toolRadius, JoinType.Round)
+
+  const fillIslands = growIslands(islands, toolRadius + LINK_MARGIN_MM)
 
   // Raster fill: the tool centre may go anywhere a radius inside the wall — the geometric
   // limit, past which it would gouge.
@@ -343,10 +384,21 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   //
   // The first scanline still lands half a stepover in from there (generateScanlines starts
   // at minY + spacing/2), so it does not sit on top of the finishing pass.
-  // Also the raster's travel-safety edge below — same inset, same ring, one Clipper offset.
-  const rasterBoundary = insetRing(boundary, toolRadius)
-  const rawScanlines = rasterBoundary.length >= 3
-    ? generateScanlines(rasterBoundary, stepoverMM, params.angle ?? 0)
+  // Round for the same reason as the island rings above — mirrored: it is the REFLEX
+  // corners of the boundary (the step of an L, the notch of a star) where the true limit is
+  // an arc and a miter squares it off.
+  const rasterBoundary = insetRing(boundary, toolRadius, JoinType.Round)
+  // ...but the FILL stops LINK_MARGIN_MM short of that limit, so that the straight link
+  // from the end of one row to the start of the next has room to be straight. Travel is
+  // still judged against rasterBoundary — the real limit — so the margin buys clearance
+  // for the links instead of loosening the test that guards them.
+  // Falling back to the unmargined ring matters in a region only just wider than the
+  // cutter: the margin is what tips it from "one scanline fits" to "none does", and a
+  // region with no scanlines is machined by its wall passes alone.
+  const marginBoundary = insetRing(boundary, toolRadius + LINK_MARGIN_MM)
+  const fillBoundary = marginBoundary.length >= 3 ? marginBoundary : rasterBoundary
+  const rawScanlines = fillBoundary.length >= 3
+    ? generateScanlines(fillBoundary, stepoverMM, params.angle ?? 0)
     : []
 
   // Clip must happen in the rotated frame where scanlines are axis-aligned.
@@ -357,11 +409,9 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
   const rotPt = ([x, y]: Pt2, c: number, s: number): Pt2 => [x * c - y * s, x * s + y * c]
   // Clipped at the island's own radius offset, matching the boundary inset above: a
   // scanline may run right up to where the tool would touch the island, and no further.
-  // islandExclusions (a full diameter) stays what TRAVEL is tested against — where the
-  // tool may cross uncleared stock is a separate question from where it may cut.
   // Boxed once here rather than per scanline: the clip below runs one pass per row over
   // every island, and each box is a function of the island alone.
-  const islandExclusionsRot: Exclusion[] = islandFinish.map(e => {
+  const islandExclusionsRot: Exclusion[] = fillIslands.map(e => {
     const ring = e.map(p => rotPt(p, cosF, sinF))
     return { ring, box: boxOf(ring) }
   })
@@ -375,27 +425,32 @@ export const planRasterPocket: PocketPlanner = (boundary, islands, tool, params)
     }))
   })
 
-  // Use the finishing ring (inset by tool radius) as the raster travel-safety edge.
-  // The raster boundary (inset by full diameter) eliminates narrow concave passages
-  // like star inner corners, so micro-lifts through those areas aren't caught as
-  // unsafe. The finishing ring (inset by only tool radius) preserves those concave
-  // edges, correctly blocking transitions that would cut through uncleared wall material.
+  // TRAVEL — both for the fill's row-to-row links and for the finishing contours — is one
+  // question with one answer: may the tool centre get from here to there while staying a
+  // radius clear of everything that was drawn? `clearance.ts` answers it exactly, off the
+  // boundary and islands themselves, so none of the offset rings above are consulted for
+  // it. That is what retired the whole family of travel bugs: an offset ring is a
+  // *approximation* of the keep-out, and every one of them lived in the difference.
   //
-  // (The comment above is from when the raster fill inset by a full diameter. It insets by
-  // a radius now — see rasterBoundary — so this IS that same ring, reused rather than
-  // offset a second time. The travel-safety reasoning stands either way.)
+  // The two obstacle sets that used to differ (the fill's, and the finishing pass's islands
+  // grown by a full DIAMETER) collapse into this single one. They were never really two
+  // questions: the second was sized for stock the fill had already taken, which made the
+  // island's own finishing ring unreachable by construction.
+  const travelField = { field: buildPocketClearance(boundary, islands), clearanceMM: toolRadius }
   const finishRing = rasterBoundary
-  const rasterTravelEdge = finishRing.length >= 3 ? finishRing : boundary
   const rasterTravel: TravelSafetyObstacles = {
-    edgeObstacles: [rasterTravelEdge, ...islandFinish], solidObstacles: islandFinish,
-    containment: [rasterTravelEdge],
+    field: travelField,
+    edgeObstacles: [finishRing.length >= 3 ? finishRing : boundary, ...islandFinish],
+    solidObstacles: islandFinish,
+    containment: [finishRing.length >= 3 ? finishRing : boundary],
   }
 
   // Finishing contours: linked without lifts when safe. Compound inset so a near-wall
   // island pinches instead of swinging the tool through the outer wall.
   const finishRings = compoundFinishRings(boundary, islands, toolRadius, wantCCW)
   const travelObstacles: TravelSafetyObstacles = {
-    edgeObstacles: [...(finishRing.length >= 3 ? [finishRing] : []), ...islandExclusions],
+    field: travelField,
+    edgeObstacles: [...(finishRing.length >= 3 ? [finishRing] : []), ...islandFinish],
     solidObstacles: islandFinish,
     containment: finishRings,
   }

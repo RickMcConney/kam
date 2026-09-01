@@ -1,5 +1,5 @@
 // ─── Pocket form ──────────────────────────────────────────────────────────────
-import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError, discardFailedOps } from './shared'
+import { FormShell, PathChip, PathListSection, PathRevisionHint, ToolSelector, ToggleRow, DepthRow, GenerateBtn, useSessionOps, StartRow, useStartZ, toolsOfType, pickToolId, LengthInput, FormError, FormNotice, useGenerateError, discardFailedOps } from './shared'
 import { resolveStartZ, type StartFrom } from '../../cam/startHeight'
 import { useState } from 'react'
 import { ICON } from '../../theme'
@@ -12,7 +12,11 @@ import { usePathsStore } from '../../store/pathsStore'
 import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
-import type { PocketStrategy } from '../../cam/pocket'
+import type { PocketNote, PocketStrategy } from '../../cam/pocket'
+
+// The strategy toggle's wording, shared with the fallback notice below it: a message naming
+// a strategy by an id that is not the word on the button is no help.
+const STRATEGY_LABELS: Partial<Record<PocketStrategy, string>> = { hybrid: 'auto', adaptive2: 'adaptive' }
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
 import { groupPathsByContainment } from './containment'
 import { reviseGroupBatch } from './reviseBatch'
@@ -94,6 +98,10 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   })
   const [generating, setGenerating] = useState(false)
   const [errorMsg, reportError, clearError] = useGenerateError()
+  // A Generate that SUCCEEDED but not as asked — today, a strategy that declined the shape.
+  // Separate from errorMsg: nothing failed, so nothing is discarded and the operation keeps
+  // its toolpath; the user just needs to know a different strategy cut it.
+  const [noticeMsg, setNoticeMsg] = useState<string | null>(null)
   const session = useSessionOps()
 
   // Editing covers every operation created by the same Generate click, not just the one
@@ -192,10 +200,28 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   // discoverable exactly when it is relevant.
   async function handleGenerate(e?: React.MouseEvent) {
     clearError()
+    setNoticeMsg(null)
     // Ids this click CREATES. A Generate that fails leaves nothing behind, so these are
     // thrown away again in the finally; an op that already existed is never touched.
     const createdIds: string[] = []
     const forceStrategy = e?.altKey === true
+    // The strategies are named for the user here, not in cam/pocket.ts: the toggle shows
+    // hybrid as "auto", and a message naming a word that is not on the button is no help.
+    const noteFallback = (note: PocketNote) => {
+      if (note.kind !== 'strategy-fallback') return
+      const name = (id: PocketStrategy) => STRATEGY_LABELS[id] ?? id
+      const chosen = name(form.strategy)
+      setNoticeMsg(
+        `${chosen} declined this shape, so ${name('hybrid')} generated it instead. ` +
+        // Not "alt-click to force" when they just did: a strategy can decline for a reason
+        // the override does not cover (too few rings to nest, a region that collapses), and
+        // telling someone to repeat the gesture that did not work is the worst of the two.
+        (forceStrategy
+          ? `It declined even with Alt held, so the shape is one ${chosen} cannot cut.`
+          : `Alt-click Generate to force ${chosen}.`),
+      )
+      useUIStore.getState().showStatus(note.short, 'warn')
+    }
     if (groups.length === 0 || !selectedTool) return
     const tool = selectedTool
     setGenerating(true)
@@ -273,7 +299,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             })
             setSegments(op.id, pocket.segments)
             // A strategy that declined the shape and fell back — say so, the user chose it.
-            for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
+            for (const note of pocket.notes) noteFallback(note)
           } catch (err) {
             // A cancel abandons the whole Generate, not just this group — carrying on
             // would immediately queue the next one against the state the user just left.
@@ -356,7 +382,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
             })
             setSegments(opId, pocket.segments)
             // A strategy that declined the shape and fell back — say so, the user chose it.
-            for (const note of pocket.notes) useUIStore.getState().showStatus(note, 'warn')
+            for (const note of pocket.notes) noteFallback(note)
           } catch (err) {
             if (isWorkCancelled(err)) break
             reportError(opId, err)
@@ -396,7 +422,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           'adaptive' (the old Adaptive2d port) stays hidden — too slow; 'adaptive2' is the
           fast raster-marching engine and is what the UI shows as "adaptive".
           The ids are what saved projects store, so they stay as they are. */}
-      <ToggleRow label="Strategy" options={['hybrid', 'raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={{ hybrid: 'auto', adaptive2: 'adaptive' }} />
+      <ToggleRow label="Strategy" options={['hybrid', 'raster', 'contour', 'morph', 'adaptive2'] as PocketStrategy[]} value={form.strategy} onChange={handleStrategyChange} labels={STRATEGY_LABELS} />
       <div>
         <label htmlFor="pocket-f1" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
           {adaptiveStrategy ? 'Engagement' : 'Stepover'} <span className="text-gray-500 dark:text-neutral-400 normal-case">{form.stepoverPercent}%</span>
@@ -453,6 +479,7 @@ export function PocketForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           Ramp In <span className="text-gray-600 dark:text-neutral-400 normal-case">(2× dia, 50% feed)</span>
         </label>
       </div>
+      <FormNotice msg={noticeMsg} />
       <FormError msg={errorMsg} />
       <GenerateBtn
         disabled={groups.length === 0 || !selectedTool || generating || form.depthMM <= 0}

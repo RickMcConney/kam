@@ -5,7 +5,8 @@
 import {  signedArea, ensureWinding, douglasPeucker, type Pt2 } from '../pathFlattener'
 import { perfLog } from '../../debug'
 import { inflatePathsD, differenceD, intersectD, JoinType, EndType, FillRule } from 'clipper2-ts'
-import {  arcLengths, interpPt, stripClosingDuplicate, pointInPolygon, ptSegDistSq } from '../geom'
+import {  arcLengths, interpPt, stripClosingDuplicate, pointInPolygon, pointOnRing, ptSegDistSq } from '../geom'
+import type { ClearanceField } from './clearance'
 import type { MotionSegment } from '../../store/toolpathStore'
 import type {  CuttingDirection, Tool } from '../../store/toolStore'
 
@@ -54,6 +55,14 @@ export interface PocketParams {
 }
 
 export interface TravelSafetyObstacles {
+  /**
+   * The answer, when the caller can supply one: the DRAWN geometry plus the clearance the
+   * tool centre must keep from it. When present every ring set below is ignored — see
+   * ./clearance.ts for why that is not merely faster but a different question, and for the
+   * six bugs that came out of asking the ring sets instead. A strategy that has its
+   * boundary and islands to hand should set this; the rest still go the old way.
+   */
+  field?: { field: ClearanceField; clearanceMM: number }
   edgeObstacles: Pt2[][]
   solidObstacles?: Pt2[][]
   /** The move must stay INSIDE at least one of these — the tool-centre allowed region.
@@ -208,7 +217,10 @@ export function transitionEntersSolidPolygon(from: Pt2, to: Pt2, poly: Pt2[]): b
     if (hi - lo < 1e-5) continue
     const t = (lo + hi) / 2
     const p: Pt2 = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
-    if (pointInPolygon(p[0], p[1], poly)) return true
+    // withinForbidden, not pointInPolygon: a move that runs ALONG this island's flank has
+    // every midpoint exactly on the ring, and the half-open rule calls that solid material
+    // on the left flank and open air on the right. See "Where the boundary belongs".
+    if (withinForbidden(p[0], p[1], poly)) return true
   }
   return false
 }
@@ -233,6 +245,50 @@ function ringBBox(poly: Pt2[]): [number, number, number, number] {
   return box
 }
 
+// How finely a pocket's boundary and islands are flattened to polylines (mm). Named
+// because it is not just an import detail: it is the accuracy of every ring downstream, and
+// therefore the size of the discrepancies the travel-safety tests have to tolerate. A link
+// between two points on a ring flattened this coarsely cuts across the vertices between
+// them by up to this much — see LINK_MARGIN_MM in raster.ts, which is derived from it.
+export const POCKET_FLATTEN_TOL_MM = 0.05
+
+// ─── Where the boundary belongs ────────────────────────────────────────────────
+//
+// Every ring in this file is a TOOL-CENTRE LIMIT, and a limit is REACHABLE: the centre may
+// stand exactly on the inset wall or exactly on a grown island, because that is where it
+// stands while cutting them. The raster relies on it — scanlines are built by INTERSECTING
+// those rings, so a stepover at a wall or beside an island is collinear with one by
+// construction, and virtually every travel it proposes lies exactly on a boundary.
+//
+// `pointInPolygon` cannot express that on its own. Its half-open crossing rule answers an
+// on-outline point by WHICH SIDE of the shape it is, so a rectangle's left wall reads
+// inside and its right wall reads outside — and the same is true of an island, whose left
+// flank then reads as solid material. Getting it wrong never moves the cut: it makes the
+// SAME move legal at one wall and illegal at the other, and the tool lifts, rapids one
+// stepover and plunges for nothing. Three separate predicates had it wrong, each showing up
+// as a different shape that "still lifts", which is why this is stated once here instead of
+// at the call sites.
+//
+// So: the boundary belongs to the ALLOWED side, always. Inside a region the tool must stay
+// within, outside a region it must stay out of.
+
+// The slack allowed in "on". A floating-point equality tolerance, NOT a geometric
+// allowance — rotating a point into the raster's scanline-aligned frame and back costs a
+// few ulps (a wall at x = 13 comes back as 12.999999999999998) and that is the entire
+// quantity being absorbed. Widen it into a real allowance and it starts admitting
+// excursions past the tool-centre limit, which is a gouge.
+const RING_EPS_MM = 1e-6
+
+/** Inside a region the tool must stay WITHIN — on the ring counts as in. */
+function withinAllowed(x: number, y: number, ring: Pt2[]): boolean {
+  return pointInPolygon(x, y, ring) || pointOnRing(x, y, ring, RING_EPS_MM)
+}
+
+/** Inside a region the tool must stay OUT of — on the ring counts as out. */
+function withinForbidden(x: number, y: number, ring: Pt2[]): boolean {
+  return pointInPolygon(x, y, ring) && !pointOnRing(x, y, ring, RING_EPS_MM)
+}
+
 // Scratch for the containment scan in isTravelSafe — see the comment at its use. Grows to
 // the largest containment set seen and is then reused; entries past `liveCount` are stale
 // and never read.
@@ -241,12 +297,23 @@ const liveScratch: Pt2[][] = []
 export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacles): boolean {
   if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 1e-6) return true
 
+  // One exact inequality against the drawn geometry, when the caller gave us that.
+  // Everything below is the older approximation of the same question.
+  if (obstacles.field) return obstacles.field.field.isClear(from, to, obstacles.field.clearanceMM)
+
   // Most travel moves are one stepover long and most obstacles are islands metres away
   // from them. Rejecting such a ring by its own box costs four comparisons instead of a
   // walk over every one of its edges; the per-edge box test inside the two predicates
   // below only ever saw the ring after that walk had already started.
-  const mnX = Math.min(from[0], to[0]), mxX = Math.max(from[0], to[0])
-  const mnY = Math.min(from[1], to[1]), mxY = Math.max(from[1], to[1])
+  //
+  // Slack by RING_EPS_MM, because a move that runs ALONG a ring has a degenerate box lying
+  // exactly on that ring's own — and a few ulps the wrong way then rejected the one ring
+  // that contained it, leaving the containment scan with nothing live and reporting a
+  // stepover down a wall unsafe. Erring inclusive is the safe direction both ways round:
+  // an extra edge/solid ring can only find more crossings, and an extra containment ring
+  // still has to pass the exact test below.
+  const mnX = Math.min(from[0], to[0]) - RING_EPS_MM, mxX = Math.max(from[0], to[0]) + RING_EPS_MM
+  const mnY = Math.min(from[1], to[1]) - RING_EPS_MM, mxY = Math.max(from[1], to[1]) + RING_EPS_MM
   const misses = (poly: Pt2[]): boolean => {
     const [bx0, by0, bx1, by1] = ringBBox(poly)
     return bx1 < mnX || bx0 > mxX || by1 < mnY || by0 > mxY
@@ -288,9 +355,19 @@ export function isTravelSafe(from: Pt2, to: Pt2, obstacles: TravelSafetyObstacle
       const t = k / N
       const x = from[0] + (to[0] - from[0]) * t
       const y = from[1] + (to[1] - from[1]) * t
+      // withinAllowed is the rule (see "Where the boundary belongs"), but it is applied in
+      // two passes, not once per ring: this is the hottest loop in the module, and the
+      // cheap half settles almost every sample. Only a sample that no ring plainly
+      // contains pays for the ring walks — which, before this, was every sample of every
+      // stepover run down a wall or past an island.
       let inside = false
       for (let i = 0; i < liveCount; i++) {
         if (pointInPolygon(x, y, liveScratch[i])) { inside = true; break }
+      }
+      if (!inside) {
+        for (let i = 0; i < liveCount; i++) {
+          if (withinAllowed(x, y, liveScratch[i])) { inside = true; break }
+        }
       }
       if (!inside) return false
     }
