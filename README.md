@@ -4,6 +4,8 @@
 
 [**Launch App →**](https://rickmcconney.github.io/kam/)
 
+If you find it useful, please ⭐ star the repo — it's the only way I know anyone is using it.
+
 ---
 
 ## What It Does
@@ -42,7 +44,7 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
   - **Pendulum** — rod, hanging hole and bob, sized from the beat you want
   - **Cam** — Archimedean snail cam with a lever, for clamps and hold-downs; lift is linear in handle angle, and the panel reports the pressure angle that decides whether it holds what it grips
   - **Cutting board** — body, juice groove, hand slots or hanging hole, with paddle/cask/carry handle options; the groove is a true constant-distance offset of the cutting field, not a scaled copy
-  - **Train track** — BRIO-compatible wooden railway — straight, curved or a turnout — cut from 12 mm stock: 40 mm body, two 6 mm × 3 mm flange grooves 26 mm apart, and the peg-and-socket joint on whichever ends you ask for. The socket is *derived* from the peg plus two clearances rather than typed in separately, so a joint can never be left half-adjusted — at the standard numbers that reproduces BRIO's Ø16 hole and 8 mm throat against its Ø11.5 peg. Curved pieces put the joint on the **tangent** to the end face, which is what lets eight 45° arcs close a circle. A **turnout** is a passive switch, left- or right-handed: both routes are grooved end to end so the flange takes whichever groove it rolls into, which is why they share a slot at the throat and cross outright at the frog — the panel reports where the frog falls and warns if the main leg or the branch stops short of it. The crotch where the two legs part gets a fillet, because the union leaves a 41° notch there that no round bit cuts. Grooves come out either as centrelines for a 6 mm cutter or as closed outlines to pocket with anything narrower, always as a separate part from the profiled outline. Scale-locked: every dimension is a fit against pieces somebody else made
+  - **Train track** — BRIO-compatible wooden railway — straight, curved or a turnout — cut from 12 mm stock, with the peg-and-socket joint on whichever ends you ask for. The socket is *derived* from the peg plus clearances rather than typed in separately, so a joint can never be left half-adjusted.  Grooves come out either as centrelines for a 6 mm cutter. 
   - **Maze** — a marble-run centreline, emitted as grooves for a ball-nose cutter rather than as an outline. Exactly one entrance and one exit reach the edge — every other corridor that would have run off the boundary is pulled back inside, so there is no doubt which end is which — and each gets a lead running clear of the maze, deletable with the point-edit tool if you would rather it didn't
 - **Clock** — a whole going train solved from one number: the beat. Pendulum length, an exact wheel/pinion factorisation for the rate (it says so in red rather than rounding when no exact train exists), optional 12:1 motion work for the hands, and the drive wheel's run time. Emits every wheel as an ordinary editable shape, lays them out on the stock, and will **run the assembled clock** on the canvas or let you drag its arbors into a plate arrangement that fits your case
 - **Text** — vector text paths via opentype.js; choose from bundled or web fonts, edit the text and font of an existing object at any time
@@ -55,6 +57,7 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 - Offset tool: inset/outset with round, miter or square corners — re-editable from its chip
 - Corner treatment: outer radius, inner radius, chamfer, dogbone
 - Linear and circular pattern tools — also re-editable from their chip
+- **Nesting** — arranges the selected parts on the stock so the least material is wasted. Set the gap between parts, the margin from the edge, the rotation step parts may be turned by, and which edge the nest packs from, so the offcut is left as one usable strip rather than scattered. Small parts can be dropped into the holes of larger ones, and unselected paths can be treated as ground already taken. Anything that will not fit is parked clear of the stock where you can see it. Select a single part and **Fill stock with copies** repeats it until no more will fit
 - Holding tabs: configure count, length, height; drag individual tabs along path
 - Group / ungroup (`Ctrl+G` / `Ctrl+Shift+G`) — groups nest, and Alt-click reaches a single path inside one
 - Copy and paste paths between projects (`Ctrl+C` / `Ctrl+V`) — a pasted gear is still a gear, with its parameters, corner treatments and grouping intact
