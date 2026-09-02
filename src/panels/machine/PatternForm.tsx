@@ -11,7 +11,7 @@ import type { PathDefinition } from '../../importers/svgImporter'
 import { useUIStore } from '../../store/uiStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
 import { useWorkpieceStore, fromMM, toMM } from '../../store/workpieceStore'
-import { computePatternInstances, applyPatternInstance, type PatternParams } from '../../tools/patternOp'
+import { computePatternInstances, patternCopies, type PatternParams } from '../../tools/patternOp'
 import { uid } from '../../uid'
 
 interface PatternLinParams { rows: number; cols: number; xSpacingMM: number; ySpacingMM: number }
@@ -80,16 +80,13 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
     const instances = computePatternInstances(params)
     if (instances.length === 0) { setError('Pattern produced no instances'); return }
     const instancesToCreate = form.mode === 'linear' ? instances.slice(1) : instances
-    const defs: { name: string; d: string; color: string }[] = []
-    for (const inst of instancesToCreate) {
-      for (const src of selectedPaths) {
-        defs.push({
-          name: `${src.name} ${inst.index !== undefined ? inst.index + 1 : `r${inst.row}c${inst.col}`}`,
-          d: applyPatternInstance(src.d, inst),
-          color: src.color,
-        })
-      }
-    }
+    // A COPY IS THE SHAPE IT WAS COPIED FROM. patternCopies carries the whole
+    // identity across — parameters, placement, the shared groupId that makes a
+    // train track's body, grooves and treads ONE part — with a fresh group per
+    // instance so patterning a group does not grow the group being patterned.
+    // Without it the copies were loose outlines, and nesting a patterned track
+    // laid every groove out as a part of its own.
+    const defs = patternCopies(selectedPaths, instancesToCreate)
     if (defs.length === 0) { setError('Pattern produced no geometry'); return }
 
     if (editCtx && defParams) {
@@ -100,12 +97,19 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
       // chip's snapshot of how things once were.
       const definition: PathDefinition = { id: editCtx.defId, kind: 'pattern', sourceIds: defParams.sourceIds, params }
       const oldPaths = defPaths
+      // The copy is rebuilt from the sources, so it REPLACES the old one wholly
+      // rather than having new geometry dropped into it: a reworked spacing moves
+      // the copy, and its parameters and placement have to move with it or the
+      // shape snaps back to where the first Apply put it the moment any parameter
+      // is stepped. Only the id survives, which is what keeps existing operations
+      // on a copy pointing at it.
       const newPaths: ImportedPath[] = defs.map((def, i) => oldPaths[i]
-        ? { ...oldPaths[i], d: def.d, name: def.name, definition }
-        : { id: uid('path-pattern'), name: def.name, d: def.d, visible: true, color: def.color, definition })
+        ? { ...oldPaths[i], ...def, definition }
+        : { ...def, id: uid('path-pattern'), definition })
       const deleteIds = oldPaths.slice(defs.length).map((p) => p.id)
       usePathsStore.getState().rewriteGeneratedRaw({
-        updates: newPaths.slice(0, Math.min(oldPaths.length, defs.length)).map((p) => ({ id: p.id, d: p.d, name: p.name, definition })),
+        updates: newPaths.slice(0, Math.min(oldPaths.length, defs.length))
+          .map((p) => ({ id: p.id, d: p.d, name: p.name, definition, fields: p })),
         add: newPaths.slice(oldPaths.length),
         deleteIds,
       })
@@ -120,11 +124,8 @@ export function PatternForm({ onClose, editCtx }: { onClose: () => void; editCtx
       id: uid('def'), kind: 'pattern', sourceIds: selectedPaths.map((p) => p.id), params,
     }
     const newPaths: ImportedPath[] = defs.map((def) => ({
+      ...def,
       id: uid('path-pattern'),
-      name: def.name,
-      d: def.d,
-      visible: true,
-      color: def.color,
       definition,
     }))
     addPaths(newPaths, { source: 'pattern' })

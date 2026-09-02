@@ -88,6 +88,15 @@ export interface NestParams {
   useHoles: boolean
   /** Ring sets that are already occupied — paths that were not selected for nesting. */
   obstacles?: Pt2[][][]
+  /**
+   * FILL THE STOCK. The ONE item given is repeated as many times as will fit,
+   * and the placements come back with `#0`, `#1`, … appended to its id: `#0` is
+   * the part the caller already has, the rest are copies for it to make.
+   *
+   * Ignored unless exactly one item is given, since "as many as will fit" has no
+   * meaning for a mixed set — which of them would it make more of?
+   */
+  fill?: boolean
   /** Cell size. Defaults to a size that keeps the grid near a million cells. */
   resolutionMM?: number
 }
@@ -129,6 +138,13 @@ export interface NestResult {
   /** Bounding box of the nested result — what lies beyond it is usable offcut. */
   usedWidthMM: number
   usedHeightMM: number
+  /**
+   * A FILL THAT STOPPED SHORT: it hit the work ceiling (see FILL_LIMIT) rather
+   * than running out of stock, so the sheet would take more copies than came
+   * back. The caller has to say so — "fill the stock" that quietly did not is
+   * the one outcome the user cannot tell from a full sheet by looking.
+   */
+  fillLimited?: boolean
 }
 
 // ─── Bit grid ─────────────────────────────────────────────────────────────────
@@ -489,6 +505,9 @@ function angleGrids(stepDeg: number): number[] {
 /** The steps the UI offers, coarsest first — the ladder `angleGrids` walks down. */
 const ROTATION_LADDER = [180, 90, 45]
 
+/** Most copies one fill will make, whatever the arithmetic says — see `fillCap`. */
+const FILL_LIMIT = 400
+
 interface Candidate { mask: Mask; angle: number; absAngle: number; minX: number; minY: number }
 
 /**
@@ -532,6 +551,8 @@ interface PackOutcome {
   placedCells: number
   usedCols: number
   usedRows: number
+  /** Fill mode only: the pass ran out of its copy budget, not out of stock. */
+  fillLimited?: boolean
 }
 
 /**
@@ -654,6 +675,30 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
     .filter((p): p is NonNullable<typeof p> => p !== null)
     .sort((a, b) => b.base.mask.cells - a.base.mask.cells)
 
+  // ── Filling the stock ──────────────────────────────────────────────────────
+  // The one part, over and over, until the sheet refuses one. A REFUSAL IS FINAL
+  // here, which is what lets a pass stop at the first one rather than grinding
+  // through a cap's worth of hopeless placements: the copies are identical and
+  // the grid only ever gains cells, so a copy that will not go on now will not go
+  // on after another has been stamped.
+  //
+  // Two caps, and the first is the real one: every stamp covers at least the
+  // part's own cells and no two overlap, so the sheet cannot hold more than its
+  // cells divided by the part's. The second is a ceiling on the WORK. A fill runs
+  // the whole multi-start — up to four rotation grids × three orientations × two
+  // pass types, each of which fills the sheet from scratch — so a 4 mm part on a
+  // full sheet is thousands of placements a dozen times over, and a job with four
+  // hundred parts on one sheet is not one a router is about to cut anyway.
+  const fill = params.fill === true && prepared.length === 1
+  const fillCap = fill
+    ? Math.min(FILL_LIMIT, Math.max(1, Math.floor((cols * rows) / Math.max(1, prepared[0].base.mask.cells))))
+    : 0
+  function* toPack(): Generator<PreparedItem> {
+    if (!fill) { yield* prepared; return }
+    const e = prepared[0]
+    for (let n = 0; n < fillCap; n++) yield { ...e, item: { ...e.item, id: `${e.item.id}#${n}` } }
+  }
+
   // ONE PASS PER ORIENTATION PREFERENCE, AND KEEP THE BEST. Bottom-left fill is
   // greedy and never reconsiders, so the whole shape of the result is decided by
   // what it commits to first — see `Orient` for the sheet of tracks that made the
@@ -688,11 +733,14 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
     let placedCells = 0
     let usedCols = 0
     let usedRows = 0
+    // A fill ends one of two ways: the sheet refuses a copy, or the budget runs
+    // out. Only the first means the stock is full.
+    let refused = false
     let levelY = rMin
     let levelH = 0
     let cursorX = cMin
 
-    for (const entry of prepared) {
+    for (const entry of toPack()) {
       const { item, pivotX, pivotY } = entry
       const candidates = orderCandidates(entry.candidates, orient, gridStep)
       let best: { cand: Candidate; ox: number; oy: number } | null = null
@@ -726,7 +774,7 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
         }
       }
 
-      if (!best) { unplaced.push(entry); continue }
+      if (!best) { if (fill) { refused = true; break } unplaced.push(entry); continue }
       stampDilated(grid, best.cand.mask, best.ox, best.oy, rad)
       placements.push({
         id: item.id, angleDeg: best.cand.angle, pivotX, pivotY,
@@ -740,7 +788,7 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
       cursorX = best.ox + 1
       levelH = Math.max(levelH, best.cand.mask.rows)
     }
-    return { placements, unplaced, placedCells, usedCols, usedRows }
+    return { placements, unplaced, placedCells, usedCols, usedRows, fillLimited: fill && !refused }
   }
 
   const packPass = (orient: Orient, gridStep: number): PackOutcome => {
@@ -750,7 +798,10 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
     let placedCells = 0
     let usedCols = 0
     let usedRows = 0
-    for (const entry of prepared) {
+    // A fill ends one of two ways: the sheet refuses a copy, or the budget runs
+    // out. Only the first means the stock is full.
+    let refused = false
+    for (const entry of toPack()) {
       const { item, pivotX, pivotY } = entry
       const candidates = orderCandidates(entry.candidates, orient, gridStep)
 
@@ -760,7 +811,7 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
         if (spot) best = { cand, ox: spot.ox, oy: spot.oy }
       }
 
-      if (!best) { unplaced.push(entry); continue }
+      if (!best) { if (fill) { refused = true; break } unplaced.push(entry); continue }
       stampDilated(grid, best.cand.mask, best.ox, best.oy, rad)
       placements.push({
         id: item.id,
@@ -775,7 +826,7 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
       usedCols = Math.max(usedCols, best.ox + best.cand.mask.cols)
       usedRows = Math.max(usedRows, best.oy + best.cand.mask.rows)
     }
-    return { placements, unplaced, placedCells, usedCols, usedRows }
+    return { placements, unplaced, placedCells, usedCols, usedRows, fillLimited: fill && !refused }
   }
 
   // More parts on the stock wins outright — a part that has to be cut from a
@@ -807,13 +858,18 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
     }
     // Everything is on the stock, so no coarser grid can place more and the
     // insurance is not worth its time — see `angleGrids`.
+    // Never in fill mode: nothing is ever unplaced there (the pass stops instead
+    // of parking), so this would break out after the first grid and throw the
+    // coarser ones away — and those are the grids that pack MORE copies, for the
+    // reason `angleGrids` gives.
+    //
     // Copied to a const first: the checker holds `better` at its declared `null`
     // through a test written directly against it here, and then types everything
     // after the loop as unreachable. Reading it into a fresh binding is enough.
     const champ: PackOutcome | null = better
-    if (champ && champ.unplaced.length === 0) break
+    if (!fill && champ && champ.unplaced.length === 0) break
   }
-  const { placements, unplaced, placedCells, usedCols, usedRows } = better!
+  const { placements, unplaced, placedCells, usedCols, usedRows, fillLimited } = better!
 
   // Back into real coordinates — see `flip` at the top for the derivation.
   // `|| 0` is not decoration: negating an angle of zero gives -0, which is a
@@ -866,6 +922,7 @@ export function nest(items: NestItem[], params: NestParams): NestResult {
     utilization: (placedCells * res * res) / (W * H),  // on-stock parts only
     usedWidthMM: flip ? usedRows * res : usedCols * res,
     usedHeightMM: flip ? usedCols * res : usedRows * res,
+    ...(fillLimited ? { fillLimited: true } : {}),
   }
 }
 

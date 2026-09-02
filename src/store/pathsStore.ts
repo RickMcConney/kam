@@ -78,7 +78,12 @@ interface PathsState {
   // Raw, NON-recording bulk update+add+delete (Offset/Pattern chip edit —
   // pattern cardinality changes add/remove result paths). Cleans up ops, tabs,
   // and selection for deleted ids like applyPathEdit, but records nothing.
-  rewriteGeneratedRaw: (edit: { updates?: { id: string; d: string; name?: string; shapeParams?: ShapeParams | null; definition?: PathDefinition; clockSpec?: ClockSpec }[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
+  // `fields` is for a generator that REBUILDS a path rather than editing it —
+  // a pattern reworked to a new spacing produces a whole new copy of its source
+  // and keeps only the id, so ops on that copy survive. Everything but the id is
+  // replaced, undefineds included, which is the point: a copy whose source lost
+  // its parameters must lose them too.
+  rewriteGeneratedRaw: (edit: { updates?: { id: string; d: string; name?: string; shapeParams?: ShapeParams | null; definition?: PathDefinition; clockSpec?: ClockSpec; fields?: Omit<ImportedPath, 'id'> }[]; add?: ImportedPath[]; deleteIds?: string[] }) => void
   updateShapeParams: (id: string, params: ShapeParams) => void
   duplicateSelected: (offsetMM?: number) => void
   splitPath: (id: string, subDs: string[]) => void
@@ -219,7 +224,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
         const upd = map.get(p.id)
         if (!upd) return p
         return {
-          ...p, d: upd.d,
+          ...p, ...(upd.fields ?? {}), id: p.id, d: upd.d,
           ...(upd.name !== undefined ? { name: upd.name } : {}),
           ...(upd.shapeParams !== undefined ? { shapeParams: upd.shapeParams ?? undefined } : {}),
           ...(upd.definition !== undefined ? { definition: upd.definition } : {}),

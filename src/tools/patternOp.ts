@@ -1,8 +1,9 @@
 // Pattern tools: linear grid and circular array.
 // Each returns a list of (d, dx, dy, angleDeg) transforms to apply to source paths.
 
-import { translateD, rotateAroundD } from '../canvas/selectionUtils'
-import { getBBox } from '../canvas/selectionUtils'
+import { getMultiBBox, type TransformStep, type BBox } from '../canvas/selectionUtils'
+import type { ImportedPath } from '../importers/svgImporter'
+import { copyPathsUnderSteps, type PathCopy } from './pathCopy'
 
 interface LinearPatternParams {
   type: 'linear'
@@ -74,16 +75,38 @@ export function computePatternInstances(params: PatternParams): PatternInstance[
   }
 }
 
-// Apply a single PatternInstance transform to a d string.
-// For circular patterns with rotation, rotates around the item's center.
-export function applyPatternInstance(d: string, inst: PatternInstance): string {
-  let result = translateD(d, inst.dx, inst.dy)
-  if (inst.angleDeg !== 0) {
-    // Find center of translated path and rotate around it
-    const bbox = getBBox(result)
-    if (bbox) {
-      result = rotateAroundD(result, bbox.cx, bbox.cy, inst.angleDeg)
-    }
+
+// ─── Copies that are still the shapes they were copied from ───────────────────
+
+/**
+ * The transform ONE pattern instance applies, as a step recipe rather than as
+ * baked geometry — which is what lets a copy keep its shape parameters and its
+ * placement (see copyPathsUnderSteps).
+ *
+ * The rotation pivot is the bounding box of the WHOLE selection, not of each
+ * path in turn. Per-path pivots were what the baked version used, and for a
+ * single path the two agree; for an assembly they do not, and turning each part
+ * about its own middle takes the assembly apart.
+ */
+export function patternInstanceSteps(inst: PatternInstance, bbox: BBox | null): TransformStep[] {
+  const steps: TransformStep[] = [{ kind: 'translate', dx: inst.dx, dy: inst.dy }]
+  if (inst.angleDeg !== 0 && bbox) {
+    steps.push({ kind: 'rotate', cx: bbox.cx + inst.dx, cy: bbox.cy + inst.dy, angle: inst.angleDeg })
   }
-  return result
+  return steps
+}
+
+/**
+ * Build the copies for a pattern: every instance × every source path.
+ *
+ * Ordered instance-major so a whole instance is contiguous, which is what lets
+ * the edit path reuse result ids by index.
+ */
+export function patternCopies(sources: ImportedPath[], instances: PatternInstance[]): PathCopy[] {
+  const bbox = getMultiBBox(sources.map((s) => s.d))
+  return instances.flatMap((inst) => copyPathsUnderSteps(
+    sources,
+    patternInstanceSteps(inst, bbox),
+    inst.index !== undefined ? `${inst.index + 1}` : `r${inst.row}c${inst.col}`,
+  ))
 }

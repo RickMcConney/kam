@@ -14,6 +14,7 @@ import { generateProfile3d } from '../cam/profile3d'
 import { generateInlayFemale, generateInlayMale } from '../cam/inlay'
 import { generateTrochoidal } from '../cam/trochoidal'
 import { generateSurface } from '../cam/surfacing'
+import { nest } from '../tools/nestOp'
 
 export const handlers = {
   generateProfile,
@@ -32,6 +33,12 @@ export const handlers = {
   generateInlayMale,
   generateTrochoidal,
   generateSurface,
+  // Not a toolpath, but the same shape of job: one long synchronous solve over
+  // plain geometry. A sheet of parts rasterizes the whole stock once per part
+  // per orientation, which on nineteen tracks at 15° is seconds — long enough
+  // that running it on the UI thread put up the browser's "page unresponsive"
+  // dialog mid-nest.
+  nest,
 } as const
 
 export type WorkerHandlers = typeof handlers

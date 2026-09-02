@@ -4,12 +4,15 @@ import { AlertCircle } from 'lucide-react'
 import { FormShell, PathChip, ToggleRow, LengthInput, FormNotice, GenerateBtn } from './shared'
 import { ICON } from '../../theme'
 import { useFormDefaultsStore } from '../../store/formDefaultsStore'
-import { usePathsStore, useSelectedPaths } from '../../store/pathsStore'
+import { usePathsStore, useSelectedPaths, type ImportedPath } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { useUIStore } from '../../store/uiStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
 import { applyTransformStep, placementMat, type TransformStep } from '../../canvas/selectionUtils'
-import { nest, groupPathsForNesting, type NestItem } from '../../tools/nestOp'
+import { groupPathsForNesting, type NestItem } from '../../tools/nestOp'
+import { copyPathsUnderSteps } from '../../tools/pathCopy'
+import { uid } from '../../uid'
+import { runInWorkerFor } from '../../workers/workerClient'
 import type { PathUpdate } from '../../store/pathsStore'
 
 // How finely a part may be turned. "None" is first because it is the only answer
@@ -28,15 +31,22 @@ interface NestFormState {
   packFrom: 'left' | 'bottom'
   useHoles: boolean
   avoidOthers: boolean
+  /** Repeat the one selected part until the stock is full — see canFill. */
+  fillStock: boolean
 }
 
 const FALLBACK: NestFormState = {
-  spacingMM: 3, marginMM: 3, rotation: '90', packFrom: 'left', useHoles: false, avoidOthers: true,
+  spacingMM: 3, marginMM: 3, rotation: '90', packFrom: 'left', useHoles: false,
+  avoidOthers: true, fillStock: false,
 }
 
 interface NestReport {
   placed: number
   total: number
+  /** How many parts the fill pass ADDED to the document. 0 for a plain nest. */
+  copies: number
+  /** The fill stopped at its copy limit rather than filling the stock. */
+  fillLimited: boolean
   usedWidthMM: number
   usedHeightMM: number
   utilization: number
@@ -74,6 +84,12 @@ export function NestForm({ onClose }: { onClose: () => void }) {
   // pressed: "9 paths → 4 parts" is the whole of what the user needs to check.
   const groups = useMemo(() => groupPathsForNesting(selPaths), [selPaths])
   const canApply = groups.length > 0 && widthMM > 0 && heightMM > 0
+  // ONE PART, or "as many as will fit" has no answer — which of a mixed set
+  // would it make more of? So the option appears only when the selection comes
+  // to a single part, and a selection that grows past one turns it off rather
+  // than leaving a checkbox on that does nothing.
+  const canFill = groups.length === 1
+  const filling = canFill && form.fillStock
 
   const up = <K extends keyof NestFormState>(k: K, v: NestFormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
@@ -83,21 +99,20 @@ export function NestForm({ onClose }: { onClose: () => void }) {
     setReport(null)
     if (!canApply) return
     setRunning(true)
-    // One frame for the spinner to land — a sheet of parts at 15° takes a moment.
-    setTimeout(() => {
-      try {
-        runNest()
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Nesting failed')
-      } finally {
-        setRunning(false)
-      }
-    }, 0)
+    runNest()
+      .catch((e) => setError(e instanceof Error ? e.message : 'Nesting failed'))
+      .finally(() => setRunning(false))
   }
 
-  function runNest() {
+  async function runNest() {
     const paths = usePathsStore.getState().paths
     const selected = new Set(selPaths.map((p) => p.id))
+    // Read BEFORE the await, and the updates below are built from this snapshot:
+    // the nest is a transform per part, so it has to be applied to the geometry
+    // it was computed from. A path deleted while the worker ran simply drops out
+    // (the `if (!path) continue` below); one MOVED while it ran would be moved
+    // again by its nest transform, which is the honest answer — the alternative
+    // is silently discarding the whole nest.
     const byIdPre = new Map(paths.map((p) => [p.id, p]))
     const items: NestItem[] = groups.map((g, i) => ({
       id: `g${i}`,
@@ -122,7 +137,13 @@ export function NestForm({ onClose }: { onClose: () => void }) {
           .filter((rings) => rings.length > 0)
       : undefined
 
-    const result = nest(items, {
+    // ON A WORKER, like every other long solve in the app. The nest rasterizes
+    // the whole stock once per part per orientation, so a sheet of nineteen
+    // tracks at 15° is seconds of straight-line arithmetic — on the UI thread
+    // that is the browser's "page unresponsive" dialog, which is exactly what it
+    // put up. Nothing here touches the DOM or the stores, so it moves across
+    // whole: rings in, transforms out.
+    const result = await runInWorkerFor(undefined, 'nest', items, {
       sheetWidthMM: widthMM,
       sheetHeightMM: heightMM,
       spacingMM: form.spacingMM,
@@ -131,6 +152,7 @@ export function NestForm({ onClose }: { onClose: () => void }) {
       packFrom: form.packFrom,
       useHoles: form.useHoles,
       obstacles,
+      fill: filling,
     })
 
     const onStock = result.placements.filter((p) => p.onStock)
@@ -149,13 +171,30 @@ export function NestForm({ onClose }: { onClose: () => void }) {
     // baking it away — see store/CLAUDE.md.
     const byId = byIdPre
     const updates: PathUpdate[] = []
+    const add: ImportedPath[] = []
     let rotated = false
     for (const pl of result.placements) {
-      const g = groups[Number(pl.id.slice(1))]
+      // `g3` in a plain nest, `g3#7` when filling — the part, and which copy of
+      // it. Copy 0 is the one the document already has; the rest have to be made.
+      const hash = pl.id.indexOf('#')
+      const g = groups[Number((hash < 0 ? pl.id : pl.id.slice(0, hash)).slice(1))]
+      if (!g) continue
+      const copyN = hash < 0 ? 0 : Number(pl.id.slice(hash + 1))
       const steps: TransformStep[] = []
       if (pl.angleDeg !== 0) steps.push({ kind: 'rotate', angle: pl.angleDeg, cx: pl.pivotX, cy: pl.pivotY })
       steps.push({ kind: 'translate', dx: pl.dx, dy: pl.dy })
       if (pl.angleDeg !== 0) rotated = true
+      if (copyN > 0) {
+        // Through the same copier the pattern tool uses, so a filled sheet of
+        // train tracks is a sheet of TRACKS — each copy its own object, with its
+        // own group, its parameters intact and its parts tied together. Copying
+        // the geometry alone would hand the next nest thirty loose grooves.
+        const sources = g.ids.flatMap((id) => { const p = byId.get(id); return p ? [p] : [] })
+        for (const c of copyPathsUnderSteps(sources, steps, `${copyN + 1}`)) {
+          add.push({ ...c, id: uid('path-nest') })
+        }
+        continue
+      }
       for (const id of g.ids) {
         const path = byId.get(id)
         if (!path) continue
@@ -176,7 +215,7 @@ export function NestForm({ onClose }: { onClose: () => void }) {
         updates.push({ id, d, shapeParams: spilled ? null : shapeParams, transforms: steps })
       }
     }
-    if (updates.length === 0) return
+    if (updates.length === 0 && add.length === 0) return
 
     // NESTING THE SAME PARTS TWICE MUST BE ALLOWED TO CHANGE NOTHING, and must
     // SAY so. The nest is decided by the parts' shapes, not by where they happen
@@ -184,16 +223,29 @@ export function NestForm({ onClose }: { onClose: () => void }) {
     // where the first one did — which from the outside is indistinguishable from
     // a button that did not work, and was read as one. Writing it as an edit
     // anyway would be worse: an undo step that undoes nothing visible.
-    const unchanged = result.placements.every(
+    const unchanged = add.length === 0 && result.placements.every(
       (pl) => Math.abs(pl.angleDeg) < 1e-6 && Math.abs(pl.dx) < 1e-4 && Math.abs(pl.dy) < 1e-4,
     )
     if (!unchanged) {
-      usePathsStore.getState().batchUpdatePaths(updates, rotated ? 'transform' : 'move')
+      // Moves and copies in ONE edit, so one undo takes the fill back off the
+      // stock whole. The copies join the selection, which is what makes a second
+      // Nest press mean "re-nest this sheet" rather than "nest one part among a
+      // crowd of obstacles it cannot get past".
+      usePathsStore.getState().applyPathEdit({
+        updates,
+        add,
+        gesture: rotated ? 'transform' : 'move',
+        ...(add.length > 0
+          ? { label: 'Fill stock', selectAfter: [...updates.map((u) => u.id), ...add.map((p) => p.id)] }
+          : {}),
+      })
       regenerateAffectedMany(updates.map((u) => u.id))
     }
     setReport({
       placed: onStock.length,
-      total: items.length,
+      total: filling ? onStock.length : items.length,
+      copies: add.length,
+      fillLimited: result.fillLimited === true,
       usedWidthMM: result.usedWidthMM,
       usedHeightMM: result.usedHeightMM,
       utilization: result.utilization,
@@ -203,7 +255,9 @@ export function NestForm({ onClose }: { onClose: () => void }) {
     useUIStore.getState().showStatus(
       unchanged
         ? 'Already nested — nothing moved'
-        : `Nested ${onStock.length} of ${items.length} part${items.length === 1 ? '' : 's'}`,
+        : filling
+          ? `Filled the stock with ${onStock.length} part${onStock.length === 1 ? '' : 's'} — ${add.length} added`
+          : `Nested ${onStock.length} of ${items.length} part${items.length === 1 ? '' : 's'}`,
       result.unplacedIds.length > 0 ? 'warn' : 'info',
     )
     save('nest', form)
@@ -273,6 +327,24 @@ export function NestForm({ onClose }: { onClose: () => void }) {
         </p>
       </div>
 
+      {canFill && (
+        <div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="nest-fill" checked={form.fillStock}
+              onChange={(e) => up('fillStock', e.target.checked)} className="accent-blue-500" />
+            <label htmlFor="nest-fill" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer"
+              title="Repeat the selected part until no more will fit">
+              Fill stock with copies
+            </label>
+          </div>
+          <p className="text-label text-gray-600 dark:text-neutral-400 normal-case mt-1">
+            As many copies of the part as the stock will take, at the same gaps.
+            Each copy is an object in its own right — cut it, move it or delete it
+            like any other.
+          </p>
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <input type="checkbox" id="nest-holes" checked={form.useHoles}
@@ -294,15 +366,22 @@ export function NestForm({ onClose }: { onClose: () => void }) {
 
       {report && (
         <p className="text-body text-gray-700 dark:text-neutral-300">
-          {report.unchanged ? 'Already nested' : `Nested ${report.placed} of ${report.total}`} into{' '}
+          {report.unchanged
+            ? 'Already nested'
+            : report.copies > 0
+              ? `Filled the stock with ${report.placed} parts — ${report.copies} added`
+              : `Nested ${report.placed} of ${report.total}`} into{' '}
           {fmtLen(report.usedWidthMM, units, 1)} × {fmtLen(report.usedHeightMM, units, 1)} —
           parts cover {(report.utilization * 100).toFixed(0)}% of the stock.
           {report.unchanged && ' This is the same arrangement, so nothing moved.'}
         </p>
       )}
-      <FormNotice msg={report && report.unplaced > 0
-        ? `${report.unplaced} part${report.unplaced === 1 ? '' : 's'} would not fit — parked to the right of the stock.`
-        : null} />
+      <FormNotice msg={
+        report && report.fillLimited
+          ? `Stopped at ${report.placed} copies — the stock would take more. Select one of them and fill again for another batch.`
+          : report && report.unplaced > 0
+            ? `${report.unplaced} part${report.unplaced === 1 ? '' : 's'} would not fit — parked to the right of the stock.`
+            : null} />
       {error && (
         <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
           <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}
@@ -310,7 +389,7 @@ export function NestForm({ onClose }: { onClose: () => void }) {
       )}
 
       <GenerateBtn disabled={!canApply || running} generating={running} onClick={handleNest}
-        label="Nest on Stock"
+        label={filling ? 'Fill Stock' : 'Nest on Stock'}
         title={widthMM > 0 && heightMM > 0 ? `Stock ${fmtLen(widthMM, units, 1)} × ${fmtLen(heightMM, units, 1)}` : 'Set the stock size first'} />
     </FormShell>
   )
