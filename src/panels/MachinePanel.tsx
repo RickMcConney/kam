@@ -1,4 +1,4 @@
-import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, VCarveForm, PhotoVCarveForm, InlayForm, Profile3dForm, SurfaceForm, BooleanForm, OffsetForm, PatternForm, TabsForm, NodeEditForm } from './machine'
+import { ProfileForm, TrochoidalForm, PocketForm, DrillForm, VCarveForm, PhotoVCarveForm, InlayForm, Profile3dForm, SurfaceForm, BooleanForm, OffsetForm, PatternForm, NestForm, TabsForm, NodeEditForm } from './machine'
 import { useState, useEffect } from 'react'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePathsStore } from '../store/pathsStore'
@@ -7,7 +7,7 @@ import type { OffsetEditCtx } from './machine/OffsetForm'
 import type { PatternEditCtx } from './machine/PatternForm'
 import { OP_TYPE_COLORS } from '../colors'
 import { ICON } from '../theme'
-import { Circle, CircleDot, Target, Layers, Star, SquaresUnite, SquareSquare, LayoutGrid, RectangleEllipsis, VectorSquare, Box, RefreshCw, Image as ImageIcon } from 'lucide-react'
+import { Circle, CircleDot, Target, Layers, Star, SquaresUnite, SquareSquare, LayoutGrid, Blocks, RectangleEllipsis, VectorSquare, Box, RefreshCw, Image as ImageIcon } from 'lucide-react'
 import { useUIStore } from '../store/uiStore'
 
 // Exported for reuse (TimelinePanel chips use the same per-op icons as this menu)
@@ -20,7 +20,7 @@ export const InlayIcon = ({ size = 24 }: { size?: number }) => (
 
 // ─── Operation type selector ──────────────────────────────────────────────────
 
-type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'photovcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'tabs' | 'nodeedit'
+type OpType = 'profile' | 'trochoidal' | 'pocket' | 'drill' | 'surface' | 'vcarve' | 'photovcarve' | 'inlay' | 'profile3d' | 'boolean' | 'offset' | 'pattern' | 'nest' | 'tabs' | 'nodeedit'
 type FormState = null | 'menu' | OpType
 
 const opBtnCls = 'flex flex-col items-center gap-0.5 py-1.5 rounded text-body transition-colors border border-gray-400 dark:border-neutral-600 hover:bg-gray-100 dark:hover:bg-neutral-700'
@@ -53,6 +53,7 @@ function AddOperationMenu({ onSelect }: { onSelect: (t: OpType) => void }) {
           ['boolean', 'Boolean', 'Union, intersect, or subtract paths', <SquaresUnite size={ICON.md} />],
           ['offset', 'Offset', 'Inset or outset path by distance', <SquareSquare size={ICON.md} />],
           ['pattern', 'Pattern', 'Linear or circular array', <LayoutGrid size={ICON.md} />],
+          ['nest', 'Nest', 'Arrange the selected paths on the stock so the least material is wasted', <Blocks size={ICON.md} />],
           ['tabs', 'Tabs', 'Add holding tabs to keep part from moving', <RectangleEllipsis size={ICON.md} />],
           ['nodeedit', 'Corners', 'Apply corner treatments: round, chamfer, dogbone', <VectorSquare size={ICON.md} />],
         ] as [OpType, string, string, React.ReactNode][]).map(([type, name, desc, icon]) => (
@@ -171,6 +172,8 @@ export default function MachinePanel({ fill = false }: { fill?: boolean }) {
         <OffsetForm key={editOffset?.defId ?? 'new'} onClose={closeForm} editCtx={editOffset ?? undefined} />
       ) : activeForm === 'pattern' ? (
         <PatternForm key={editPattern?.defId ?? 'new'} onClose={closeForm} editCtx={editPattern ?? undefined} />
+      ) : activeForm === 'nest' ? (
+        <NestForm onClose={closeForm} />
       ) : activeForm === 'tabs' ? (
         <TabsForm onClose={closeForm} />
       ) : activeForm === 'nodeedit' ? (

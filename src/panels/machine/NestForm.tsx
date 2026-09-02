@@ -1,0 +1,317 @@
+// ─── Nest form ────────────────────────────────────────────────────────────────
+import { useMemo, useState } from 'react'
+import { AlertCircle } from 'lucide-react'
+import { FormShell, PathChip, ToggleRow, LengthInput, FormNotice, GenerateBtn } from './shared'
+import { ICON } from '../../theme'
+import { useFormDefaultsStore } from '../../store/formDefaultsStore'
+import { usePathsStore, useSelectedPaths } from '../../store/pathsStore'
+import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
+import { useUIStore } from '../../store/uiStore'
+import { regenerateAffectedMany } from '../../cam/regenerate'
+import { applyTransformStep, placementMat, type TransformStep } from '../../canvas/selectionUtils'
+import { nest, groupPathsForNesting, type NestItem } from '../../tools/nestOp'
+import type { PathUpdate } from '../../store/pathsStore'
+
+// How finely a part may be turned. "None" is first because it is the only answer
+// for stock with a grain direction or a figure to keep aligned — nesting is a
+// material-saving tool, not a licence to rotate a board's worth of parts across
+// the grain, and a machinist reaching for it on plywood wants a different answer
+// from one reaching for it on MDF.
+type RotOption = 'none' | '90' | '45' | '15'
+const ROT_STEP: Record<RotOption, number> = { none: 0, '90': 90, '45': 45, '15': 15 }
+const ROT_LABEL: Record<RotOption, string> = { none: 'None', '90': '90°', '45': '45°', '15': '15°' }
+
+interface NestFormState {
+  spacingMM: number
+  marginMM: number
+  rotation: RotOption
+  packFrom: 'left' | 'bottom'
+  useHoles: boolean
+  avoidOthers: boolean
+}
+
+const FALLBACK: NestFormState = {
+  spacingMM: 3, marginMM: 3, rotation: '90', packFrom: 'left', useHoles: false, avoidOthers: true,
+}
+
+interface NestReport {
+  placed: number
+  total: number
+  usedWidthMM: number
+  usedHeightMM: number
+  utilization: number
+  unplaced: number
+  /** The nest came out where everything already was — see runNest. */
+  unchanged: boolean
+}
+
+/**
+ * How far a part already stands turned, out of its placement recipe: the angle of
+ * the transformed x-axis, the same reading the Properties panel's Angle field
+ * gives. Handed to the nest so its rotation grid is absolute — see
+ * NestItem.currentAngleDeg.
+ */
+function placedAngleOf(path: { placement?: TransformStep[] } | undefined): number {
+  if (!path?.placement?.length) return 0
+  const [a, b] = placementMat(path.placement)
+  return (Math.atan2(b, a) * 180) / Math.PI
+}
+
+export function NestForm({ onClose }: { onClose: () => void }) {
+  const selPaths = useSelectedPaths()
+  const { load, save } = useFormDefaultsStore()
+  const units = useWorkpieceStore((s) => s.units)
+  const widthMM = useWorkpieceStore((s) => s.widthMM)
+  const heightMM = useWorkpieceStore((s) => s.heightMM)
+
+  const [form, setForm] = useState<NestFormState>(() => ({ ...FALLBACK, ...(load('nest') as Partial<NestFormState> | null) }))
+  const [error, setError] = useState<string | null>(null)
+  const [report, setReport] = useState<NestReport | null>(null)
+  const [running, setRunning] = useState(false)
+
+  // What will actually be moved as one piece — a gear's parts, a user group, a
+  // plate and the holes drawn inside it. Worth showing before the button is
+  // pressed: "9 paths → 4 parts" is the whole of what the user needs to check.
+  const groups = useMemo(() => groupPathsForNesting(selPaths), [selPaths])
+  const canApply = groups.length > 0 && widthMM > 0 && heightMM > 0
+
+  const up = <K extends keyof NestFormState>(k: K, v: NestFormState[K]) =>
+    setForm((f) => ({ ...f, [k]: v }))
+
+  function handleNest() {
+    setError(null)
+    setReport(null)
+    if (!canApply) return
+    setRunning(true)
+    // One frame for the spinner to land — a sheet of parts at 15° takes a moment.
+    setTimeout(() => {
+      try {
+        runNest()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Nesting failed')
+      } finally {
+        setRunning(false)
+      }
+    }, 0)
+  }
+
+  function runNest() {
+    const paths = usePathsStore.getState().paths
+    const selected = new Set(selPaths.map((p) => p.id))
+    const byIdPre = new Map(paths.map((p) => [p.id, p]))
+    const items: NestItem[] = groups.map((g, i) => ({
+      id: `g${i}`,
+      rings: g.rings,
+      currentAngleDeg: placedAngleOf(byIdPre.get(g.ids[0])),
+    }))
+
+    // Anything NOT being nested but still on the stock is stock that is already
+    // spoken for. Optional because the reverse case exists too — a border or a
+    // background outline drawn over the whole sheet would otherwise leave
+    // nowhere at all to put anything.
+    //
+    // THROUGH THE SAME GROUPING AS THE SELECTION, which is not a tidiness point.
+    // A hole is a region an item's rings enclose an even number of times, so a
+    // ring and the circle drawn inside it are only a hole once they are ONE item
+    // — and taking obstacles a path at a time made each of them its own filled
+    // disc instead. The effect was that "nest inside holes" worked on a part in
+    // the selection and silently did not on the identical part left out of it.
+    const obstacles = form.avoidOthers
+      ? groupPathsForNesting(paths.filter((p) => !selected.has(p.id) && p.visible && !p.hidden))
+          .map((g) => g.rings)
+          .filter((rings) => rings.length > 0)
+      : undefined
+
+    const result = nest(items, {
+      sheetWidthMM: widthMM,
+      sheetHeightMM: heightMM,
+      spacingMM: form.spacingMM,
+      marginMM: form.marginMM,
+      rotationStepDeg: ROT_STEP[form.rotation],
+      packFrom: form.packFrom,
+      useHoles: form.useHoles,
+      obstacles,
+    })
+
+    const onStock = result.placements.filter((p) => p.onStock)
+    if (onStock.length === 0) {
+      setError(
+        obstacles?.length
+          ? 'Nothing fits on the stock — try a smaller spacing or margin, or turn off "Avoid other paths".'
+          : 'Nothing fits on the stock — try a smaller spacing or margin, or larger stock.',
+      )
+      return
+    }
+
+    // ONE batch, so the whole nest is one undo step. Each part carries its own
+    // recipe (`transforms`), which is what keeps a rotated shape's parameters
+    // alive: applyPathEdit spills a rotation into the placement rather than
+    // baking it away — see store/CLAUDE.md.
+    const byId = byIdPre
+    const updates: PathUpdate[] = []
+    let rotated = false
+    for (const pl of result.placements) {
+      const g = groups[Number(pl.id.slice(1))]
+      const steps: TransformStep[] = []
+      if (pl.angleDeg !== 0) steps.push({ kind: 'rotate', angle: pl.angleDeg, cx: pl.pivotX, cy: pl.pivotY })
+      steps.push({ kind: 'translate', dx: pl.dx, dy: pl.dy })
+      if (pl.angleDeg !== 0) rotated = true
+      for (const id of g.ids) {
+        const path = byId.get(id)
+        if (!path) continue
+        // Folded here rather than through applyTransformSteps because the SIGNAL
+        // matters as much as the geometry: a rotate reports `shapeParams: null`
+        // to say the parameters could not absorb it, and a translate folded on
+        // top of that reports `undefined`, which reads as "nothing to say" and
+        // would leave a turned shape with parameters describing it unturned.
+        let d = path.d
+        let shapeParams = path.shapeParams
+        let spilled = false
+        for (const step of steps) {
+          const r = applyTransformStep({ d, shapeParams, placement: path.placement }, step)
+          if (r.shapeParams === null) spilled = true
+          d = r.d
+          shapeParams = r.shapeParams ?? undefined
+        }
+        updates.push({ id, d, shapeParams: spilled ? null : shapeParams, transforms: steps })
+      }
+    }
+    if (updates.length === 0) return
+
+    // NESTING THE SAME PARTS TWICE MUST BE ALLOWED TO CHANGE NOTHING, and must
+    // SAY so. The nest is decided by the parts' shapes, not by where they happen
+    // to be lying, so a second run with the same settings lands them exactly
+    // where the first one did — which from the outside is indistinguishable from
+    // a button that did not work, and was read as one. Writing it as an edit
+    // anyway would be worse: an undo step that undoes nothing visible.
+    const unchanged = result.placements.every(
+      (pl) => Math.abs(pl.angleDeg) < 1e-6 && Math.abs(pl.dx) < 1e-4 && Math.abs(pl.dy) < 1e-4,
+    )
+    if (!unchanged) {
+      usePathsStore.getState().batchUpdatePaths(updates, rotated ? 'transform' : 'move')
+      regenerateAffectedMany(updates.map((u) => u.id))
+    }
+    setReport({
+      placed: onStock.length,
+      total: items.length,
+      usedWidthMM: result.usedWidthMM,
+      usedHeightMM: result.usedHeightMM,
+      utilization: result.utilization,
+      unplaced: result.unplacedIds.length,
+      unchanged,
+    })
+    useUIStore.getState().showStatus(
+      unchanged
+        ? 'Already nested — nothing moved'
+        : `Nested ${onStock.length} of ${items.length} part${items.length === 1 ? '' : 's'}`,
+      result.unplacedIds.length > 0 ? 'warn' : 'info',
+    )
+    save('nest', form)
+  }
+
+  return (
+    <FormShell title="Nest" onClose={onClose}>
+      <div>
+        <div className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">
+          Paths{groups.length > 0 && (
+            <span className="normal-case text-gray-500 dark:text-neutral-400">
+              {' '}({selPaths.length} → {groups.length} part{groups.length === 1 ? '' : 's'})
+            </span>
+          )}
+        </div>
+        {selPaths.length > 0 ? (
+          <div className="space-y-0.5 max-h-40 overflow-y-auto">
+            {selPaths.map((p) => <PathChip key={p.id} path={p} />)}
+          </div>
+        ) : (
+          <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <AlertCircle size={ICON.sm} /> Select the paths to nest
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label htmlFor="nest-spacing" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Part Gap</label>
+          <LengthInput id="nest-spacing" valueMM={form.spacingMM} minMM={0} stepMM={0.5}
+            onChangeMM={(mm) => up('spacingMM', mm)} />
+        </div>
+        <div>
+          <label htmlFor="nest-margin" className="block text-label text-gray-600 dark:text-neutral-400 uppercase tracking-wider mb-1">Edge Margin</label>
+          <LengthInput id="nest-margin" valueMM={form.marginMM} minMM={0} stepMM={0.5}
+            onChangeMM={(mm) => up('marginMM', mm)} />
+        </div>
+      </div>
+
+      <div>
+        <ToggleRow label="Rotation Step"
+          options={['none', '90', '45', '15'] as const}
+          labels={ROT_LABEL}
+          value={form.rotation}
+          onChange={(v) => up('rotation', v)} />
+        {/* "45°" reads as a LIMIT — up to 45° — and it is not one; it is the step
+            of the grid of orientations a part may be turned to, so 45° allows a
+            half turn and 15° allows everything 45° does. Said in the panel
+            because the difference decides whether the setting looks broken. */}
+        <p className="text-label text-gray-600 dark:text-neutral-400 normal-case mt-1">
+          {form.rotation === 'none'
+            ? 'Parts are turned back to the way they were drawn — for stock with a grain to follow.'
+            : `Parts may be turned to any multiple of ${ROT_LABEL[form.rotation]}. Finer steps pack a little tighter and take longer.`}
+        </p>
+      </div>
+
+      <div>
+        <ToggleRow label="Pack From"
+          options={['left', 'bottom'] as const}
+          labels={{ left: 'Left Edge', bottom: 'Bottom Edge' }}
+          value={form.packFrom}
+          onChange={(v) => up('packFrom', v)} />
+        <p className="text-label text-gray-600 dark:text-neutral-400 normal-case mt-1">
+          {form.packFrom === 'left'
+            ? 'The offcut is left as a full-height strip off the end of the board.'
+            : 'The offcut is left as a full-width band along the top of the stock.'}
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="nest-holes" checked={form.useHoles}
+            onChange={(e) => up('useHoles', e.target.checked)} className="accent-blue-500" />
+          <label htmlFor="nest-holes" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer"
+            title="Small parts may be placed in the holes of larger ones — saves material, but the offcut comes out in pieces">
+            Nest inside holes
+          </label>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="nest-avoid" checked={form.avoidOthers}
+            onChange={(e) => up('avoidOthers', e.target.checked)} className="accent-blue-500" />
+          <label htmlFor="nest-avoid" className="text-body text-gray-700 dark:text-neutral-300 cursor-pointer"
+            title="Treat paths that are not selected as stock already taken">
+            Avoid other paths
+          </label>
+        </div>
+      </div>
+
+      {report && (
+        <p className="text-body text-gray-700 dark:text-neutral-300">
+          {report.unchanged ? 'Already nested' : `Nested ${report.placed} of ${report.total}`} into{' '}
+          {fmtLen(report.usedWidthMM, units, 1)} × {fmtLen(report.usedHeightMM, units, 1)} —
+          parts cover {(report.utilization * 100).toFixed(0)}% of the stock.
+          {report.unchanged && ' This is the same arrangement, so nothing moved.'}
+        </p>
+      )}
+      <FormNotice msg={report && report.unplaced > 0
+        ? `${report.unplaced} part${report.unplaced === 1 ? '' : 's'} would not fit — parked to the right of the stock.`
+        : null} />
+      {error && (
+        <p className="text-body text-red-600 dark:text-red-400 flex items-start gap-1.5">
+          <AlertCircle size={ICON.sm} className="mt-0.5 shrink-0" />{error}
+        </p>
+      )}
+
+      <GenerateBtn disabled={!canApply || running} generating={running} onClick={handleNest}
+        label="Nest on Stock"
+        title={widthMM > 0 && heightMM > 0 ? `Stock ${fmtLen(widthMM, units, 1)} × ${fmtLen(heightMM, units, 1)}` : 'Set the stock size first'} />
+    </FormShell>
+  )
+}
