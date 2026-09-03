@@ -1,4 +1,4 @@
-import { pointInPolygon, interiorPoint, pushAll } from './geom'
+import { pointInPolygon, interiorPoint, pushAll, isVCutter, tipBallRadiusMM, vProfileHeightMM, vRadiusAtHeightMM } from './geom'
 import { flattenPath, signedArea, splitSelfIntersecting, requireClosedSubpaths, sharesVertex, type Pt2 } from './pathFlattener'
 import { generatePocket } from './pocket'
 import { generateVCarve } from './vcarve'
@@ -271,8 +271,9 @@ function fillRings(
  */
 function letterReliefPlunges(
   letterOuterDs: string[], letterCounterDs: string[],
-  roughRadiusMM: number, plugDepthMM: number, tanHalf: number, maxDepthMM: number,
+  roughRadiusMM: number, plugDepthMM: number, wg: WallGeom, maxDepthMM: number,
 ): { x: number; y: number; z: number }[] {
+  const tanHalf = wg.tanHalf
   const CELL = 0.1
   const outerRings = letterOuterDs.flatMap(s => flattenPath(s, 0.05)).filter(r => r.length >= 3)
   const counterRings = letterCounterDs.flatMap(s => flattenPath(s, 0.05)).filter(r => r.length >= 3)
@@ -335,7 +336,9 @@ function letterReliefPlunges(
   // Leftover: background the cutter never swept, and proud enough to be worth a plunge.
   const SAFETY_MM = CELL * Math.SQRT2
   const MIN_RELIEF_MM = 0.05
-  const minDistCells = (MIN_RELIEF_MM * tanHalf + SAFETY_MM) / CELL
+  // The reach a MIN_RELIEF_MM-deep plunge actually clears — the tool's width at that
+  // depth, which for a taper is its tip ball rather than a cone's depth × tanHalf.
+  const minDistCells = (wg.halfWidthAt(MIN_RELIEF_MM) + SAFETY_MM) / CELL
   const open: number[] = []
   for (let k = 0; k < letters.length; k++) {
     if (letters[k] || !inBox[k]) continue
@@ -354,7 +357,11 @@ function letterReliefPlunges(
     const i = k % nx, j = (k - i) / nx
     const reachMM = Math.max(0, Math.sqrt(distToLetter[k]) * CELL - SAFETY_MM)
     if (reachMM <= 0) continue
-    const z = -Math.min(plugDepthMM + reachMM / tanHalf, maxDepthMM)
+    // How far BELOW the mating plane the tip must go for the tool to be `reachMM` wide
+    // there — f(reach), the inverse of halfWidthAt. A taper's tip ball makes this less
+    // than the cone's reach/tan, so the plunge stops short of the plug wall rather than
+    // shaving it.
+    const z = -Math.min(plugDepthMM + vProfileHeightMM(reachMM, tanHalf, wg.tipR), maxDepthMM)
     out.push({ x: bbox.x0 + i * CELL, y: bbox.y0 + j * CELL, z })
     // This plunge takes everything within reachMM down to the mating plane or below.
     const rc = Math.ceil(reachMM / CELL), rc2 = (reachMM / CELL) * (reachMM / CELL)
@@ -638,6 +645,39 @@ function getOuters(d: string): Pt2[][] {
 
 // ─── Female socket ────────────────────────────────────────────────────────────
 
+// The wall tool's geometry in the ONE form this file needs it. Everything here used to
+// be written out as `depth × tanHalf`, which is the half-width of a CONE at that depth —
+// true for a V-bit and wrong for a taper, whose tip is a ball. `halfWidthAt` is the
+// tool's actual cutting radius at a depth, and reduces to `depth × tanHalf` exactly when
+// the tip radius is zero.
+//
+// The ANGLE comes from the operation (`params.angleDeg`) because the male and female
+// halves of an inlay must agree on one; the TIP is a property of the grind and so always
+// comes from the tool.
+interface WallGeom {
+  tanHalf: number
+  tipR: number
+  halfWidthAt: (depthMM: number) => number
+  /** Depth at which the tool is buried to its widest cutting diameter — below it the
+   *  wall would be cut by the shank, not the flute. */
+  maxDepthMM: number
+}
+
+function wallGeom(tool: Tool, angleDeg: number): WallGeom {
+  const tanHalf = Math.tan((angleDeg / 2) * (Math.PI / 180))
+  if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
+  const tipR = tipBallRadiusMM(tool)
+  return {
+    tanHalf, tipR,
+    halfWidthAt: (depthMM) => vRadiusAtHeightMM(depthMM, tanHalf, tipR),
+    // A taper's usable length is stated outright (its Max Z); a V-bit's follows from
+    // where its cone reaches full diameter.
+    maxDepthMM: tool.type === 'taper'
+      ? (tool.maxDepthMM > 0 ? tool.maxDepthMM : vProfileHeightMM(tipR, tanHalf, tipR))
+      : (tool.diameterMM / 2) / tanHalf,
+  }
+}
+
 // Compute the socket boundary + two inward offset paths for the female operation.
 // Exported so the UI can add them to the canvas as debug paths.
 //
@@ -647,13 +687,14 @@ function getOuters(d: string): Pt2[][] {
 function computeInlayFemaleOffsets(
   d: string,
   params: Pick<InlayParams, 'angleDeg' | 'pocketDepthMM' | 'glueLineMM' | 'clearanceMM'>,
+  tipR = 0,
 ): { socketD: string | null; pocketBoundaryD: string | null; vcarveIslandD: string | null } {
   const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
   const tanHalf = Math.tan(halfAngle)
   if (tanHalf < 1e-6) return { socketD: null, pocketBoundaryD: null, vcarveIslandD: null }
   // Offsets use the total socket depth so the V-carved walls reach the pocket floor
   // (glue gap included). fullWidth = 2 × halfWidth.
-  const halfWidthMM = (params.pocketDepthMM + params.glueLineMM) * tanHalf
+  const halfWidthMM = vRadiusAtHeightMM(params.pocketDepthMM + params.glueLineMM, tanHalf, tipR)
   const c = params.clearanceMM
   // Per-ring offsets (offsetEachRing) so a self-intersecting boundary keeps each lobe
   // separate on the outward socket offset — offsetPath would merge them and carve only
@@ -775,20 +816,19 @@ async function insideClear(
     return { endmillSegs, vbitSegs: [] }
   }
 
-  // ── V-bit walls: raster pocket to the bevel-foot boundary + medial-axis V-carve. ──
-  if (wallTool.type === 'vbit') {
-    const tanHalf = Math.tan((params.angleDeg / 2) * (Math.PI / 180))
-    if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
-    const halfWidthMM = totalDepthMM * tanHalf
+  // ── V-cutter walls: raster pocket to the bevel-foot boundary + medial-axis V-carve. ──
+  if (isVCutter(wallTool)) {
+    const wg = wallGeom(wallTool, params.angleDeg)
+    const halfWidthMM = wg.halfWidthAt(totalDepthMM)
     const fullWidthMM = halfWidthMM * 2
 
-    const { socketD, pocketBoundaryD, vcarveIslandD } = computeInlayFemaleOffsets(boundaryD, params)
+    const { socketD, pocketBoundaryD, vcarveIslandD } = computeInlayFemaleOffsets(boundaryD, params, wg.tipR)
 
     // Socket too small/thin for the tool geometry → plain medial-axis VCarve, no pocket.
     if (!socketD || !pocketBoundaryD || !vcarveIslandD) {
       const vbitSegs = await generateVCarve(socketD ?? boundaryD, wallTool, {
         angleDeg: params.angleDeg,
-        maxDepthMM: (wallTool.diameterMM / 2) / tanHalf,
+        maxDepthMM: wg.maxDepthMM,
         islandDs: protrusionDs,
         safeHeightMM: params.safeHeightMM,
       })
@@ -945,7 +985,7 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool | null, par
     return { vbitSegs: [], endmillSegs }
   }
 
-  if (wallTool.type !== 'vbit') {
+  if (!isVCutter(wallTool)) {
     // End mill: round corners, then one outside profile (finishR outside the wall).
     const finishR = wallTool.diameterMM / 2
     const roundedD = roundCornersForEndmill(boundaryD, wallTool.diameterMM + CORNER_ROUND_EXTRA_MM)
@@ -957,7 +997,9 @@ function outerCut(boundaryD: string, roughTool: Tool, wallTool: Tool | null, par
     return { vbitSegs, endmillSegs: [] }
   }
 
-  // V-bit: trace the outline (tip on path) + roughing release profile to free the plug.
+  // V-cutter: trace the outline (tip on path) + roughing release profile to free the plug.
+  // The tip is what rides the line — a V-bit's apex or a taper's ball touches it at a
+  // point either way, so the plug is nominal at the mating plane for both.
   const vbitSegs: MotionSegment[] = []
   for (const pts of getOuters(boundaryD)) addContourStack(pts, zPasses, vbitSegs, safeZ)
   const endmillSegs: MotionSegment[] = []
@@ -1002,12 +1044,11 @@ export async function generateInlayFemale(
   // socket; no flat pocket). Depth at full engagement = r / tan(half). Paired with the
   // raised-prism male, so both halves must agree on when this fires — see the note on
   // MULTI_REGION_IS_TEXT.
-  if (vbit && vbit.type === 'vbit' && regions.length > MULTI_REGION_IS_TEXT) {
-    const tanHalf = Math.tan((params.angleDeg / 2) * (Math.PI / 180))
-    if (tanHalf < 1e-6) throw new Error('Invalid V-bit angle')
+  if (vbit && isVCutter(vbit) && regions.length > MULTI_REGION_IS_TEXT) {
+    const wg = wallGeom(vbit, params.angleDeg)
     const vbitSegs = await generateVCarve(growTextSocket(regions, params.clearanceMM) ?? d, vbit, {
       angleDeg: params.angleDeg,
-      maxDepthMM: (vbit.diameterMM / 2) / tanHalf,
+      maxDepthMM: wg.maxDepthMM,
       islandDs: params.islandDs,
       safeHeightMM: params.safeHeightMM,
     })
@@ -1094,14 +1135,12 @@ async function generateInlayMaleText(
   const safeZ = params.safeHeightMM ?? 5
   const workingD = params.mirrorX ? mirrorPathD(d) : d
 
-  const halfAngle    = (params.angleDeg / 2) * (Math.PI / 180)
-  const tanHalfAngle = Math.tan(halfAngle)
-  if (tanHalfAngle < 1e-6) throw new Error('Invalid V-bit angle')
+  const wg = wallGeom(vbitTool, params.angleDeg)
 
-  // Z_max: depth when the V-bit is fully engaged at its widest cutting radius. Below it
+  // Z_max: depth when the bit is fully engaged at its widest cutting radius. Below it
   // the wall would be cut by the shank, not the flute, so the plug depth is clamped to
   // it — leaving the plug proud rather than undersized (see the note above).
-  const vbitMaxDepthMM = (vbitTool.diameterMM / 2) / tanHalfAngle
+  const vbitMaxDepthMM = wg.maxDepthMM
   const wallDepthMM = Math.min(params.pocketDepthMM, vbitMaxDepthMM)
 
   // Split into per-letter regions (outer ring + intrinsic counter-holes like 'O', 'A').
@@ -1125,8 +1164,8 @@ async function generateInlayMaleText(
   }
   if (!isFinite(minX)) throw new Error('Cannot compute bounding box for text path')
 
-  // Margin: wide enough for the V-bit at max engagement + end mill diameter clearance.
-  const margin = Math.max(vbitMaxDepthMM * tanHalfAngle * 2, profileTool.diameterMM, 2.0)
+  // Margin: wide enough for the bit at max engagement + end mill diameter clearance.
+  const margin = Math.max(wg.halfWidthAt(vbitMaxDepthMM) * 2, profileTool.diameterMM, 2.0)
   minX -= margin; minY -= margin; maxX += margin; maxY += margin
 
   // Bounding box polygon (CCW in CNC Y-up).
@@ -1155,7 +1194,7 @@ async function generateInlayMaleText(
   // the search is confined to the letters' own bounding boxes.
   for (const p of letterReliefPlunges(
     letterOuterDs, letterCounterDs,
-    profileTool.diameterMM / 2, wallDepthMM, tanHalfAngle, vbitMaxDepthMM,
+    profileTool.diameterMM / 2, wallDepthMM, wg, vbitMaxDepthMM,
   )) {
     vbitSegs.push({ x: p.x, y: p.y, z: safeZ, rapid: true })
     vbitSegs.push({ x: p.x, y: p.y, z: p.z, rapid: false })
@@ -1256,7 +1295,7 @@ export async function generateInlayMale(
   // Text with a V-bit: Virtual Z-Plane Shift (raised-letter prisms). Gated the same way
   // as the female's V-carve socket — see MULTI_REGION_IS_TEXT.
   const regions = splitRegions(d)
-  if (vbitTool && vbitTool.type === 'vbit' && regions.length > MULTI_REGION_IS_TEXT) {
+  if (vbitTool && isVCutter(vbitTool) && regions.length > MULTI_REGION_IS_TEXT) {
     return generateInlayMaleText(d, profileTool, vbitTool, params)
   }
 
@@ -1267,8 +1306,8 @@ export async function generateInlayMale(
   const vbitSegs: MotionSegment[] = []
   const endmillSegs: MotionSegment[] = []
 
-  const halfWidthMM = vbitTool?.type === 'vbit'
-    ? params.pocketDepthMM * Math.tan((params.angleDeg / 2) * (Math.PI / 180))
+  const halfWidthMM = vbitTool && isVCutter(vbitTool)
+    ? wallGeom(vbitTool, params.angleDeg).halfWidthAt(params.pocketDepthMM)
     : 0
 
   // Each island is a hole in the plug that receives the mating female protrusion, so it's

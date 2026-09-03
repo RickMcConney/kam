@@ -1,5 +1,5 @@
 import type { MotionSegment } from '../store/toolpathStore'
-import { pushAll } from './geom'
+import { pushAll, maxCutRadiusMM, toolProfileHeightMM } from './geom'
 import { perfLog } from '../debug'
 import type { Tool } from '../store/toolStore'
 import type { StlModelBounds } from '../importers/svgImporter'
@@ -141,25 +141,52 @@ function sampleGrid(
          h01 * (1 - tx) * ty       + h11 * tx * ty
 }
 
-// ─── Ball-nose safe surface (morphological dilation) ─────────────────────────
+// ─── Gouge-free tool surface (morphological dilation) ────────────────────────
 //
 // For each grid cell (jx, jy) the raw height h gives the surface Z directly below
-// the tool, but a ball-nose tool can also collide with NEIGHBORING surface points
-// if they are within the ball radius.  The correct tool-centre Z at (jx, jy) must
-// satisfy: toolZ >= h_neighbor + sqrt(R² - dist²)  for every neighbor within R.
+// the tool, but the tool can also collide with NEIGHBORING surface points if they
+// are within its cutting radius.  The tool-TIP Z at (jx, jy) must therefore satisfy
+//     tipZ >= h_neighbor − f(dist)     for every neighbor within reach,
+// where f is the tool's own profile — how far above its tip the tool's surface sits
+// at radial distance d (see the tool-profile note in geom.ts). For a ball nose that
+// is R − √(R²−d²); a taper is its tip ball blended into its cone, which is why the
+// same dilation carves either one.
 //
-// This is the 2D morphological dilation of the height map.  After subtracting R,
-// the result is the "effective surface" — the gouge-free tool-TIP height. The pipeline
+// This is the 2D morphological dilation of the height map by the tool profile. The
+// result is the "effective surface" — the gouge-free tool-TIP height. The pipeline
 // is tip-referenced, so the emitted Z is just this effective surface (+ stock allowance);
 // there is no extra ball-radius term (adding one would float the tool R above the stock).
 //
 // Computed on a downsampled grid (≤DILATE_MAX cells) for speed.
 
+// The dilation kernel. `termAtDistSq` is added to a neighbour's height and the reach
+// then subtracted — `eff = h + term − reach` — which is the shape `reach − f(d)`, i.e.
+// the tool's tip when its flank rests on that neighbour. It is split that way rather
+// than folded into one `−f(d)` term so the ball-nose case stays the exact expression
+// (`h + √(R²−d²) − R`) this function computed before it took a profile at all; a
+// re-association would be a sub-ULP change, but not a provably empty one.
+interface ToolKernel {
+  reachMM: number
+  termAtDistSq: (d2: number) => number
+}
+
+function ballKernel(radius: number): ToolKernel {
+  const r2 = radius * radius
+  return { reachMM: radius, termAtDistSq: (d2) => Math.sqrt(r2 - d2) }
+}
+
+function toolKernel(tool: Tool): ToolKernel {
+  if (tool.type === 'ballnose') return ballKernel(tool.diameterMM / 2)
+  const reachMM = maxCutRadiusMM(tool)
+  return { reachMM, termAtDistSq: (d2) => reachMM - toolProfileHeightMM(tool, Math.sqrt(d2)) }
+}
+
 function computeToolSurface(
   srcGrid: Float32Array, srcNX: number, srcNY: number,
-  bbox: BBox, radius: number,
+  bbox: BBox, kernel: ToolKernel,
   maxCells = 750,  // cap grid resolution for speed; roughing uses 350, finishing uses 750
 ): { grid: Float32Array; nx: number; ny: number; cellX: number; cellY: number } {
+  const radius = kernel.reachMM
   const scale = Math.max(1, Math.ceil(Math.max(srcNX, srcNY) / maxCells))
   const nx    = Math.ceil(srcNX / scale)
   const ny    = Math.ceil(srcNY / scale)
@@ -185,6 +212,19 @@ function computeToolSurface(
   const rcX = Math.ceil(radius / cellX) + 1
   const rcY = Math.ceil(radius / cellY) + 1
 
+  // The kernel depends only on the offset, so evaluate the profile ONCE per offset
+  // rather than once per (cell, offset) pair — and the inner loop loses its sqrt.
+  const kw = 2 * rcX + 1
+  const kern = new Float64Array(kw * (2 * rcY + 1))
+  for (let dj = -rcY; dj <= rcY; dj++) {
+    const dy = dj * cellY, dy2 = dy * dy
+    for (let di = -rcX; di <= rcX; di++) {
+      const dx = di * cellX
+      const d2 = dx * dx + dy2
+      kern[(dj + rcY) * kw + (di + rcX)] = d2 > r2 ? NaN : kernel.termAtDistSq(d2)
+    }
+  }
+
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
       const h = src[iy * nx + ix]
@@ -192,14 +232,12 @@ function computeToolSurface(
       const jxMin = Math.max(0, ix - rcX), jxMax = Math.min(nx - 1, ix + rcX)
       const jyMin = Math.max(0, iy - rcY), jyMax = Math.min(ny - 1, iy + rcY)
       for (let jy = jyMin; jy <= jyMax; jy++) {
-        const dy = (jy - iy) * cellY, dy2 = dy * dy
-        if (dy2 > r2) continue
+        const kRow = (jy - iy + rcY) * kw + rcX - ix
         for (let jx = jxMin; jx <= jxMax; jx++) {
-          const dx = (jx - ix) * cellX
-          const d2 = dx * dx + dy2
-          if (d2 > r2) continue
-          // effective surface = toolCenterZ − radius = h + sqrt(r²−d²) − radius
-          const eff = h + Math.sqrt(r2 - d2) - radius
+          // effective surface = the tool's tip when its flank rests on this neighbour
+          const k = kern[kRow + jx]
+          if (Number.isNaN(k)) continue   // outside the tool's reach
+          const eff = h + k - radius
           const idx = jy * nx + jx
           if (eff > result[idx]) result[idx] = eff
         }
@@ -359,15 +397,18 @@ export function generateProfile3d(
   tool: Tool,
   params: Profile3dParams,
 ): MotionSegment[] {
-  if (tool.type !== 'ballnose') {
-    throw new Error('3D Profile requires a ball nose tool')
+  if (tool.type !== 'ballnose' && tool.type !== 'taper') {
+    throw new Error('3D Profile requires a ball nose or taper tool')
   }
   if (bbox.width < 0.001 || bbox.height < 0.001) {
     throw new Error('STL path has zero dimensions')
   }
 
   const safeZ = params.safeHeightMM ?? 5
-  const ballRadius = tool.diameterMM / 2
+  const finishKernel = toolKernel(tool)
+  // Stepover is set by the geometry that finishes a near-horizontal surface, which is
+  // the tool's TIP — its ball for both a ball nose and a taper. `diameterMM` is exactly
+  // that for either type (a taper stores its tip), so this needs no per-type branch.
   const stepoverMM = Math.max(0.01, tool.diameterMM * params.stepoverPercent / 100)
 
   // Height map resolution: ≈ stepover / 3 (oversampled), capped at 1500×1500
@@ -382,7 +423,7 @@ export function generateProfile3d(
                       params.roughingStepoverPercent !== undefined
 
   // Compute gouge-free effective surface for the finishing ball (used by both paths)
-  const finishSurface = computeToolSurface(grid, nx, ny, bbox, ballRadius)
+  const finishSurface = computeToolSurface(grid, nx, ny, bbox, finishKernel)
 
   if (!hasRoughing) {
     return generateRaster(finishSurface.grid, finishSurface.nx, finishSurface.ny,
@@ -406,8 +447,8 @@ export function generateProfile3d(
     if (v !== -Infinity && -v > rawMaxDepth) rawMaxDepth = -v
   }
 
-  const roughSurface = computeToolSurface(grid, nx, ny, bbox, roughRadius, 350)
-  perfLog(`[profile3d] roughSurface ${roughSurface.nx}×${roughSurface.ny} R=${roughRadius}mm stock=${roughStockMM}mm | finishSurface ${finishSurface.nx}×${finishSurface.ny} R=${ballRadius}mm`)
+  const roughSurface = computeToolSurface(grid, nx, ny, bbox, ballKernel(roughRadius), 350)
+  perfLog(`[profile3d] roughSurface ${roughSurface.nx}×${roughSurface.ny} R=${roughRadius}mm stock=${roughStockMM}mm | finishSurface ${finishSurface.nx}×${finishSurface.ny} R=${finishKernel.reachMM.toFixed(3)}mm`)
 
   const roughAngleDeg = params.roughingRasterAngleDeg ?? (params.rasterAngleDeg + 90)
 

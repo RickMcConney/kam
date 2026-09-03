@@ -13,6 +13,7 @@ import { useSelectedPathsInOrder } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
+import { includedAngleDeg, isVCutter, tipBallRadiusMM, toolRadiusAtHeight } from '../../cam/geom'
 import { groupPathsByContainment } from './containment'
 import { reviseGroupBatch } from './reviseBatch'
 
@@ -33,10 +34,12 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, thicknessMM, widthMM, heightMM, units } = useWorkpieceStore()
 
-  // Nothing but a V-bit carves a V: the cone angle IS the op, and Generate below is already
+  // Only a tapered wall carves a V: the cone angle IS the op, and Generate below is already
   // gated on it. The list used to fall back to every tool when the library had no V-bit,
-  // which offered drills for a cut they can't make.
-  const vbits = toolsOfType(tools, ['vbit'])
+  // which offered drills for a cut they can't make. A taper qualifies — it is the same cone
+  // with a ball on the tip, so a stroke narrower than the tip comes out round-bottomed
+  // instead of pointed rather than being cut wrong.
+  const vbits = toolsOfType(tools, ['vbit', 'taper'])
   const defaultTool = vbits[0]
   const [form, setForm] = useState<VCarveFormState>(() => {
     const base = editOp
@@ -74,8 +77,11 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
     ? editRevised
     : groupPathsByContainment(selPaths).map((g) => ({ ...g, op: undefined }))
   const selectedTool = tools.find((t) => t.id === form.toolId)
-  // Angle always comes from the selected V-bit — it's a property of the grind, not the op.
-  const angleDeg = selectedTool?.vbitAngleDeg ?? 60
+  // Angle always comes from the selected bit — it's a property of the grind, not the op.
+  // includedAngleDeg normalises the two conventions the library stores (a V-bit's included
+  // angle, a taper's per-side), so everything downstream sees one meaning.
+  const angleDeg = selectedTool ? includedAngleDeg(selectedTool) : 60
+  const tipDiaMM = selectedTool ? 2 * tipBallRadiusMM(selectedTool) : 0
   // Margin 0: a v-carve is bounded by the outline it carves — the widest part of the cone
   // lands ON the outline, never outside it.
   // See PocketForm: ops this session already generated are not cuts preceding themselves.
@@ -217,14 +223,16 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
         <p className="text-body text-amber-600 dark:text-amber-400 flex items-center gap-1"><AlertCircle size={ICON.sm} /> {editOp ? 'Path not found' : 'Select a closed path first'}</p>
       )}
       <ToolSelector tools={vbits} value={form.toolId} onChange={handleToolChange} />
-      {selectedTool?.type !== 'vbit' && (
+      {(!selectedTool || !isVCutter(selectedTool)) && (
         <p className="text-label text-amber-600 dark:text-amber-400 flex items-center gap-1">
-          <AlertCircle size={ICON.xs} /> V-Carve requires a V-bit tool.
+          <AlertCircle size={ICON.xs} /> V-Carve requires a V-bit or taper tool.
         </p>
       )}
-      {selectedTool?.type === 'vbit' && (
+      {selectedTool && isVCutter(selectedTool) && (
         <p className="text-label text-gray-600 dark:text-neutral-400">
-          V-bit angle: {angleDeg}° (set on tool)
+          {selectedTool.type === 'taper'
+            ? `Taper: ${selectedTool.vbitAngleDeg ?? 5}° per side, Ø${fmtLen(tipDiaMM, units)} tip (set on tool)`
+            : `V-bit angle: ${angleDeg}° (set on tool)`}
         </p>
       )}
       <StartRow value={form.startFrom} onChange={(v) => up('startFrom', v)} resolved={startZ} opId={selfOpId} />
@@ -240,12 +248,12 @@ export function VCarveForm({ onClose, editOp }: { onClose: () => void; editOp?: 
           </p>
         )}
         <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
-          Cuts at most {fmtLen((form.maxDepthMM) * Math.tan((angleDeg / 2) * Math.PI / 180) * 2, units)} wide at full depth.
+          Cuts at most {fmtLen(selectedTool ? 2 * toolRadiusAtHeight(selectedTool, form.maxDepthMM) : 0, units)} wide at full depth.
         </p>
       </div>
       <FormError msg={errorMsg} />
       <GenerateBtn
-        disabled={groups.length === 0 || !selectedTool || generating || form.maxDepthMM <= 0 || selectedTool.type !== 'vbit'}
+        disabled={groups.length === 0 || !selectedTool || generating || form.maxDepthMM <= 0 || !isVCutter(selectedTool)}
         generating={generating}
         onClick={handleGenerate}
         label={editOp ? 'Regenerate Toolpath' : updating ? 'Update Toolpath' : 'Generate Toolpath'}

@@ -34,13 +34,15 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
   const { load, save } = useFormDefaultsStore()
   const { safeHeightMM, autoFeedEnabled, thicknessMM, units } = useWorkpieceStore()
 
-  // Ball nose for BOTH slots, and no fall-back to the whole library. The finishing bit is
-  // gated on it by `canGenerate`; the roughing bit is ball-only by construction, since
-  // profile3d models the rougher as a sphere (`roughingBallRadius`) and skips the entire
-  // roughing pass when that is undefined — a flat rougher would silently become a
-  // single-pass finish rather than an error.
+  // Finishing: a ball nose or a taper — profile3d dilates the height map by the tool's
+  // own profile, and a taper is a tip ball blended into a cone, so both are gouge-free
+  // by the same construction. No fall-back to the whole library; `canGenerate` gates it.
+  // The ROUGHING bit stays ball-only by construction, since profile3d models the rougher
+  // as a sphere (`roughingBallRadius`) and skips the entire roughing pass when that is
+  // undefined — a flat rougher would silently become a single-pass finish, not an error.
+  const finishTools = toolsOfType(tools, ['ballnose', 'taper'])
   const ballNoseTools = toolsOfType(tools, ['ballnose'])
-  const defaultTool = ballNoseTools[0]
+  const defaultTool = finishTools[0]
   const stlPaths = paths.filter((p) => !!p.stlSrc)
 
   const [form, setForm] = useState<Profile3dFormState>(() => {
@@ -69,7 +71,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     roughingRasterAngleDeg: '' as number | '',
   }, tools)
     return { ...base,
-      toolId: pickToolId(base.toolId, ballNoseTools),
+      toolId: pickToolId(base.toolId, finishTools),
       // '' is "no roughing pass" — an explicit choice, not a stale id.
       roughingToolId: base.roughingToolId === '' ? '' : pickToolId(base.roughingToolId, ballNoseTools) }
   })
@@ -182,7 +184,7 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
     }, 0)
   }
 
-  const canGenerate = !!selectedTool && selectedTool.type === 'ballnose' && !!selectedPath?.stlSrc && !generating && form.maxDepthMM > 0
+  const canGenerate = !!selectedTool && (selectedTool.type === 'ballnose' || selectedTool.type === 'taper') && !!selectedPath?.stlSrc && !generating && form.maxDepthMM > 0
 
   return (
     <FormShell title={editOp ? 'Edit 3D Profile' : 'New 3D Profile'} onClose={onClose}>
@@ -295,18 +297,26 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
         <select id="p3d-f7"
           value={form.toolId}
           onChange={(e) => handleToolChange(e.target.value)}
-          disabled={ballNoseTools.length === 0}
+          disabled={finishTools.length === 0}
           className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 disabled:opacity-60"
         >
-          {ballNoseTools.length === 0 && <option value="">No ball nose — add one in the Tool Library</option>}
-          {ballNoseTools.map((t) => (
-            <option key={t.id} value={t.id}>{t.name} (Ø{fmtLen(t.diameterMM, units)})</option>
+          {finishTools.length === 0 && <option value="">No ball nose or taper — add one in the Tool Library</option>}
+          {finishTools.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} (Ø{fmtLen(t.diameterMM, units)}{t.type === 'taper' ? ' tip' : ''})
+            </option>
           ))}
         </select>
       </div>
-      {selectedTool && selectedTool.type !== 'ballnose' && (
+      {selectedTool && selectedTool.type === 'taper' && (
+        // The stepover comes off the TIP, so a fine taper asks for a great many passes.
+        <p className="text-label text-gray-600 dark:text-neutral-400">
+          Taper: passes are spaced off the Ø{fmtLen(selectedTool.diameterMM, units)} tip.
+        </p>
+      )}
+      {selectedTool && selectedTool.type !== 'ballnose' && selectedTool.type !== 'taper' && (
         <p className="text-label text-amber-600 dark:text-amber-400 flex items-center gap-1">
-          <AlertCircle size={ICON.xs} /> Ball nose tool recommended for 3D profiling
+          <AlertCircle size={ICON.xs} /> 3D Profile needs a ball nose or taper tool
         </p>
       )}
 

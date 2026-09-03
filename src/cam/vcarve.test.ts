@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { generateVCarve } from './vcarve'
-import { classifySubpaths, pointInPolygon, ptSegDistSq } from './geom'
+import { classifySubpaths, pointInPolygon, ptSegDistSq, toolRadiusAtHeight, includedAngleDeg } from './geom'
 import { flattenPath } from './pathFlattener'
 import type { MotionSegment } from '../store/toolpathStore'
 import type { Pt2 } from './pathFlattener'
@@ -323,6 +323,107 @@ describe('generateVCarve — ordering', () => {
 })
 
 // ─── Error handling ───────────────────────────────────────────────────────────
+
+describe('generateVCarve — taper', () => {
+  const taper = (sideDeg = 15, tipDiaMM = 1): Tool => ({
+    id: 'tp', name: 'Taper', type: 'taper', diameterMM: tipDiaMM, fluteCount: 2, rpm: 18000,
+    xyFeedMmMin: 1200, zFeedMmMin: 300, maxDepthMM: 25, vbitAngleDeg: sideDeg,
+  })
+  // The op's angle is the INCLUDED one (the form converts a taper's per-side entry once,
+  // in includedAngleDeg) — so a 15°/side taper is carved as a 30° bit.
+  const opts = { angleDeg: 30, maxDepthMM: 20, islandDs: [] as string[] }
+
+  it('rides its tip ball, so it cuts SHALLOWER than a V-bit of the same angle', async () => {
+    // At any given width a taper's tip is already that wide before the cone starts, so it
+    // reaches the same width with less depth. Cutting it to the V-bit's depth would carve
+    // the stroke wider than it is.
+    const t = await generateVCarve(RECT_40x10, taper(15, 1), opts)
+    const v = await generateVCarve(RECT_40x10, vbit(30), opts)
+    const deepest = (segs: Awaited<ReturnType<typeof generateVCarve>>) =>
+      Math.min(...segs.filter(s => !s.rapid).map(s => s.z))
+    expect(deepest(t)).toBeGreaterThan(deepest(v))
+  })
+
+  it('follows the ball/cone profile exactly, not the cone alone', async () => {
+    // The 40×10 rectangle's ridge runs at a clearance radius of 5 mm — the cone region for
+    // a 0.5 mm tip ball. Depth there is f(5), which is 5/tan LESS the offset that slides
+    // the cone onto the ball; asserting the plain 5/tan would pass for a V-bit and fail here.
+    const tool = taper(15, 1)
+    const th = 15 * Math.PI / 180
+    const expected = 5 / Math.tan(th) - 0.5 * (1 / Math.sin(th) - 1)
+    const segs = await generateVCarve(RECT_40x10, tool, opts)
+    const deepest = Math.min(...segs.filter(s => !s.rapid).map(s => s.z))
+    expect(-deepest).toBeCloseTo(expected, 3)
+    expect(expected).toBeLessThan(5 / Math.tan(th))   // strictly shallower than the bare cone
+  })
+
+  it('carves a stroke narrower than its tip instead of skipping or overcutting it', async () => {
+    // A FLAT-tipped bit could not enter a 0.3 mm stroke at all. A ball tip reaches zero
+    // width at its point, so the stroke is cut — round-bottomed, and never wider than it is.
+    const tool = taper(15, 1)   // 1 mm tip ball, far wider than the stroke
+    const NARROW = 'M 0 0 L 20 0 L 20 0.3 L 0 0.3 Z'
+    const segs = await generateVCarve(NARROW, tool, opts)
+    const cuts = segs.filter(s => !s.rapid)
+    expect(cuts.length).toBeGreaterThan(0)
+    const deepest = -Math.min(...cuts.map(s => s.z))
+    // Depth is the ball's own rise at the stroke's half-width — a shallow round groove.
+    expect(deepest).toBeCloseTo(0.5 - Math.sqrt(0.25 - 0.15 * 0.15), 4)
+    // The cut is 0.3 mm wide at that depth: exactly the stroke, so nothing is overcut.
+    expect(2 * toolRadiusAtHeight(tool, deepest)).toBeCloseTo(0.3, 4)
+  })
+
+  it('never cuts outside the shape at a sharp corner, where the tip ball rides', async () => {
+    // The machine drives Z LINEARLY between emitted points. A V-bit's depth law is linear
+    // in the clearance radius so two endpoints describe the move exactly; a taper's is an
+    // arc wherever it is on its tip ball, and a straight chord across that arc runs deeper
+    // — deeper being wider. The small radii that put the bit on its ball are the ones at
+    // sharp corners, so the error collects there. Before the run was subdivided, a 5°/side
+    // taper cut 0.18–0.40 mm outside a star point, a wedge and an L; a V-bit cut none.
+    //
+    // Measured the way the machine moves: walk each cutting move, and at every step compare
+    // the tool's width at the interpolated Z against the true distance to the wall.
+    const shapes: [string, string][] = [
+      ['wedge', 'M 0,0 L 60,3 L 60,-3 Z'],
+      ['L-shape', 'M 0 0 L 30 0 L 30 10 L 10 10 L 10 30 L 0 30 Z'],
+    ]
+    const tool = taper(5, 1)
+    for (const [name, d] of shapes) {
+      const rings = flattenPath(d, 0.01)
+      const clearance = (x: number, y: number) => {
+        let best = Infinity
+        for (const ring of rings)
+          for (let i = 0; i + 1 < ring.length; i++)
+            best = Math.min(best, ptSegDistSq(x, y, ring[i][0], ring[i][1], ring[i + 1][0], ring[i + 1][1]))
+        return Math.sqrt(best)
+      }
+      const segs = await generateVCarve(d, tool, { angleDeg: includedAngleDeg(tool), maxDepthMM: 6, islandDs: [] })
+      let worst = 0
+      let prev: MotionSegment | null = null
+      for (const s of segs) {
+        if (!s.rapid && prev) {
+          const steps = Math.max(1, Math.ceil(Math.hypot(s.x - prev.x, s.y - prev.y) / 0.05))
+          for (let k = 0; k <= steps; k++) {
+            const t = k / steps
+            const x = prev.x + t * (s.x - prev.x)
+            const y = prev.y + t * (s.y - prev.y)
+            const z = prev.z + t * (s.z - prev.z)
+            if (z >= 0) continue
+            worst = Math.max(worst, toolRadiusAtHeight(tool, -z) - clearance(x, y))
+          }
+        }
+        prev = s
+      }
+      expect(worst, `${name} overcut`).toBeLessThan(0.02)
+    }
+  })
+
+  it('reduces to the V-bit law when the tip diameter is zero', async () => {
+    // A taper is the general family; the V-bit is its zero-tip member. Same segments.
+    const asTaper = await generateVCarve(RECT_40x10, { ...taper(15, 0), diameterMM: 0 }, opts)
+    const asVbit = await generateVCarve(RECT_40x10, vbit(30), opts)
+    expect(asTaper).toEqual(asVbit)
+  })
+})
 
 describe('generateVCarve — rejections', () => {
   it('rejects a non-V-bit tool', async () => {

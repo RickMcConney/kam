@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { zPasses, pointInPolygon, pointOnRing, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq, toolRadiusAtHeight } from './geom'
+import { zPasses, pointInPolygon, pointOnRing, arcLengths, interpPt, stripClosingDuplicate, ptSegDistSq, toolRadiusAtHeight,
+  toolProfileHeightMM, maxCutRadiusMM, includedAngleDeg, isVCutter, vProfileHeightMM, vRadiusAtHeightMM } from './geom'
 import type { Pt2 } from './pathFlattener'
 import type { Tool } from '../store/toolStore'
 
@@ -213,5 +214,69 @@ describe('toolRadiusAtHeight', () => {
     expect(toolRadiusAtHeight(mkTool({ type: 'ballnose', diameterMM: 6 }), -1)).toBe(0)
     expect(toolRadiusAtHeight(mkTool({ type: 'vbit', diameterMM: 6, vbitAngleDeg: 0 }), 5)).toBe(3)
     expect(toolRadiusAtHeight(mkTool({ type: 'vbit', diameterMM: 6, vbitAngleDeg: 180 }), 5)).toBe(3)
+  })
+
+  it('starts a taper at zero: its tip is a ball, so it can enter a stroke of any width', () => {
+    // The whole reason a taper needs no "too narrow to carve" case — unlike a flat tip,
+    // its cutting radius goes to zero at the very point.
+    const t = mkTool({ type: 'taper', diameterMM: 1, vbitAngleDeg: 5, maxDepthMM: 25 })
+    expect(toolRadiusAtHeight(t, 0)).toBe(0)
+    expect(toolRadiusAtHeight(t, 0.01)).toBeGreaterThan(0)
+  })
+
+  it('follows the tip ball, then the cone tangent to it, then caps at Max Z', () => {
+    // 15° per side; tip ball Ø1 (r = 0.5). The ball runs to h = r(1 − sinθ), the cone
+    // from there out. Values are the ball and cone laws written independently.
+    const th = 15 * Math.PI / 180
+    const t = mkTool({ type: 'taper', diameterMM: 1, vbitAngleDeg: 15, maxDepthMM: 20 })
+    const hT = 0.5 * (1 - Math.sin(th))
+    expect(toolRadiusAtHeight(t, hT / 2)).toBeCloseTo(Math.sqrt((hT / 2) * (2 * 0.5 - hT / 2)), 12)
+    expect(toolRadiusAtHeight(t, hT)).toBeCloseTo(0.5 * Math.cos(th), 12)          // tangency
+    expect(toolRadiusAtHeight(t, 10)).toBeCloseTo((10 + 0.5 * (1 / Math.sin(th) - 1)) * Math.tan(th), 12)
+    // Past its usable length the body is a straight shank — it never opens out further.
+    expect(toolRadiusAtHeight(t, 999)).toBeCloseTo(maxCutRadiusMM(t), 12)
+    expect(maxCutRadiusMM(t)).toBeCloseTo(toolRadiusAtHeight(t, 20), 12)
+  })
+
+  it('is the exact inverse of the profile height, across the ball/cone join', () => {
+    const t = mkTool({ type: 'taper', diameterMM: 1.5, vbitAngleDeg: 8, maxDepthMM: 25 })
+    const dT = 0.75 * Math.cos(8 * Math.PI / 180)
+    for (const d of [0, dT / 2, dT, dT * 1.5, dT * 4, maxCutRadiusMM(t)]) {
+      expect(toolRadiusAtHeight(t, toolProfileHeightMM(t, d))).toBeCloseTo(d, 9)
+    }
+  })
+
+  it('degenerates to a V-bit at zero tip radius and to a ball nose at zero angle', () => {
+    // The taper is the two-parameter family containing both, which is why the V-bit code
+    // paths generalise to it rather than forking. Compared through the raw primitives so
+    // the tool-level diameter caps do not mask a difference.
+    const tan30 = Math.tan(30 * Math.PI / 180)
+    for (const h of [0, 0.5, 2, 5]) {
+      expect(vRadiusAtHeightMM(h, tan30, 0)).toBeCloseTo(h * tan30, 12)
+      expect(vProfileHeightMM(h * tan30, tan30, 0)).toBeCloseTo(h, 12)
+    }
+    // θ → 0: the cone stands vertical at the ball's equator, i.e. a ball nose of the tip.
+    const tiny = Math.tan(1e-6)
+    for (const h of [0.1, 1, 2.9]) {
+      expect(vRadiusAtHeightMM(h, tiny, 3)).toBeCloseTo(Math.sqrt(h * (6 - h)), 4)
+    }
+  })
+})
+
+describe('the two angle conventions', () => {
+  it('reads a V-bit angle as included and a taper angle as per side', () => {
+    // A taper is sold by its per-side angle and a V-bit by its included one. Everything
+    // downstream works in included angle, so this is where the two meet — and getting it
+    // backwards would halve or double every taper wall in the app.
+    expect(includedAngleDeg(mkTool({ type: 'vbit', vbitAngleDeg: 60 }))).toBe(60)
+    expect(includedAngleDeg(mkTool({ type: 'taper', vbitAngleDeg: 5 }))).toBe(10)
+  })
+
+  it('counts both a V-bit and a taper as tapered-wall cutters, and nothing else', () => {
+    expect(isVCutter(mkTool({ type: 'vbit' }))).toBe(true)
+    expect(isVCutter(mkTool({ type: 'taper' }))).toBe(true)
+    expect(isVCutter(mkTool({ type: 'endmill' }))).toBe(false)
+    expect(isVCutter(mkTool({ type: 'ballnose' }))).toBe(false)
+    expect(isVCutter(mkTool({ type: 'drill' }))).toBe(false)
   })
 })

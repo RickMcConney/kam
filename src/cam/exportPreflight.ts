@@ -2,7 +2,7 @@ import { useToolpathStore } from '../store/toolpathStore'
 import { useToolStore } from '../store/toolStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
-import { feedsForTool, targetChipLoad, rigidityFeedFactor } from './feeds'
+import { feedsForTool, targetChipLoad, rigidityFeedFactor, feedDiameterMM } from './feeds'
 import { generateGcode } from './gcode'
 import { parseGcode } from '../sim/gcodeParser'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -236,7 +236,7 @@ export function buildExportPreflight(): ExportPreflight {
     const f = feedsForTool(t)
     const flutes = t.fluteCount > 0 ? t.fluteCount : 1
     if (f.rpm <= 0 || f.xyFeedMmMin <= 0) continue
-    const aimFz = targetChipLoad(t.type, t.diameterMM, hardness) * rigidityFeedFactor(machineRigidity)
+    const aimFz = targetChipLoad(t.type, feedDiameterMM(t), hardness) * rigidityFeedFactor(machineRigidity)
     if (aimFz <= 0) continue
     const ratio = (f.xyFeedMmMin / (f.rpm * flutes)) / aimFz
     if (ratio > 1.4) heavyTools.push(t.name)

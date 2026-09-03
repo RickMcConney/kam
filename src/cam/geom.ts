@@ -6,29 +6,155 @@
 import { signedArea, sharesVertex, type Pt2 } from './pathFlattener'
 import type { Tool } from '../store/toolStore'
 
-// Cutting radius of a tool at a given height above its tip — the half-width of the
-// material it removes at that height.
+// ─── Tool profile ─────────────────────────────────────────────────────────────
 //
-// Only tapered/round tools vary with height:
+// Every rotationally symmetric cutter here is described by ONE pair of inverse
+// functions, and no module may write its own version of either:
+//
+//   toolProfileHeightMM(tool, d)  f(d)  — how far above the tip the tool's surface
+//                                         sits at radial distance d. This is the
+//                                         shape the cut LEAVES in the material.
+//   toolRadiusAtHeight(tool, h)   a(h)  — f's inverse: the half-width of material
+//                                         removed at height h above the tip.
+//
 //  • endmill / drill — flat bottom, full radius at every height (including 0).
-//  • vbit — a cone of half-angle θ: r = h·tanθ, capped at the shank radius once the
-//    cone runs out (h > R/tanθ).
-//  • ballnose — sphere of radius R tangent to the shank: r = √(h(2R−h)) while
+//  • vbit — a cone of half-angle θ: a(h) = h·tanθ, capped at the shank radius once
+//    the cone runs out (h > R/tanθ).
+//  • ballnose — sphere of radius R tangent to the shank: a(h) = √(h(2R−h)) while
 //    h < R, then the full radius.
+//  • taper — a ball of radius r at the tip blended TANGENTIALLY into a cone of
+//    half-angle θ; the general two-parameter family that contains both of the
+//    above. The ball and the cone meet at
+//        d_t = r·cosθ        h_t = r·(1 − sinθ)
+//    and the profile is
+//        f(d) = r − √(r² − d²)               d ≤ d_t
+//        f(d) = d/tanθ − r·(1/sinθ − 1)      d ≥ d_t
+//    which is C1 there (both sides have slope 1/tanθ at d_t). Setting r = 0
+//    reproduces the V-bit law exactly and θ → 0 reproduces the ball nose, which is
+//    why the V-bit code paths generalise to a taper instead of forking.
 //
 // A profile that must "just touch" the design line at the stock surface offsets by
 // the radius at the surface, i.e. h = depth of cut below that surface — which is why
 // a shallow V-bit pass barely offsets at all and a deep one offsets a full radius.
+
+// A cutter whose wall is tapered rather than straight — the question nearly every
+// `type === 'vbit'` test in the CAM modules was really asking.
+export function isVCutter(tool: Tool): boolean {
+  return tool.type === 'vbit' || tool.type === 'taper'
+}
+
+// The cone angle in the ONE convention the rest of the app works in: full included
+// angle. A V-bit stores that already; a taper is sold and stored per side, so it
+// doubles. This is the only place the two conventions meet — see Tool.vbitAngleDeg.
+export function includedAngleDeg(tool: Tool): number {
+  if (tool.type === 'taper') return (tool.vbitAngleDeg ?? 5) * 2
+  return tool.vbitAngleDeg ?? 60
+}
+
+// tan of the half (per-side) angle, or null when the angle is degenerate — 0° and
+// 180° both make the cone meaningless, and a hand-edited project can hold either.
+// Callers fall back to a straight-walled tool (a taper falls back to a ball nose).
+export function halfAngleTan(tool: Tool): number | null {
+  const halfDeg = includedAngleDeg(tool) / 2
+  if (!(halfDeg > 0 && halfDeg < 90)) return null
+  return Math.tan((halfDeg * Math.PI) / 180)
+}
+
+// Radius of the ball ground on the tip. A taper's stored diameter IS that ball;
+// every other type has no tip ball.
+export function tipBallRadiusMM(tool: Tool): number {
+  return tool.type === 'taper' ? Math.max(0, tool.diameterMM / 2) : 0
+}
+
+// ── The V-cutter primitives ───────────────────────────────────────────────────
+// A cone of half-angle θ tangent to a ball of radius `tipR` at the tip. tipR = 0 is a
+// plain V-bit and both reduce to the bare cone laws. Uncapped — the widest the tool
+// actually cuts depends on the tool, so capping is the caller's business.
+//
+// These take a raw tan and tip rather than a Tool because two callers must not read
+// the tool's own angle: a V-carve uses the OPERATION's angle (an inlay's two halves
+// share one), and the simulator only ever has what it parsed out of the G-code.
+
+// The constant that slides the cone down to meet the tip ball tangentially:
+// r·(1/sinθ − 1), written in terms of tanθ.
+export function vConeOffsetMM(halfAngleTan: number, tipR: number): number {
+  return tipR <= 0 ? 0 : tipR * (Math.sqrt(1 + halfAngleTan * halfAngleTan) / halfAngleTan - 1)
+}
+
+// f(d) — height above the tip at radial distance d.
+export function vProfileHeightMM(dMM: number, halfAngleTan: number, tipR: number): number {
+  const d = Math.max(0, dMM)
+  if (tipR <= 0) return d / halfAngleTan
+  const dT = tipR / Math.sqrt(1 + halfAngleTan * halfAngleTan)      // r·cosθ
+  if (d <= dT) return tipR - Math.sqrt(Math.max(0, tipR * tipR - d * d))
+  return d / halfAngleTan - vConeOffsetMM(halfAngleTan, tipR)
+}
+
+// a(h) — f's inverse: the half-width removed at height h above the tip.
+export function vRadiusAtHeightMM(hMM: number, halfAngleTan: number, tipR: number): number {
+  const h = Math.max(0, hMM)
+  if (tipR <= 0) return h * halfAngleTan
+  const hT = tipR * (1 - halfAngleTan / Math.sqrt(1 + halfAngleTan * halfAngleTan))  // r·(1 − sinθ)
+  if (h <= hT) return Math.sqrt(Math.max(0, h * (2 * tipR - h)))
+  return (h + vConeOffsetMM(halfAngleTan, tipR)) * halfAngleTan
+}
+
+// The widest radius this tool can cut — for a taper, the radius at the far end of
+// its usable taper length (its Max Z). Straight-walled tools are their own radius.
+export function maxCutRadiusMM(tool: Tool): number {
+  const R = Math.max(0, tool.diameterMM / 2)
+  if (tool.type !== 'taper') return R
+  const tan = halfAngleTan(tool)
+  if (tan === null) return R
+  // A hand-edited project can hold a non-positive Max Z. There is no taper length to
+  // open out over then, so the tool is just its tip ball — finite, and never wider
+  // than the user asked for.
+  const L = tool.maxDepthMM > 0 ? tool.maxDepthMM : R
+  return vRadiusAtHeightMM(L, tan, R)
+}
+
+// Height above the tip of a ball of radius R at radial distance d.
+function ballProfile(d: number, R: number): number {
+  return R - Math.sqrt(Math.max(0, R * R - d * d))
+}
+
+// f(d) — height above the tip at radial distance d; the shape the cut leaves.
+// Beyond the tool's widest cutting radius the body is a straight shank, which
+// removes nothing further, so the profile is reported at that widest radius.
+export function toolProfileHeightMM(tool: Tool, dMM: number): number {
+  const d = Number.isFinite(dMM) ? Math.max(0, dMM) : 0
+  const R = maxCutRadiusMM(tool)
+  const dc = Math.min(d, R)
+  switch (tool.type) {
+    case 'vbit':
+    case 'taper': {
+      const tan = halfAngleTan(tool)
+      // Degenerate angle: a V-cutter with no usable cone is a flat/ball tool.
+      if (tan === null) return tool.type === 'taper' ? ballProfile(dc, R) : 0
+      return vProfileHeightMM(dc, tan, tipBallRadiusMM(tool))
+    }
+    case 'ballnose':
+      return ballProfile(dc, R)
+    default:
+      return 0
+  }
+}
+
+// a(h) — the inverse of f: the half-width of material removed at height h.
 export function toolRadiusAtHeight(tool: Tool, heightAboveTipMM: number): number {
   const R = Math.max(0, tool.diameterMM / 2)
   const h = Number.isFinite(heightAboveTipMM) ? Math.max(0, heightAboveTipMM) : 0
   switch (tool.type) {
-    case 'vbit': {
-      // Guard the degenerate angles a hand-edited project can hold: 0° and 180°
-      // both make the cone meaningless, so fall back to a straight-walled tool.
-      const halfDeg = (tool.vbitAngleDeg ?? 60) / 2
-      if (!(halfDeg > 0 && halfDeg < 90)) return R
-      return Math.min(R, h * Math.tan((halfDeg * Math.PI) / 180))
+    case 'vbit':
+    case 'taper': {
+      const tan = halfAngleTan(tool)
+      // Degenerate angle: a taper with no usable cone is a ball nose of its tip,
+      // a V-bit a straight-walled tool of its own radius.
+      if (tan === null) {
+        if (tool.type === 'vbit') return R
+        return h >= R ? R : Math.sqrt(Math.max(0, h * (2 * R - h)))
+      }
+      return Math.min(maxCutRadiusMM(tool), vRadiusAtHeightMM(h, tan, tipBallRadiusMM(tool)))
     }
     case 'ballnose':
       return h >= R ? R : Math.sqrt(Math.max(0, h * (2 * R - h)))

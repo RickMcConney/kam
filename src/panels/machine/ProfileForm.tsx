@@ -15,7 +15,7 @@ import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { entryHintAt } from '../../cam/startOptimizer'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
-import { toolRadiusAtHeight } from '../../cam/geom'
+import { maxCutRadiusMM, toolRadiusAtHeight } from '../../cam/geom'
 
 interface ProfileFormState {
   toolId: string
@@ -42,7 +42,7 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   // A profile follows the path with the side of the tool, so it needs a side-cutting
   // edge — a drill has none. Tapered tools stay: the taper hint below explains the
   // wall a V-bit or ball nose leaves.
-  const cutters = toolsOfType(tools, ['endmill', 'ballnose', 'vbit'])
+  const cutters = toolsOfType(tools, ['endmill', 'ballnose', 'vbit', 'taper'])
   const defaultTool = cutters[0]
   const [form, setForm] = useState<ProfileFormState>(() => {
     const base = editOp ? {
@@ -100,9 +100,14 @@ export function ProfileForm({ onClose, editOp }: { onClose: () => void; editOp?:
   // than its radius, so the wall it leaves is a taper that meets the path at the surface.
   // Say so — otherwise the toolpath just looks like it's in the wrong place.
   const cutRadiusMM = selectedTool ? toolRadiusAtHeight(selectedTool, form.depthMM) : 0
+  // Compared against the tool's WIDEST cutting radius, not `diameterMM / 2` — a taper
+  // stores its tip there, and at any depth it cuts wider than that, so the old test
+  // could never fire for one.
+  const profileNoun = selectedTool?.type === 'vbit' ? 'V'
+    : selectedTool?.type === 'taper' ? 'taper' : 'ball'
   const taperHint = selectedTool && form.side !== 'centerline'
-    && cutRadiusMM < selectedTool.diameterMM / 2 - 1e-6
-    ? `Offset ${fmtLen(cutRadiusMM, units)} — the ${selectedTool.type === 'vbit' ? 'V' : 'ball'} profile at ${fmtLen(form.depthMM, units)} deep, so the cut meets the path at the start surface and the wall below is tapered.`
+    && cutRadiusMM < maxCutRadiusMM(selectedTool) - 1e-6
+    ? `Offset ${fmtLen(cutRadiusMM, units)} — the ${profileNoun} profile at ${fmtLen(form.depthMM, units)} deep, so the cut meets the path at the start surface and the wall below is tapered.`
     : null
   // What the allowance does to the number the calipers read. The wall moves by the
   // allowance, so the MEASURED size moves by twice it — that factor of two is the whole

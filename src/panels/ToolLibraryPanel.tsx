@@ -4,17 +4,20 @@ import { FRACTION_HINT } from '../components/parseNumeric'
 import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react'
 import { ICON } from '../theme'
 import { useToolStore, type Tool, type ToolType, type ToolSortKey } from '../store/toolStore'
+import { includedAngleDeg, maxCutRadiusMM } from '../cam/geom'
 import { useWorkpieceStore, toMM, fromMM, type Units } from '../store/workpieceStore'
 import { spindleDialLabel, type SpindleType } from '../store/spindle'
 import endmillIcon from '../icons/endmill.svg'
 import ballnoseIcon from '../icons/ballnose.svg'
 import vbitIcon from '../icons/vbit.svg'
+import taperIcon from '../icons/taper.svg'
 import drillIcon from '../icons/drill.svg'
 
 const TOOL_TYPE_ICON: Record<ToolType, string> = {
   endmill: endmillIcon,
   ballnose: ballnoseIcon,
   vbit: vbitIcon,
+  taper: taperIcon,
   drill: drillIcon,
 }
 
@@ -38,7 +41,7 @@ const COLUMNS: { key: keyof Omit<Tool, 'id'>; label: string; title: string; widt
 // Group tools the way the type dropdown is ordered rather than alphabetically —
 // the point of a type sort is to put all the ball noses together, and this keeps
 // like cutters adjacent instead of interleaving by first letter.
-const TYPE_ORDER: ToolType[] = ['endmill', 'ballnose', 'vbit', 'drill']
+const TYPE_ORDER: ToolType[] = ['endmill', 'ballnose', 'vbit', 'taper', 'drill']
 
 const byName = (a: Tool, b: Tool) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
 
@@ -60,13 +63,14 @@ const cellCls = 'bg-transparent border-0 text-body text-gray-800 dark:text-neutr
 // A numeric input whose value is stored in mm but displayed/edited in the user's
 // chosen units. `kind` only affects the inch-mode arrow-key step (lengths want a
 // fine step, feed rates a coarse one); mm mode keeps each field's original step.
-function DimInput({ valueMM, onChangeMM, minMM, stepMM, kind, units }: {
+function DimInput({ valueMM, onChangeMM, minMM, stepMM, kind, units, title }: {
   valueMM: number
   onChangeMM: (mm: number) => void
   minMM: number
   stepMM: number
   kind: 'length' | 'feed'
   units: Units
+  title?: string
 }) {
   const step = units === 'in' ? (kind === 'feed' ? 1 : 0.001) : stepMM
   return (
@@ -76,9 +80,15 @@ function DimInput({ valueMM, onChangeMM, minMM, stepMM, kind, units }: {
       step={step}
       onChange={(v) => onChangeMM(toMM(v, units))}
       className={cellCls + ' text-right'}
-      title={FRACTION_HINT}
+      title={title ? `${title} — ${FRACTION_HINT}` : FRACTION_HINT}
     />
   )
+}
+
+// Read-only length for a derived hint — the editable fields go through DimInput.
+function fmtDim(mm: number, units: Units): string {
+  const v = fromMM(mm, units)
+  return `${v.toFixed(units === 'in' ? 3 : 2)} ${units === 'in' ? 'in' : 'mm'}`
 }
 
 function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Units; spindleType: SpindleType; selected: boolean }) {
@@ -109,17 +119,23 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
       <td className="px-2 py-1">
         <select value={tool.type} onChange={(e) => {
             const type = e.target.value as ToolType
-            up(type === 'vbit' && !tool.vbitAngleDeg ? { type, vbitAngleDeg: 60 } : { type })
+            // Seed the angle in the convention the new type is READ in — 60°
+            // included for a V-bit, 5° per side for a taper. Seeding a taper
+            // with 60 would make a 120° included cone.
+            const seed = type === 'vbit' ? 60 : type === 'taper' ? 5 : undefined
+            up(seed !== undefined && !tool.vbitAngleDeg ? { type, vbitAngleDeg: seed } : { type })
           }} className={cellCls + ' bg-gray-100 dark:bg-neutral-800'}>
           <option value="endmill">End Mill</option>
           <option value="ballnose">Ball Nose</option>
           <option value="vbit">V-bit</option>
+          <option value="taper">Taper End Mill</option>
           <option value="drill">Drill</option>
         </select>
       </td>
       <td className="px-2 py-1">
         <DimInput valueMM={tool.diameterMM} onChangeMM={(mm) => up({ diameterMM: mm })}
-          minMM={0.1} stepMM={0.001} kind="length" units={units} />
+          minMM={0.1} stepMM={0.001} kind="length" units={units}
+          title={tool.type === 'taper' ? 'Tip diameter — the ball ground on the tip' : undefined} />
       </td>
       <td className="px-2 py-1">
         <input type="number" value={tool.fluteCount} min={1} step={1}
@@ -147,14 +163,34 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
           minMM={0.01} stepMM={0.5} kind="length" units={units} />
       </td>
       <td className="px-2 py-1">
-        {tool.type === 'vbit' ? (
-          <input
-            type="number"
-            value={tool.vbitAngleDeg ?? 60}
-            min={5} max={175} step={5}
-            onChange={(e) => up({ vbitAngleDeg: parseFloat(e.target.value) || 60 })}
-            className={cellCls + ' text-right'}
-          />
+        {tool.type === 'vbit' || tool.type === 'taper' ? (
+          <>
+            {/* One column, two conventions — because that is how the two bits are
+                sold. The suffix says which one this row is in; includedAngleDeg()
+                is what everything downstream reads. A taper's angles are small,
+                so it steps by 1° where a V-bit steps by 5°. */}
+            <div className="flex items-baseline gap-1">
+              <input
+                type="number"
+                value={tool.vbitAngleDeg ?? (tool.type === 'taper' ? 5 : 60)}
+                min={tool.type === 'taper' ? 0.5 : 5}
+                max={tool.type === 'taper' ? 60 : 175}
+                step={tool.type === 'taper' ? 1 : 5}
+                onChange={(e) => up({ vbitAngleDeg: parseFloat(e.target.value) || (tool.type === 'taper' ? 5 : 60) })}
+                className={cellCls + ' text-right'}
+              />
+              <span className="text-label text-gray-600 dark:text-neutral-400 whitespace-nowrap">
+                {tool.type === 'taper' ? '/side' : 'incl'}
+              </span>
+            </div>
+            {tool.type === 'taper' && (
+              // The number that actually decides whether this bit can cut the job,
+              // and it is derived from all three columns so it exists nowhere else.
+              <div className="text-label text-gray-600 dark:text-neutral-400 px-1 mt-0.5 whitespace-nowrap">
+                Ø{fmtDim(2 * maxCutRadiusMM(tool), units)} at depth · {includedAngleDeg(tool)}° incl
+              </div>
+            )}
+          </>
         ) : (
           <span className="text-gray-600 dark:text-neutral-400 px-1">—</span>
         )}

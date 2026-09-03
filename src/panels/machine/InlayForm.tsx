@@ -11,6 +11,7 @@ import { useSelectedPaths } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { runInWorkerFor, isWorkCancelled } from '../../workers/workerClient'
 import { effectiveStepDownMM, seedStepDownMM } from '../../cam/feeds'
+import { includedAngleDeg, isVCutter } from '../../cam/geom'
 import { groupPathsByContainment } from './containment'
 import { getMultiBBox } from '../../canvas/selectionUtils'
 
@@ -57,9 +58,9 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
   // scalloped floor for the plug to bottom on and a drill can't clear at all. The finish
   // tool cuts the WALL, and there are exactly two wall shapes the fit maths knows: sloped
   // (V-bit) and flat (end mill).
-  const vbits = tools.filter((t) => t.type === 'vbit')
+  const vbits = tools.filter((t) => isVCutter(t))
   const endmills = toolsOfType(tools, ['endmill'])
-  const finishers = toolsOfType(tools, ['endmill', 'vbit'])
+  const finishers = toolsOfType(tools, ['endmill', 'vbit', 'taper'])
   const defaultVbit = vbits[0] ?? finishers[0]
   const defaultEndmill = endmills[0]
 
@@ -183,7 +184,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
       // over is one rigid motion for the part, and inverting changes which paths are
       // boundaries without moving anything.
       : getMultiBBox(selPaths.map((p) => p.d))?.cx
-    const angleDeg = vbitTool?.vbitAngleDeg ?? 60
+    const angleDeg = vbitTool ? includedAngleDeg(vbitTool) : 60
     const baseParams = {
       angleDeg,
       pocketDepthMM: form.pocketDepthMM,
@@ -322,7 +323,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     // Male V-bit: vbit (bevel profile) first, endmill (release cut) second.
     // Male endmill-only: endmill (roughing release) first, vbit/finish (release) second.
     const role = form.role
-    const isEndmillOnly = vbitTool?.type !== 'vbit'
+    const isEndmillOnly = !vbitTool || !isVCutter(vbitTool)
     const firstPhase  = (role === 'female' || isEndmillOnly) ? 'endmill' : 'vbit'   as 'vbit' | 'endmill'
     const secondPhase = (role === 'female' || isEndmillOnly) ? 'vbit'    : 'endmill' as 'vbit' | 'endmill'
     const firstToolId  = firstPhase  === 'vbit' ? form.vbitToolId : form.pocketToolId
@@ -416,7 +417,7 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
     }, 0)
   }
 
-  const isEndmillMode = !!vbitTool && vbitTool.type !== 'vbit'
+  const isEndmillMode = !!vbitTool && !isVCutter(vbitTool)
   const canGenerate = groups.length > 0 && (!!vbitTool || finishIsNone) && !!pocketTool && !generating && form.pocketDepthMM > 0
   const isMale = editOp ? editOp.role === 'male' : form.role === 'male'
 
@@ -461,16 +462,29 @@ export function InlayForm({ onClose, editOp }: { onClose: () => void; editOp?: I
         {finishIsNone && (
           <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">No finish pass — flat walls left by the roughing tool (corners at its radius).</p>
         )}
-        {vbitTool?.type === 'vbit' && (
-          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">V-bit — sloped bevel walls</p>
+        {vbitTool && isVCutter(vbitTool) && (
+          <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">
+            {vbitTool.type === 'taper' ? 'Taper — sloped bevel walls, rounded at the foot' : 'V-bit — sloped bevel walls'}
+          </p>
         )}
-        {vbitTool && vbitTool.type !== 'vbit' && (
+        {vbitTool?.type === 'taper' && (
+          /* Measured with scripts/inlay-fit.mts: the plug always seats (no interference),
+             but the tip ball rounds the foot of the PLUG wall while the socket's own
+             rounding sits at its deep end — so the two do not meet at the finished face.
+             A V-bit's cone is its own mirror image and closes completely. */
+          <p className="text-label text-amber-600 dark:text-amber-500 mt-0.5">
+            Leaves a hairline gap around the inlay at the finished face, up to the Ø{fmtLen(vbitTool.diameterMM, units)} tip&rsquo;s radius. A V-bit closes fully.
+          </p>
+        )}
+        {vbitTool && !isVCutter(vbitTool) && (
           <p className="text-label text-gray-600 dark:text-neutral-400 mt-0.5">End mill — flat walls, corners auto-rounded to Ø{fmtLen(vbitTool.diameterMM, units)}</p>
         )}
       </div>
-      {vbitTool?.type === 'vbit' && (
+      {vbitTool && isVCutter(vbitTool) && (
         <p className="text-label text-gray-600 dark:text-neutral-400">
-          V-bit angle: {vbitTool.vbitAngleDeg ?? 60}° (set on tool)
+          {vbitTool.type === 'taper'
+            ? `Taper: ${vbitTool.vbitAngleDeg ?? 5}° per side, Ø${fmtLen(vbitTool.diameterMM, units)} tip (set on tool)`
+            : `V-bit angle: ${includedAngleDeg(vbitTool)}° (set on tool)`}
         </p>
       )}
       {/* Depth */}

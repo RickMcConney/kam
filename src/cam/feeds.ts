@@ -1,4 +1,5 @@
 import type { Tool, ToolType } from '../store/toolStore'
+import { maxCutRadiusMM, tipBallRadiusMM } from './geom'
 import { useWorkpieceStore, MATERIAL_INFO } from '../store/workpieceStore'
 
 // ─── Centralized feed, spindle & step-down calculation ─────────────────────────
@@ -23,6 +24,10 @@ const CHIP_LOAD_TABLE: Record<ToolType, number> = {
   endmill: 0.05,
   ballnose: 0.04,
   vbit: 0.03,
+  // A taper is a small, well-supported cutter whose flute is backed by the cone — it
+  // takes a lighter chip than a straight end mill of its mean diameter but is not as
+  // fragile as the knife edge of a V-bit.
+  taper: 0.035,
   drill: 0.05,
 }
 
@@ -59,6 +64,16 @@ export function targetChipLoad(toolType: ToolType, diameterMM: number, hardness:
   const h = hardness > 0 ? hardness : 1
   const diaScale = clamp(diameterMM / REFERENCE_DIAMETER_MM, 0.3, 2)
   return (CHIP_LOAD_TABLE[toolType] ?? 0.05) * diaScale / h
+}
+
+// The diameter to judge a tool's CUTTING duty by. Every type stores the diameter it
+// cuts at — except a taper, whose stored diameter is the ball on its TIP. Feeding a
+// 1 mm tip into targetChipLoad would ask a bit that is 5 mm wide halfway down its
+// taper to take a 1 mm bit's chip, so a taper reports the mean of its tip and its
+// widest cutting diameter instead.
+export function feedDiameterMM(tool: Tool): number {
+  if (tool.type !== 'taper') return tool.diameterMM
+  return tipBallRadiusMM(tool) + maxCutRadiusMM(tool)
 }
 
 interface FeedCalcInput {
@@ -110,7 +125,7 @@ function computeFeeds(input: FeedCalcInput): FeedCalcResult {
   const flutes = tool.fluteCount > 0 ? tool.fluteCount : 1
 
   // Intrinsic chip load for this tool + material (independent of the machine).
-  const fz = targetChipLoad(tool.type, tool.diameterMM, hardness)
+  const fz = targetChipLoad(tool.type, feedDiameterMM(tool), hardness)
 
   // On softer machines we deliberately aim for a lighter chip so the gantry isn't
   // overloaded. This scales the *feed*, not the displayed target.

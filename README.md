@@ -37,16 +37,16 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 
 ### Drawing Tools
 - **Shapes** — rectangle, rounded rect, sign (inner-rounded), circle, ellipse, polygon, star, heart, slot, shield
-- **Spirograph** — the hypotrochoid a real spirograph draws: a wheel rolling inside a ring with the pen at offset *p*. **Loops** is a whole number and *is* the lobe count, because an integer ratio closes the curve in exactly one turn — every position on the slider is a different rosette, not a differently-interleaved version of the same one. **Radius** is the size the finished curve occupies on the stock rather than the ring it was derived from, so pattern and size move independently. *p* is not capped at the wheel's rim the way a physical set's drilled holes are: push it out to `loops − 1` and the curve passes exactly through the centre instead of leaving a hole, and past that it loops through. The panel shows the ring and wheel radii a physical set is labelled with, and the curve stays re-editable from its chip
+- **Spirograph** — the hypotrochoid a real spirograph draws. **Loops** is a whole number and *is* the lobe count, so every position on the slider is a different rosette. **Radius** is the size on the stock, not the ring it came from, so pattern and size move independently. The pen offset isn't capped at the wheel's rim the way a physical set's drilled holes are — push it far enough and the curve passes through the centre. Re-editable from its chip
 - **Parametric mechanisms** — every one is a real part, not a lookalike, and stays editable from its own chip:
-  - **Gear** — a true involute profile (or cycloidal, for clock work) with a hobbed trochoidal root that undercuts below the classic tooth-count limit. Module × teeth, bore, hub, spokes, backlash; pitch radius and tooth count engraved on the face in a single-stroke font. Cycloidal wheels emit the mating lantern pinion too, and either can be **animated in mesh** against its mate to check the pair actually runs
+  - **Gear** — a true involute profile (or cycloidal, for clock work) with a hobbed trochoidal root that undercuts below the classic tooth-count limit. Module × teeth, bore, hub, spokes, backlash; pitch radius and tooth count engraved on the face. Cycloidal wheels emit the mating lantern pinion too, and either can be **animated in mesh** to check the pair actually runs
   - **Escapement** — deadbeat or recoil, wheel and anchor generated together from one spec (the pallet faces are loci of this wheel's tooth tips, so the two halves only mean anything as a pair). Animates through its beat
   - **Pendulum** — rod, hanging hole and bob, sized from the beat you want
   - **Cam** — Archimedean snail cam with a lever, for clamps and hold-downs; lift is linear in handle angle, and the panel reports the pressure angle that decides whether it holds what it grips
   - **Cutting board** — body, juice groove, hand slots or hanging hole, with paddle/cask/carry handle options; the groove is a true constant-distance offset of the cutting field, not a scaled copy
-  - **Train track** — BRIO-compatible wooden railway — straight, curved or a turnout — cut from 12 mm stock, with the peg-and-socket joint on whichever ends you ask for. The socket is *derived* from the peg plus clearances rather than typed in separately, so a joint can never be left half-adjusted.  Grooves come out either as centrelines for a 6 mm cutter. 
-  - **Maze** — a marble-run centreline, emitted as grooves for a ball-nose cutter rather than as an outline. Exactly one entrance and one exit reach the edge — every other corridor that would have run off the boundary is pulled back inside, so there is no doubt which end is which — and each gets a lead running clear of the maze, deletable with the point-edit tool if you would rather it didn't
-- **Clock** — a whole going train solved from one number: the beat. Pendulum length, an exact wheel/pinion factorisation for the rate (it says so in red rather than rounding when no exact train exists), optional 12:1 motion work for the hands, and the drive wheel's run time. Emits every wheel as an ordinary editable shape, lays them out on the stock, and will **run the assembled clock** on the canvas or let you drag its arbors into a plate arrangement that fits your case
+  - **Train track** — BRIO-compatible wooden railway: straight, curved or a turnout, cut from 12 mm stock, with the peg-and-socket joint on whichever ends you ask for. The socket is *derived* from the peg plus clearances, so a joint can never be left half-adjusted. Grooves come out as centrelines for a 6 mm cutter
+  - **Maze** — a marble-run centreline, emitted as grooves for a ball-nose cutter rather than as an outline. Exactly one entrance and one exit reach the edge, so there is no doubt which end is which, and each gets a lead running clear of the maze
+- **Clock** — a whole going train solved from one number: the beat. Pendulum length, an exact wheel/pinion factorisation for the rate (said in red rather than rounded when no exact train exists), optional 12:1 motion work, and the drive wheel's run time. Every wheel comes out as an ordinary editable shape, and the assembled clock will **run on the canvas**
 - **Text** — vector text paths via opentype.js; choose from bundled or web fonts, edit the text and font of an existing object at any time
 - **Pen tool** — click for straight segments, click-drag for Bezier curves; Escape to finish open path, click near first node to close
 - **Point editing** — double-click any path; drag anchors and handles, click segment to insert, hover + Delete to remove
@@ -57,7 +57,7 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 - Offset tool: inset/outset with round, miter or square corners — re-editable from its chip
 - Corner treatment: outer radius, inner radius, chamfer, dogbone
 - Linear and circular pattern tools — also re-editable from their chip
-- **Nesting** — arranges the selected parts on the stock so the least material is wasted. Set the gap between parts, the margin from the edge, the rotation step parts may be turned by, and which edge the nest packs from, so the offcut is left as one usable strip rather than scattered. Small parts can be dropped into the holes of larger ones, and unselected paths can be treated as ground already taken. Anything that will not fit is parked clear of the stock where you can see it. Select a single part and **Fill stock with copies** repeats it until no more will fit
+- **Nesting** — packs the selected parts onto the stock with the least waste. Set the gap, edge margin, rotation step and which edge to pack from, so the offcut is left as one usable strip rather than scattered. Small parts drop into the holes of larger ones, unselected paths can be treated as ground already taken, and anything that won't fit is parked clear of the stock. **Fill stock with copies** repeats a single part until no more fit
 - Holding tabs: configure count, length, height; drag individual tabs along path
 - Group / ungroup (`Ctrl+G` / `Ctrl+Shift+G`) — groups nest, and Alt-click reaches a single path inside one
 - Copy and paste paths between projects (`Ctrl+C` / `Ctrl+V`) — a pasted gear is still a gear, with its parameters, corner treatments and grouping intact
@@ -67,13 +67,25 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 
 The bar under the canvas holds two strips. They look alike, but one is the **document** and the other is the **program**.
 
-**Objects** is everything in the project, one chip per thing — every path, every clock, every operation. Click a chip to select what it stands for and open the editor that made it: a gear chip reopens the gear's parameters, a boolean chip its union/subtract, a pocket chip its depth. Editing a thing changes its chip rather than adding another, and deleting a chip deletes the thing.
+**Objects** is everything in the project, one chip per thing. Click a chip to select what it stands for and reopen the editor that made it: a gear chip its parameters, a boolean chip its union/subtract, a pocket chip its depth. Editing changes the chip rather than adding another; deleting the chip deletes the thing. A group is one chip, and so is a whole Generate — profiling five paths makes five operations but was one decision, so it edits as one. Tabs and corner treatments get their own chips, attached to the path they belong to.
 
-A group — a multi-part shape, an imported SVG, a set of paths you grouped by hand — is one chip. So is a whole Generate: profiling five selected paths makes five operations, because each is its own run of the tool, but it was one decision and it edits as one. Tabs and corner treatments get chips too, attached to the path they belong to and sharing its colour, because each carries parameters worth reopening.
-
-**Ops** is the program: one chip per toolpath, in the order the machine will run them, which is the order G-code is written in. Operations sharing a tool are drawn as a coloured band, with a marker at every tool change. Drag a chip — or a whole band — to reorder. When the program visits a tool more than once, a **−N TC** button appears and gathers each tool's operations together in one step, so you load it once. Hover a chip to hide it (hidden operations are excluded from exported G-code) or delete it.
+**Ops** is the program: one chip per toolpath, in the order the machine runs them, which is the order G-code is written in. Operations sharing a tool are drawn as a coloured band with a marker at every tool change. Drag a chip — or a whole band — to reorder. When the program visits a tool more than once, a **−N TC** button gathers that tool's operations into one step so you load it once. Hover a chip to hide it (hidden operations are left out of exported G-code) or delete it.
 
 Undo and redo cover every edit and are independent of both strips; undo history is per session.
+
+### Tool Library
+
+A library of cutters, saved with the project and kept in the browser between sessions. Each row holds diameter, flute count, RPM, feeds and the tool's maximum depth of cut; an operation only offers the tools that can actually make its cut.
+
+| Tool | Defined by | Available to |
+|---|---|---|
+| End mill | Diameter | Profile, pocket, trochoidal, surfacing, helical drilling |
+| Ball nose | Diameter | Profile, pocket, trochoidal, 3D profile |
+| V-bit | Diameter + **included** angle | V-carve, photo V-carve, inlay walls, profile |
+| Taper end mill | **Tip** diameter + **per-side** angle + usable length | V-carve, inlay walls, 3D profile, profile |
+| Drill | Diameter | Peck drilling |
+
+A **taper end mill** is a V-bit with a ball ground on its tip, described the way the bits are sold: the diameter column is its *tip ball*, and the angle is *per side* where a V-bit's is included. The library derives how wide it opens out — a 5°/side taper on a 1 mm tip reaches Ø5.29 mm at 25 mm deep. Its ball tip can enter a stroke narrower than itself, cutting a round-bottomed groove rather than refusing it, which is what suits it to fine lettering and 3D finishing. In an inlay a V-bit still closes tighter: a taper's rounded foot leaves a hairline gap at the finished face.
 
 ### CAM Operations
 | Operation | Description |
@@ -83,10 +95,10 @@ Undo and redo cover every edit and are independent of both strips; undo history 
 | Trochoidal | Low-engagement slotting with configurable step and loop radius, optional finishing pass |
 | Drill | Peck drilling at placed points or helical drilling from circular paths |
 | Surface | Full-workpiece facing passes |
-| V-Carve | Medial-axis depth from V-bit geometry, island/letter-hole support |
-| Photo V-Carve | Rasters a photograph as V-grooves whose depth tracks image brightness |
+| V-Carve | Medial-axis depth from V-bit or taper geometry, island/letter-hole support |
+| Photo V-Carve | Rasters a photograph as V-grooves whose depth tracks image brightness (V-bit only) |
 | Inlay | Female socket (pocket + V-carved walls) and male plug generation |
-| 3D Profile | Raster surface following from imported STL with optional roughing pass |
+| 3D Profile | Raster surface following from imported STL with a ball nose or taper, optional roughing pass |
 
 **Pocket strategies**
 
@@ -132,8 +144,8 @@ Depths are always measured *from* the start surface, and the tool-reach and past
 - Pre-export preflight: cut-time estimate, and warnings for anything that would surprise you at the machine
 - Arc output (G2/G3) optional per profile
 - Separate G-code unit mode (mm or inches) independent of display units
-- **SVG export** of the selected paths, or the whole drawing — written to round-trip through this app's own importer, with the stock as the page, so a path exported at (120, 40) comes back at (120, 40)
-- Saves as `.fkam` project files (JSON) — geometry, operations, tool library and workpiece, with every generated object keeping the parameters it was made from so it stays editable after a reload
+- **SVG export** of the selection or the whole drawing — round-trips through this app's own importer with the stock as the page, so a path exported at (120, 40) comes back at (120, 40)
+- Saves as `.fkam` project files (JSON) — geometry, operations, tool library and workpiece, every generated object keeping the parameters it was made from so it stays editable after a reload
 
 ---
 

@@ -21,6 +21,7 @@
 // Rewinding the scrubber, loading another program, or moving the work origin drops
 // everything and replays — correctness first; those are not per-frame events.
 
+import { vRadiusAtHeightMM } from '../cam/geom'
 import { segTool, type SimSegment, type ToolState } from './gcodeParser'
 
 export interface FrustumSeg {
@@ -32,11 +33,15 @@ export interface FrustumSeg {
 // taper; coarse enough that a long pass shares one stroke.
 const WIDTH_STEP_MM = 0.1
 
-// For V-bit segments, cut width = 2 * |z| * tan(halfAngle), capped at tool diameter.
+// For V-cutter segments, cut width = 2·a(|z|), capped at the tool diameter: a cone of
+// 2·|z|·tan for a V-bit, and for a taper the tip ball out to where the cone takes over
+// (so a shallow taper pass draws its tip width, not a line).
 export function effectiveCutWidthAt(seg: SimSegment, z: number, toolStates: ToolState[]): number {
   const ts = segTool(seg, toolStates)
-  if (ts.toolVbitHalfAngleTan !== undefined) {
-    return Math.min(2 * Math.abs(z) * ts.toolVbitHalfAngleTan, ts.toolDiameterMM)
+  const tan = ts.toolVbitHalfAngleTan
+  if (tan !== undefined) {
+    const rad = vRadiusAtHeightMM(Math.abs(z), tan, ts.toolTipRadiusMM ?? 0)
+    return Math.min(2 * rad, ts.toolDiameterMM)
   }
   return ts.toolDiameterMM
 }

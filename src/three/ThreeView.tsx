@@ -9,6 +9,7 @@ import { useToolStore } from '../store/toolStore'
 import { usePathsStore } from '../store/pathsStore'
 import { getCurrentSegIdx, interpolatePos, segTool, type SimSegment } from '../sim/gcodeParser'
 import { flattenPath } from '../cam/pathFlattener'
+import { includedAngleDeg, isVCutter, maxCutRadiusMM } from '../cam/geom'
 import { getBBox } from '../canvas/selectionUtils'
 import { THREE_BG_COLOR_THREE } from '../colors'
 import { HeightfieldMaterial } from './HeightfieldMaterial'
@@ -19,6 +20,10 @@ import { SPINDLE_VIS_RPS } from '../sim/spindleVis'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { parseStlGeometry, base64ToArrayBuffer } from '../importers/stlImporter'
 import type { StlModelBounds } from '../importers/stlImporter'
+
+// Time constant of the Follow Tool camera low-pass, in ms — the time the target
+// takes to close ~63% of its distance to the tool. Larger is calmer and laggier.
+const FOLLOW_TAU_MS = 450
 
 // ─── coordinate mapping ──────────────────────────────────────────────────────
 //
@@ -99,17 +104,22 @@ function makeFluteTexture(fluteCount: number, helical: boolean): THREE.CanvasTex
 // Cutting section shows fluteCount helical grooves; shank is polished steel
 // (small tools get a standard ~3.2mm shank) topped with a dark collet nut.
 // V-bit:     striped cone (height from included angle) + shank
+// Taper:     striped tip ball + striped cone opening out to its widest cutting
+//            diameter over its usable length + shank (see cam/geom.ts for the profile)
 // Ball nose: striped hemisphere tip + striped flute cylinder + shank
 // Drill:     striped 118° point + striped flute cylinder + shank
 // Flat:      striped flute cylinder with dark end face + shank
-function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60, fluteCount = 2): THREE.Object3D {
+function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60, fluteCount = 2, tipDiaMM = 0): THREE.Object3D {
+  // A taper is drawn from its WIDEST cutting diameter down to its tip ball; `diamMM`
+  // carries that widest diameter (the sim's one meaning for a tool diameter) and
+  // `tipDiaMM` the ball.
   const r = diamMM / 2
   const isBall = type === 'ball' || type === 'ballnose'
   // Real-world shank sizing: never thinner than ~3.2mm; V-bits step down from a
   // wide cutting diameter to a narrower shank (capped at 80% of the cutting
   // radius so the cone rim always shows); ball noses neck down slightly so the
   // ball reads as a ball.
-  const shankR = type === 'vbit' ? Math.max(Math.min(r * 0.8, 3.175), 1.6)
+  const shankR = type === 'vbit' || type === 'taper' ? Math.max(Math.min(r * 0.8, 3.175), 1.6)
     : isBall ? Math.max(r * 0.8, 1.6)
     : Math.max(r, 1.6)
   const fluteLen = Math.max(diamMM * 3, 6)
@@ -119,6 +129,7 @@ function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60, fluteCou
   const opts = { transparent: true, opacity: 0.9 }
   // Drills/V-bits read best with helical grooves; end mills and ball noses with
   // straight vertical grooves (per user preference).
+  // A taper cuts like an end mill, so it gets straight grooves, not a drill's helix.
   const helical = type === 'drill' || type === 'vbit'
   const fluteMat  = new THREE.MeshPhongMaterial({ map: makeFluteTexture(fluteCount, helical), specular: 0x555555, shininess: 60, ...opts })
   const shankMat  = new THREE.MeshPhongMaterial({ color: 0xd4d7db, specular: 0x777777, shininess: 90, ...opts })
@@ -181,7 +192,32 @@ function buildToolMesh(type: string, diamMM: number, vbitAngleDeg = 60, fluteCou
     y += coneH
   }
 
-  if (type === 'vbit') {
+  if (type === 'taper') {
+    // Ball cap from the south pole up to the tangency latitude (90° − θ from the pole),
+    // then the cone that leaves it tangentially and opens out to the full radius r.
+    const halfAngle = (vbitAngleDeg / 2) * Math.PI / 180
+    const tipR = Math.max(0.01, tipDiaMM / 2)
+    const dT = tipR * Math.cos(halfAngle)      // radius at the ball/cone join
+    const hT = tipR * (1 - Math.sin(halfAngle))
+    const ballGeo = new THREE.SphereGeometry(tipR, SEGS, 16, 0, Math.PI * 2, halfAngle, Math.PI - halfAngle)
+    ballGeo.translate(0, tipR, 0)
+    group.add(new THREE.Mesh(ballGeo, fluteMat))
+    y = hT
+    // Cone from the join out to the widest cutting radius — its height is exactly the
+    // usable taper length the tool's Max Z described.
+    const coneH = Math.max(0.01, (r - dT) / Math.tan(halfAngle))
+    const coneGeo = new THREE.CylinderGeometry(r, dT, coneH, SEGS, 1, true)
+    coneGeo.translate(0, y + coneH / 2, 0)
+    group.add(new THREE.Mesh(coneGeo, fluteMat))
+    y += coneH
+    if (shankR < r - 0.01) {
+      const taperH = r - shankR
+      const taperGeo = new THREE.CylinderGeometry(shankR, r, taperH, SEGS)
+      taperGeo.translate(0, y + taperH / 2, 0)
+      group.add(new THREE.Mesh(taperGeo, shankMat))
+      y += taperH
+    }
+  } else if (type === 'vbit') {
     const halfAngle = (vbitAngleDeg / 2) * Math.PI / 180
     addTipCone(r / Math.tan(halfAngle))
     // 45° chamfer easing the cone base into the narrower shank
@@ -432,17 +468,20 @@ export default function ThreeView() {
         if (activeSeg) {
           const ts = segTool(activeSeg, sim.toolStates)
           let tType = 'flat', tDiam = ts.toolDiameterMM, tAngle = 60
+          const tTip = ts.toolTipRadiusMM ? ts.toolTipRadiusMM * 2 : 0
           if (ts.toolVbitHalfAngleTan) {
-            tType  = 'vbit'
+            tType  = tTip > 0 ? 'taper' : 'vbit'
             tAngle = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
           } else if (ts.toolBallNose) {
             tType = 'ball'
           } else if (ts.toolDrill) {
             tType = 'drill'
           }
-          const key = `${tType}|${tDiam}|${tAngle}|${ts.fluteCount}`
+          // The tip is part of the shape, so it belongs in the key — without it a
+          // taper and a V-bit of the same diameter and angle share a mesh.
+          const key = `${tType}|${tDiam}|${tAngle}|${ts.fluteCount}|${tTip}`
           if (key !== refs.activeToolKey) {
-            buildToolIndicatorForParams(refs, tType, tDiam, tAngle, ts.fluteCount)
+            buildToolIndicatorForParams(refs, tType, tDiam, tAngle, ts.fluteCount, tTip)
             refs.activeToolKey = key
           }
         }
@@ -462,8 +501,34 @@ export default function ThreeView() {
         }
 
         if (followToolRef.current && pos) {
-          const [tx, ty, tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z - zOff, T)
-          refs.controls.target.set(tx, ty, tz)
+          // Follow the tool in the XY plane ONLY. Three's Y is the vertical
+          // (T + cncZ), and Z is the axis that moves fastest and least usefully:
+          // a v-carve rides the Z up and down within a single stroke, and a
+          // target that tracked it would swing the camera on every plunge. The
+          // tool travels across the work slowly enough to watch; it plunges too
+          // fast. So the target keeps whatever height it already has — the one
+          // the user framed — and only slides along with the cut.
+          const [tx, , tz] = cncToThree(pos.x + org.x, pos.y + org.y, pos.z - zOff, T)
+
+          // …and it lags the tool through a first-order low-pass rather than
+          // sitting on it. Lettering and detail work dart back and forth over a
+          // few mm many times a second; a target pinned to the tip hands all of
+          // that straight to the camera, which is what makes it sickening to
+          // watch. The filter's gain falls off as 1/(2π·f·τ), so a 5 Hz, 2 mm
+          // wiggle reaches the camera as ~0.15 mm — still — while a traverse,
+          // which is a step and not an oscillation, is tracked with a steady
+          // lag of feed·τ (~20 mm at 50 mm/s) that costs nothing to look at.
+          // dt is clamped so a long frame (a carve catching up, a backgrounded
+          // tab) can't overshoot, and skipped when the clock hasn't advanced.
+          const step = dt > 0 ? Math.min(dt, 100) : 0
+          const k    = 1 - Math.exp(-step / FOLLOW_TAU_MS)
+          const tgt  = refs.controls.target
+          tgt.x += (tx - tgt.x) * k
+          tgt.z += (tz - tgt.z) * k
+          // The glide outlives whatever woke the frame — a paused sim, the last
+          // segment of a program — so it has to keep the loop alive itself
+          // until it has actually arrived.
+          if (Math.abs(tx - tgt.x) + Math.abs(tz - tgt.z) > 1e-3) refs.renderNeeded = true
         }
 
         if (refs.heightfield) {
@@ -687,13 +752,13 @@ function rebuildHeightfield(refs: SceneRefs) {
   perfLog(`[heightfield] built ${hf.topZ.length.toLocaleString()} samples @ ${hf.cellMM.toFixed(3)}mm cell`)
 }
 
-function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: number, vbitAngleDeg: number, fluteCount = 2) {
+function buildToolIndicatorForParams(refs: SceneRefs, toolType: string, diamMM: number, vbitAngleDeg: number, fluteCount = 2, tipDiaMM = 0) {
   if (refs.toolMesh) {
     refs.scene.remove(refs.toolMesh)
     disposeObject3D(refs.toolMesh)
     refs.toolMesh = null
   }
-  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg, fluteCount)
+  const mesh = buildToolMesh(toolType, diamMM, vbitAngleDeg, fluteCount, tipDiaMM)
   mesh.visible = false
   refs.scene.add(mesh)
   refs.toolMesh = mesh
@@ -705,15 +770,16 @@ function buildToolIndicator(refs: SceneRefs) {
   refs.activeToolKey = ''
 
   const { segments, toolStates } = useSimStore.getState()
-  let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60, fluteCount = 2
+  let toolType = 'flat', diamMM = 3, vbitAngleDeg = 60, fluteCount = 2, tipDiaMM = 0
 
   for (const seg of segments) {
     if (!seg.rapid) {
       const ts = segTool(seg, toolStates)
       diamMM = ts.toolDiameterMM
       fluteCount = ts.fluteCount
+      tipDiaMM = ts.toolTipRadiusMM ? ts.toolTipRadiusMM * 2 : 0
       if (ts.toolVbitHalfAngleTan) {
-        toolType = 'vbit'
+        toolType = tipDiaMM > 0 ? 'taper' : 'vbit'
         vbitAngleDeg = Math.atan(ts.toolVbitHalfAngleTan) * (180 / Math.PI) * 2
       } else if (ts.toolBallNose) {
         toolType = 'ball'
@@ -730,10 +796,12 @@ function buildToolIndicator(refs: SceneRefs) {
     toolType   = t.type
     diamMM     = t.diameterMM
     fluteCount = t.fluteCount
-    if (t.type === 'vbit') vbitAngleDeg = (t as any).vbitAngleDeg ?? 60
+    if (isVCutter(t)) vbitAngleDeg = includedAngleDeg(t)
+    // A library taper stores its TIP as its diameter; the mesh wants the widest.
+    if (t.type === 'taper') { tipDiaMM = t.diameterMM; diamMM = 2 * maxCutRadiusMM(t) }
   }
 
-  buildToolIndicatorForParams(refs, toolType, diamMM, vbitAngleDeg, fluteCount)
+  buildToolIndicatorForParams(refs, toolType, diamMM, vbitAngleDeg, fluteCount, tipDiaMM)
 }
 
 function rebuildShapes(refs: SceneRefs) {

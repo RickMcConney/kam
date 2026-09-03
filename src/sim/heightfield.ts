@@ -8,6 +8,7 @@
 // Coordinate convention: segment XY is workpiece-local mm shifted by (orgX, orgY); segment Z
 // is top-referenced (0 = stock top, negative = into the material), while `topZ` holds height
 // above the stock bottom (0 … T).
+import { vRadiusAtHeightMM, vConeOffsetMM } from '../cam/geom'
 import type { SimSegment, ToolState } from './gcodeParser'
 import { segTool } from './gcodeParser'
 
@@ -31,7 +32,10 @@ export interface HeightfieldGrid {
 
 function segMaxRadius(seg: SimSegment, toolStates: ToolState[]): number {
   const ts = segTool(seg, toolStates)
-  if (ts.toolVbitHalfAngleTan) return Math.max(Math.abs(seg.prevZ), Math.abs(seg.z)) * ts.toolVbitHalfAngleTan
+  if (ts.toolVbitHalfAngleTan) {
+    const h = Math.max(Math.abs(seg.prevZ), Math.abs(seg.z))
+    return vRadiusAtHeightMM(h, ts.toolVbitHalfAngleTan, ts.toolTipRadiusMM ?? 0)
+  }
   return ts.toolDiameterMM / 2
 }
 
@@ -140,7 +144,7 @@ export class Heightfield {
     for (const s of segments) {
       if (s.rapid || (s.prevZ >= 0 && s.z >= 0)) continue
       const ts = segTool(s, toolStates)
-      this.carve(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM)
+      this.carve(s.prevX, s.prevY, s.x, s.y, s.prevZ, s.z, ts.toolVbitHalfAngleTan, ts.toolBallNose, ts.toolDiameterMM, ts.toolTipRadiusMM)
     }
   }
 
@@ -152,10 +156,14 @@ export class Heightfield {
     vbitTan?: number,
     ballNose?: boolean,
     toolDiameterMM = 0,
+    tipRadiusMM = 0,
   ) {
     const dz = endZ - prevZ
+    // Deliberately NOT capped at the tool's own diameter: this model has always let the
+    // cone run on past full engagement, the inlay pipeline v-carves to 2.5× the socket
+    // depth on that basis, and capping it here moved every V-bit socket in the fit audit.
     const r = vbitTan
-      ? Math.max(Math.abs(prevZ), Math.abs(endZ)) * vbitTan
+      ? vRadiusAtHeightMM(Math.max(Math.abs(prevZ), Math.abs(endZ)), vbitTan, tipRadiusMM)
       : toolDiameterMM / 2
     if (r <= 0) return
 
@@ -204,16 +212,42 @@ export class Heightfield {
 
         let newH: number
         if (vbitTan) {
+          // Surface the swept cutter leaves at this cell: min over the pass of
+          // z(t) + f(dist(t)), where f is the tool's own profile — a cone for a
+          // V-bit, a tip ball blended into that cone for a taper.
+          const dT = tipRadiusMM > 0 ? tipRadiusMM / Math.sqrt(1 + vbitTan * vbitTan) : 0   // r·cosθ
+          const off = vConeOffsetMM(vbitTan, tipRadiusMM)
           const evalF = (tRaw: number): number => {
             const tt = Math.max(0, Math.min(1, tRaw))
             const dt = tt - tc_raw
-            return (prevZ + tt * dz) + Math.sqrt(dt * dt * lenSq + perp_sq) / vbitTan
+            const d = Math.sqrt(dt * dt * lenSq + perp_sq)
+            const prof = d <= dT
+              ? tipRadiusMM - Math.sqrt(Math.max(0, tipRadiusMM * tipRadiusMM - d * d))
+              : d / vbitTan - off
+            return (prevZ + tt * dz) + prof
           }
+          // f is convex and C1, so the minimum of z + f(dist) over [0,1] sits at one of:
+          // an interval end, the closest-approach point, either piece's own optimum, or
+          // the ball/cone boundary. Evaluating all of them is exact, not a search.
           let fMin = Math.min(evalF(0), evalF(1), evalF(Math.max(0, Math.min(1, tc_raw))))
           const discrim = lenSq * (lenSq - dz * dz * vbitTan * vbitTan)
           if (discrim > 1e-12 && perp_sq > 1e-12) {
             const t_opt = tc_raw - dz * vbitTan * Math.sqrt(perp_sq) / Math.sqrt(discrim)
             fMin = Math.min(fMin, evalF(t_opt))
+          }
+          if (dT > 0) {
+            const r0sq = tipRadiusMM * tipRadiusMM
+            if (r0sq > perp_sq && lenSq > 1e-12) {
+              // Ball-piece optimum: uL = −dz·√(r0²−d²) solved for u = t − tc_raw.
+              const u = -Math.sign(dz) * Math.abs(dz) *
+                Math.sqrt((r0sq - perp_sq) / (lenSq * (lenSq + dz * dz)))
+              fMin = Math.min(fMin, evalF(tc_raw + u))
+            }
+            const dTsq = dT * dT
+            if (dTsq > perp_sq && lenSq > 1e-12) {
+              const u = Math.sqrt((dTsq - perp_sq) / lenSq)
+              fMin = Math.min(fMin, evalF(tc_raw - u), evalF(tc_raw + u))
+            }
           }
           newH = Math.max(0, this.T + fMin)
         } else if (ballNose) {

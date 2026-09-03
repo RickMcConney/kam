@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { uid } from '../uid'
 
-export type ToolType = 'endmill' | 'ballnose' | 'vbit' | 'drill'
+export type ToolType = 'endmill' | 'ballnose' | 'vbit' | 'taper' | 'drill'
 export type CuttingDirection = 'climb' | 'conventional'
 
 export interface Tool {
@@ -15,7 +15,12 @@ export interface Tool {
   xyFeedMmMin: number
   zFeedMmMin: number
   maxDepthMM: number
-  vbitAngleDeg?: number  // full included angle; only meaningful for vbit type
+  // The cone angle, in the convention each tool type is SOLD in: a V-bit's is the
+  // full INCLUDED angle (a 60° V-bit is 30° per side), a taper's is the angle PER
+  // SIDE (a 5° taper is 10° included). Nothing outside the tool library reads this
+  // field raw — `includedAngleDeg(tool)` in cam/geom.ts is the one place the two
+  // conventions meet, and everything downstream works in included angle / its half.
+  vbitAngleDeg?: number  // only meaningful for vbit and taper types
 }
 
 const DEFAULT_TOOLS: Tool[] = [
@@ -24,6 +29,9 @@ const DEFAULT_TOOLS: Tool[] = [
   { id: 'default-3', name: '60° V-Bit',       type: 'vbit',     diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 400, maxDepthMM: 10.0, vbitAngleDeg: 60 },
   { id: 'default-4', name: '1/4" Ball Nose',  type: 'ballnose', diameterMM: 6.35,  fluteCount: 2, rpm: 18000, xyFeedMmMin: 2000, zFeedMmMin: 400, maxDepthMM: 20.0 },
   { id: 'default-5', name: '3mm Drill',       type: 'drill',    diameterMM: 3.0,   fluteCount: 2, rpm: 12000, xyFeedMmMin: 0,    zFeedMmMin: 200, maxDepthMM: 20.0 },
+  // Ø is the TIP ball diameter and maxDepth the usable taper length: together with the
+  // 5°/side they say this bit opens out to Ø5.29 mm at 25 mm deep.
+  { id: 'default-6', name: '5° Taper 1mm Tip', type: 'taper',   diameterMM: 1.0,   fluteCount: 2, rpm: 18000, xyFeedMmMin: 1200, zFeedMmMin: 300, maxDepthMM: 25.0, vbitAngleDeg: 5 },
 ]
 
 // How the library table is ordered for display. The tools array itself keeps its

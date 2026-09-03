@@ -7,10 +7,13 @@
 //  4. Prune noisy leaf branches that arise from curve discretization.
 //  5. Build a graph of skeleton segments; traverse with a Dijkstra-based
 //     Euler-path algorithm (ported from vcarve.js) to minimise rapid travel.
-//  6. Convert each skeleton point: r (scaled radius) → Z depth via
-//     Z = -(r/SCALE / tan(halfAngle)), capped at maxDepth.
+//  6. Convert each skeleton point: r (scaled radius) → Z depth by asking the tool
+//     how far below the surface its tip sits when its profile is `r` wide there —
+//     f(r) in cam/geom.ts — capped at maxDepth. For a V-bit that is the familiar
+//     r/tan(halfAngle); a taper adds the ball on its tip, which is why a stroke
+//     narrower than the taper comes out round-bottomed instead of pointed.
 
-import { classifySubpaths, centroidX } from './geom'
+import { classifySubpaths, centroidX, isVCutter, tipBallRadiusMM, vProfileHeightMM, vRadiusAtHeightMM } from './geom'
 import { jspoly as JSPOLY } from './lib/jspoly.js'
 // jspoly.js's internal methods reference `JSPoly` as a bare global (written for <script> context).
 // In ES module scope it's never defined, so we pin it on globalThis once at import time.
@@ -501,14 +504,20 @@ export async function generateVCarve(
   tool: Tool,
   params: VCarveParams,
 ): Promise<MotionSegment[]> {
-  if (tool.type !== 'vbit') throw new Error('V-Carve requires a V-bit tool')
+  if (!isVCutter(tool)) throw new Error('V-Carve requires a V-bit tool')
 
   const halfAngle = (params.angleDeg / 2) * (Math.PI / 180)
   const tanHalfAngle = Math.tan(halfAngle)
   if (tanHalfAngle < 1e-6) throw new Error('Invalid V-bit angle')
 
+  // The ball ground on a taper's tip; 0 for a V-bit, which then reduces every
+  // formula below to exactly the cone laws this file has always used.
+  const tipR = tipBallRadiusMM(tool)
+  // Depth below the surface at a skeleton point of clearance radius `rScaled`.
+  const depthAtRadius = (rScaled: number) => vProfileHeightMM(rScaled / SCALE, tanHalfAngle, tipR)
+
   // Maximum tool radius in scaled units (used for pruning thresholds)
-  const maxRadiusScaled = params.maxDepthMM * tanHalfAngle * SCALE
+  const maxRadiusScaled = vRadiusAtHeightMM(params.maxDepthMM, tanHalfAngle, tipR) * SCALE
 
   // A v-carve cuts the MEDIAL AXIS of a region — the ridge equidistant from its walls —
   // so it needs walls on every side. An open path has none, and closing it implicitly
@@ -545,6 +554,60 @@ export async function generateVCarve(
   const safeZ = params.safeHeightMM ?? 5
 
   const segs: MotionSegment[] = []
+
+  const zAtRadius = (rScaled: number) => -Math.min(zStart + depthAtRadius(rScaled), params.maxDepthMM)
+
+  // Z ALONG A MEDIAL EDGE IS NOT A STRAIGHT LINE FOR A TAPER, and the machine interpolates
+  // it as one. A V-bit's depth law r/tanθ is linear in the clearance radius, and the radius
+  // runs linearly along a medial edge, so the two emitted endpoints describe the whole move
+  // exactly. A taper's law is an ARC wherever the bit is riding its tip ball — and f is
+  // convex, so the straight chord across that arc runs DEEPER than the profile, and deeper
+  // means WIDER. The small radii that put the tool on its ball are exactly the ones at
+  // sharp corners, so the whole error collects there: a 5°/side taper with a 1 mm tip cut
+  // 0.18–0.37 mm outside the shape at the point of a star, a wedge and an L, where the
+  // same shapes came out exact with a V-bit.
+  //
+  // So bisect the move until the chord follows the profile. The test is in CUT WIDTH, not
+  // in Z: near the tip the profile is nearly flat, where a Z error of a few microns is a
+  // wide miss. Both `r` and XY run linearly along the edge, so the midpoint of a run is an
+  // honest sample of it. Gated on tipR — a V-bit inserts nothing and its output is
+  // unchanged, byte for byte.
+  // Bisection alone is not enough, because it only samples the MIDDLE of a run. The ball
+  // arc lives at radii below `kneeR` and that can be a few percent of a long medial edge —
+  // on a 60 mm wedge the midpoint error read 0.0075 mm, under tolerance, while the first
+  // 3 % of the move was cutting 0.4 mm outside the shape. So split each run at the knee
+  // first: what is left either side is the smooth arc or the straight cone, and on those
+  // the midpoint IS representative.
+  const CHORD_TOL_MM = 0.01
+  const MAX_BISECT = 10
+  const widthAtZ = (z: number) => vRadiusAtHeightMM(-z, tanHalfAngle, tipR)
+  const kneeRScaled = (tipR / Math.sqrt(1 + tanHalfAngle * tanHalfAngle)) * SCALE   // r·cosθ
+
+  function emitRun(a: TPoint, za: number, b: TPoint, zb: number, out: MotionSegment[]) {
+    const lo = Math.min(a.r, b.r), hi = Math.max(a.r, b.r)
+    if (lo < kneeRScaled && kneeRScaled < hi) {
+      const t = (kneeRScaled - a.r) / (b.r - a.r)
+      const knee: TPoint = { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y), r: kneeRScaled }
+      const zk = zAtRadius(kneeRScaled)
+      refineRun(a, za, knee, zk, out, 0)
+      out.push({ x: knee.x / SCALE, y: knee.y / SCALE, z: zk, rapid: false })
+      refineRun(knee, zk, b, zb, out, 0)
+    } else {
+      refineRun(a, za, b, zb, out, 0)
+    }
+  }
+
+  function refineRun(a: TPoint, za: number, b: TPoint, zb: number, out: MotionSegment[], depth: number) {
+    if (depth >= MAX_BISECT) return
+    const mr = (a.r + b.r) / 2
+    const zTrue = zAtRadius(mr)
+    // Where both ends are already at max depth this is 0 and the run stops splitting.
+    if (Math.abs(widthAtZ((za + zb) / 2) - widthAtZ(zTrue)) <= CHORD_TOL_MM) return
+    const mid: TPoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, r: mr }
+    refineRun(a, za, mid, zTrue, out, depth + 1)
+    out.push({ x: mid.x / SCALE, y: mid.y / SCALE, z: zTrue, rapid: false })
+    refineRun(mid, zTrue, b, zb, out, depth + 1)
+  }
 
   // flattenPath adds a closing duplicate for Z paths (first === last).
   // JSPoly expects an open polygon ring — strip the duplicate if present.
@@ -591,15 +654,21 @@ export async function generateVCarve(
     if (!toolpath.length) continue
 
     const first = toolpath[0]
-    const firstZ = -Math.min(zStart + (first.r / SCALE) / tanHalfAngle, params.maxDepthMM)
+    const firstZ = zAtRadius(first.r)
 
     segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: safeZ, rapid: true })
     segs.push({ x: first.x / SCALE, y: first.y / SCALE, z: firstZ, rapid: false })
 
+    let prev = first, prevZ = firstZ
     for (let i = 1; i < toolpath.length; i++) {
       const pt = toolpath[i]
-      const z = -Math.min(zStart + (pt.r / SCALE) / tanHalfAngle, params.maxDepthMM)
+      const z = zAtRadius(pt.r)
+      // The machine drives Z linearly between the points we emit. For a V-bit that is
+      // exact; for a taper it is not, and the error lands on sharp corners — see
+      // refineRun. Nothing is inserted for a V-bit.
+      if (tipR > 0) emitRun(prev, prevZ, pt, z, segs)
       segs.push({ x: pt.x / SCALE, y: pt.y / SCALE, z, rapid: false })
+      prev = pt; prevZ = z
     }
 
     const last = toolpath[toolpath.length - 1]

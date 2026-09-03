@@ -6,6 +6,7 @@ import { useWorkpieceStore, zDatumOffsetMM } from '../store/workpieceStore'
 import { SPINDLE_INFO, spindleDialLabel } from '../store/spindle'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { feedsForTool } from './feeds'
+import { includedAngleDeg, isVCutter, maxCutRadiusMM } from './geom'
 import { arcFitPolyline, douglasPeucker, ARC_FIT_MAX_SPAN, type Pt2 } from './pathFlattener'
 import { lineSpacingMM } from './photoVcarve'
 import { sanitizeFileName } from '../io/filename'
@@ -13,6 +14,31 @@ import { sanitizeFileName } from '../io/filename'
 const MM_PER_IN = 25.4
 
 function f(n: number, decimals = 3) { return n.toFixed(decimals) }
+
+// The tool's size as the SIMULATOR needs it: `dia` is the widest the tool cuts, which
+// is what every consumer of it (footprint radius, cut-trail width, tool mesh) uses it
+// for. Every type stores that directly except a taper, whose stored diameter is the
+// ball on its TIP — so it reports its opened-out diameter and names its tip alongside.
+function toolDiaComment(tool: Tool): string {
+  return tool.type === 'taper'
+    ? `tip Ø${f(tool.diameterMM)}mm  dia ${f(2 * maxCutRadiusMM(tool))}mm`
+    : `dia ${f(tool.diameterMM)}mm`
+}
+
+// The tool-shape markers the sim parser reads, emitted AFTER the `dia` line — that
+// line resets them, so anything written before it is thrown away. `angleDeg` is an
+// operation's own included angle where it has one (inlay's two halves share one),
+// otherwise the tool's.
+function toolShapeComments(tool: Tool, angleDeg: number | undefined, c: (s: string) => void) {
+  if (isVCutter(tool)) {
+    c(`vbit-angle:${f((angleDeg ?? includedAngleDeg(tool)) / 2)}`)
+    // A taper is a V-cutter with a ball on the tip; without this the sim carves it
+    // as a knife-edged V and shows a groove that runs to a point.
+    if (tool.type === 'taper') c(`taper-tip:${f(tool.diameterMM)}`)
+  }
+  if (tool.type === 'ballnose') c(`ballnose`)
+  if (tool.type === 'drill') c(`drillbit`)
+}
 
 function sub(template: string, vals: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (_, k) => String(vals[k] ?? ''))
@@ -236,19 +262,14 @@ export function generateGcode(
       // the roughing segments get the correct (large) diameter.  Finishing tool dia is
       // emitted at the tool-change segment later.
       c(`Finishing: ${finishTool.name}  ${opDesc(op)}`)
-      c(`Roughing: ${rt.name}  dia ${f(rt.diameterMM)}mm  flutes:${rt.fluteCount}`)
-      if (rt.type === 'ballnose') c(`ballnose`)
-      if (rt.type === 'drill') c(`drillbit`)
+      c(`Roughing: ${rt.name}  ${toolDiaComment(rt)}  flutes:${rt.fluteCount}`)
+      toolShapeComments(rt, undefined, c)
     } else {
-      c(`Tool: ${finishTool.name}  dia ${f(finishTool.diameterMM)}mm  flutes:${finishTool.fluteCount}  ${opDesc(op)}`)
-      if (finishTool.type === 'vbit') {
-        const angleDeg = (op.type === 'vcarve' || op.type === 'inlay' || op.type === 'photovcarve')
-          ? op.angleDeg
-          : (finishTool.vbitAngleDeg ?? 60)
-        c(`vbit-angle:${f(angleDeg / 2)}`)
-      }
-      if (finishTool.type === 'ballnose') c(`ballnose`)
-      if (finishTool.type === 'drill') c(`drillbit`)
+      c(`Tool: ${finishTool.name}  ${toolDiaComment(finishTool)}  flutes:${finishTool.fluteCount}  ${opDesc(op)}`)
+      const angleDeg = (op.type === 'vcarve' || op.type === 'inlay' || op.type === 'photovcarve')
+        ? op.angleDeg
+        : undefined
+      toolShapeComments(finishTool, angleDeg, c)
     }
 
     if (lastToolId !== firstToolId) {
@@ -305,13 +326,8 @@ export function generateGcode(
         if (newTool && seg.toolChange !== lastToolId) {
           if (profile.toolChangeGcode.trim()) lines.push(...profile.toolChangeGcode.split('\n'))
           // Emit dia + tool type so sim parser updates to the new tool
-          c(`${newTool.name}  dia ${f(newTool.diameterMM)}mm  flutes:${newTool.fluteCount}`)
-          if (newTool.type === 'vbit') {
-            const vbitAngle = op.type === 'inlay' ? op.angleDeg : (newTool.vbitAngleDeg ?? 60)
-            c(`vbit-angle:${f(vbitAngle / 2)}`)
-          }
-          if (newTool.type === 'ballnose') c(`ballnose`)
-          if (newTool.type === 'drill') c(`drillbit`)
+          c(`${newTool.name}  ${toolDiaComment(newTool)}  flutes:${newTool.fluteCount}`)
+          toolShapeComments(newTool, op.type === 'inlay' ? op.angleDeg : undefined, c)
           const newFeeds = feedsForTool(newTool)
           if (profile.spindleOnTemplate.trim()) {
             const dc = dialComment(newFeeds.rpm); if (dc) c(dc)

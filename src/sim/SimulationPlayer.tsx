@@ -129,8 +129,13 @@ export default function SimulationPlayer() {
   const ts = curSeg ? segTool(curSeg, toolStates) : null
   const spindleRpm = ts?.spindleRpm ?? 0
   const toolType: ToolType = ts?.toolBallNose ? 'ballnose'
+    : ts?.toolTipRadiusMM ? 'taper'
     : ts?.toolVbitHalfAngleTan !== undefined ? 'vbit' : 'endmill'
-  const targetFz = ts ? targetChipLoad(toolType, ts.toolDiameterMM, MATERIAL_INFO[material].hardness) : 0
+  // Judge a taper by its MEAN cutting diameter, the same figure feeds.feedDiameterMM
+  // fed the feed calculation — its parsed `dia` is the widest it opens out to, and its
+  // tip is far narrower, so either end alone would move the gauge off the aim.
+  const feedDiaMM = ts ? (ts.toolTipRadiusMM ? ts.toolTipRadiusMM + ts.toolDiameterMM / 2 : ts.toolDiameterMM) : 0
+  const targetFz = ts ? targetChipLoad(toolType, feedDiaMM, MATERIAL_INFO[material].hardness) : 0
   // Chip-load color applies only to steady side-cutting: the tip must be below the
   // material top (z < 0, not cutting air) AND not descending. Descending moves —
   // ramp-in, plunges, helical entries — run a deliberately reduced feed and have

@@ -19,7 +19,10 @@ export interface SimSegment {
 // each segment. Resolve with `segTool(seg, toolStates)`.
 export interface ToolState {
   toolDiameterMM: number
-  toolVbitHalfAngleTan?: number  // set for V-bit segments; tan(halfAngle)
+  toolVbitHalfAngleTan?: number  // set for V-bit AND taper segments; tan(halfAngle)
+  // Radius of the ball on a taper's tip. Set only for a taper; a V-bit's tip is a
+  // point, and the two are otherwise the same tool — a cone tangent to a tip ball.
+  toolTipRadiusMM?: number
   toolBallNose?: boolean         // set for ball nose segments
   toolDrill?: boolean            // set for drill-bit segments (118° point)
   spindleRpm: number             // active spindle speed (S word); 0 if none seen
@@ -139,6 +142,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
   const warnings = new Set<string>()
   let toolDiameterMM = 3.0
   let toolVbitHalfAngleTan: number | undefined
+  let toolTipRadiusMM: number | undefined
   let toolBallNose: boolean | undefined
   let toolDrill: boolean | undefined
   let spindleRpm = 0
@@ -152,6 +156,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
   let curStateIdx = 0
   const matchesCur = (t: ToolState) =>
     t.toolDiameterMM === toolDiameterMM && t.toolVbitHalfAngleTan === toolVbitHalfAngleTan &&
+    t.toolTipRadiusMM === toolTipRadiusMM &&
     t.toolBallNose === toolBallNose && t.toolDrill === toolDrill &&
     t.spindleRpm === spindleRpm && t.fluteCount === fluteCount
   const syncToolState = () => {
@@ -159,7 +164,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     const found = toolStates.findIndex(matchesCur)
     if (found >= 0) { curStateIdx = found; return }
     curStateIdx = toolStates.length
-    toolStates.push({ toolDiameterMM, toolVbitHalfAngleTan, toolBallNose, toolDrill, spindleRpm, fluteCount })
+    toolStates.push({ toolDiameterMM, toolVbitHalfAngleTan, toolTipRadiusMM, toolBallNose, toolDrill, spindleRpm, fluteCount })
   }
 
   for (let li = 0; li < rawLines.length; li++) {
@@ -170,6 +175,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     if (diamMatch) {
       toolDiameterMM = parseFloat(diamMatch[1])
       toolVbitHalfAngleTan = undefined  // reset; overwritten below if vbit-angle present
+      toolTipRadiusMM = undefined        // reset; overwritten below if taper-tip present
       toolBallNose = undefined           // reset; overwritten below if ballnose present
       toolDrill = undefined              // reset; overwritten below if drillbit present
     }
@@ -177,6 +183,11 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     // Parse V-bit half-angle tangent: "; vbit-angle:30.0" (half-angle in degrees)
     const vbitMatch = raw.match(/vbit-angle:([\d.]+)/i)
     if (vbitMatch) toolVbitHalfAngleTan = Math.tan(parseFloat(vbitMatch[1]) * (Math.PI / 180))
+
+    // Parse a taper's tip ball: "; taper-tip:0.500" (tip DIAMETER in mm). Present only
+    // for a taper — a bare vbit-angle with no tip is a V-bit, tip radius 0.
+    const tipMatch = raw.match(/taper-tip:([\d.]+)/i)
+    if (tipMatch) toolTipRadiusMM = parseFloat(tipMatch[1]) / 2
 
 
     // Parse ball nose marker: "; ballnose"
@@ -192,7 +203,7 @@ export function parseGcode(text: string, initialZMM = 5): ParsedGcode {
     if (fluteMatch) fluteCount = Math.max(1, parseInt(fluteMatch[1]))
 
     // Fold any tool-comment changes on this line into the flyweight table.
-    if (diamMatch || vbitMatch || fluteMatch || drillMatch || /\bballnose\b/i.test(raw)) syncToolState()
+    if (diamMatch || vbitMatch || tipMatch || fluteMatch || drillMatch || /\bballnose\b/i.test(raw)) syncToolState()
 
     const pairs = parseWords(raw)
     if (pairs.length === 0) continue

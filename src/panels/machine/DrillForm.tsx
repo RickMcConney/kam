@@ -436,6 +436,7 @@ export function DrillForm({ onClose, editOp }: { onClose: () => void; editOp?: D
   const peckToolWarning = !selectedTool || selectedTool.type === 'drill' ? null
     : selectedTool.type === 'endmill' ? 'Peck drilling with an end mill — it must be centre-cutting to plunge.'
     : selectedTool.type === 'ballnose' ? 'Peck drilling with a ball nose — leaves a round-bottomed hole.'
+    : selectedTool.type === 'taper' ? 'Peck drilling with a taper — cuts a round-bottomed cone, not a straight-walled hole.'
     : 'Peck drilling with a V-bit — cuts a cone, not a straight-walled hole.'
   const isDrillTool = selectedTool?.type === 'drill'
   const peckReady = editOp ? editBatch.some((op) => op.points.length > 0)
