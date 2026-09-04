@@ -4,15 +4,16 @@
 // clockmaker actually dials in, the readouts that say what came of them, and the
 // button that lays the parts out on the stock.
 //
-// The one design decision worth restating here: it emits FIVE INDEPENDENT
-// SHAPES, one chip each, not a single "clock" shape. A wheel's bore, hub, spoke
+// The one design decision worth restating here: it emits INDEPENDENT SHAPES,
+// one chip each — four wheels, an escapement and a pendulum for the default
+// three-wheel train — not a single "clock" shape. A wheel's bore, hub, spoke
 // count, backlash and markings are all things a maker changes per wheel once the
 // train is settled, and a shape is one set of parameters. So the clock passes
 // each wheel only what the train forces on it — its tooth count, the pins of the
 // pinion it drives, the module and the cycloidal profile — and takes everything
 // else from the user's own Gear and Escapement defaults. After the click there
-// is no clock left in the document, only five ordinary shapes that happen to
-// mesh, each editable through its own chip in the usual way.
+// is no clock left in the document, only ordinary shapes that happen to mesh,
+// each editable through its own chip in the usual way.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Clock, Info, Lock, LockOpen } from 'lucide-react'
@@ -25,20 +26,22 @@ import { generateShapeParts, translateShapeParams } from '../../shapes/shapeGene
 import { loadFont, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import {
   DEFAULT_CLOCK_SPEC, designClock, layoutClock, MAX_WHEEL_DIA, MODULE_TAPER, MOTION_CENTRE_MM,
+  meshCountOf, trainWheelsOf,
   type ClockPart, type ClockPartParams, type ClockSpec,
 } from '../../shapes/clockTrain'
 import { nextPathColor, type ImportedPath } from '../../importers/svgImporter'
 import { uid } from '../../uid'
-import { NumInput, PlainInput, Check, noteCls } from './shared'
+import { NumInput, PlainInput, Check, Select, noteCls } from './shared'
 import { clockReadout } from '../clockReadout'
 import { TONE_BTN } from '../readout'
 
 const LS_CLOCK_KEY = 'kam:clockSpec'
 
-/** The three wheels the train solver has to place, in mesh order. The drive
- *  wheel and the escape wheel are not among them: one follows the run time and
- *  the other sets the ratio the three of these divide. */
-const TRAIN_WHEEL_NAMES = ['Great', 'Second', 'Third'] as const
+/** The wheels the train solver has to place, in mesh order — the first two on a
+ *  three-wheel train, all three on a four-wheel one. The drive wheel and the
+ *  escape wheel are not among them: one follows the run time and the other sets
+ *  the ratio these divide. */
+const ALL_WHEEL_NAMES = ['Great', 'Second', 'Third'] as const
 
 // Margin from the stock edge, and daylight between parts. Both generous: these
 // are big wheels, and a clock that lands overlapping its own stock edge is more
@@ -118,14 +121,35 @@ export default function ClockPanel() {
     // not from whatever was last typed into a fresh one.
     if (clockEditId) {
       const own = usePathsStore.getState().paths.find((p) => p.clockId === clockEditId && p.clockSpec)
-      if (own?.clockSpec) { setSpec({ ...DEFAULT_CLOCK_SPEC, ...own.clockSpec }); return }
+      // MERGING OVER THE DEFAULTS IS WRONG FOR `trainWheels` AND ONLY FOR IT.
+      // Every other absent field means "this clock predates the field, give it
+      // today's answer"; this one means "this clock was CUT as a four-wheel
+      // train", and taking the default would show three wheels over a clock that
+      // has four — and delete its third wheel on the next Update. `trainWheelsOf`
+      // is the one reader that knows that, so it fills the gap here.
+      if (own?.clockSpec) {
+        setSpec({
+          ...DEFAULT_CLOCK_SPEC, ...own.clockSpec,
+          trainWheels: trainWheelsOf(own.clockSpec),
+        })
+        return
+      }
     }
     const saved = localStorage.getItem(LS_CLOCK_KEY)
     if (!saved) return
     try {
       // Merged over the defaults, so a spec saved before a field existed still
       // loads — the same rule project files follow.
-      setSpec({ ...DEFAULT_CLOCK_SPEC, ...JSON.parse(saved) })
+      const remembered = JSON.parse(saved)
+      // …except that the wheel count and the pin floor are ONE decision, and a
+      // spec remembered from before there was a choice carries a `minPins` typed
+      // for the four-wheel train. Pairing a saved 12 with the new default of
+      // three wheels asks two meshes to come to 60:1 on 12-pin pinions, which
+      // wants ~93-tooth wheels — so a spec that predates the field gives up its
+      // pin floor along with its wheel count. These are the numbers a NEW clock
+      // starts from, not a clock that exists, so nothing is being re-cut.
+      if (remembered.trainWheels === undefined) delete remembered.minPins
+      setSpec({ ...DEFAULT_CLOCK_SPEC, ...remembered })
     } catch {}
   }, [clockEditId])
 
@@ -147,9 +171,12 @@ export default function ClockPanel() {
 
   const L = (mm: number) => fmtLen(mm, units)
 
-  // One entry per mesh, always MESHES long whatever an older spec carries — a
-  // short or missing array must read as "nothing held", not as undefined rows.
-  const locks: (number | null)[] = TRAIN_WHEEL_NAMES.map((_, i) => spec.lockedTeeth?.[i] ?? null)
+  // The wheels THIS train has, and one lock entry per mesh — a short or missing
+  // array must read as "nothing held", not as undefined rows. Trimmed to the
+  // mesh count so a clock stepped down from four wheels to three does not keep
+  // holding a count for a wheel it no longer cuts.
+  const wheelNames = ALL_WHEEL_NAMES.slice(0, meshCountOf(spec))
+  const locks: (number | null)[] = wheelNames.map((_, i) => spec.lockedTeeth?.[i] ?? null)
 
   // Everything derived lives in the floating readout now; the panel keeps only
   // its TONE, for the button that stands for it.
@@ -252,7 +279,7 @@ export default function ClockPanel() {
     try {
       // A gear's tooth-count marking is set in the single-stroke face, which is
       // fetched on demand — a gear generated before it lands simply has no
-      // marking part. Four wheels are worth waiting for it once.
+      // marking part. A trainful of wheels is worth waiting for it once.
       if (shapeToolConfig.gear.toothLabel) await loadFont(SINGLE_LINE_FONT_FAMILY)
 
       const { setSelectedIds, updateShapeParams } = usePathsStore.getState()
@@ -379,13 +406,31 @@ export default function ClockPanel() {
 
         <div className="space-y-1">
           <p className={noteCls + ' font-medium uppercase tracking-wider'}>Going train</p>
+          {/* HOW MANY WHEELS, and it is the first thing to decide because
+              everything below it moves: the mesh count, the pin count that makes
+              those meshes possible, and which way the escape wheel runs. Three
+              is the classic English longcase train and what a wooden clock
+              wants — fewer pivots and one fewer mesh to lose torque in, which is
+              what a wooden train is always short of. Four is kept because every
+              clock designed before this existed has one. */}
+          <Select label="Wheels" value={String(trainWheelsOf(spec))}
+            options={[['3', '3 — great, second, escape'], ['4', '4 — with a third wheel']]}
+            onChange={(v) => {
+              const trainWheels = v === '3' ? 3 : 4
+              // Holds are per WHEEL, so a train that just lost its third wheel
+              // must lose that wheel's hold with it — leaving it would pin a
+              // count onto a wheel the solver is no longer placing.
+              const kept = spec.lockedTeeth?.slice(0, trainWheels - 1)
+              set({ trainWheels, lockedTeeth: kept?.some((x) => x != null) ? kept : undefined })
+            }} />
           <NumInput label="Min pins" valueMM={spec.minPins} units="" min={6} integer
             onChange={(p) => set({ minPins: Math.max(6, Math.round(p)) })} />
-          {/* THE THREE TRAIN WHEELS, as the solver has them — type one and the
-              others move to keep the ratio exact. The escape wheel is above (it
+          {/* THE TRAIN WHEELS, as the solver has them — type one and the
+              others move to keep the ratio exact. Two of them on a three-wheel
+              train, three on a four-wheel one. The escape wheel is above (it
               sets the ratio rather than dividing it) and the drive wheel is
               below (its count follows the run time, not the rate). */}
-          {TRAIN_WHEEL_NAMES.map((name, i) => (
+          {wheelNames.map((name, i) => (
             <TeethRow
               key={name}
               label={name}
@@ -430,8 +475,9 @@ export default function ClockPanel() {
           {/* TWO DOWELS, not one. The tooth is `π·m − pin Ø − backlash` and the
               pin is an absolute rod, so a pin that suits the great wheel is most
               of the tooth space at the escape end and one that suits the escape
-              end rattles in the great wheel's. Each mesh takes whichever of the
-              two better suits its own pitch; the info window says which got
+              end rattles in the great wheel's. The slow end takes the fattest of
+              the two its TOOTH can still push (`pinForTooth`) and the fast end
+              takes the small one regardless; the info window says which mesh got
               which. Set them equal for one pin throughout. */}
           <NumInput label="Pin Ø large" valueMM={spec.pinDia} units={units} min={0.5} step={0.5}
             onChange={(pinDia) => set({ pinDia })} />

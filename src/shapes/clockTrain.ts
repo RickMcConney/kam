@@ -1,10 +1,10 @@
 // ─── Weight-driven clock train ────────────────────────────────────────────────
 //
 // This is NOT a shape. It is a small designer that emits SEVERAL ordinary shapes
-// — four cycloidal wheels with lantern pinions and one escapement — each landing
+// — cycloidal wheels with lantern pinions, and one escapement — each landing
 // as its own chip with its own parameters, so every wheel stays independently
 // editable afterwards. That is the whole reason it is not a `ShapeType`: a shape
-// is one set of params, and a clock is five sets that only agree about the
+// is one set of params, and a clock is several sets that only agree about the
 // tooth and pin counts.
 //
 // What it works out, and what it deliberately does not:
@@ -16,8 +16,9 @@
 //   • THE GOING TRAIN is then forced. The escape wheel gives up half a tooth per
 //     beat, so it turns once every `2·beat·escapeTeeth` seconds; the great wheel
 //     is required to turn once every `greatWheelMin` minutes (60 puts the minute
-//     hand straight on it). The ratio between those two is what the three meshes
-//     must produce EXACTLY — a train off by a thousandth is 86 seconds a day —
+//     hand straight on it). The ratio between those two is what the train's
+//     meshes must produce EXACTLY — a train off by a thousandth is 86 seconds a
+//     day —
 //     which is why `solveTrain` searches integer factorisations rather than
 //     rounding a cube root.
 //
@@ -30,11 +31,18 @@
 //
 // Every wheel drives the pinion of the wheel AFTER it, so each gear is emitted
 // with `emitPinion` — the pinion beside the great wheel is the SECOND wheel's,
-// and the one beside the third wheel is the escape wheel's. The escapement
-// generator emits no pinion of its own, which is exactly right: the third
+// and the one beside the LAST train wheel is the escape wheel's. The escapement
+// generator emits no pinion of its own, which is exactly right: that last
 // wheel's is it. The great wheel therefore has a pinion driven by the drive
 // wheel, and the drive wheel is the one wheel in the clock with nothing driving
 // it but the cord.
+//
+//   • HOW MANY WHEELS is the spec's (`trainWheels`): three by default — great,
+//     second, escape, the classic English longcase train and what a wooden clock
+//     wants — or four for a clock designed before there was a choice. It decides
+//     more than a part count: every mesh reverses the rotation, so it also fixes
+//     which way the escape wheel must run for the minute hand to go clockwise
+//     (`escapeClockwiseFor`).
 
 import { getMultiBBox } from '../canvas/selectionUtils'
 import { gearDims, gearHub, gearMesh, pinionDims } from './gearGenerator'
@@ -48,10 +56,67 @@ import { clamp } from './polyOps'
 /** mm/s². The pendulum length is only as good as this, so it is stated once. */
 export const G_MM = 9806.65
 
-/** Wheels in the going train — great, second, third, escape. Hardcoded. */
-export const TRAIN_WHEELS = 4
-/** …so there are three meshes to solve for. */
-const MESHES = TRAIN_WHEELS - 1
+/** Wheels in the going train a NEW clock is built with — great, second, escape,
+ *  so TWO meshes between the minute arbor and the escapement.
+ *
+ *  This is the classic English seconds-pendulum going train and it is what a
+ *  wooden clock wants. Fewer meshes is fewer pivots and one fewer mesh loss, and
+ *  a wooden train has no slack to spend: the torque arriving at the pallets is
+ *  what a wooden clock is always short of, and you cannot simply hang more
+ *  weight, since the weight is also what wears wooden pivots and crushes the
+ *  plates. Every routed wheel also carries its own runout and spacing error,
+ *  which shows as a once-a-turn tight spot — three meshes is three chances to
+ *  have one deep enough to stall the train, and every arbor is one more centre
+ *  distance that walks with the humidity.
+ *
+ *  WHAT MAKES IT AFFORDABLE IS THE LANTERN, not dropping a wheel. Two meshes
+ *  have to split 60:1 as roughly 7.75 each, which needs an 8-pin pinion — and a
+ *  lantern takes a low count where a cut pinion will not, the pin being a full
+ *  cylinder that the wheel's face is generated against, so there is no undercut
+ *  to fight at any count. 8 is comfortable and 6 is done; below 6 the action
+ *  goes lumpy. Hence `DEFAULT_CLOCK_SPEC.minPins` of 8: leave it at 12 and the
+ *  solver needs ~93-tooth wheels to make two meshes come to 60. */
+export const DEFAULT_TRAIN_WHEELS = 3
+
+/** …and what a clock designed before there was a choice has. Absent
+ *  `ClockSpec.trainWheels` reads as this, so an old project opens cutting
+ *  exactly what it always cut — the same rule `module` and `motionSize` follow. */
+export const LEGACY_TRAIN_WHEELS = 4
+
+/** Wheels in this clock's going train, great…escape. */
+export function trainWheelsOf(spec: Pick<ClockSpec, 'trainWheels'>): 3 | 4 {
+  return spec.trainWheels === 3 || spec.trainWheels === 4 ? spec.trainWheels : LEGACY_TRAIN_WHEELS
+}
+
+/** …and the meshes between them, which is what `solveTrain` divides the ratio
+ *  across. The drive wheel's mesh is NOT one of these: its count follows the run
+ *  time rather than the rate. */
+export function meshCountOf(spec: Pick<ClockSpec, 'trainWheels'>): number {
+  return trainWheelsOf(spec) - 1
+}
+
+/**
+ * Which way the escape wheel must run for the MINUTE HAND to run clockwise.
+ *
+ * Every external mesh reverses the sense, so the great wheel — which carries the
+ * minute hand — and the escape wheel agree only when the number of meshes
+ * between them is even. At four wheels that is three meshes and they turn
+ * opposite ways; at three it is two and they turn together.
+ *
+ * So this is FORCED by the wheel count and is not the user's Escapement default
+ * to give, exactly as `backlash` and `pinDia` are not: which way the hands go is
+ * a decision about the clock. Leaving it be would build a three-wheel clock
+ * whose minute hand runs backwards — and it fails silently twice over, since
+ * back relief makes a wheel handed, so every wheel in the train would have its
+ * ACTING flank cut away and still look entirely reasonable on the stock.
+ *
+ * The pleasant consequence at three wheels: the escape wheel turns clockwise
+ * too, so a mark on it reads as a seconds hand going the right way round —
+ * which is why a longcase puts its seconds hand on the escape arbor.
+ */
+export function escapeClockwiseFor(trainWheels: number): boolean {
+  return (Math.max(2, Math.round(trainWheels)) - 1) % 2 === 0
+}
 
 // Bounds on ONE mesh. A wooden clock wheel much under 1.5:1 is not worth the
 // arbor it sits on, and much over 12:1 needs a wheel that will not fit the case.
@@ -69,12 +134,17 @@ const PIN_HEADROOM = 3
 const TRAIN_LEAN_DEG = 22
 
 /** Where the MOTION WORK's arbor sits, as one more entry on the end of
- *  `linkAngles`. The train's links run 0…TRAIN_WHEELS-1 (one per pair of
- *  neighbouring arbors); this one is a BRANCH off the great arbor rather than
- *  the next link of the chain, which is why it is indexed past them and why its
- *  angle points the other way — from its host TO the joint, since here the host
- *  is what is fixed. */
-export const MOTION_LINK = TRAIN_WHEELS
+ *  `linkAngles`. The train's links run one per pair of neighbouring arbors;
+ *  this one is a BRANCH off the great arbor rather than the next link of the
+ *  chain, which is why it is indexed past them and why its angle points the
+ *  other way — from its host TO the joint, since here the host is what is fixed.
+ *
+ *  A FIXED SLOT, not `trainWheels` — it is deliberately indexed past the LONGEST
+ *  train rather than past this clock's own. A three-wheel train uses links 0–2
+ *  and simply leaves slot 3 unused, so switching a clock between three and four
+ *  wheels does not slide the motion branch onto a train link (which would fold
+ *  the hour hand into the going train) or throw the arrangement away. */
+export const MOTION_LINK = LEGACY_TRAIN_WHEELS
 
 /** …and where it starts: straight out to the right of the great arbor, clear of
  *  a train that leans upward. As arbitrary as the train's own lean, and as
@@ -84,7 +154,7 @@ const MOTION_LEAN_DEG = 0
 /** The lean as link angles: up and alternately left/right, which keeps the
  *  train compact and vertical and leaves the middle clear for the pendulum. The
  *  motion branch rides on the end, so one array covers the whole arrangement. */
-export function defaultLinkAngles(links = TRAIN_WHEELS + 1): number[] {
+export function defaultLinkAngles(links = MOTION_LINK + 1): number[] {
   return Array.from({ length: links }, (_, i) => i === MOTION_LINK
     ? MOTION_LEAN_DEG
     : 90 + (i % 2 === 0 ? 1 : -1) * TRAIN_LEAN_DEG)
@@ -116,24 +186,47 @@ export const MAX_WHEEL_DIA = 280
  *  leaves more material in the root than the drawing shows — which for a lantern
  *  is not cosmetic, since the pin has to reach into that space. */
 export const CLOCK_ROOT_BIT_DIA = 25.4 / 8
-/** The fraction of a mesh's circular pitch a pin wants to be. Used only to pick
- *  between the clock's two dowel sizes, so it needs to be about right rather
- *  than exact: a lantern pin is roughly half the tooth SPACE, and the space is
- *  roughly a third of the pitch once the wheel's tooth has taken its share. */
-export const PIN_PITCH_FRACTION = 0.35
-
-/** Which of the clock's two dowels suits a mesh of this module — whichever
- *  lands nearer `PIN_PITCH_FRACTION` of its circular pitch. A tie goes to the
- *  larger, that being the stronger pin. Only asked of the SLOW end: see
- *  `LIGHT_PIN_MESHES`. */
-export function pinForPitch(module: number, large: number, small: number): number {
-  const want = PIN_PITCH_FRACTION * Math.PI * Math.max(0.05, module)
-  return Math.abs(large - want) <= Math.abs(small - want) ? large : small
+/**
+ * Which of the clock's two dowels a SLOW mesh takes: **the fattest one the tooth
+ * can still push.**
+ *
+ * A lantern mesh has exactly two members and they fail differently. The PIN is a
+ * beam between its cheeks and wants to be fat; the wheel's TOOTH is what is left
+ * of the circular pitch once the pin and the backlash are taken out
+ * (`π·m − pin Ø − backlash`), so every millimetre of pin is a millimetre off the
+ * tooth. The dowel is absolute and the pitch is not, so on a fine enough mesh the
+ * fat pin stops being the strong answer and starts being the reason the tooth
+ * breaks across the grain. The changeover is therefore where the two members are
+ * the same size — take the large pin while it leaves a tooth at least as thick as
+ * itself, and the small one after that.
+ *
+ * IT REPLACED A FRACTION-OF-PITCH HEURISTIC (`0.35·π·m`, nearest wins) which had
+ * no failure mode behind it and switched over at m4.09 for a Ø6/Ø3 pair. That was
+ * fine while a clock's great wheel was m5.6, and stopped being fine when the
+ * three-wheel train landed at m4.24 — 3.6% clear of the switch. A `maxWheelDia`
+ * an inch narrower put the most heavily loaded lantern in the going train (the
+ * one the great wheel drives, at the full weight torque) onto the thin dowel,
+ * silently. This rule changes over at m3.92 for the same pair, which on a
+ * three-wheel train is a 258 mm board rather than a 270 mm one, and it gives up
+ * the fat pin only where the tooth really has become the weaker member.
+ *
+ * Only asked of the SLOW end; the fast end is pinned small whatever it says (see
+ * `LIGHT_PIN_MESHES`).
+ */
+export function pinForTooth(module: number, large: number, small: number, backlash: number): number {
+  const tooth = Math.PI * Math.max(0.05, module) - large - Math.max(0, backlash)
+  return tooth >= large ? large : small
 }
 
-/** How many meshes at the FAST end are pinned small whatever their pitch would
- *  suggest — the last two, which are the lanterns carried by the third wheel and
- *  the escape wheel.
+/** How many meshes at the FAST end are pinned small whatever `pinForTooth`
+ *  would say — the last two, which on a four-wheel train are the lanterns carried
+ *  by the third wheel and the escape wheel.
+ *
+ *  IT IS CAPPED SO THE GREAT WHEEL'S OWN MESH IS NEVER IN THE SET (see
+ *  `solveModules`): on a three-wheel train there are only three meshes in all,
+ *  and taking the last two would put the thin dowel through the lantern the
+ *  great wheel drives — the most heavily loaded pinion in the going train. A
+ *  three-wheel clock therefore lightens the escape mesh alone.
  *
  *  Fitting the pin to the pitch is a strength argument, and at the fast end
  *  strength is not what is scarce: torque has fallen by the whole train ratio, so
@@ -154,12 +247,21 @@ export interface ClockSpec {
   beatSeconds: number
   /** Escape wheel teeth. With a one-second beat, 30 turns it once a minute. */
   escapeTeeth: number
-  /** Tooth counts the user is HOLDING, one per mesh (great, second, third);
-   *  `null` or absent means the solver chooses. The rate is still what the
-   *  search is costed on, so pinning one wheel moves the others to keep the
+  /** Wheels in the going train, great…escape — 3 or 4, so two meshes or three.
+   *  Absent means 4, which is what a clock designed before there was a choice
+   *  has; a new clock is 3 (see `DEFAULT_TRAIN_WHEELS` for why).
+   *
+   *  It is not only a count. The number of meshes decides which way each arbor
+   *  turns, so it also fixes the escape wheel's handedness — see
+   *  `escapeClockwiseFor` — and changing it re-cuts every wheel in the train
+   *  mirrored. */
+  trainWheels?: 3 | 4
+  /** Tooth counts the user is HOLDING, one per mesh (great, second, and third
+   *  on a four-wheel train); `null` or absent means the solver chooses. The rate
+   *  is still what the search is costed on, so pinning one wheel moves the others to keep the
    *  train exact — pin the wheel you have stock for, or have already cut. Pin
-   *  all three and there is nothing left to solve: the train is reported as it
-   *  stands, in red if it no longer keeps time. See `solveTrain`. */
+   *  every one of them and there is nothing left to solve: the train is reported
+   *  as it stands, in red if it no longer keeps time. See `solveTrain`. */
   lockedTeeth?: (number | null)[]
   /** Fewest pins any lantern pinion in the train may have. A lantern pinion with
    *  too few pins has a coarse, lumpy action, so this is the floor the solver
@@ -190,7 +292,7 @@ export interface ClockSpec {
   /** Play at every mesh, mm at the pitch line — tooth THINNING, not a wider
    *  centre distance (see gearGenerator). One figure for the whole clock: it is
    *  a property of how the wheels are cut, and setting it per wheel meant
-   *  opening five chips to change one decision. */
+   *  opening a chip per wheel to change one decision. */
   backlash: number
   /** The LARGER of the two pin diameters, mm — what the coarse end of the train
    *  is pinned with. On a cycloidal wheel this is a tooth-FORM parameter — the
@@ -200,9 +302,9 @@ export interface ClockSpec {
   /** The SMALLER pin, for the fine end. Two sizes rather than one because the
    *  tooth is `π·m − pin Ø − backlash` and the pin is an absolute dowel: one
    *  that suits the great wheel is most of the tooth space at the escape end,
-   *  and one that suits the escape end rattles in the great wheel's. Each mesh
-   *  takes whichever of the two better suits its own circular pitch — see
-   *  `pinForPitch`. Absent on a clock designed before there were two, which
+   *  and one that suits the escape end rattles in the great wheel's. The slow end
+   *  takes the fattest of the two its tooth can still push — see `pinForTooth`;
+   *  the fast end takes the small one regardless. Absent on a clock designed before there were two, which
    *  reads as `pinDia` for every mesh and so cuts what it always cut. */
   pinDiaFine?: number
   /** Cut the MOTION WORK too — the two extra wheels that drive an hour hand off
@@ -229,7 +331,8 @@ export interface ClockSpec {
   drumDia: number
   /** Direction of each link of the going train, DEGREES CCW from +x — link i
    *  runs from arbor i to arbor i+1, so there is one fewer of these than there
-   *  are arbors (4 for the standard five). The lengths are NOT here and never
+   *  are arbors (3 for a three-wheel train's four, 4 for a four-wheel train's
+   *  five). The lengths are NOT here and never
    *  will be: they are forced by the meshes, and storing them would let the two
    *  disagree. These are the whole of what a user may arrange.
    *
@@ -241,12 +344,17 @@ export interface ClockSpec {
 }
 
 export const DEFAULT_CLOCK_SPEC: ClockSpec = {
-  // A seconds pendulum with a 30-tooth escape wheel and 12-pin pinions: the
-  // train comes out 48 / 48 / 45 driving 12s, which is exactly 60:1, so the
-  // great wheel turns once an hour and carries the minute hand.
+  // A seconds pendulum, a 30-tooth escape wheel and THREE wheels on 8-pin
+  // pinions: 64/8 then 60/8 is 8 × 7.5, exactly 60:1, so the great wheel turns
+  // once an hour and carries the minute hand while the escape wheel turns once a
+  // minute. That is the standard English longcase going train, and both ends of
+  // it turn clockwise — so a mark on the escape wheel reads as a seconds hand.
   beatSeconds: 1,
   escapeTeeth: 30,
-  minPins: 12,
+  trainWheels: DEFAULT_TRAIN_WHEELS,
+  // Eight, because two meshes have to come to ~7.75 each and a lantern takes a
+  // low count happily. At 12 the same ratio needs ~93-tooth wheels.
+  minPins: 8,
   greatWheelMin: 60,
   // Sized to the board rather than to a module: the wheels come out as big as
   // 280 mm allows, tapering toward the escapement.
@@ -301,9 +409,10 @@ export interface Mesh {
 }
 
 export interface TrainSolution {
-  /** Great→second, second→third, third→escape. Always MESHES long. */
+  /** Great→second, then second→escape, or second→third and third→escape on a
+   *  four-wheel train. One per mesh of the going train, drive end first. */
   meshes: Mesh[]
-  /** Ratio the three meshes had to produce, great wheel to escape wheel. */
+  /** Ratio those meshes had to produce, great wheel to escape wheel. */
   targetRatio: number
   /** What they actually produce. */
   actualRatio: number
@@ -315,13 +424,18 @@ export interface TrainSolution {
 }
 
 /**
- * Split `ratio` across three lantern meshes, exactly if it can be done.
+ * Split `ratio` across `meshCount` lantern meshes, exactly if it can be done.
  *
- * The search is over integer factorisations, not over rounded cube roots,
- * because a clock train that is a thousandth out is 86 seconds a day. It walks
- * two of the wheels and takes the third from the quotient; anything that lands
- * on a whole tooth costs nothing, everything else pays for its rate error first
- * and its shape second.
+ * The search is over integer factorisations, not over rounded roots, because a
+ * clock train that is a thousandth out is 86 seconds a day. It walks all but one
+ * of the wheels and takes the last from the quotient; anything that lands on a
+ * whole tooth costs nothing, everything else pays for its rate error first and
+ * its shape second.
+ *
+ * `meshCount` is `trainWheels − 1`: two for the three-wheel train a new clock
+ * gets, three for the four-wheel one an older project carries. At two the
+ * classic 64/8 and 60/8 fall straight out of the cost function, the spread term
+ * preferring the evenest split of 60 that lands on whole teeth.
  *
  * Cost, in order: rate error, then how far the three ratios are spread apart (an
  * even split gives the smallest wheels overall), then pins above `minPins` — the
@@ -329,16 +443,16 @@ export interface TrainSolution {
  * there is no exact one without them.
  *
  * `locked` HOLDS TOOTH COUNTS THE USER HAS CHOSEN, one entry per mesh (great,
- * second, third; `null` for free). The search then runs over what is left and
+ * second, and third where there is one; `null` for free). The search then runs over what is left and
  * the RATE is still what it is costed on, which is the point of the feature: pin
  * the wheel you have stock for, or the one you have already cut, and the others
  * move to keep the train exact. Three things follow from a lock and each would
  * be a bug if it were forgotten:
  *
- *   • the DERIVED wheel is the last FREE one, not always the third — with two
- *     locked there is only one left to solve for, and with three there is
- *     nothing to search at all and the train is simply reported (inexact and in
- *     red, if that is what the user has asked for);
+ *   • the DERIVED wheel is the last FREE one, not always the last — hold all
+ *     but one and there is only that one left to solve for, and hold every one
+ *     and there is nothing to search at all: the train is simply reported
+ *     (inexact and in red, if that is what the user has asked for);
  *   • a locked count IGNORES the mesh-ratio bounds. They exist to stop the
  *     search proposing silly wheels, and a number the user typed is not a
  *     proposal;
@@ -347,28 +461,35 @@ export interface TrainSolution {
  *     chose freely — but the locks are per WHEEL, and sorting would slide the
  *     user's count onto a different arbor.
  */
-export function solveTrain(ratio: number, minPins: number, locked?: (number | null)[]): TrainSolution {
+export function solveTrain(
+  ratio: number,
+  minPins: number,
+  locked?: (number | null)[],
+  meshCount = DEFAULT_TRAIN_WHEELS - 1,
+): TrainSolution {
   const target = Math.max(1, ratio)
   const floor = Math.max(2, Math.round(minPins))
-  const ideal = Math.log(target) / MESHES
+  const n = Math.max(1, Math.round(meshCount))
+  const ideal = Math.log(target) / n
 
   // One entry per mesh: the count the user is holding, or null.
-  const lock = Array.from({ length: MESHES }, (_, i) => {
+  const lock = Array.from({ length: n }, (_, i) => {
     const v = locked?.[i]
     return typeof v === 'number' && Number.isFinite(v) && v >= 4 ? Math.round(v) : null
   })
   const anyLocked = lock.some((v) => v !== null)
-  // The one the quotient decides — the LAST free mesh, or none when all three
-  // are held.
-  const freeIdx = lock.map((v, i) => (v === null ? i : -1)).filter((i) => i >= 0)
+  // The one the quotient decides — the LAST free mesh, or none when every one of
+  // them is held.
+  const idx = Array.from({ length: n }, (_, i) => i)
+  const freeIdx = idx.filter((i) => lock[i] === null)
   const derive = freeIdx.length > 0 ? freeIdx[freeIdx.length - 1] : -1
-  const walk = [0, 1, 2].filter((i) => i !== derive)
+  const walk = idx.filter((i) => i !== derive)
 
   let bestCost = Infinity
   let best: Mesh[] | null = null
 
   const consider = (t: number[], p: number[], pinCost: number) => {
-    const actual = (t[0] / p[0]) * (t[1] / p[1]) * (t[2] / p[2])
+    const actual = t.reduce((r, ti, i) => r * (ti / p[i]), 1)
     // Rate error dominates by six orders of magnitude: an exact train is always
     // preferred to a prettier inexact one.
     const relErr = Math.abs(actual / target - 1)
@@ -376,44 +497,52 @@ export function solveTrain(ratio: number, minPins: number, locked?: (number | nu
     const cost = relErr * 1e6 + spread + pinCost
     if (cost < bestCost) {
       bestCost = cost
-      best = [0, 1, 2].map((i) => ({ teeth: t[i], pins: p[i] }))
+      best = t.map((ti, i) => ({ teeth: ti, pins: p[i] }))
     }
   }
 
-  for (let p1 = floor; p1 <= floor + PIN_HEADROOM; p1++) {
-    for (let p2 = floor; p2 <= floor + PIN_HEADROOM; p2++) {
-      for (let p3 = floor; p3 <= floor + PIN_HEADROOM; p3++) {
-        const pins = [p1, p2, p3]
-        const pinCost = 0.01 * (p1 + p2 + p3 - 3 * floor)
-        if (pinCost >= bestCost) continue
-        const product = target * p1 * p2 * p3   // what T1·T2·T3 must come to
+  // Every pin count each mesh may take, as one counter over `PIN_HEADROOM + 1`
+  // options per mesh — the nested loops this replaced only worked for three.
+  const options = PIN_HEADROOM + 1
+  const combos = options ** n
+  for (let code = 0; code < combos; code++) {
+    const pins: number[] = []
+    for (let i = 0, c = code; i < n; i++, c = Math.floor(c / options)) {
+      pins.push(floor + (c % options))
+    }
+    const pinCost = 0.01 * pins.reduce((sum, p) => sum + p - floor, 0)
+    if (pinCost >= bestCost) continue
+    const product = pins.reduce((r, p) => r * p, target)   // what ΠTᵢ must come to
 
-        if (derive < 0) {
-          // Every count held: there is nothing to search, only to report.
-          consider(lock as number[], pins, pinCost)
-          continue
-        }
-        // A locked count is walked as itself and is NOT held to the ratio
-        // bounds; a free one is walked over them.
-        const range = (i: number): [number, number] => lock[i] !== null
-          ? [lock[i]!, lock[i]!]
-          : [Math.ceil(MIN_MESH_RATIO * pins[i]), Math.floor(MAX_MESH_RATIO * pins[i])]
-        const [aLo, aHi] = range(walk[0])
-        const [bLo, bHi] = range(walk[1])
-        const [dLo, dHi] = range(derive)
-        const t = [0, 0, 0]
-        for (let a = aLo; a <= aHi; a++) {
-          t[walk[0]] = a
-          for (let b = bLo; b <= bHi; b++) {
-            t[walk[1]] = b
-            const d = Math.round(product / (a * b))
-            if (d < dLo || d > dHi) continue
-            t[derive] = d
-            consider(t, pins, pinCost)
-          }
-        }
+    if (derive < 0) {
+      // Every count held: there is nothing to search, only to report.
+      consider(lock as number[], pins, pinCost)
+      continue
+    }
+    // A locked count is walked as itself and is NOT held to the ratio bounds; a
+    // free one is walked over them.
+    const range = (i: number): [number, number] => lock[i] !== null
+      ? [lock[i]!, lock[i]!]
+      : [Math.ceil(MIN_MESH_RATIO * pins[i]), Math.floor(MAX_MESH_RATIO * pins[i])]
+    const [dLo, dHi] = range(derive)
+    const t = new Array<number>(n).fill(0)
+    // One loop per WALKED mesh, however many that is — the innermost takes the
+    // derived count from the quotient.
+    const step = (w: number, prod: number) => {
+      if (w === walk.length) {
+        const d = Math.round(product / prod)
+        if (d < dLo || d > dHi) return
+        t[derive] = d
+        consider(t, pins, pinCost)
+        return
+      }
+      const [lo, hi] = range(walk[w])
+      for (let v = lo; v <= hi; v++) {
+        t[walk[w]] = v
+        step(w + 1, prod * v)
       }
     }
+    step(0, 1)
   }
 
   // Nothing in range at all (an absurd ratio). Fall back to an even split so the
@@ -421,7 +550,7 @@ export function solveTrain(ratio: number, minPins: number, locked?: (number | nu
   // whatever the user locked, since that is not the solver's to give up.
   if (!best) {
     const r = Math.exp(ideal)
-    best = Array.from({ length: MESHES }, (_, i) => ({
+    best = Array.from({ length: n }, (_, i) => ({
       teeth: lock[i] ?? Math.max(4, Math.round(floor * r)),
       pins: floor,
     }))
@@ -532,8 +661,9 @@ export interface MeshModule {
 }
 
 export interface ModuleFamily {
-  /** One per mesh, DRIVE END FIRST: drive→great, great→second, second→third,
-   *  third→escape. Always 4 long for the standard five-arbor clock. */
+  /** One per mesh, DRIVE END FIRST: drive→great, great→second, then second→escape
+   *  or second→third and third→escape. `trainWheels` long — 3 for a three-wheel
+   *  train, 4 for a four-wheel one. */
   meshes: MeshModule[]
   /** Index of the mesh whose wheel set the scale by hitting `maxWheelDia`, or
    *  −1 when every mesh was pinned. */
@@ -543,7 +673,7 @@ export interface ModuleFamily {
 /** Context a mesh needs before its wheel can be measured. */
 interface ModuleCtx {
   pressureAngle: number; backlash: number
-  /** The two dowels; `pinForPitch` picks between them per mesh. */
+  /** The two dowels; `pinForTooth` picks between them per mesh. */
   pinDia: number; pinDiaFine: number
 }
 
@@ -604,10 +734,15 @@ export function solveModules(
       }
       k = lo
     }
+    // Mesh 0 is the drive wheel's and mesh 1 the GREAT wheel's; those two carry
+    // the weight's torque undivided and are never lightened, however few meshes
+    // there are. See LIGHT_PIN_MESHES — and `pinForTooth` for what the slow end
+    // takes instead, which is the fattest dowel its tooth can still push.
+    const lightFrom = Math.max(2, meshes.length - LIGHT_PIN_MESHES)
     const next = meshes.map((_, i) => {
-      if (i >= meshes.length - LIGHT_PIN_MESHES) return small
+      if (i >= lightFrom) return small
       const m = pinnedAt(i) ?? Math.max(0.05, k * rel[i])
-      return pinForPitch(m, large, small)
+      return pinForTooth(m, large, small, ctx.backlash)
     })
     if (next.every((p, i) => p === pins[i])) break
     pins = next
@@ -749,6 +884,16 @@ export type ClockPartKey =
   // walks — see TRAIN_PART_ORDER.
   | 'minute' | 'hour'
 
+/** The going train's WHEELS, great first — the ones `solveTrain` places, one per
+ *  mesh. A three-wheel train takes the first two of these and simply has no
+ *  third wheel; `TRAIN_PART_ORDER` finds it either way, since it selects by what
+ *  is present rather than by a count. The drive wheel and the escapement are not
+ *  here: one follows the run time and the other sets the ratio these divide. */
+export const TRAIN_WHEEL_KEYS: readonly ClockPartKey[] = ['great', 'second', 'third']
+
+/** …and what each is called, on its chip and in the panel. */
+export const TRAIN_WHEEL_NAMES: readonly string[] = ['Great Wheel', 'Second Wheel', 'Third Wheel']
+
 /** The shapes the GOING TRAIN is made of — narrowed so every reader can reach
  *  the tooth counts without re-narrowing the whole ShapeParams union. The
  *  pendulum is deliberately not one of these: it hangs off the anchor and is on
@@ -776,6 +921,13 @@ export type ClockBase = Pick<ShapeToolConfig, 'gear' | 'escapement' | 'pendulum'
 export interface ClockDesign {
   train: TrainSolution
   drive: DriveSolution
+  /** Wheels in the going train, great…escape — 3 or 4. */
+  trainWheels: 3 | 4
+  /** Which way the escape wheel runs, forced by that count so that the minute
+   *  hand runs clockwise. At three wheels it is `true` and the escape wheel
+   *  turns clockwise with the great wheel; at four it is `false` and they turn
+   *  opposite ways. See `escapeClockwiseFor`. */
+  escapeClockwise: boolean
   /** Tooth size at every mesh, drive end first — what replaced the one module. */
   modules: ModuleFamily
   pendulumMM: number
@@ -792,15 +944,25 @@ export interface ClockDesign {
  * module, its tooth count, the pins of the pinion it drives, and the profile —
  * a clock wheel running a lantern pinion must be cycloidal, since an involute
  * wheel is not conjugate to a pin and its ratio wobbles within every tooth. The
- * escapement takes `base.escapement` and overrides its tooth count and span.
+ * escapement takes `base.escapement` and overrides its tooth count, its span,
+ * and WHICH WAY IT RUNS — that last because the number of meshes decides it and
+ * a wrong one runs the hands backwards (`escapeClockwiseFor`).
  * Everything else — bore, hub, spokes, pin diameter, backlash, markings, the
  * escapement's whole geometry — is the user's default, untouched, and editable
  * per chip afterwards.
  */
 export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   const escRev = escapeRevSeconds(spec.beatSeconds, spec.escapeTeeth)
-  const train = solveTrain(trainRatio(spec), spec.minPins, spec.lockedTeeth)
+  const wheels = trainWheelsOf(spec)
+  const train = solveTrain(trainRatio(spec), spec.minPins, spec.lockedTeeth, wheels - 1)
   const drive = solveDrive(spec, spec.minPins)
+  // WHICH WAY THE ESCAPE WHEEL RUNS IS THE WHEEL COUNT'S TO SAY, not the user's
+  // Escapement default — see `escapeClockwiseFor`. Every mesh reverses the
+  // sense, so the count decides whether the minute hand goes round the right
+  // way, and that is a decision about the CLOCK exactly as backlash and pin
+  // diameter are. Left to the default, a three-wheel clock would run its hands
+  // backwards and every wheel in it would be relieved on its acting flank.
+  const escClockwise = escapeClockwiseFor(wheels)
 
   // Every mesh in the going train, DRIVE END FIRST — which is the order tooth
   // size tapers in, and the order `solveModules` expects.
@@ -899,8 +1061,11 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   //
   // Rotation sense per train arbor, off the escapement and alternating back —
   // exactly what `clockPose` runs on, from the one definition.
-  const senses = trainSenses(base.escapement.clockwise === true)
-  const [sDrive, sGreat, sSecond, sThird] = senses
+  // One sense per ARBOR: drive, great, …, escape — `wheels + 1` of them, since
+  // the drive wheel is an arbor the going train's wheel count does not include.
+  const senses = trainSenses(escClockwise, wheels + 1)
+  const sDrive = senses[0]
+  const sGreat = senses[1]
   //
   // WHICH FLANK ACTS IS FORCED BY THE TRAIN, and it is the one thing about back
   // relief a wheel cannot be left to decide for itself: every mesh reverses the
@@ -931,11 +1096,16 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   })
 
   // Arbor periods, from the escape wheel backwards: each wheel turns its mesh
-  // ratio slower than the one it drives.
-  const [m1, m2, m3] = train.meshes
-  const thirdSec = escRev * (m3.teeth / m3.pins)
-  const secondSec = thirdSec * (m2.teeth / m2.pins)
-  const greatActual = secondSec * (m1.teeth / m1.pins)
+  // ratio slower than the one it drives. `wheelSec[i]` is the arbor of train
+  // wheel *i* (great first); the escape arbor is `escRev` and is not in it.
+  const wheelSec: number[] = new Array(train.meshes.length).fill(0)
+  for (let i = train.meshes.length - 1; i >= 0; i--) {
+    const m = train.meshes[i]
+    wheelSec[i] = (wheelSec[i + 1] ?? escRev) * (m.teeth / m.pins)
+  }
+  const greatActual = wheelSec[0] ?? escRev
+  /** The mesh that drives the escape arbor — the last one, whatever the count. */
+  const lastMesh = train.meshes[train.meshes.length - 1]
 
   // The hour hand's gearing, if asked for: two more wheels of the same kind, off
   // the great arbor rather than along the train. Its ratio is 12 whatever the
@@ -988,7 +1158,8 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
     },
     {
       key: 'great', name: 'Great Wheel', revSeconds: greatActual,
-      params: wheel(mod(1), m1.teeth, m1.pins, pin(1), sGreat, drive.pins, mod(0), pin(0)),
+      params: wheel(mod(1), train.meshes[0].teeth, train.meshes[0].pins, pin(1), sGreat,
+        drive.pins, mod(0), pin(0)),
     },
     // In CLOCK_PART_ORDER position: straight after the wheel whose arbor they
     // hang off. Each is emitted with the lantern it MESHES with, exactly as a
@@ -1027,20 +1198,37 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
         },
       },
     ] : []),
-    { key: 'second', name: 'Second Wheel', revSeconds: secondSec, params: wheel(mod(2), m2.teeth, m2.pins, pin(2), sSecond, m1.pins, mod(1), pin(1)) },
-    { key: 'third',  name: 'Third Wheel',  revSeconds: thirdSec,  params: wheel(mod(3), m3.teeth, m3.pins, pin(3), sThird, m2.pins, mod(2), pin(2)) },
+    // The rest of the going train, one wheel per remaining mesh — the second
+    // wheel alone on a three-wheel train, the second and third on a four-wheel
+    // one. Written as a walk rather than as a row each because the COUNT is the
+    // spec's now: mesh *i* cuts wheel *i*'s teeth, and the pins through its hub
+    // belong to mesh *i* − 1, which is the previous wheel's and a different
+    // module under a taper.
+    ...train.meshes.slice(1).map((m, j) => {
+      const i = j + 1
+      return {
+        key: TRAIN_WHEEL_KEYS[i], name: TRAIN_WHEEL_NAMES[i], revSeconds: wheelSec[i],
+        params: wheel(mod(i + 1), m.teeth, m.pins, pin(i + 1), senses[i + 1],
+          train.meshes[i - 1].pins, mod(i), pin(i)),
+      }
+    }),
     {
       key: 'escapement', name: 'Escapement', revSeconds: escRev,
       params: {
         type: 'escapement', cx: 0, cy: 0,
         ...base.escapement,
         teeth: Math.max(6, Math.round(spec.escapeTeeth)),
-        // It carries the third wheel's pinion, like every other driven wheel —
-        // and it is the one wheel that cannot work the pin circle out for
-        // itself, having no module of its own.
-        arborPins: m3.pins,
-        arborPinCircleDia: mod(3) * m3.pins,
-        arborPinDia: pin(3),
+        // HANDEDNESS IS THE TRAIN'S, not the user's Escapement default: it is
+        // what makes the minute hand go round the right way, and at three wheels
+        // it also puts the escape wheel clockwise, so a mark on it reads as a
+        // seconds hand. See `escapeClockwiseFor`.
+        clockwise: escClockwise,
+        // It carries the last train wheel's pinion, like every other driven
+        // wheel — and it is the one wheel that cannot work the pin circle out
+        // for itself, having no module of its own.
+        arborPins: lastMesh.pins,
+        arborPinCircleDia: mod(train.meshes.length) * lastMesh.pins,
+        arborPinDia: pin(train.meshes.length),
       },
     },
     // Last, and on no arbor at all — it hangs from the anchor. Its LENGTH is the
@@ -1059,6 +1247,8 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
 
   return {
     train, drive, parts, motion, modules,
+    trainWheels: wheels,
+    escapeClockwise: escClockwise,
     pendulumMM: pendulumLengthMM(spec.beatSeconds),
     escRevSeconds: escRev,
   }
@@ -1137,7 +1327,7 @@ export function layoutClock(
   const totalH = rows.reduce((t, r) => t + r.h, 0) + gap * Math.max(0, rows.length - 1)
   // Rows stack DOWNWARD from the block's top edge. Centred when the block fits,
   // but a block TALLER than the stock starts at the top edge and trails off the
-  // bottom instead of straddling: five m4 wheels are 200 mm each on a 300 mm
+  // bottom instead of straddling: a row of m4 wheels is 200 mm each on a 300 mm
   // board, so centred, the first row sat entirely ABOVE the stock and the last
   // entirely below it — the arrangement that gets the FEWEST of them onto the
   // board. From the top edge, everything that fits is on it and the rest hangs
@@ -1178,7 +1368,7 @@ export function layoutClock(
 // ─── Assembled: where the arbors go, and where everything stands ──────────────
 //
 // The parts are drawn CLEAR of each other on the stock, which leaves the one
-// question a drawing of five wheels cannot answer: assembled, does the train
+// question a drawing of loose wheels cannot answer: assembled, does the train
 // run? `clockPlate` puts the arbors at their true spacings and `clockPose`
 // turns everything from the escapement's own kinematics, which is what the
 // canvas preview (canvas/layers/ClockAnimLayer.tsx) draws.
@@ -1752,7 +1942,7 @@ export function trainSenses(escClockwise: boolean, n = TRAIN_PART_ORDER.length):
 /**
  * Gather a clock back out of the document.
  *
- * The five wheels are ordinary independent shapes once emitted — several paths
+ * The wheels are ordinary independent shapes once emitted — several paths
  * each, all carrying the same `shapeParams` — so this takes the FIRST path of
  * each `clockPart` and reads its current parameters. Which means the assembly
  * reflects every edit made to a wheel since, including edits that break the
@@ -1760,7 +1950,7 @@ export function trainSenses(escClockwise: boolean, n = TRAIN_PART_ORDER.length):
  * more use than one showing the clock as designed.
  *
  * Returns the parts in train order, dropping any whose paths have been deleted —
- * a caller must handle a short list rather than assume five.
+ * a caller must handle a short list rather than assume the full train.
  */
 export function clockAssemblyFromPaths(
   paths: { clockId?: string; clockPart?: string; shapeParams?: ShapeParams }[],

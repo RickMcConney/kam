@@ -2,7 +2,7 @@
 
 **Browser-based CNC CAM application for makers, woodworkers, and hobby CNC users.**
 
-[**Launch App →**](https://rickmcconney.github.io/kam/)
+[**Launch App →**](https://rickmcconney.github.io/kam/) · [**User Guide →**](docs/README.md)
 
 If you find it useful, please ⭐ star the repo — it's the only way I know anyone is using it.
 

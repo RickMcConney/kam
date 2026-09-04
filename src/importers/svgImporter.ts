@@ -59,7 +59,7 @@ export interface ImportedPath {
   // shapes/clockTrain.ts). Purely a LINK: the shapes are ordinary, independent
   // and separately editable, and nothing regenerates through this. It exists so
   // the five groups can be found again and stood up in mesh — the one question a
-  // drawing of five wheels laid out flat cannot answer.
+  // drawing of loose wheels laid out flat cannot answer.
   clockId?: string
   clockPart?: string
   // The SPEC the whole clock was worked out from, carried by every one of its

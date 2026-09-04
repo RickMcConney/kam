@@ -125,7 +125,8 @@ Close the setup panel with the **×**.
 *Stock, origin and material — everything else in the project is measured from these.*
 
 <!-- CROP · sidebar only (x 0-640 of the 2800 px capture), Setup header down through
-     Material. Native 2×, 640 px wide. Fields must be readable. -->
+     Material. Downscaled to 346 px wide (capped at 700 px tall, to match the rest of
+     the guide's crops) — fields stay readable. -->
 
 **Working in inches?** Click the units button in the toolbar and type inches instead.
 It changes what you see and type, never what is stored, so you can flip back and forth
@@ -382,7 +383,7 @@ Click **Export**. The `.gcode` file lands in your downloads.
 job — read the origin lines against how you zeroed the machine. Warnings, when there are
 any, don't block the export; they tell you what to look at first.*
 
-<!-- CROP · the dialog only, native 2×, 911 px wide. -->
+<!-- CROP · the dialog only, native 2×, downscaled to 441 px wide (capped at 700 px tall). -->
 
 ---
 

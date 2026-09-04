@@ -10,15 +10,22 @@ in. So there are two kinds, used for different jobs.
 | Kind | What it's for | Final width |
 |---|---|---|
 | **Full app** | Orientation — *where* a thing is on screen | **1600 px** |
-| **Crop** | Detail — a panel, form or dialog whose values you must be able to read | **native 2×, capped at 1000 px** |
+| **Crop** | Detail — a panel, form or dialog whose values you must be able to read | **native 2×, capped at 1000 px wide, 700 px tall** |
 
 A full-app shot at 1600 px displays at ~800pt: half size, retina-crisp, and you can see
 the layout but not read the sidebar. That is the correct trade for "here is where the
 Setup button lives."
 
 A crop kept at native 2× displays at its *real* on-screen size and stays sharp, so a
-form's labels and values read exactly as they do in the app. Cap it at 1000 px; wider
-than that and it's really a full-app shot.
+form's labels and values read exactly as they do in the app. Cap it at 1000 px wide;
+wider than that and it's really a full-app shot.
+
+**Cap the tall dimension too, at 700 px**, or a crop can end up taller than a full-app
+screenshot — a tall sidebar panel or a full canvas region can pass 1000 px in height while
+staying comfortably under the width cap, and unlike the width cap nothing stops it. A
+whole panel that runs past 700 px tall (the Setup panel is the standing example) doesn't
+need a second screenshot — scale the one crop down until its tall edge hits 700; the text
+was captured at 2×, so it stays legible well below native size.
 
 ## Capturing
 

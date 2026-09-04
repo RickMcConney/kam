@@ -15,7 +15,7 @@ import {
 /**
  * The whole clock, assembled and running.
  *
- * The five parts are cut flat and laid out CLEAR of each other on the stock,
+ * The parts are cut flat and laid out CLEAR of each other on the stock,
  * which leaves the question the drawing cannot answer: put together at the
  * spacings the panel quotes, does the train run? So this stands the arbors up at
  * those spacings and turns everything off the escapement's own kinematics.

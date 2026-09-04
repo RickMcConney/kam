@@ -390,7 +390,7 @@ export default function CanvasStage() {
   const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
   const meshAnimGroupId = usePathsStore((s) =>
     s.paths.find((p) => p.id === meshAnimPathId)?.groupId ?? null)
-  // A running CLOCK draws all five wheels itself, in mesh, so every one of its
+  // A running CLOCK draws all its wheels itself, in mesh, so every one of its
   // groups steps aside — which is why this is a separate exclusion from the
   // single-group one above rather than another user of it.
   const clockAnimPathId = useUIStore((s) => s.clockAnimPathId)

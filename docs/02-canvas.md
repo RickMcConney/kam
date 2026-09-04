@@ -190,7 +190,7 @@ curve into and out of each one. The first point is drawn in white, so you can al
 where the path starts — which matters when you care where a cut begins. The banner names
 the gestures, and the status bar reads `Mode: Edit Points` until you finish.*
 
-<!-- CROP · canvas plus the hint banner, from a 2× capture, 1000 px wide. -->
+<!-- CROP · canvas plus the hint banner, from a 2× capture, downscaled to 525 px wide to match the dragbox pair above. -->
 
 **Ctrl+Z inside a point-edit session undoes just that session's edits**, one at a time,
 before it starts eating anything else. You can go into a path, make a mess, back out of
@@ -200,16 +200,88 @@ it, and leave without having disturbed the rest of the project.
 
 ## Reshaping with Path Tools
 
-The **Path Tools** group makes new geometry from existing geometry. All four are
-re-editable afterwards from their chip in the Objects strip — the chip holds the
-parameters, so you can change your mind rather than undoing and redoing.
+The **Path Tools** row, in the CAM Operations panel, makes new geometry from existing
+geometry rather than cutting anything. All five are re-editable afterwards from their chip
+in the Objects strip — the chip holds the parameters, so you can change your mind rather
+than undoing and redoing.
 
 | Tool | Does | Needs |
 |---|---|---|
 | **Boolean** | Union, intersect, subtract | Two or more overlapping paths |
-| **Offset** | Grows or shrinks a path by a distance, with round, miter or square corners | One path |
-| **Pattern** | Linear or circular arrays | One path or group |
+| **Offset** | Grows or shrinks a path by a distance, with round, miter or square corners | One or more paths |
+| **Pattern** | Linear grid or circular array | One path or group |
+| **Tabs** | Holding tabs on a profile cut — covered in [chapter 5](05-pockets.md#holding-tabs) | An existing profile operation |
 | **Corners** | Applies a corner treatment to the corners you pick | One path |
+
+### Boolean
+
+Select two or more paths and pick **Union** (merge them), **Intersect** (keep only where
+they overlap) or **Subtract** (cut the rest away from the first).
+
+Selection order decides the result for Subtract, and it's *pick* order, not stacking
+order: the path you clicked first is kept, the others are cut away from it. The form's
+chips are labelled to match — **primary (kept)** for the first pick, **tool (cut away)**
+for the rest — so you can see which way a subtract will go before applying it.
+
+The result is a new path; the sources aren't deleted, only hidden, so nothing is lost if
+you undo. Click the result's chip to reopen **Edit Boolean**, where you can swap the
+operation — union to subtract, say — without re-picking the sources.
+
+![The Boolean form, Union selected, over an L-shaped path and a circle about to be combined](images/02-boolean.png)
+
+*Union highlighted, with the two source shapes still showing their own selection handles
+on canvas.*
+
+<!-- FULL APP · 1600 px wide. -->
+
+### Offset
+
+Select one or more paths and set a **distance** in mm — positive grows the path (outset),
+negative shrinks it (inset) — and a **corner style**: **miter** (sharp corners, the
+default), **round**, or **square**. Offsetting several paths at once applies the same
+distance and style to each, producing one result per source, all editable together from
+one chip.
+
+Miter is tuned to keep genuinely sharp points sharp — a star or a gear tooth doesn't get
+its tips squared off the way a naive miter limit would — while still capping anything
+close to a spike. An inset larger than the shape collapses it to nothing, which the form
+reports as an error rather than silently returning an empty path.
+
+![A five-point star outset 10mm with Round corner style, the rounded outline following the star's points](images/02-offset.png)
+
+*A 10 mm Round outset. Round is the style that shows most clearly on a point — Miter
+would carry the star's own corner out to a sharp tip instead.*
+
+<!-- FULL APP · 1600 px wide. -->
+
+### Pattern
+
+Select one path (or a group) and choose **Linear** or **Circular**.
+
+- **Linear** lays out a **Rows × Cols** grid at the given X and Y spacing. The original
+  is row 0, column 0 of the grid and stays exactly where it is; the tool adds the rest
+  around it.
+- **Circular** arrays copies at a **radius** from the selection's own centre, over a
+  **start/end angle** — 0–360 for a full ring, narrower for an arc. **Items face
+  outward** rotates each copy tangentially, the way spokes point away from a hub, instead
+  of every copy keeping the original's orientation.
+
+A copy is the real shape it was copied from, not a flattened outline — a patterned gear
+keeps its module and tooth count re-editable, and a patterned group stays one group per
+copy rather than merging into the group being patterned. Reworking the count afterwards
+reuses existing copies where it can, so anything already built on one of them (a drilled
+hole, an assigned operation) keeps working; a copy deleted by hand stays deleted rather
+than being resurrected by the next edit.
+
+![A circular pattern of five hearts around a centre point, each one rotated to point outward](images/02-pattern.png)
+
+*Circular, count 5, radius 30 mm, a full 360° ring. With Items face outward checked, each
+heart is rotated to point away from the centre rather than all five sharing the
+original's orientation.*
+
+<!-- FULL APP · 1600 px wide. -->
+
+### Corners
 
 **Corners** is the one worth knowing about before you need it. It offers **Outer Round**,
 **Inner Round**, **Chamfer**, **Dogbone** and **None**, and you choose which corners get
@@ -220,6 +292,14 @@ it leaves a radius, and a square peg then won't seat in the socket you just cut.
 overcuts a small circular notch into the corner so the mating part fits. Its radius field
 asks for the **tool radius**, not a decorative size, because that is what decides how much
 must be relieved.
+
+![Five polygons with a small notch cut into each corner, from Dogbone at a 5mm tool radius](images/02-corners.png)
+
+*Dogbone at a 5 mm tool radius, applied to every corner. The status bar's cursor readout
+is from picking specific corners — leave none picked and Apply treats every sharp corner
+on the path.*
+
+<!-- FULL APP · 1600 px wide. -->
 
 ---
 

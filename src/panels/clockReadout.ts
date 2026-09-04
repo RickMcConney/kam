@@ -7,7 +7,7 @@
 // the sidebar by one button carrying the worst tone.
 
 import {
-  clockArborClashes, clockPlate, clockWheelClashes, designClock, TRAIN_WHEELS, TRAIN_PART_ORDER,
+  clockArborClashes, clockPlate, clockWheelClashes, designClock, TRAIN_PART_ORDER,
   MIN_MESH_RATIO, MAX_MESH_RATIO, CLOCK_ROOT_BIT_DIA,
   type ClockAssembly, type ClockBase, type ClockMotion, type ClockSpec,
 } from '../shapes/clockTrain'
@@ -167,8 +167,34 @@ export function clockReadout(
 
   // ── The going train ───────────────────────────────────────────────────────
   const going = section('Going train')
-  going(`${TRAIN_WHEELS} wheels, ${train.meshes.length} meshes at ${+train.actualRatio.toFixed(4)}:1`)
+  going(`${design.trainWheels} wheels, ${train.meshes.length} meshes at ${+train.actualRatio.toFixed(4)}:1`)
   going(`${train.meshes.map((m) => `${m.teeth}/${m.pins}`).join(' · ')} · escape ${spec.escapeTeeth}`)
+  // WHICH WAY EACH END TURNS, and it is the wheel count that decides it: every
+  // mesh reverses the sense, so the great wheel and the escape wheel agree only
+  // when there is an even number of meshes between them. The escapement's
+  // handedness is set from that rather than taken from the user's Escapement
+  // default — otherwise a three-wheel clock runs its hands backwards — so this
+  // is where a maker is told what was decided for them.
+  going(`Escape wheel runs ${design.escapeClockwise ? 'clockwise' : 'anticlockwise'}, `
+    + `set by the ${train.meshes.length} meshes rather than by the Escapement defaults: the minute hand `
+    + 'is on the great arbor and has to go round clockwise, and every mesh reverses the sense.'
+    + (design.trainWheels === 3
+      ? ' With two meshes the two ends agree, so the escape wheel turns clockwise too.'
+      : ' With three meshes the two ends disagree, so the escape wheel turns the other way from the hands.'))
+  // A SECONDS HAND OFF THE ESCAPE ARBOR is why a longcase puts one there — but
+  // it only reads seconds when the escape wheel really does turn once a minute,
+  // which is a fact about THESE numbers (`escapeTeeth × 2 × beat`) and not about
+  // the design. Nothing is cut for it either way; it is a mark on a wheel.
+  const secondsHand = Math.abs(design.escRevSeconds - 60) < 1e-6
+  if (secondsHand && design.escapeClockwise) going(
+    `The escape wheel turns once a minute and clockwise, so a mark on it is a SECONDS HAND — `
+    + `one step per beat, ${spec.escapeTeeth} teeth reading every second second. It is a recoil `
+    + 'escapement, so the mark kicks back a little on each tick before it settles, exactly as a '
+    + 'longcase seconds hand does. Behind the plate: read it on the wheel itself, or carry the escape '
+    + 'arbor through the front and put a hand on it.', 'note')
+  else if (secondsHand) going(
+    'The escape wheel turns once a minute, but anticlockwise on this train — a mark on it would run '
+    + 'backwards against the hands. Three wheels puts it the right way round.', 'note')
   // Backlash and pin diameter are the clock's, not each wheel's — so this is
   // where they are reported, and where a pin that cannot work is caught once
   // rather than seven times over.
@@ -219,7 +245,7 @@ export function clockReadout(
     .filter((x) => x.at !== null)
   if (held.length > 0) {
     going(`Held: ${held.map((x) => `${wheelName[x.i]} ${x.m.teeth}t`).join(', ')}`
-      + (held.length === TRAIN_WHEELS - 1
+      + (held.length === train.meshes.length
         ? ' — every wheel, so nothing is left to solve with.'
         : ' — the rest are solved round them.'))
     for (const { m, i } of held) {
@@ -340,9 +366,12 @@ export function clockReadout(
   // The clock has no single module any more: each mesh has its own, scaled so
   // the biggest wheel just fits the board and tapering toward the escapement.
   // So every per-mesh limit that used to be answered once for the whole clock
-  // has to be answered four times.
+  // has to be answered once per mesh.
   const teeth = section('Tooth size')
-  const MESH_NAMES = ['drive → great', 'great → second', 'second → third', 'third → escape']
+  // Named off the ARBORS this train actually has — a three-wheel one runs
+  // drive → great → second → escape and has no third wheel to name.
+  const arborNames = ['drive', ...['great', 'second', 'third'].slice(0, design.trainWheels - 1), 'escape']
+  const MESH_NAMES = arborNames.slice(0, -1).map((a, i) => `${a} → ${arborNames[i + 1]}`)
   const chain: { teeth: number; pins: number }[] = [
     { teeth: drive.teeth, pins: drive.pins }, ...train.meshes,
   ]
@@ -351,12 +380,21 @@ export function clockReadout(
     + 'and lantern to share a module, so each may have its own. It falls from the GREAT wheel toward the '
     + 'escapement because torque does; the drive wheel shares the great wheel\'s, having no reason for '
     + 'coarser teeth than the wheel the weight acts through.', 'note')
-  teeth('The two FAST arbors — the third wheel and the escape wheel — are pinned with the small dowel '
-    + 'whatever their pitch would suggest. Fitting a pin to the pitch is a strength argument, and strength '
-    + 'is not what is scarce down there: torque has fallen by the whole train ratio, while the inertia of '
-    + 'those pins is what the escapement starts and stops twice a second. Nothing is risked by going thin — '
-    + 'a smaller pin only ever leaves MORE tooth. The slow end takes whichever dowel suits its own pitch.',
+  // THE SLOW END'S RULE AND THE FAST END'S ARE DIFFERENT ARGUMENTS, so they are
+  // stated as two lines rather than one. The slow end is choosing between two
+  // members that both have to survive; the fast end is not choosing at all.
+  teeth('The SLOW end takes the fattest of the two dowels its tooth can still push: the large pin while it '
+    + 'leaves a tooth at least as thick as itself, the small one after that. A lantern mesh has two members '
+    + 'that fail differently — the pin is a beam between its cheeks and wants to be fat, while the tooth is '
+    + "what is LEFT of the circular pitch once the pin and the backlash are out of it — so past that point "
+    + 'the fat pin is no longer the strong answer, it is the reason the tooth breaks across the grain.',
     'note')
+  teeth(`The ${design.trainWheels === 3 ? 'escape arbor ALONE is' : 'two FAST arbors — the third wheel and '
+    + 'the escape wheel — are'} pinned SMALL whatever the teeth could have taken, because strength is not `
+    + 'what is scarce down there: torque has fallen by the whole train ratio, while the pins’ inertia is '
+    + 'what the escapement starts and stops twice a second. Nothing is risked by going thin — a smaller pin '
+    + "only ever leaves MORE tooth. The GREAT wheel's own lantern is never lightened this way: it carries "
+    + 'the weight’s torque undivided and is the most heavily loaded pinion in the going train.', 'note')
   design.modules.meshes.forEach((m, i) => {
     const mesh = chain[i]
     if (!mesh) return

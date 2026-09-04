@@ -179,7 +179,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
   const meshAnimPathId = useUIStore((s) => s.meshAnimPathId)
   // Running the assembled clock and folding its linkage used to be offered here,
   // on every wheel — but both are questions about the WHOLE clock, not about the
-  // wheel that happens to be selected, so five wheels each showed the same pair
+  // wheel that happens to be selected, so every wheel showed the same pair
   // of buttons and they read as five different animations. They live in
   // ClockPanel now, reached from the clock's own chip. The per-shape "Animate in
   // mesh" below stays: that IS a question about this wheel, against its own

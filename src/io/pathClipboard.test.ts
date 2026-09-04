@@ -33,7 +33,7 @@ describe('the path clipboard', () => {
 
   // THE POINT OF THE FEATURE: what was shared must go on being shared, or a
   // pasted gear arrives as three unrelated paths that no longer regenerate
-  // together — and a pasted clock as five wheels that are no longer one clock.
+  // together — and a pasted clock as loose wheels that are no longer one clock.
   it('keeps a group a group, and a clock a clock', () => {
     const gear = ['teeth', 'bore', 'spokes'].map((part) => path({
       id: `g-${part}`, groupId: 'grp', groupName: 'Gear', shapePart: part,

@@ -46,7 +46,7 @@ tell them apart on the bench a year later.
 panel beside it reports pitch, base, outside and root diameters, the centre distance it
 meshes at, and the play at the mesh.*
 
-<!-- CROP · canvas region from a 2× capture, 800 px wide. -->
+<!-- CROP · canvas region from a 2× capture, downscaled to 700 px wide/tall. -->
 
 **Cycloidal gears emit their mating lantern pinion too** — a pinion of pins rather than
 teeth, which is how clocks are built. The two are generated together because a cycloidal
@@ -212,7 +212,7 @@ That inverts how the numbers work:
 the maze. The panel states the grid it settled on — here 19 × 19 cells at an 8.33 mm pitch
 — and the rule that governs it: `wall = pitch − cutter Ø`.*
 
-<!-- CROP · canvas region from a 2× capture, 1000 px wide. -->
+<!-- CROP · canvas region from a 2× capture, downscaled to 789 px wide (capped at 700 px tall). -->
 
 Cut it with a **ball nose** — the groove profile is what the marble rolls in — and cut it
 as a groove, on the centreline. Sending a maze to a profile operation as if it were an
@@ -234,7 +234,7 @@ The hypotrochoid a real spirograph draws, with two differences from the toy:
 *Loops set to 7, and the rosette has seven lobes. Every step of the slider is a different
 pattern rather than a near-duplicate of the last.*
 
-<!-- CROP · canvas region from a 2× capture, 700 px wide. -->
+<!-- CROP · canvas region from a 2× capture, 688 px wide (capped at 700 px tall). -->
 
 The pen offset is not capped at the wheel's rim the way a physical set's drilled holes
 are. Push it far enough and the curve passes through the centre.

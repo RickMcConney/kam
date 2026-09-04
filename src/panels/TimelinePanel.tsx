@@ -117,7 +117,7 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
 
   for (const p of paths) {
     // A clock gets a chip of its own, at the position of its first part, which
-    // reopens the designer on the spec every part carries. Its five wheels keep
+    // reopens the designer on the spec every part carries. Its wheels keep
     // their own chips too — each is a separately editable shape.
     if (p.clockId && !seenClock.has(p.clockId)) {
       seenClock.add(p.clockId)
