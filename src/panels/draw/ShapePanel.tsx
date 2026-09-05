@@ -241,8 +241,9 @@ function ShapeConfig({ type, config, onChange, units }: {
       const mesh = gearMesh({ ...g, cx: 0, cy: 0 })
       const hub = gearHubOf({ ...g, cx: 0, cy: 0 })
       // A pin has to pass through the tooth space, or the pair cannot turn at all.
-      // The root was driven below the ISO dedendum to clear a fat pin.
-      const rootDeepened = !!cyc && d.rootDia < g.module * (g.teeth - 2.5) - 0.01
+      // The root clears the pin and stops — usually SHALLOWER than the ISO
+      // dedendum, since a lantern presents no tooth tip to make room for.
+      const rootByPin = !!cyc && Math.abs(d.rootDia - g.module * (g.teeth - 2.5)) > 0.01
       const L = (mm: number) => fmtLen(mm, u as 'mm' | 'in')
       // The marking runs out along the right-hand spoke at whatever size that
       // takes — ask the generator rather than restating its rules. Position is
@@ -272,10 +273,16 @@ function ShapeConfig({ type, config, onChange, units }: {
               number here because a gear drawn on its own DRIVES its lantern, and
               opposite on a wheel the pins drive (see gearRotationSense). There is
               no driven-wheel default: that case is a clock's motion work, which
-              the clock stamps, or a tick on the wheel's own properties. */}
-          {relief > 0 && <Select label="Runs" value={gearRotationSense({ ...g, cx: 0, cy: 0 }) === -1 ? 'cw' : 'ccw'}
+              the clock stamps, or a tick on the wheel's own properties.
+
+              ALWAYS SHOWN, not only under back relief: it was gated on relief
+              because direction is invisible in the TEETH without it, which stopped
+              being the whole story once `gearPose` began turning the wheel the way
+              this says and settling the mate on the flank it drives. Both show at
+              0% relief, so the field that sets them has to be reachable there. */}
+          <Select label="Runs" value={gearRotationSense({ ...g, cx: 0, cy: 0 }) === -1 ? 'cw' : 'ccw'}
             options={[['cw', 'Clockwise'], ['ccw', 'Anticlockwise']]}
-            onChange={(v) => set({ actingSense: v === 'ccw' ? 1 : -1 })} />}
+            onChange={(v) => set({ actingSense: v === 'ccw' ? 1 : -1 })} />
           {/* The mate, drawn from these same numbers — cheek, pin holes, arbor. */}
           <Check label="Pinion" checked={g.emitPinion} onChange={(emitPinion) => set({ emitPinion })} />
         </>) : (
@@ -347,7 +354,7 @@ function ShapeConfig({ type, config, onChange, units }: {
         {d.pointed && <p className="text-label text-yellow-500">Teeth come to a point — OD reduced.</p>}
         {!cyc && d.undercut && <p className="text-label text-gray-600 dark:text-neutral-400">Under {Math.ceil(2 / Math.sin((g.pressureAngle * Math.PI) / 180) ** 2)} teeth at {g.pressureAngle}° — roots hobbed with an undercut, flank waisted below the base circle.</p>}
 
-        {rootDeepened && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} to clear the pins.</p>}
+        {rootByPin && <p className="text-label text-blue-400">Root cut to {L(d.rootDia)} — just clears the pins.</p>}
         {cyc && <p className="text-label text-gray-600 dark:text-neutral-400">
           Faces cut for this {g.mateTeeth}-pin lantern pinion at Ø{L(g.pinDia)} — another pinion wants another wheel.
           {relief > 0 && <><br />

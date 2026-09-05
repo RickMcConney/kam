@@ -436,6 +436,39 @@ describe('gear — running the pair', () => {
     expect(a.mateDeg - b.mateDeg).toBeCloseTo(360 / mesh.mateTeeth, 9)
   })
 
+  it('turns a cycloidal wheel the way its Runs field says, and an involute gear CCW', () => {
+    // The preview turned every gear CCW whatever the wheel said, so the Runs
+    // field did nothing to it — and since `actingSense` defaults to −1, meaning
+    // CW, a default lantern wheel was previewed running BACKWARDS: driving on
+    // the flank the back relief cuts away.
+    const cyc: GearSpec = { ...base, toothProfile: 'cycloidal', mateTeeth: 8, pinDia: 3 }
+    const step = (s: GearSpec) => gearPose(s, 1).gearDeg - gearPose(s, 0).gearDeg
+    expect(step({ ...cyc, actingSense: -1 }), 'CW wheel').toBeCloseTo(-360 / base.teeth, 9)
+    expect(step({ ...cyc, actingSense: 1 }), 'CCW wheel').toBeCloseTo(360 / base.teeth, 9)
+    // Driven BY the pins, the acting flank is the far one — the same tooth form
+    // belongs to a wheel turning the other way, which is `gearRotationSense`.
+    expect(step({ ...cyc, actingSense: -1, drivenByPins: true }), 'driven').toBeCloseTo(360 / base.teeth, 9)
+    // An involute gear has no direction to honour: symmetric teeth, and nothing
+    // in the UI sets the field. It keeps the CCW it has always been shown at.
+    expect(step({ ...base, actingSense: -1 }), 'involute').toBeCloseTo(360 / base.teeth, 9)
+  })
+
+  it('settles the mate on the flank the wheel is actually driving', () => {
+    // The play shows as a gap on ONE side, and which side is the only thing in
+    // the drawing that says which body drives. Reverse the wheel and the whole
+    // picture mirrors — so the two senses must straddle the centred phase by the
+    // same amount, and neither may sit on it.
+    // WITH BACKLASH. A lantern wheel's tooth is cut to fill what the pin leaves,
+    // so a pair cut with none has no play to settle in and both senses land on
+    // the centred phase — which would pass this by accident.
+    const cyc: GearSpec = { ...base, toothProfile: 'cycloidal', mateTeeth: 8, pinDia: 3, backlash: 0.3 }
+    const centred = 180 + 180 / 8
+    const cw = gearPose({ ...cyc, actingSense: -1 }, 0).mateDeg
+    const ccw = gearPose({ ...cyc, actingSense: 1 }, 0).mateDeg
+    expect(cw - centred).toBeCloseTo(-(ccw - centred), 9)
+    expect(Math.abs(ccw - centred)).toBeGreaterThan(0.5)
+  })
+
   it('puts a space on the line of centres, not a tooth', () => {
     // Tooth 0 of the gear is centred on angle 0 and the mate sits along +x, so
     // the gear points a tooth straight at it. The mate must answer with a space

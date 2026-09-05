@@ -8,7 +8,7 @@ import {
   DEFAULT_TRAIN_WHEELS, LEGACY_TRAIN_WHEELS,
   type ClockAssembly, type ClockPlate, type ClockSpec,
 } from './clockTrain'
-import { gearHub, gearMesh, generateGearParts, pinionDims } from './gearGenerator'
+import { gearHubOf, gearMesh, generateGearParts, pinionDims } from './gearGenerator'
 import { generatePendulumParts, pendulumBeat } from './pendulumGenerator'
 import { DEFAULT_SHAPE_CONFIG, generateShapeParts, type ShapeParams } from './shapeGenerators'
 import { getMultiBBox } from '../canvas/selectionUtils'
@@ -561,7 +561,11 @@ describe('the drive wheel against its drum', () => {
     const base = { ...BASE, gear: { ...BASE.gear, spokes } }
     const design = designClock({ ...FOUR, maxWheelDia }, base)
     const g = design.parts.find((p) => p.key === 'drive')!.params as Extract<ShapeParams, { type: 'gear' }>
-    return { g, hub: gearHub(g.module, g.teeth, g.bore, g.hubDia, g.spokes) }
+    // `gearHubOf`, not `gearHub` with the loose numbers: a clock wheel is
+    // cycloidal and its rim is measured in from a root cut to clear the pin, so
+    // spelling the arguments out again would seat this hub on a wheel that is
+    // not the one the design emitted.
+    return { g, hub: gearHubOf(g) }
   }
 
   it('keeps the hub ON the drum, giving up spokes to do it', () => {
@@ -590,7 +594,7 @@ describe('the drive wheel against its drum', () => {
     // number of spokes reaches it. Landing on the arbor's floor is still far
     // better than seating every spoke asked for.
     const wide = withSpokes(8, 700)
-    const naive = gearHub(wide.g.module, wide.g.teeth, wide.g.bore, wide.g.hubDia, 8)
+    const naive = gearHubOf({ ...wide.g, spokes: 8 })
     expect(wide.hub.dia).toBeGreaterThan(FOUR.drumDia)   // genuinely unreachable
     expect(wide.hub.dia).toBeLessThan(naive.dia)                        // …but much closer than doing nothing
   })

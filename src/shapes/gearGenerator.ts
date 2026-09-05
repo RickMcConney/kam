@@ -253,10 +253,15 @@ export function gearHub(
    *  one bound rather than folding it in behind the user's own figure. */
   carriedHubDia = 0,
   spokeWidth?: number, rimWidth?: number,
+  /** The cycloidal descriptor, when this is a lantern wheel. The rim is measured
+   *  in from the ROOT, and the two profiles do not put it in the same place — so
+   *  a hub seated without this is seated against a wheel that does not exist.
+   *  Omitted reads as involute, which is what every gear was before cycloidal. */
+  cyc?: CycMate,
 ): GearHub {
   const m = Math.max(0.05, module)
   const z = Math.max(4, Math.round(teeth))
-  const rf = Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
+  const rf = rootRadius(m, z, cyc)
   return seatHub(
     rf - gearRimW(m, rimWidth), clamp(bore / 2, 0, rf - 1),
     hubDia, spokes, gearSpokeW(m, spokeWidth), carriedHubDia,
@@ -269,8 +274,27 @@ export function gearHub(
 export function gearHubOf(spec: GearSpec): GearHub {
   return gearHub(
     spec.module, spec.teeth, spec.bore, spec.hubDia, spec.spokes,
-    carriedPinion(spec)?.hubDia ?? 0, spec.spokeWidth, spec.rimWidth,
+    carriedPinion(spec)?.hubDia ?? 0, spec.spokeWidth, spec.rimWidth, cycOf(spec),
   )
+}
+
+/**
+ * Root radius, for EITHER profile — the one place it is worked out.
+ *
+ * It is not only the tooth's foot: the rim is measured in from it and the spoke
+ * windows stop at it, so everything inside the teeth hangs off this number. The
+ * two profiles do not agree on it — a lantern wheel's root clears the pin and
+ * stops, which is normally shallower than the involute's 1.25·m — and while
+ * `gearDims` and `generateGearParts` asked the profile, `gearHub` had its own
+ * copy of the ISO figure and seated every cycloidal hub against a rim that was
+ * not there.
+ *
+ * Needs only these three numbers: neither profile's root moves with pressure
+ * angle, and backlash thins the tooth without lowering its foot.
+ */
+function rootRadius(m: number, z: number, cyc?: CycMate): number {
+  if (cyc) return cycloidalRoot(m, z, Math.max(0, cyc.pinDia) / 2)
+  return Math.max(0.1, (m * z) / 2 - DEDENDUM * m)
 }
 
 /**
@@ -293,9 +317,8 @@ export function gearDims(
 
   if (cyc) {
     const spec: CycloidalSpec = { m, z, backlash, ...cyc }
-    const pinR = Math.max(0, cyc.pinDia) / 2
     const ra = cycloidalTip(spec)
-    const rf = cycloidalRoot(m, z, pinR)
+    const rf = rootRadius(m, z, cyc)
     const thickness = 2 * rp * cycloidalHalfTooth(m, z, backlash, cyc.pinDia)
     return {
       pitchDia: 2 * rp,
@@ -303,7 +326,7 @@ export function gearDims(
       describingDia: 2 * describingRadius(m, cyc.mateTeeth),
       spaceAtPitch: Math.PI * m - thickness,
       outsideDia: 2 * ra,
-      rootDia: Math.max(0.2, 2 * rf),
+      rootDia: 2 * rf,
       circularPitch: Math.PI * m,
       toothThickness: thickness,
       pointed: ra < Math.min(rp + ADDENDUM * m, rp + 2 * describingRadius(m, cyc.mateTeeth)) - 1e-6,
@@ -321,7 +344,7 @@ export function gearDims(
     describingDia: 0,
     spaceAtPitch: Math.PI * m - thickness,
     outsideDia: 2 * ra,
-    rootDia: Math.max(0.2, 2 * (rp - DEDENDUM * m)),
+    rootDia: 2 * rootRadius(m, z),
     circularPitch: Math.PI * m,
     toothThickness: thickness,
     pointed: ra < rp + ADDENDUM * m - 1e-6,
@@ -909,7 +932,7 @@ function cycloidalRing(spec: CycloidalSpec): Pt[] {
   const rp = (m * z) / 2
   const psi = cycloidalHalfTooth(m, z, backlash, pinDia)
   const pinR = Math.max(0, pinDia) / 2
-  const rf = cycloidalRoot(m, z, pinR)
+  const rf = rootRadius(m, z, spec)
   const rho = describingRadius(m, mateTeeth)
   const ra = cycloidalTip(spec)
   const face = cycloidFace(rp, rho, ra, pinR)
@@ -983,16 +1006,27 @@ function cycloidalHalfTooth(m: number, z: number, backlash: number, pinDia: numb
 }
 
 /**
- * Root radius. Deeper than the involute dedendum when a fat pin needs it: the pin
- * centre rides the pinion's pitch circle, so the pin's inner edge dips to
- * `rp − pinR` at the line of centres, and a root above that is a pin bottoming in
- * the wheel — the loudest failure in a clock train, and one that looks fine on the
- * canvas. The panels report the deepened root.
+ * Root radius — set by THE PIN AND NOTHING ELSE, and the ISO dedendum has no say.
+ *
+ * The pin centre rides the pinion's pitch circle, so at the line of centres it
+ * sits exactly on the wheel's pitch circle and the pin's inner edge dips to
+ * `rp − pinR`. That is the whole of what has to be cleared: a lantern presents no
+ * tooth tip, so there is no addendum on the other side to make room for. A root
+ * above `rp − pinR` is a pin bottoming in the wheel — the loudest failure in a
+ * clock train, and one that looks fine on the canvas — and a root below it is
+ * dead depth that only makes the tooth longer and more fragile.
+ *
+ * This used to be `min(rp − 1.25m, rp − pinR − c)`, meaning to deepen the root for
+ * a fat pin but in fact never letting it come UP: the ISO dedendum is the deeper
+ * of the two at every pin a clock actually uses, so it always won and the pin term
+ * never bound. On m4 with Ø3 pins that is 5 mm of dedendum where 2.3 mm clears —
+ * 2.7 mm of tooth standing for nothing. The flank below the pitch circle is
+ * radial and does no driving, so shortening it costs the mesh nothing.
  */
 function cycloidalRoot(m: number, z: number, pinR: number): number {
   const rp = (m * z) / 2
   const clearance = 0.2 * m
-  return Math.max(0.1, Math.min(rp - DEDENDUM * m, rp - pinR - clearance))
+  return Math.max(0.1, rp - pinR - clearance)
 }
 
 /** The tip, pulled in to where the two faces meet or where the epicycloid's arch
@@ -1474,9 +1508,9 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
   const z = Math.max(4, Math.round(spec.teeth))
   const alpha = clamp(spec.pressureAngle, 5, 35) * (Math.PI / 180)
   const cyc = cycOf(spec)
-  // Everything inside the teeth hangs off the root circle, and a lantern's pin can
-  // push that deeper — so ask for the profile's own root, not the ISO dedendum.
-  const rf = gearDims(m, z, spec.pressureAngle, spec.backlash, cyc).rootDia / 2
+  // Everything inside the teeth hangs off the root circle, and the two profiles
+  // put it in different places — so ask for the profile's own root.
+  const rf = rootRadius(m, z, cyc)
   const place = (r: Pt[]) => r.map(([x, y]) => [x + spec.cx, y + spec.cy] as Pt)
 
   // One closing fills every root corner at once with the rack-tip radius, and
@@ -1575,12 +1609,14 @@ export function generateGearParts(spec: GearSpec): GearPart[] {
 // at whatever the pin leaves, which is a good deal more.
 //
 // WHICH FLANK IS THE DRIVING ONE DEPENDS ON WHICH WAY THE GEAR TURNS, so
-// `driveSense` says. A gear previewed on its own is turned CCW by `gearPose`,
-// which is the default; a clock train is a chain of external meshes and its
-// wheels therefore turn ALTERNATELY, so half of them run the other way and take
-// the play up on the other side of the pin. Nothing errors when it is wrong —
-// the pair still runs, with the slop drawn ahead of the drive instead of behind
-// it, which reads as the PINION driving the WHEEL.
+// `driveSense` says. A cycloidal wheel previewed on its own is turned the way
+// its own `actingSense` says (`poseSense`), because a lantern wheel HAS a
+// direction — the back relief is cut off the flank that never meets a pin; an
+// involute gear has none and keeps the CCW default. A clock train is a chain of
+// external meshes and its wheels therefore turn ALTERNATELY, so half of them run
+// the other way and take the play up on the other side of the pin. Nothing errors
+// when it is wrong — the pair still runs, with the slop drawn ahead of the drive
+// instead of behind it, which reads as the PINION driving the WHEEL.
 
 export type GearMateKind = 'lantern' | 'gear'
 
@@ -1690,10 +1726,31 @@ export interface GearPose {
  * preview is there to let someone check by eye.
  */
 export function gearPose(spec: GearSpec, phase: number): GearPose {
-  const mesh = gearMesh(spec)
+  const sense = poseSense(spec)
+  const mesh = gearMesh(spec, sense)
   const z = Math.max(4, Math.round(spec.teeth))
-  const gearDeg = (phase * 360) / z
+  const gearDeg = (sense * phase * 360) / z
   return { gearDeg, mateDeg: mesh.matePhaseDeg - gearDeg * mesh.ratio }
+}
+
+/**
+ * Which way the preview turns a gear.
+ *
+ * A CYCLOIDAL wheel has a real direction and the panel's `Runs` field sets it:
+ * the back relief is cut off the flank that never touches a pin, so turned the
+ * wrong way the preview shows the wheel driving with the flank that was cut
+ * away. It also decides which side of its play the mate settles on, which is the
+ * only thing in the drawing that says which body is driving. The default
+ * `actingSense` of −1 means CW, so the preview was backwards on a default wheel
+ * as well as unresponsive to the field.
+ *
+ * An INVOLUTE gear has no direction: its teeth are symmetric, nothing in the UI
+ * sets `actingSense`, and that −1 default is a statement about which flank the
+ * cycloidal generator DRAWS, not about a gear with no acting flank. So it keeps
+ * the CCW it has always been previewed at.
+ */
+function poseSense(spec: GearSpec): 1 | -1 {
+  return cycOf(spec) ? gearRotationSense(spec) : 1
 }
 
 /**

@@ -390,7 +390,9 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
       const pinLab = pinionLabel(params)
       const mesh = gearMesh(params)
       const running = meshAnimPathId === id
-      const rootDeepened = !!cyc && d.rootDia < params.module * (params.teeth - 2.5) - 0.01
+      // The cycloidal root is set by the pin alone, so it is normally SHALLOWER
+      // than the ISO dedendum, not deeper — worth saying either way it differs.
+      const rootByPin = !!cyc && Math.abs(d.rootDia - params.module * (params.teeth - 2.5)) > 0.01
       const relief = Math.round(Math.max(0, Math.min(1, params.backRelief ?? 0)) * 100)
       // The field is the wheel's ROTATION, which is what a maker knows and what
       // decides which way up it goes on the arbor. The acting FLANK is the
@@ -436,7 +438,13 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
             turns like a clock wheel with nothing left to drive with. */}
         {cyc && <RawField label="Back" value={relief} min={0} max={100} step={10} suffix="%"
           onChange={(v) => updateGear({ ...params, backRelief: Math.max(0, Math.min(1, v / 100)) })} />}
-        {cyc && relief > 0 && <label className="flex items-center gap-1.5">
+        {/* ALWAYS SHOWN, not only under back relief. It was gated on relief on the
+            reasoning that direction is invisible in the cut without it — true of
+            the TEETH, and it stopped being the whole story once `gearPose` began
+            turning the wheel the way this says and settling the mate on the flank
+            it drives. Both are visible at 0% relief, so the field that sets them
+            has to be reachable there. */}
+        {cyc && <label className="flex items-center gap-1.5">
           <span className={labelCls}>Runs</span>
           <select value={turnsCW ? 'cw' : 'ccw'} className={fieldCls}
             onChange={(e) => updateGear({ ...params, actingSense: senseFor(e.target.value === 'cw') })}>
@@ -516,7 +524,7 @@ function ShapeParamsEditor({ id, params, units, fromCenter }: { id: string; para
           {cyc && d.pinTooFat && <><br /><span className="text-red-400">
             Ø{N(params.pinDia)} pins take the whole {N(d.circularPitch)} pitch — no tooth left to drive with. Thinner pins, or a bigger module.
           </span></>}
-          {rootDeepened && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} to clear the pins.</span></>}
+          {rootByPin && <><br /><span className="text-blue-400">Root cut to {N(d.rootDia)} — just clears the pins.</span></>}
           {cyc && <><br />Cut for a {params.mateTeeth}-pin lantern at Ø{N(params.pinDia)}.</>}
           {cyc && relief > 0 && <><br />Back of each tooth cut away
             {relief >= 100 ? ' to the middle of the tip' : ` by ${relief}% of the tip`} — turns

@@ -1021,7 +1021,12 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
   // bore whatever the count) it lands as close as the wheel allows, and the
   // readout says the cord will ride against the hub. Most spokes at that
   // minimum, not fewest — nothing is gained by dropping further.
-  const spokesInDrum = (module: number, teeth: number, wanted: number): number => {
+  // `cyc` because every clock wheel is cycloidal and its root is cut to clear the
+  // pin, not to the ISO dedendum — the rim the spokes land on is measured in from
+  // that root, so sizing the hub without it sizes it against a different wheel.
+  const spokesInDrum = (
+    module: number, teeth: number, wanted: number, cyc: { mateTeeth: number; pinDia: number },
+  ): number => {
     const drum = Math.max(0, spec.drumDia)
     const bore = base.gear.bore
     const want = Math.max(0, Math.round(wanted))
@@ -1029,7 +1034,7 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
     let best = Infinity
     let pick = want
     for (let n = 2; n <= want; n++) {
-      const h = gearHub(module, teeth, bore, drum, n)
+      const h = gearHub(module, teeth, bore, drum, n, 0, undefined, undefined, cyc)
       if (!h.spoked) continue
       if (h.dia < best - 0.05) { best = h.dia; pick = n }
       else if (h.dia <= best + 0.05) pick = n          // same hub, more spokes
@@ -1147,7 +1152,8 @@ export function designClock(spec: ClockSpec, base: ClockBase): ClockDesign {
       params: {
         ...(wheel(mod(0), drive.teeth, drive.pins, pin(0), sDrive) as Extract<ClockShapeParams, { type: 'gear' }>),
         hubDia: Math.max(0, spec.drumDia),
-        spokes: spokesInDrum(mod(0), drive.teeth, base.gear.spokes),
+        spokes: spokesInDrum(mod(0), drive.teeth, base.gear.spokes,
+          { mateTeeth: drive.pins, pinDia: pin(0) }),
         // …and drawn as a circle of its own, because it is the DRUM. Nothing
         // else draws it reliably — the spoke windows imply the hub, but only
         // where there is a window, and a solid wheel or a sliver-windowed one
