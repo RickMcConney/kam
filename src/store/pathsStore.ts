@@ -2,8 +2,8 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ImportedPath, PathDefinition } from '../importers/svgImporter'
 import type { ClockSpec } from '../shapes/clockTrain'
-import { translateD, applyPlacementD, placementMat, foldPlacement, isPlacementOnly, type TransformStep } from '../canvas/selectionUtils'
-import { generateShapeD, generateShapeParts, shapeDisplayName, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
+import { translateD, applyPlacementD, placementMat, foldPlacement, isPlacementOnly, getBBox, type TransformStep } from '../canvas/selectionUtils'
+import { generateShapeD, generateShapeParts, shapeDisplayName, translateShapeParams, ANNOTATION_SWITCH, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, refsPathId, remapOpsForSplit } from './toolpathStore'
 import { useTabStore } from './tabStore'
 import { useTimelineStore } from '../timeline/timelineStore'
@@ -94,6 +94,70 @@ interface PathsState {
 // Undo/redo lives in the timeline (src/timeline/timelineStore.ts): every
 // mutating action here records a TimelineEvent, and undo/redo scrub the
 // timeline cursor. There is no separate history stack anymore.
+
+/**
+ * The extra deletes and parameter updates that a delete of annotation parts
+ * implies, or null if it implies none.
+ *
+ * A MARKING OR A REFERENCE CIRCLE THE USER DELETES IS A DECISION, NOT A GESTURE
+ * — the parameter that draws it goes off with it (`ANNOTATION_SWITCH`). Without
+ * that, the definition still says "draw the marking" and the next regeneration
+ * is entitled to bring it back: delete a clock wheel's tooth-count number,
+ * press Update clock, and there it is again. Every other part of a shape is
+ * machined and its parameter is a number the user dials — a bore, a spoke count
+ * — so deleting one of THOSE says nothing about the definition and is left
+ * alone.
+ *
+ * The switch is written to every surviving part of the group — they share one
+ * definition — and the OTHER parts that switch was drawing go in the same
+ * atomic edit, so the drawing and the parameters agree at once and one undo
+ * puts the lot back. Which parts those are is asked of the generator rather
+ * than kept in a second table: regenerate with the switch off and drop whatever
+ * the shape no longer has. Measured against a regeneration with the switch
+ * still ON, because a marking is missing from BOTH when the single-stroke font
+ * has yet to load, and "gone because the font is not here" must not read as
+ * "gone because the user turned it off".
+ */
+function annotationSwitchOff(
+  paths: ImportedPath[],
+  deleteIds: string[],
+  updates: PathUpdate[],
+): { deleteIds: string[]; updates: PathUpdate[] } | null {
+  const doomed = new Set(deleteIds)
+  const patches = new Map<string, Record<string, unknown>>()
+  for (const p of paths) {
+    if (!doomed.has(p.id) || !p.groupId || p.shapePart === undefined || !p.shapeParams) continue
+    const patch = ANNOTATION_SWITCH[p.shapeParams.type]?.[p.shapePart]
+    if (patch) patches.set(p.groupId, { ...(patches.get(p.groupId) ?? {}), ...patch })
+  }
+  if (patches.size === 0) return null
+
+  // A caller already writing the group's definition in this same edit speaks for
+  // it — `updateShapeParams` drops a part BECAUSE its switch went off, and
+  // re-deriving the params from the old ones here would undo whatever else it
+  // changed.
+  const spoken = new Set(updates.filter((u) => u.shapeParams !== undefined).map((u) => u.id))
+
+  const nextDeletes = [...deleteIds]
+  const nextUpdates = [...updates]
+  const byId = new Map(nextUpdates.map((u, i) => [u.id, i]))
+  for (const [groupId, patch] of patches) {
+    const members = paths.filter((p) => p.groupId === groupId && p.shapePart !== undefined && p.shapeParams)
+    if (members.length === 0 || members.some((m) => spoken.has(m.id))) continue
+    const params = members[0].shapeParams!
+    const next = { ...params, ...patch } as ShapeParams
+    const before = new Set((generateShapeParts(params) ?? []).map((pt) => pt.part))
+    const after = new Set((generateShapeParts(next) ?? []).map((pt) => pt.part))
+    for (const m of members) {
+      if (doomed.has(m.id)) continue
+      if (before.has(m.shapePart!) && !after.has(m.shapePart!)) { nextDeletes.push(m.id); continue }
+      const at = byId.get(m.id)
+      if (at !== undefined) nextUpdates[at] = { ...nextUpdates[at], shapeParams: next }
+      else nextUpdates.push({ id: m.id, d: m.d, shapeParams: next })
+    }
+  }
+  return { deleteIds: nextDeletes, updates: nextUpdates }
+}
 
 export const usePathsStore = create<PathsState>()((set, get) => ({
   paths: [],
@@ -242,6 +306,13 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
   applyPathEdit: ({ updates = [], add = [], deleteIds = [], label, gesture, selectAfter }) => {
     if (updates.length === 0 && add.length === 0 && deleteIds.length === 0) return
     const s = get()
+    // Deleting a marking or a pitch circle turns its switch off across the whole
+    // shape, in THIS edit — so the ops/tabs cleanup below covers the parts that
+    // go with it and one undo puts everything back. See ANNOTATION_SWITCH.
+    if (deleteIds.length > 0) {
+      const off = annotationSwitchOff(s.paths, deleteIds, updates)
+      if (off) { deleteIds = off.deleteIds; updates = off.updates }
+    }
     if (deleteIds.length > 0) {
       const opsBefore = useToolpathStore.getState().operations
       const tabsBefore = useTabStore.getState().tabs
@@ -396,24 +467,58 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       // has to be turned with them or the spokes come back lying flat inside a
       // rotated rim. Only when they ALL agree: once a part has been dragged off
       // on its own the group has no single answer, and inheriting one part's
-      // displacement would drop the new part wherever that one was moved to.
-      const groupPlacement = (() => {
-        if (siblings.length === 0) return undefined
+      // displacement would drop the new part wherever that one was moved to —
+      // so a group that disagrees answers per-part instead, below.
+      const agreed = siblings.length > 0 && (() => {
         const first = JSON.stringify(siblings[0].placement ?? null)
         return siblings.every((p) => JSON.stringify(p.placement ?? null) === first)
-          ? siblings[0].placement
-          : undefined
       })()
+      const groupPlacement = agreed ? siblings[0].placement : undefined
+      // …and when they DON'T agree, the placement of the BODY the new part sits
+      // on. A group can be several bodies drawn apart — a clock wheel's group is
+      // the wheel AND the pinion it drives, laid out side by side — so dragging
+      // one of them and leaving the other is an ordinary thing to do, and it
+      // left the group with no single answer: a marking deleted and then brought
+      // back by an Update clock came back at the spot the wheel was GENERATED
+      // at, while every part that still existed stayed where it had been dragged
+      // to. Nearest in DEFINITION space, which is where this regeneration
+      // measures everything anyway, so there is no per-shape table of which part
+      // belongs to which body: a gear's marking lands on its teeth and a
+      // pinion's marking on the pinion. Lazy, because it flattens every part of
+      // the shape and nothing but an appearing part needs it.
+      let nominal: Map<string, { x: number; y: number }> | null = null
+      const placementForNew = (part: string): TransformStep[] | undefined => {
+        if (agreed || siblings.length === 0) return groupPlacement
+        if (!nominal) {
+          nominal = new Map()
+          for (const pt of parts) {
+            const b = getBBox(pt.d)
+            if (b) nominal.set(pt.part, { x: b.cx, y: b.cy })
+          }
+        }
+        const c = nominal.get(part)
+        if (!c) return undefined
+        let best: ImportedPath | undefined
+        let bestD2 = Infinity
+        for (const sib of siblings) {
+          const sc = nominal.get(sib.shapePart!)
+          if (!sc) continue
+          const d2 = (sc.x - c.x) ** 2 + (sc.y - c.y) ** 2
+          if (d2 < bestD2) { bestD2 = d2; best = sib }
+        }
+        return best?.placement
+      }
       for (const pt of parts) {
         const existing = byPart.get(pt.part)
         // Generated geometry is where the definition NOMINALLY puts this part;
         // carrying it out to where the user actually dragged it is what keeps a
         // gear's pinion still on the far side of the stock after the module is
         // stepped.
-        if (existing) updates.push({ id: existing.id, d: applyPlacementD(pt.d, existing.placement), shapeParams: params })
-        else add.push({
+        if (existing) { updates.push({ id: existing.id, d: applyPlacementD(pt.d, existing.placement), shapeParams: params }); continue }
+        const placement = placementForNew(pt.part)
+        add.push({
           id: uid('shape'), name: `${self.groupName ?? self.name} ${pt.label}`,
-          d: applyPlacementD(pt.d, groupPlacement), placement: groupPlacement,
+          d: applyPlacementD(pt.d, placement), placement,
           visible: true, color: self.color, shapeParams: params, shapePart: pt.part,
           groupId: self.groupId, groupName: self.groupName,
           // A part that appears mid-edit (spokes turned back on) belongs to the

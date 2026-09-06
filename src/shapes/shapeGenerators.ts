@@ -487,6 +487,47 @@ const GEAR_PART_LABELS: Record<string, string> = {
   pinionpitch: 'Pinion Pitch Circle', pinionlabel: 'Pinion Marking',
 }
 
+// ─── The parts that are annotation, and the switch that draws each ───────────
+//
+// A MARKING OR A REFERENCE CIRCLE IS THE ONE KIND OF PART THAT IS NOT CUT. Both
+// already get a path of their own expressly so they can be deleted without
+// touching anything that will be machined — and deleting one is a DECISION, so
+// the switch that draws it goes off with it (`applyPathEdit`) and a rebuild is
+// not entitled to bring it back (`carryAnnotationSwitches`, which is how Update
+// clock keeps a wheel the user has unmarked unmarked).
+//
+// Only switches that change NOTHING ELSE about the shape belong here: deleting
+// one regenerates nothing, so a switch that moved or resized another part would
+// leave the drawing disagreeing with its own parameters.
+export const ANNOTATION_SWITCH: Partial<Record<ShapeType, Record<string, Record<string, unknown>>>> = {
+  // One `toothLabel` draws the wheel's number AND its pinion's, and one
+  // `pitchCircle` draws both pitch circles — so deleting either half takes the
+  // other with it, which is what "off" has to mean for a switch covering two
+  // parts.
+  gear: {
+    label: { toothLabel: false },
+    pinionlabel: { toothLabel: false },
+    pitch: { pitchCircle: false },
+    pinionpitch: { pitchCircle: false },
+  },
+}
+
+/** The annotation switches of `from`, written onto `to` — for a rebuild that
+ *  derives its parameters afresh and would otherwise hand back an annotation
+ *  the user has thrown away. Same shape type only; anything else is `to`. */
+export function carryAnnotationSwitches(from: ShapeParams | undefined, to: ShapeParams): ShapeParams {
+  if (!from || from.type !== to.type) return to
+  const switches = ANNOTATION_SWITCH[to.type]
+  if (!switches) return to
+  const carried: Record<string, unknown> = {}
+  for (const patch of Object.values(switches)) {
+    for (const field of Object.keys(patch)) {
+      if (field in from) carried[field] = (from as unknown as Record<string, unknown>)[field]
+    }
+  }
+  return { ...to, ...carried } as ShapeParams
+}
+
 export function generateShapeParts(p: ShapeParams): ShapePart[] | null {
   if (p.type === 'gear') {
     return generateGearParts(p).map((g) => ({

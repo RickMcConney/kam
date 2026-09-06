@@ -22,7 +22,7 @@ import { useUIStore } from '../../store/uiStore'
 import { usePathsStore } from '../../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
-import { generateShapeParts, translateShapeParams } from '../../shapes/shapeGenerators'
+import { generateShapeParts, translateShapeParams, carryAnnotationSwitches } from '../../shapes/shapeGenerators'
 import { loadFont, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import {
   DEFAULT_CLOCK_SPEC, designClock, layoutClock, MAX_WHEEL_DIA, MODULE_TAPER, MOTION_CENTRE_MM,
@@ -314,9 +314,16 @@ export default function ClockPanel() {
           // who has arranged the parts on the stock should not lose that to a
           // spinner step.
           const old = existing.shapeParams
-          const params = reLayout || !old || !('cx' in old)
+          const placed = reLayout || !old || !('cx' in old)
             ? laid[i].params
             : translateShapeParams(part.params, old.cx, old.cy) as ClockPartParams
+          // A wheel's parameters are re-derived from the train and the user's
+          // Gear defaults, which would hand back a marking or a pitch circle
+          // that has been DELETED off this wheel — deleting one turns its switch
+          // off (ANNOTATION_SWITCH), and that switch belongs to the wheel, not
+          // to the design. Nothing else is carried: re-deriving the rest is what
+          // Update clock is for.
+          const params = carryAnnotationSwitches(old, placed) as ClockPartParams
           updateShapeParams(existing.id, params)
           const ids = groupOf(existing.id)
           regenerateAffectedMany(ids)
