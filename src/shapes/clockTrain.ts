@@ -2006,3 +2006,98 @@ export function clockPendulumFromPaths(
     p.clockId === clockId && p.clockPart === 'pendulum' && p.shapeParams?.type === 'pendulum')
   return hit ? (hit.shapeParams as Extract<ShapeParams, { type: 'pendulum' }>) : null
 }
+
+/** The going-train WHEEL that cuts each mesh, drive end first — the order
+ *  `solveModules` returns and the order `ClockSpec.lockedModules` is indexed in.
+ *  A three-wheel train uses the first three. The escapement is not here: its
+ *  wheel is cut by the mesh BEFORE it and has no module of its own. */
+export const MESH_WHEEL_KEYS: readonly ClockPartKey[] = ['drive', 'great', 'second', 'third']
+
+/** How far two tooth sizes — or two arbor spacings — may differ and still be the
+ *  same number, mm. Only guards float: anything anyone TYPES differs by orders
+ *  of magnitude more. */
+const SAME_MM = 1e-6
+
+/**
+ * The spec a clock's wheels ACTUALLY are, given the spec they were cut from.
+ *
+ * A wheel is an ordinary shape once emitted, so its module can be re-typed on
+ * its own chip — and nothing carried that back to the clock. The designer went
+ * on reporting the tooth size it had solved for, so the arbor spacings in the
+ * readout were the ones the plate WAS drilled to rather than the ones it now
+ * needs, and the next Update quietly cut the wheel back to the old module.
+ *
+ * TYPING IS LOCKING, exactly as it is for a tooth count (see `TeethRow`): a
+ * module someone has typed on a wheel is a module they want kept, so it comes
+ * back as a HELD mesh. Holding it is not merely bookkeeping — the pins it runs
+ * against are on the NEXT wheel's hub, cut to this mesh's module, so a wheel
+ * re-cut alone meshes with nothing until the clock is rebuilt around it.
+ *
+ * The MOTION WORK comes back as a distance instead — see below; it is the same
+ * fact, stated in the one term its spec keeps.
+ *
+ * Only a wheel that differs is held: an untouched clock reconciles to its own
+ * spec unchanged, so "Max wheel Ø" goes on resizing the family.
+ */
+export function holdCutModules(
+  spec: ClockSpec, base: ClockBase, parts: ClockAssembly, motion?: ClockMotion | null,
+): ClockSpec {
+  if (parts.length === 0 && !motion) return spec
+  const design = designClock(spec, base)
+  const designed = design.modules.meshes
+  const was = (i: number) => spec.lockedModules?.[i] ?? null
+  // A LEGACY clock is read as a uniform family at its one `module` and its
+  // `lockedModules` are never consulted (see `designClock`), so holding one mesh
+  // there would change nothing at all. It gives up the legacy field instead and
+  // holds EVERY mesh at what it is cut to — which is the same clock, since one
+  // module throughout is what "uniform family" already meant, and a fully held
+  // family has no fit left for `maxWheelDia` to bind.
+  const legacy = spec.maxWheelDia === undefined && Number.isFinite(spec.module)
+  const cutAt = (i: number): number | null => {
+    const p = parts.find((q) => q.key === MESH_WHEEL_KEYS[i])?.params
+    if (!p || p.type !== 'gear' || !Number.isFinite(p.module) || p.module <= 0) return null
+    return Math.abs(p.module - designed[i].module) > SAME_MM ? p.module : null
+  }
+  const cut = designed.map((_, i) => cutAt(i))
+
+  // THE MOTION WORK'S ONE FREE NUMBER IS ITS ARBOR SPACING, so a wheel re-cut
+  // there comes back as a DISTANCE rather than as a held module. Its counts are
+  // fixed at the classic 10/30 and 8/32 and `C = m(P+T)/2`, so the spacing and
+  // the module are the same fact stated two ways — and the spacing is the term
+  // the spec keeps, the one both meshes must agree about, and the one the plate
+  // is drilled from. `pinionDims().centreDistance` IS that arithmetic (pitch
+  // radius + the lantern's), so it inverts `solveMotionWork` without repeating
+  // its counts.
+  //
+  // It is also the ONLY handle these two wheels have: neither's size is offered
+  // anywhere but its own chip's module, which is why re-typing that is what a
+  // maker reaches for — and why leaving it uncarried was worse here than on the
+  // train, where "Max wheel Ø" at least asks the question.
+  //
+  // The MINUTE wheel decides, being the one `clockPlate` measures the branch
+  // from; the hour wheel is asked only when the minute wheel still agrees with
+  // the design, so that editing either one alone is taken up.
+  const motionCut = ((): number | null => {
+    if (!motion || !design.motion) return null
+    for (const g of [motion.minute, motion.hour]) {
+      const c = pinionDims(g)?.centreDistance
+      if (c !== undefined && Number.isFinite(c) && c > 0
+        && Math.abs(c - design.motion.centreDistanceMM) > SAME_MM) return c
+    }
+    return null
+  })()
+
+  if (cut.every((m) => m === null) && motionCut === null) return spec
+  // `motionSize` is left alone: it is read only to RECOVER a spacing for a clock
+  // that has none, and a spacing set here takes precedence over it.
+  const next: ClockSpec = motionCut === null ? spec : { ...spec, motionCentreMM: motionCut }
+  if (cut.every((m) => m === null)) return next
+  if (legacy) return {
+    ...next,
+    module: undefined,
+    maxWheelDia: MAX_WHEEL_DIA,
+    lockedModules: designed.map((m, i) => cut[i] ?? m.module),
+  }
+  const held = designed.map((_, i) => cut[i] ?? was(i))
+  return { ...next, lockedModules: held.some((m) => m !== null) ? held : undefined }
+}

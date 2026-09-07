@@ -15,12 +15,13 @@
 // a SELECTED clock's own spec, so the numbers for a clock already in the document
 // can be consulted without reopening the designer.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, GripHorizontal } from 'lucide-react'
 import { ICON } from '../theme'
 import { useUIStore } from '../store/uiStore'
 import { usePathsStore } from '../store/pathsStore'
 import { useWorkpieceStore, fmtLen } from '../store/workpieceStore'
+import { clockAssemblyFromPaths, clockMotionFromPaths, holdCutModules } from '../shapes/clockTrain'
 import { clockReadout, fmtPeriod } from './clockReadout'
 import { TONE_CLASS } from './readout'
 
@@ -54,7 +55,23 @@ export default function ClockInfoPanel() {
   }, [])
 
   // The draft wins: while the designer is open, that is the clock being decided.
-  const fromSelection = paths.find((p) => selectedIds.includes(p.id) && p.clockSpec)?.clockSpec
+  // A clock read out of the SELECTION is read as it now stands: a wheel re-cut on
+  // its own chip since is taken up as a held module, so the parts table gives the
+  // arbor spacings of the wheels that are actually there. `ClockPanel` does the
+  // same to the spec it loads, so a draft has already been through this.
+  const own = paths.find((p) => selectedIds.includes(p.id) && p.clockSpec)
+  // Memoised only for its IDENTITY: it feeds the self-closing effect below, and
+  // a fresh object every render would re-run that on every render.
+  const fromSelection = useMemo(
+    () => (own?.clockSpec
+      ? holdCutModules(
+        own.clockSpec, toolConfig,
+        clockAssemblyFromPaths(paths, own.clockId ?? ''),
+        clockMotionFromPaths(paths, own.clockId ?? ''),
+      )
+      : undefined),
+    [own?.clockSpec, own?.clockId, paths, toolConfig],
+  )
   const spec = draft ?? fromSelection ?? null
 
   // IT CLOSES ITSELF when its subject goes away — the designer is shut and no

@@ -26,7 +26,7 @@ import { generateShapeParts, translateShapeParams, carryAnnotationSwitches } fro
 import { loadFont, SINGLE_LINE_FONT_FAMILY } from '../../shapes/textGenerator'
 import {
   DEFAULT_CLOCK_SPEC, designClock, layoutClock, MAX_WHEEL_DIA, MODULE_TAPER, MOTION_CENTRE_MM,
-  meshCountOf, trainWheelsOf,
+  clockAssemblyFromPaths, clockMotionFromPaths, holdCutModules, meshCountOf, trainWheelsOf,
   type ClockPart, type ClockPartParams, type ClockSpec,
 } from '../../shapes/clockTrain'
 import { nextPathColor, type ImportedPath } from '../../importers/svgImporter'
@@ -128,10 +128,26 @@ export default function ClockPanel() {
       // has four — and delete its third wheel on the next Update. `trainWheelsOf`
       // is the one reader that knows that, so it fills the gap here.
       if (own?.clockSpec) {
-        setSpec({
-          ...DEFAULT_CLOCK_SPEC, ...own.clockSpec,
-          trainWheels: trainWheelsOf(own.clockSpec),
-        })
+        // …and a wheel RE-CUT on its own chip since is taken up as a held module
+        // (`holdCutModules`). Without that the designer went on reporting the
+        // tooth size it had solved for — so the numbers window gave the arbor
+        // spacing of the wheel that used to be there — and the next Update cut
+        // the wheel back to it. Typing is locking, exactly as it is for a tooth
+        // count; the rest of the train then re-cuts AROUND the held wheel,
+        // which is what puts the pins it drives back on its pitch circle. A
+        // motion wheel comes back as the "Arbor spacing" below instead — the
+        // same fact in the term this panel actually offers, and the only handle
+        // those two wheels have.
+        const paths = usePathsStore.getState().paths
+        setSpec(holdCutModules(
+          {
+            ...DEFAULT_CLOCK_SPEC, ...own.clockSpec,
+            trainWheels: trainWheelsOf(own.clockSpec),
+          },
+          useUIStore.getState().shapeToolConfig,
+          clockAssemblyFromPaths(paths, clockEditId),
+          clockMotionFromPaths(paths, clockEditId),
+        ))
         return
       }
     }
