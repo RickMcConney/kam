@@ -10,7 +10,6 @@ import { usePathsStore } from './store/pathsStore'
 import { openProjectFile, newProject } from './io/projectLoad'
 import { triggerProjectSave } from './io/fileSystem'
 import SaveDialog from './components/SaveDialog'
-import RestoreDialog from './components/RestoreDialog'
 import EscapementInfoPanel from './panels/EscapementInfoPanel'
 import ClockInfoPanel from './panels/ClockInfoPanel'
 import { useWorkpieceStore } from './store/workpieceStore'
@@ -20,8 +19,7 @@ import { regenerateOperation } from './cam/regenerate'
 import { useSimStore } from './store/simStore'
 import { installSimAutoReload } from './sim/simAutoReload'
 import { installPathClipboard } from './io/pathClipboard'
-import { installAutosave, armAutosave, readSnapshot, clearSnapshot } from './io/autosave'
-import { useRestoreStore } from './store/restoreStore'
+import { installAutosave, armAutosave, readSnapshot, clearSnapshot, applySnapshot, pruneSnapshots, tabWasDiscarded } from './io/autosave'
 
 const CanvasStage = lazy(() => import('./canvas/CanvasStage'))
 const ThreeView = lazy(() => import('./three/ThreeView'))
@@ -118,6 +116,13 @@ function useKeyboardShortcuts() {
         if (sim.gcode) { e.preventDefault(); sim.playing ? sim.pause() : sim.play(); return }
       }
       if (e.key === 's' || e.key === 'S') { useUIStore.getState().toggleSnap(); return }
+      // C enters (and leaves) the Constrain tool. Escape also leaves it, so this
+      // is the shortcut for turning it ON without the toolbar.
+      if (e.key === 'c' || e.key === 'C') {
+        const ui = useUIStore.getState()
+        ui.setActiveTool(ui.activeTool === 'constrain' ? 'select' : 'constrain')
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!useUIStore.getState().nodeEditPathId) usePathsStore.getState().deleteSelected()
         return
@@ -181,22 +186,46 @@ function usePathClipboard() {
 
 // Crash / tab-discard recovery — see io/autosave.ts for why this exists.
 //
-// Order matters: installAutosave() subscribes immediately but writes nothing
-// until armed, and arming waits on the boot-time read. Otherwise the empty
-// document this mounts over would overwrite the snapshot before it is offered.
+// UNSAVED WORK IS PUT BACK, NEVER OFFERED BACK. This asked first, in a modal, and
+// the question had only one answer: the snapshot exists because the session
+// ended without the user's say-so, so the choice on the table was between their
+// own work and an empty screen. A dialog in front of that is a step to get past,
+// not a decision — and the way to an empty screen was never the dialog anyway,
+// it is New Project, which is one keystroke and undoable.
+//
+// Order still matters: installAutosave() subscribes immediately but writes
+// nothing until armed, and arming waits on the boot-time read. Otherwise the
+// empty document this mounts over would overwrite the snapshot before it is
+// read back.
 function useAutosave() {
   useEffect(() => {
     const dispose = installAutosave()
     void (async () => {
       const snap = await readSnapshot()
       // A snapshot of a document that WAS saved is just a stale mirror of a file
-      // on disk, so it is dropped rather than offered back.
+      // on disk: it is on disk under its own name, so it is dropped rather than
+      // reopened behind the user's back.
       if (snap && snap.dirty && (snap.pathCount > 0 || snap.opCount > 0)) {
-        useRestoreStore.getState().setOffer(snap) // RestoreDialog arms once answered
-      } else {
-        if (snap) await clearSnapshot()
-        armAutosave()
+        const ok = applySnapshot(snap)
+        // SAID OUT LOUD, because the one thing a silent restore could hide is
+        // that this document is not saved anywhere. The wording separates the
+        // two ways a session ends: a discard is the browser's doing and worth
+        // naming, anything else the user may have half-expected.
+        useUIStore.getState().showStatus(
+          ok
+            ? `Restored ${snap.name} — unsaved work from ${tabWasDiscarded()
+                ? 'before the browser put this tab to sleep'
+                : 'your last session'}. Ctrl+N for an empty project.`
+            : 'Could not restore the last session — the backup was unreadable.',
+          ok ? 'info' : 'error',
+        )
+      } else if (snap) {
+        await clearSnapshot()
       }
+      armAutosave()
+      // Last, and unawaited: the records of tabs that closed weeks ago are
+      // landfill, and clearing them must never delay the project appearing.
+      void pruneSnapshots()
     })()
     return dispose
   }, [])
@@ -233,7 +262,6 @@ export default function App() {
       </div>
       <StatusBar />
       <SaveDialog />
-      <RestoreDialog />
       {/* Floats over everything and takes no focus — it is a readout being
           watched while a spinner is held down, not a dialog. */}
       <EscapementInfoPanel />

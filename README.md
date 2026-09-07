@@ -58,6 +58,7 @@ FreazyKam runs entirely in your browser — no account, no server, no install. Y
 - Corner treatment: outer radius, inner radius, chamfer, dogbone
 - Linear and circular pattern tools — also re-editable from their chip
 - **Nesting** — packs the selected parts onto the stock with the least waste. Set the gap, edge margin, rotation step and which edge to pack from, so the offcut is left as one usable strip rather than scattered. Small parts drop into the holes of larger ones, unselected paths can be treated as ground already taken, and anything that won't fit is parked clear of the stock. **Fill stock with copies** repeats a single part until no more fit
+- **Constraints** — hold one part a stated distance from another and keep it there as either is edited. Press **C**, click a point on one part (corner, edge midpoint, centre, or the centre of a round feature), then a point on another — or *drag* the second part into place with the dimension reading out live, and let go where you want it. Numbers are measured in the first part's own frame, so four holes 10 mm in from the corners of a plate stay 10 mm in from the corners when the plate is resized *or rotated*; the second part can be held at its angle to the first as well, so a slot turns with the plate it sits in. Parts can also be held off an edge of the stock, which is ground and wins over a drag. There is no root — drag any part of a chain and the rest follow — and a contradiction is reported rather than half-applied
 - Holding tabs: configure count, length, height; drag individual tabs along path
 - Group / ungroup (`Ctrl+G` / `Ctrl+Shift+G`) — groups nest, and Alt-click reaches a single path inside one
 - Copy and paste paths between projects (`Ctrl+C` / `Ctrl+V`) — a pasted gear is still a gear, with its parameters, corner treatments and grouping intact
@@ -162,6 +163,7 @@ Depths are always measured *from* the start surface, and the tool-reach and past
 | `Ctrl/Cmd+C` / `Ctrl/Cmd+V` | Copy / paste paths, including between projects |
 | `Ctrl/Cmd+G` / `Ctrl/Cmd+Shift+G` | Group / ungroup selected |
 | `Delete` / `Backspace` | Delete selected |
+| `C` | Constrain tool — hold one part relative to another |
 | `S` | Toggle snap to grid |
 | `Space` | Play / pause simulation |
 | `Escape` | Cancel pen drawing / exit point edit |

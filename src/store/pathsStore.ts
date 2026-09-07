@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ImportedPath, PathDefinition } from '../importers/svgImporter'
 import type { ClockSpec } from '../shapes/clockTrain'
-import { translateD, applyPlacementD, placementMat, foldPlacement, isPlacementOnly, getBBox, type TransformStep } from '../canvas/selectionUtils'
+import { translateD, applyPlacementD, placementMat, foldPlacement, isPlacementOnly, getBBox, applyTransformSteps, type TransformStep } from '../canvas/selectionUtils'
 import { generateShapeD, generateShapeParts, shapeDisplayName, translateShapeParams, ANNOTATION_SWITCH, type ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, refsPathId, remapOpsForSplit } from './toolpathStore'
 import { useTabStore } from './tabStore'
@@ -10,6 +10,10 @@ import { useTimelineStore } from '../timeline/timelineStore'
 import { serializeOp, type PathsAddSource, type PathEditGesture } from '../timeline/events'
 import type { CornerTreatmentType } from '../tools/cornerTreatment'
 import { inGroup, outerGroupOf } from './pathGroups'
+import { useConstraintsStore, constraintsTouching } from './constraintsStore'
+import { solveConstraints } from './constraints'
+import { useWorkpieceStore } from './workpieceStore'
+import { useUIStore } from './uiStore'
 import { uid } from '../uid'
 
 export type { ImportedPath }
@@ -159,6 +163,237 @@ function annotationSwitchOff(
   return { deleteIds: nextDeletes, updates: nextUpdates }
 }
 
+/**
+ * One path, with one update applied.
+ *
+ * Lifted out of `applyPathEdit`'s map so the CONSTRAINT SOLVE can go through it
+ * too. A constraint moves a part by emitting a translate — and, when it holds
+ * the angle between two parts, a rotate before it — exactly as a drag does, and
+ * it must land the same way: folded into `placement` when the path has
+ * parameters that cannot absorb it, absorbed into those parameters when they
+ * can, carrying the corner recipe either way. A second copy of these rules would
+ * be a second set of them to keep in step. It matters more for the rotate than
+ * for the translate: `placement` is where a part's ANGLE is recorded, and the
+ * angle is what the next solve reads back to work out the frame it measures in.
+ */
+function applyUpdateToPath(p: ImportedPath, upd: PathUpdate): ImportedPath {
+  const newPath = { ...p, d: upd.d }
+  // Repositioning one part of a multi-part shape is recorded as that
+  // part's PLACEMENT. Its params are the whole GROUP's definition, so
+  // translating them here made the group's copies disagree and the next
+  // parameter step regenerated everything from one of them, throwing the
+  // arrangement away — and a rotate cleared them outright, which took the
+  // part out of the group for good. Neither now happens: the definition
+  // is untouched and the offset from it is remembered.
+  //
+  // A SINGLE parametric shape takes the same road, and the rule for it is
+  // that PARAMETERS ARE NEVER LOST TO A GESTURE. `shapeParams: null` used
+  // to mean "throw them away"; it now means only "the parameters could
+  // not absorb this step" — a rotate, a skew, a mirror, or a stretch of
+  // something with no aspect ratio to stretch — and the step SPILLS into
+  // the placement recipe instead. The definition goes on regenerating
+  // from the parameters and the recipe carries it back out to where the
+  // shape actually sits, so a spirograph that has been turned, stretched
+  // and dragged still opens with its loop count and still has it applied.
+  //
+  // Absorbing is preferred wherever it works, because it is what keeps
+  // the panel's own fields live: a plain drag moves x/y, and a scale a
+  // shape CAN express changes its size (a gear's module, a rectangle's
+  // W/H). Once a placement exists, repositioning must fold into it rather
+  // than splitting across the two — leaving the recipe's pivots in
+  // coordinates the parameters had since moved out of would throw the
+  // shape across the stock on the next parameter edit.
+  //
+  // A path with NO parameters — a pen path, an imported outline — records
+  // its transforms here too, and that is the whole of what makes the
+  // properties panel's Transform section work the same way for every
+  // path. Nothing regenerates such a path (there is no definition to
+  // regenerate FROM, so `d` stays baked and `applyPlacementD` is never
+  // called on it), which makes this a RECORD rather than a recipe. It is
+  // still the only place the answer to "how far is this turned?" exists:
+  // without it a rotated pen path reports 0°, because a rotation baked
+  // into a polyline is unrecoverable from the polyline.
+  const spilled = upd.shapeParams === null && p.shapeParams !== undefined
+  const reposition = (upd.transforms?.length ?? 0) > 0 && (
+    spilled
+    || p.shapeParams === undefined
+    || (isPlacementOnly(upd.transforms) &&
+        (p.shapePart !== undefined || (p.placement?.length ?? 0) > 0))
+  )
+  if (reposition) {
+    newPath.placement = foldPlacement(p, upd.transforms!)
+  } else if (upd.shapeParams !== undefined) {
+    newPath.shapeParams = upd.shapeParams ?? undefined
+    // The PLACEMENT IS NOT CLEARED WITH THEM. It was, on the reasoning
+    // that a recipe with no definition left to carry is dead weight —
+    // true while only a parametric shape had one, and wrong now that a
+    // path without parameters keeps its placement as the RECORD of how far
+    // it has been turned. Chamfering a rotated rectangle is exactly that
+    // case: `d` is rewritten and the parameters go (a chamfered rectangle
+    // is no longer {x,y,w,h}), but the rectangle is still standing at 37°
+    // and the record is the only place that number exists — cleared, the
+    // panel read 0° under a visibly rotated shape. Nothing re-applies it,
+    // so a `d` rewrite cannot put it out of step with the geometry; only a
+    // gesture that actually turns the path changes what it says.
+  }
+  // Corner treatments are a recipe over an untreated outline, so they
+  // survive exactly as long as that outline still describes this path:
+  //  - an edit carrying a `corner` recipe REPLACES them (the form always
+  //    sends the full cumulative map, never a delta);
+  //  - a pure transform CARRIES them, base outline and radii together, so
+  //    moving a treated path does not cost it its chip;
+  //  - anything else that rewrites `d` — node edits, weld, trim, boolean —
+  //    DROPS them, because `treatments` is keyed by corner index into the
+  //    base outline and those indices now point at different corners.
+  if (upd.corner) {
+    const baseD = upd.cornerBaseD ?? p.corners?.baseD
+    newPath.corners = baseD && upd.corner.length > 0
+      ? { baseD, treatments: upd.corner.map((c) => [c.idx, { type: c.type, radiusMM: c.radiusMM }]) }
+      : undefined
+  } else if (p.corners && upd.transforms?.length) {
+    // Still moved with the path, even though the transform is now ALSO
+    // recorded in the placement. Nothing applies a non-parametric path's
+    // placement (see above — it is a record, not a recipe), so the corner
+    // form re-cuts straight from this base and writes `d` itself; leaving
+    // the base behind would put a re-chamfered rectangle back where it was
+    // first drawn. Pinned by `a move carries the base outline with it` in
+    // scripts/corner-recipe-check.mts.
+    newPath.corners = transformCorners(p.corners, upd.transforms)
+  } else if (p.corners && upd.d !== p.d) {
+    newPath.corners = undefined
+  }
+  if (upd.name !== undefined) {
+    newPath.name = upd.name
+  }
+  if (upd.hidden !== undefined) {
+    newPath.hidden = upd.hidden
+  }
+  if (upd.fromCenter !== undefined) {
+    newPath.fromCenter = upd.fromCenter
+  }
+  if (upd.userGroups !== undefined) {
+    newPath.userGroups = upd.userGroups.length > 0 ? upd.userGroups : undefined
+  }
+  return newPath
+}
+
+// The last constraint failure reported, so a document left over-constrained
+// says so ONCE rather than on every subsequent edit. Cleared when a solve
+// succeeds, so the next genuine failure is announced again.
+let lastConstraintError: string | null = null
+
+/**
+ * Drop the constraints a delete has orphaned, then move whatever the surviving
+ * ones say has to move.
+ *
+ * Runs inside the caller's atomic edit, on the paths as they will BE, and
+ * returns the paths as they will FINALLY be. Both halves matter: dropping the
+ * constraints here means the snapshot taken by the caller's `record` already has
+ * them gone, so one undo brings back the path AND the constraints that named it;
+ * and applying the moves here means the constrained part moves in the same
+ * timeline entry as the part that drove it, rather than appearing as a second
+ * mysterious Move chip the user did not make.
+ *
+ * A solve is IDEMPOTENT (see solveConstraints), so running it on every edit —
+ * including the edits it itself caused, on the next gesture — costs nothing and
+ * changes nothing once everything sits where it belongs.
+ */
+function enforceConstraints(
+  paths: ImportedPath[],
+  deleteIds: string[],
+  anchorIds: string[] = [],
+): { paths: ImportedPath[]; movedIds: string[] } {
+  const cs = useConstraintsStore.getState()
+  let constraints = cs.constraints
+  if (constraints.length === 0) return { paths, movedIds: [] }
+  if (deleteIds.length > 0) {
+    // A constraint with a deleted end has nothing left to say. Same doctrine as
+    // the operations above: it goes visibly, and one undo restores it.
+    const doomed = new Set(constraintsTouching(constraints, deleteIds).map((c) => c.id))
+    if (doomed.size > 0) {
+      constraints = constraints.filter((c) => !doomed.has(c.id))
+      cs.replaceConstraints(constraints)
+    }
+  }
+  if (constraints.length === 0) return { paths, movedIds: [] }
+  const { widthMM, heightMM } = useWorkpieceStore.getState()
+  // THE PARTS THIS EDIT TOUCHED ARE THE ANCHORS. There is no root in the
+  // constraint graph — the walk starts from whatever the user just moved and
+  // everything else follows it — so a chain can be dragged by any of its parts.
+  const sol = solveConstraints(paths, constraints, { widthMM, heightMM }, anchorIds)
+  if (sol.error) {
+    // Refused, not half-applied: a loop or a contradiction has no answer, and
+    // moving the parts anyway would be worse than leaving them where they are.
+    if (sol.error !== lastConstraintError) {
+      lastConstraintError = sol.error
+      useUIStore.getState().showStatus(sol.error, 'warn')
+    }
+    return { paths, movedIds: [] }
+  }
+  lastConstraintError = null
+  if (sol.moves.length === 0) return { paths, movedIds: [] }
+  const byId = new Map<string, PathUpdate>()
+  for (const mv of sol.moves) {
+    // A TURN FIRST, THEN THE SLIDE, and the turn is about the very point the
+    // constraint measures to — so the slide is the same number whether or not
+    // the body also turned, which is what lets `runPlan` work them out
+    // independently. A constraint that holds no angle between the parts emits
+    // the pure translate it always did, and the geometry is byte-identical.
+    const steps: TransformStep[] = []
+    if (mv.rotDeg !== undefined && mv.pivot) {
+      steps.push({ kind: 'rotate', angle: mv.rotDeg, cx: mv.pivot.x, cy: mv.pivot.y })
+    }
+    if (mv.dx !== 0 || mv.dy !== 0) steps.push({ kind: 'translate', dx: mv.dx, dy: mv.dy })
+    if (steps.length === 0) continue
+    for (const id of mv.pathIds) {
+      const p = paths.find((q) => q.id === id)
+      if (!p) continue
+      const r = applyTransformSteps(p, steps)
+      byId.set(id, { id, d: r.d, shapeParams: r.shapeParams, transforms: steps })
+    }
+  }
+  if (byId.size === 0) return { paths, movedIds: [] }
+  return {
+    paths: paths.map((p) => { const u = byId.get(p.id); return u ? applyUpdateToPath(p, u) : p }),
+    movedIds: [...byId.keys()],
+  }
+}
+
+/**
+ * Move whatever the constraints now say has to move, recording NOTHING.
+ *
+ * `anchorIds` is what must NOT move — for a constraint whose number has been
+ * changed, that is its `from` end, which is the whole of what the arrow on the
+ * dimension line means: this end is held, the other one is derived.
+ *
+ * For the constraint actions themselves (`constraintsStore`): adding a
+ * constraint or changing its distance has to move the parts, but the constraint
+ * event is already the record of that decision — a second `paths.edit` would put
+ * a Move chip in the strip for something the user did not do by hand, and cost a
+ * second press of undo to get back. So this writes the paths and leaves the
+ * history to the caller, which records afterwards so its snapshot holds both.
+ */
+export function applyConstraintSolve(anchorIds: string[] = []): void {
+  const solved = enforceConstraints(usePathsStore.getState().paths, [], anchorIds)
+  if (solved.movedIds.length === 0) return
+  usePathsStore.setState({ paths: solved.paths })
+  regenerateConstrained(solved.movedIds)
+}
+
+/**
+ * Regenerate the toolpaths on parts a constraint moved.
+ *
+ * The gesture's own caller regenerates what IT touched (see bakeTransform) and
+ * has no way to know a constraint carried something else along, so this is the
+ * only place that owes those operations a rebuild. Dynamically imported for the
+ * same reason the timeline's scheduled regen is: cam/regenerate reads this store
+ * back, and a static import would close the cycle at module-evaluation time.
+ */
+function regenerateConstrained(ids: string[]): void {
+  if (ids.length === 0) return
+  void import('../cam/regenerate').then(({ regenerateAffectedMany }) => regenerateAffectedMany(ids))
+}
+
 export const usePathsStore = create<PathsState>()((set, get) => ({
   paths: [],
   selectedIds: [],
@@ -295,12 +530,20 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
           ...(upd.clockSpec !== undefined ? { clockSpec: upd.clockSpec } : {}),
         }
       })
+    // A group amend moves real geometry — a gear's module is stepped and its rim
+    // grows — so the constraints hanging off it are re-solved here as well. This
+    // path records nothing (the chip it amends already stands for the edit), and
+    // neither does the solve.
+    const solved = enforceConstraints(
+      add.length > 0 ? [...paths, ...add] : paths, deleteIds,
+      [...updates.map((u) => u.id), ...add.map((a) => a.id)])
     set({
-      paths: add.length > 0 ? [...paths, ...add] : paths,
+      paths: solved.paths,
       ...(deleteIds.length > 0
         ? { selectedIds: s.selectedIds.filter((sid) => !deleteIds.includes(sid)) }
         : {}),
     })
+    regenerateConstrained(solved.movedIds)
   },
 
   applyPathEdit: ({ updates = [], add = [], deleteIds = [], label, gesture, selectAfter }) => {
@@ -322,112 +565,25 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
     }
     const map = new Map(updates.map((u) => [u.id, u]))
-    const paths = s.paths
+    let paths = s.paths
       .filter((p) => !deleteIds.includes(p.id))
       .map((p) => {
         const upd = map.get(p.id)
-        if (!upd) return p
-        const newPath = { ...p, d: upd.d }
-        // Repositioning one part of a multi-part shape is recorded as that
-        // part's PLACEMENT. Its params are the whole GROUP's definition, so
-        // translating them here made the group's copies disagree and the next
-        // parameter step regenerated everything from one of them, throwing the
-        // arrangement away — and a rotate cleared them outright, which took the
-        // part out of the group for good. Neither now happens: the definition
-        // is untouched and the offset from it is remembered.
-        //
-        // A SINGLE parametric shape takes the same road, and the rule for it is
-        // that PARAMETERS ARE NEVER LOST TO A GESTURE. `shapeParams: null` used
-        // to mean "throw them away"; it now means only "the parameters could
-        // not absorb this step" — a rotate, a skew, a mirror, or a stretch of
-        // something with no aspect ratio to stretch — and the step SPILLS into
-        // the placement recipe instead. The definition goes on regenerating
-        // from the parameters and the recipe carries it back out to where the
-        // shape actually sits, so a spirograph that has been turned, stretched
-        // and dragged still opens with its loop count and still has it applied.
-        //
-        // Absorbing is preferred wherever it works, because it is what keeps
-        // the panel's own fields live: a plain drag moves x/y, and a scale a
-        // shape CAN express changes its size (a gear's module, a rectangle's
-        // W/H). Once a placement exists, repositioning must fold into it rather
-        // than splitting across the two — leaving the recipe's pivots in
-        // coordinates the parameters had since moved out of would throw the
-        // shape across the stock on the next parameter edit.
-        //
-        // A path with NO parameters — a pen path, an imported outline — records
-        // its transforms here too, and that is the whole of what makes the
-        // properties panel's Transform section work the same way for every
-        // path. Nothing regenerates such a path (there is no definition to
-        // regenerate FROM, so `d` stays baked and `applyPlacementD` is never
-        // called on it), which makes this a RECORD rather than a recipe. It is
-        // still the only place the answer to "how far is this turned?" exists:
-        // without it a rotated pen path reports 0°, because a rotation baked
-        // into a polyline is unrecoverable from the polyline.
-        const spilled = upd.shapeParams === null && p.shapeParams !== undefined
-        const reposition = (upd.transforms?.length ?? 0) > 0 && (
-          spilled
-          || p.shapeParams === undefined
-          || (isPlacementOnly(upd.transforms) &&
-              (p.shapePart !== undefined || (p.placement?.length ?? 0) > 0))
-        )
-        if (reposition) {
-          newPath.placement = foldPlacement(p, upd.transforms!)
-        } else if (upd.shapeParams !== undefined) {
-          newPath.shapeParams = upd.shapeParams ?? undefined
-          // The PLACEMENT IS NOT CLEARED WITH THEM. It was, on the reasoning
-          // that a recipe with no definition left to carry is dead weight —
-          // true while only a parametric shape had one, and wrong now that a
-          // path without parameters keeps its placement as the RECORD of how far
-          // it has been turned. Chamfering a rotated rectangle is exactly that
-          // case: `d` is rewritten and the parameters go (a chamfered rectangle
-          // is no longer {x,y,w,h}), but the rectangle is still standing at 37°
-          // and the record is the only place that number exists — cleared, the
-          // panel read 0° under a visibly rotated shape. Nothing re-applies it,
-          // so a `d` rewrite cannot put it out of step with the geometry; only a
-          // gesture that actually turns the path changes what it says.
-        }
-        // Corner treatments are a recipe over an untreated outline, so they
-        // survive exactly as long as that outline still describes this path:
-        //  - an edit carrying a `corner` recipe REPLACES them (the form always
-        //    sends the full cumulative map, never a delta);
-        //  - a pure transform CARRIES them, base outline and radii together, so
-        //    moving a treated path does not cost it its chip;
-        //  - anything else that rewrites `d` — node edits, weld, trim, boolean —
-        //    DROPS them, because `treatments` is keyed by corner index into the
-        //    base outline and those indices now point at different corners.
-        if (upd.corner) {
-          const baseD = upd.cornerBaseD ?? p.corners?.baseD
-          newPath.corners = baseD && upd.corner.length > 0
-            ? { baseD, treatments: upd.corner.map((c) => [c.idx, { type: c.type, radiusMM: c.radiusMM }]) }
-            : undefined
-        } else if (p.corners && upd.transforms?.length) {
-          // Still moved with the path, even though the transform is now ALSO
-          // recorded in the placement. Nothing applies a non-parametric path's
-          // placement (see above — it is a record, not a recipe), so the corner
-          // form re-cuts straight from this base and writes `d` itself; leaving
-          // the base behind would put a re-chamfered rectangle back where it was
-          // first drawn. Pinned by `a move carries the base outline with it` in
-          // scripts/corner-recipe-check.mts.
-          newPath.corners = transformCorners(p.corners, upd.transforms)
-        } else if (p.corners && upd.d !== p.d) {
-          newPath.corners = undefined
-        }
-        if (upd.name !== undefined) {
-          newPath.name = upd.name
-        }
-        if (upd.hidden !== undefined) {
-          newPath.hidden = upd.hidden
-        }
-        if (upd.fromCenter !== undefined) {
-          newPath.fromCenter = upd.fromCenter
-        }
-        if (upd.userGroups !== undefined) {
-          newPath.userGroups = upd.userGroups.length > 0 ? upd.userGroups : undefined
-        }
-        return newPath
+        return upd ? applyUpdateToPath(p, upd) : p
       })
+    if (add.length > 0) paths = [...paths, ...add]
+    // EVERY CONSTRAINT IS RE-SOLVED HERE, INSIDE THIS SAME EDIT. Every gesture
+    // that moves geometry comes through applyPathEdit — a canvas drag, a typed
+    // position, a boolean, a node edit, an offset — so this is the one place it
+    // has to happen, and doing it here rather than afterwards is what makes a
+    // constrained part follow in ONE timeline entry and come back in ONE undo.
+    // It is a pure pre-pass over the paths as they will BE, so there is no
+    // re-entrancy: nothing here calls back into applyPathEdit.
+    const solved = enforceConstraints(
+      paths, deleteIds, [...updates.map((u) => u.id), ...add.map((a) => a.id)])
+    paths = solved.paths
     set({
-      paths: add.length > 0 ? [...paths, ...add] : paths,
+      paths,
       // Only touch selection when the caller asks (selectAfter) or something
       // was deleted — a fresh array reference here would needlessly re-render
       // every selectedIds subscriber on plain batch updates.
@@ -447,6 +603,7 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
       },
       { label, selectionAfter: selectAfter },
     )
+    regenerateConstrained(solved.movedIds)
   },
 
   updateShapeParams: (id, params) => {
@@ -572,9 +729,10 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     // carries it out to where it actually sits — so a rotated spirograph stays
     // rotated when its loop count is stepped.
     const d = applyPlacementD(generateShapeD(params), self?.placement)
-    set((s) => ({
-      paths: s.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p),
-    }))
+    const solved = enforceConstraints(
+      s0.paths.map((p) => p.id === id ? { ...p, d, shapeParams: params } : p), [], [id])
+    set({ paths: solved.paths })
+    regenerateConstrained(solved.movedIds)
     // Parameter edits amend the chip that created/last-defined the shape —
     // changing text or a star's point count is an argument edit to that call,
     // not a new timeline entry. Fallback records normally if no definer exists.
@@ -623,6 +781,14 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     // don't map onto the sub-paths, so drop them.
     const newTabs = tabsBefore.filter((t) => t.pathId !== id)
     if (newTabs.length !== tabsBefore.length) useTabStore.getState().replaceTabs(newTabs)
+    // A constraint on the compound path goes with it, for the reason an
+    // operation does (see remapOpsForSplit): its endpoint was a bbox or a circle
+    // of the WHOLE outline, and no one sub-path inherits that. Cloning it onto
+    // each piece would silently start moving parts to a distance the user never
+    // asked for; losing it is visible, and one undo brings it back.
+    const cs = useConstraintsStore.getState()
+    const doomed = new Set(constraintsTouching(cs.constraints, [id]).map((c) => c.id))
+    if (doomed.size > 0) cs.replaceConstraints(cs.constraints.filter((c) => !doomed.has(c.id)))
     set({
       paths: [...s.paths.slice(0, idx), ...newPaths, ...s.paths.slice(idx + 1)],
       selectedIds: newPaths.map((p) => p.id),
@@ -664,6 +830,25 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
           return made
         }),
       }))
+    // A constraint is copied only when BOTH of its ends were — the same rule the
+    // user groups above follow, and for the same reason: a constraint with one
+    // end in the copy and one in the original is not a copy of anything the user
+    // selected, and re-pointing it at the original would tie the new parts to the
+    // old ones. A stock edge counts as copied: it is ground, and there is one.
+    const copiedOf = new Map(s.paths
+      .filter((p) => s.selectedIds.includes(p.id))
+      .map((p, i) => [p.id, newPaths[i].id]))
+    const cs = useConstraintsStore.getState()
+    const carried = cs.constraints.flatMap((c) => {
+      const from = c.from.kind === 'stock' ? c.from : (() => {
+        const to = copiedOf.get(c.from.id); return to ? { ...c.from, id: to } : null
+      })()
+      const to = c.to.kind === 'stock' ? c.to : (() => {
+        const t = copiedOf.get(c.to.id); return t ? { ...c.to, id: t } : null
+      })()
+      return from && to ? [{ ...c, id: uid('con'), from, to }] : []
+    })
+    if (carried.length > 0) cs.replaceConstraints([...cs.constraints, ...carried])
     set({
       paths: [...s.paths, ...newPaths],
       selectedIds: newPaths.map((p) => p.id),
@@ -671,7 +856,18 @@ export const usePathsStore = create<PathsState>()((set, get) => ({
     useTimelineStore.getState().record({ kind: 'paths.add', paths: newPaths, source: 'duplicate' })
   },
 
-  replacePaths: (paths) => set({ paths, selectedIds: [] }),
+  replacePaths: (paths) => {
+    // Load machinery: the constraints for THIS document are installed separately
+    // (projectLoad), so drop any left over from the last one rather than letting
+    // them point at ids that no longer exist.
+    const live = new Set(paths.map((p) => p.id))
+    const cs = useConstraintsStore.getState()
+    const kept = cs.constraints.filter((c) =>
+      (c.from.kind === 'stock' || live.has(c.from.id))
+      && (c.to.kind === 'stock' || live.has(c.to.id)))
+    if (kept.length !== cs.constraints.length) cs.replaceConstraints(kept)
+    set({ paths, selectedIds: [] })
+  },
 }))
 
 // A clock's spec, carried by every one of its parts (see ImportedPath.clockSpec).

@@ -17,7 +17,10 @@ interface StatusMessage {
   seq: number
 }
 export type WorkspaceTab = '2d' | '3d' | 'tools' | 'postprocessor'
-type ActiveTool = 'select' | 'drill' | 'pen' | ShapeType
+// 'constrain' is the Constrain tool: click a point on one part, then a point on
+// another, and the constraint holding them where they stand is created — see
+// canvas/layers/ConstraintPickLayer.tsx.
+type ActiveTool = 'select' | 'drill' | 'pen' | 'constrain' | ShapeType
 
 export type PenNode = {
   x: number
@@ -32,6 +35,25 @@ interface UIState {
   workspaceTab: WorkspaceTab
   snapEnabled: boolean
   activeTool: ActiveTool
+  /** How the Constrain tool states a new constraint. Remembered across uses,
+   *  like `shapeToolConfig` — the mode is a working preference, not a per-
+   *  constraint decision, and an individual one can still be switched later. */
+  constrainMode: 'polar' | 'xy'
+  /** The constraint just created, so its first field takes the keyboard — the
+   *  whole point of the tool is that a number can be typed without reaching for
+   *  the sidebar. Cleared once that field has claimed focus. */
+  focusConstraintId: string | null
+  /**
+   * WHAT WAS SELECTED WHEN THE CONSTRAIN TOOL WAS ENTERED.
+   *
+   * Entering the tool clears the selection — a selected part carries resize
+   * handles that swallow the very clicks the tool needs — and that took the
+   * panel's rows with it: pick the part whose constraints you are about to edit,
+   * press the button, and the list you were looking at empties. The subject
+   * outlives the selection so the section goes on answering the same question.
+   * Emptied when the tool is left.
+   */
+  constrainSubjectIds: string[]
   shapeToolConfig: ShapeToolConfig
   lastShapeType: ShapeType
   pendingDrillPoints: { x: number; y: number }[]
@@ -160,6 +182,9 @@ interface UIState {
   toggleSnap: () => void
   setSnap: (enabled: boolean) => void
   setActiveTool: (tool: ActiveTool) => void
+  setConstrainMode: (mode: 'polar' | 'xy') => void
+  setFocusConstraint: (id: string | null) => void
+  setConstrainSubject: (ids: string[]) => void
   setShapeToolConfig: (config: ShapeToolConfig) => void
   // Drag out a shape from its CENTRE rather than corner-to-corner, and the
   // DEFAULT for the `fromCenter` each shape drawn from here is stamped with. A
@@ -198,6 +223,9 @@ export const useUIStore = create<UIState>()(
   workspaceTab: '2d',
   snapEnabled: true,
   activeTool: 'select',
+  constrainMode: 'xy',
+  focusConstraintId: null,
+  constrainSubjectIds: [],
   shapeToolConfig: DEFAULT_SHAPE_CONFIG,
   lastShapeType: 'rectangle',
   pendingDrillPoints: [],
@@ -267,6 +295,9 @@ export const useUIStore = create<UIState>()(
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
   setSnap: (enabled) => set({ snapEnabled: enabled }),
   setActiveTool: (tool) => set({ activeTool: tool, nodeEditPathId: null }),
+  setConstrainMode: (mode) => set({ constrainMode: mode }),
+  setFocusConstraint: (id) => set({ focusConstraintId: id }),
+  setConstrainSubject: (ids) => set({ constrainSubjectIds: ids }),
   setShapeToolConfig: (config) => set({ shapeToolConfig: config }),
   setMeshAnim: (id) => set({ meshAnimPathId: id, clockAnimPathId: null, clockLinkPathId: null }),
   setClockAnim: (id) => set({ clockAnimPathId: id, meshAnimPathId: null, clockLinkPathId: null }),

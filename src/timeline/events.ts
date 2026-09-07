@@ -2,6 +2,7 @@ import type { ImportedPath } from '../importers/svgImporter'
 import type { PathUpdate } from '../store/pathsStore'
 import type { AnyOperation, MotionSegment } from '../store/toolpathStore'
 import type { Tab } from '../store/tabStore'
+import { constraintName, type Constraint } from '../store/constraints'
 import { shapeDisplayName, type ShapeParams } from '../shapes/shapeGenerators'
 import type { Units, OriginPosition, ZOrigin, Material } from '../store/workpieceStore'
 
@@ -150,6 +151,12 @@ export type TimelineEventPayload =
   | { kind: 'tabs.apply'; pathId: string; tabs: Tab[] }  // replaces all tabs of pathId
   | { kind: 'tabs.delete'; tabIds: string[] }
   | { kind: 'tabs.moveT'; tabId: string; t01: number }
+  // ---- constraints ----
+  // A constraint is not a property of either path it joins, so it is its own
+  // object with its own events — see store/constraints.ts.
+  | { kind: 'constraint.add'; constraint: Constraint }
+  | { kind: 'constraint.update'; constraintId: string; changes: Partial<Omit<Constraint, 'id'>> }
+  | { kind: 'constraint.delete'; constraintIds: string[] }
   // ---- project ----
   | { kind: 'workpiece.set'; changes: WorkpieceEventChanges }
 
@@ -218,6 +225,10 @@ export function labelFor(ev: TimelineEventPayload): string {
     case 'tabs.apply': return `Tabs ×${ev.tabs.length}`
     case 'tabs.delete': return ev.tabIds.length === 1 ? 'Delete tab' : `Delete ${ev.tabIds.length} tabs`
     case 'tabs.moveT': return 'Move tab'
+    case 'constraint.add': return constraintName(ev.constraint)
+    case 'constraint.update': return 'Constraint'
+    case 'constraint.delete':
+      return ev.constraintIds.length === 1 ? 'Delete constraint' : `Delete ${ev.constraintIds.length} constraints`
     case 'workpiece.set': {
       const keys = Object.keys(ev.changes)
       const dims = ['widthMM', 'heightMM', 'thicknessMM']
@@ -240,5 +251,8 @@ export function familyOf(kind: TimelineEvent['kind']): EventFamily {
   if (kind.startsWith('paths.') || kind === 'shape.params') return 'path'
   if (kind.startsWith('op.')) return 'op'
   if (kind.startsWith('tabs.')) return 'tab'
+  // A constraint is drawn attached to the parts it joins, so it reads as
+  // something done TO them rather than as a thing of its own.
+  if (kind.startsWith('constraint.')) return 'path'
   return 'project'
 }

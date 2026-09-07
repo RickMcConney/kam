@@ -7,6 +7,7 @@ import { useSimStore } from '../store/simStore'
 import PathsPanel from '../panels/PathsPanel'
 import MachinePanel from '../panels/MachinePanel'
 import PropertiesPanel from '../panels/PropertiesPanel'
+import ConstraintsSection from '../panels/ConstraintsSection'
 import ShapePanel from '../panels/draw/ShapePanel'
 import ClockPanel from '../panels/draw/ClockPanel'
 import WorkpiecePanel from '../panels/WorkpiecePanel'
@@ -42,8 +43,18 @@ export default function Sidebar() {
   const shapesPanelOpen = useUIStore((s) => s.shapesPanelOpen)
   const clockPanelOpen = useUIStore((s) => s.clockPanelOpen)
   const setupPanelOpen = useUIStore((s) => s.setupPanelOpen)
+  const activeTool = useUIStore((s) => s.activeTool)
+  const focusConstraintId = useUIStore((s) => s.focusConstraintId)
 
   const showProps = selectedIds.length > 0 && !machineFormActive && !clockPanelOpen
+  // THE CONSTRAIN TOOL WORKS WITH NOTHING SELECTED — a selection puts resize
+  // handles over the parts and those swallow the clicks the tool needs — so its
+  // section has to survive an empty canvas selection, which `showProps` does
+  // not. Rendered on its own rather than by forcing PropertiesPanel to appear
+  // selectionless: that panel returns early when nothing is selected and has
+  // hooks after the return, so it depends on being unmounted in that state.
+  const showConstrain = !showProps && !machineFormActive && !clockPanelOpen
+    && (activeTool === 'constrain' || !!focusConstraintId)
 
   const [width, setWidth] = useState(320)
   const dragging = useRef(false)
@@ -159,7 +170,7 @@ export default function Sidebar() {
               remainder and grows down into it. */}
           <div className={(machineFormActive || shapesPanelOpen || clockPanelOpen) && sidebarTab === 'draw'
             ? 'flex-1 min-h-0 overflow-hidden flex flex-col'
-            : showProps
+            : showProps || showConstrain
               ? 'flex-initial min-h-0 overflow-y-auto'
               : 'flex-1 overflow-y-auto'
           }>
@@ -169,6 +180,21 @@ export default function Sidebar() {
           {/* Properties panel — hidden while the machine form or the clock
               designer fills the sidebar */}
           {showProps && <PropertiesPanel />}
+          {/* SITS WHERE THE PROPERTIES PANEL SITS — directly under the tools
+              above it, growing DOWNWARD into the free space, which is why it
+              carries that panel's three classes verbatim. As `flex-initial` it
+              took only its own height while the tools above kept `flex-1`, so
+              the free space went ABOVE it and the section hung off the bottom
+              edge of the sidebar with a gap over it — detached from the tool
+              that opens it, and shifting its own rows upward every time a
+              constraint was added. Same rule as PropertiesPanel: the panel that
+              can grow takes the space, and whatever is above it stops growing
+              (see the `showConstrain` arm of the class above). */}
+          {showConstrain && (
+            <div className="border-t border-gray-300 dark:border-neutral-700 px-3 py-2 flex-1 min-h-0 overflow-y-auto">
+              <ConstraintsSection />
+            </div>
+          )}
         </>
       )}
       </div>

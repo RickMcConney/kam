@@ -10,6 +10,8 @@ import { useSimStore } from '../store/simStore'
 import { useUIStore } from '../store/uiStore'
 import { useCanvasStore } from '../store/canvasStore'
 import { useTabStore, type Tab } from '../store/tabStore'
+import { useConstraintsStore } from '../store/constraintsStore'
+import type { Constraint } from '../store/constraints'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { migrateProvenance } from './migrateProvenance'
 import type { ImportedPath } from '../store/pathsStore'
@@ -50,6 +52,9 @@ export interface ProjectData {
     activeId: string
   }
   tabs?: Tab[]
+  // v4 and later. A v3 or earlier project has none, and a v4 one holds them in
+  // the pre-polar shape `migrateConstraints` reads.
+  constraints?: (Constraint | LegacyConstraint)[]
   // v2 ONLY, and never written again: the operation timeline. It is not restored
   // — undo is a snapshot stack now and history starts at the load — but it is
   // still READ once, to hoist the provenance of generated paths onto the paths
@@ -119,6 +124,10 @@ export function loadProject(data: ProjectData, fileName?: string) {
   }
 
   useTabStore.getState().replaceTabs(data.tabs ?? [])
+  // After the paths: `replacePaths` drops constraints whose ends are not in the
+  // document it was given, which is exactly what the OUTGOING project's
+  // constraints are by then.
+  useConstraintsStore.getState().replaceConstraints(migrateConstraints(data.constraints))
 
   useProjectStore.getState().markClean()
   // History is session-scoped: a snapshot stack holds live objects, which no file
@@ -132,6 +141,41 @@ export function loadProject(data: ProjectData, fileName?: string) {
     useUIStore.getState().showStatus(`Upgraded an older project — ${bits} can be edited from their chips again.`, 'info')
   }
   regenerateAll()
+}
+
+// A v4 constraint: separate X, Y and plain-distance kinds, one number each.
+type LegacyConstraint = {
+  id: string
+  kind: 'distance' | 'distX' | 'distY'
+  from: Constraint['from']
+  to: Constraint['to']
+  valueMM: number
+}
+
+/**
+ * v4 constraints read as polar ones.
+ *
+ * An X or a Y distance becomes a distance held at the axis angle its sign
+ * implies — 40 mm at 0° for `distX: 40`, at 180° for `distX: -40` — which is
+ * what the parts were actually standing at, so nothing moves on load. It holds
+ * MORE than the old one did (the free axis is now pinned too), and that is the
+ * honest reading: there is no polar constraint that says "hold X and leave Y
+ * alone", and quietly dropping the constraint instead would open the project
+ * with parts that look right and are no longer held.
+ */
+function migrateConstraints(saved: (Constraint | LegacyConstraint)[] | undefined): Constraint[] {
+  if (!saved) return []
+  return saved.map((c) => {
+    if (!('kind' in c)) return c
+    const { kind, valueMM, ...rest } = c
+    if (kind === 'distance') return { ...rest, distanceMM: valueMM }
+    const along = kind === 'distX' ? 0 : 90
+    return {
+      ...rest,
+      distanceMM: Math.abs(valueMM),
+      angleDeg: valueMM < 0 ? along + 180 : along,
+    }
+  })
 }
 
 export function newProject() {
@@ -151,6 +195,7 @@ export function newProject() {
   usePathsStore.getState().replacePaths([])
   useToolpathStore.getState().replaceOperations([])
   useTabStore.getState().replaceTabs([])
+  useConstraintsStore.getState().replaceConstraints([])
   useProjectStore.getState().setName('Untitled Project')
   useProjectStore.getState().markClean()
   useTimelineStore.getState().resetToCurrentState()

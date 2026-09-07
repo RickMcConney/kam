@@ -7,6 +7,8 @@ import type { ShapeParams } from '../shapes/shapeGenerators'
 import { useToolpathStore, type AnyOperation } from '../store/toolpathStore'
 import { abortGeneration } from '../workers/abortGeneration'
 import { useTabStore, type Tab } from '../store/tabStore'
+import { useConstraintsStore } from '../store/constraintsStore'
+import type { Constraint } from '../store/constraints'
 import { useUIStore } from '../store/uiStore'
 import { useWorkpieceStore } from '../store/workpieceStore'
 import type { WorkpieceEventChanges } from './events'
@@ -48,9 +50,14 @@ interface Snapshot {
   paths: ImportedPath[]
   operations: AnyOperation[]
   tabs: Tab[]
+  // Constraints ride here for the same reason paths do: they are document
+  // state, they change outside their own actions (a deleted path drops the
+  // constraints that named it, inside somebody else's atomic edit), and undo
+  // has to put both halves back in one press.
+  constraints: Constraint[]
   workpiece?: WorkpieceEventChanges
 }
-const stateAt: (Snapshot | undefined)[] = [{ paths: [], operations: [], tabs: [] }]
+const stateAt: (Snapshot | undefined)[] = [{ paths: [], operations: [], tabs: [], constraints: [] }]
 
 function captureWorkpiece(): Required<WorkpieceEventChanges> {
   const { widthMM, heightMM, thicknessMM, units, origin, zOrigin, material } = useWorkpieceStore.getState()
@@ -62,6 +69,7 @@ function captureSnapshot(): Snapshot {
     paths: usePathsStore.getState().paths,
     operations: useToolpathStore.getState().operations,
     tabs: useTabStore.getState().tabs,
+    constraints: useConstraintsStore.getState().constraints,
     workpiece: captureWorkpiece(),
   }
 }
@@ -78,7 +86,7 @@ const backfillGenesis = () => {
   // Async module loaders (vitest/vite-node) flush microtasks between module
   // evaluations, so this can fire while the cycle's bindings are still
   // undefined — retry on the next tick until the stores exist.
-  if (!useWorkpieceStore || !usePathsStore || !useToolpathStore || !useTabStore) {
+  if (!useWorkpieceStore || !usePathsStore || !useToolpathStore || !useTabStore || !useConstraintsStore) {
     setTimeout(backfillGenesis, 0)
     return
   }
@@ -264,6 +272,12 @@ function coalesce(last: TimelineEvent, payload: TimelineEventPayload): TimelineE
       if (last.kind !== 'shape.params' || last.pathId !== payload.pathId) return null
       return { ...last, params: payload.params }
     }
+    case 'constraint.update': {
+      // Same rule as op.update: dialling one constraint's distance is one
+      // decision, however many keystrokes it took to reach the number.
+      if (last.kind !== 'constraint.update' || last.constraintId !== payload.constraintId) return null
+      return { ...last, changes: { ...last.changes, ...payload.changes } }
+    }
     case 'op.setVisible': {
       if (last.kind !== 'op.setVisible') return null
       const sameIds = last.opIds.length === payload.opIds.length &&
@@ -376,6 +390,7 @@ function restoreStateAt(seq: number, events: TimelineEvent[]): boolean {
   usePathsStore.setState({ paths: state.paths, selectedIds: selection })
   useToolpathStore.setState({ operations })
   useTabStore.setState({ tabs: state.tabs })
+  useConstraintsStore.setState({ constraints: state.constraints })
 
   // Restore workpiece fields when the snapshot carries them (timelines from
   // before Phase 6 don't — leave the workpiece as-is then). setState bypasses

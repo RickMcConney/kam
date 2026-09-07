@@ -109,6 +109,32 @@ repeating the gesture won't help.
 
 ---
 
+## "Over-constrained" — a constraint is not being applied
+
+> *Over-constrained in X: Plate, Hole 3 are held by more constraints than they have room
+> to satisfy. Delete one.*
+
+Two constraints are fighting over the same freedom, and there is no answer that satisfies
+both — so **nothing is moved at all** rather than half-applied. The rows involved turn red
+in the Constraints section and the parts stay where they are.
+
+A part has two freedoms, X and Y, and each constraint takes one away. The usual cause is a
+part held to another part *and* pinned to a stock edge in the same direction: the stock is
+ground and wins, so the other constraint has nothing left to work with.
+
+**Fixes:**
+
+1. **Delete one of the flagged constraints** — its ✕ leaves the parts exactly where they
+   are, so nothing jumps.
+2. **Or stop holding one number rather than the whole constraint.** Click the **X** or
+   **Y** label in the row: the part keeps the other one and is free in that direction.
+
+Holding a part off *two different* stock edges is fine — that is one constraint per
+direction, which is exactly determinate. So is a chain of any length, as long as no part
+is driven twice.
+
+---
+
 ## Operations turned amber
 
 An amber ring on a chip means **needs regenerating**: the geometry, the stock or an

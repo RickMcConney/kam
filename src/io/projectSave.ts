@@ -5,6 +5,7 @@ import { usePathsStore } from '../store/pathsStore'
 import { useToolpathStore } from '../store/toolpathStore'
 import { usePostProcessorStore } from '../store/postProcessorStore'
 import { useTabStore } from '../store/tabStore'
+import { useConstraintsStore } from '../store/constraintsStore'
 import { useTimelineStore } from '../timeline/timelineStore'
 import { sanitizeFileName } from './filename'
 
@@ -14,7 +15,12 @@ import { sanitizeFileName } from './filename'
 // the block had nothing left to do but bloat the file. What it also carried —
 // the parameters generated paths could be re-edited from — moved onto the paths
 // themselves, and `io/migrateProvenance.ts` hoists it out of v2 files on load.
-const PROJECT_VERSION = 3
+// v4 added `constraints`; v5 is the same block holding POLAR ones — a distance
+// and an angle in a single constraint per pair, in place of the separate X and Y
+// distances v4 wrote (see store/constraints.ts, and `migrateConstraints` in
+// projectLoad for what an old file becomes). A v3 file has no constraints at
+// all, so the migration for it is a default value rather than a migration.
+const PROJECT_VERSION = 5
 
 export function buildProjectData() {
   const { name } = useProjectStore.getState()
@@ -35,6 +41,7 @@ export function buildProjectData() {
   }))
   const { profiles, activeId } = usePostProcessorStore.getState()
   const { tabs } = useTabStore.getState()
+  const { constraints } = useConstraintsStore.getState()
 
   return {
     version: PROJECT_VERSION,
@@ -50,6 +57,7 @@ export function buildProjectData() {
     operations,
     postProcessors: { profiles, activeId },
     tabs,
+    constraints,
   }
 }
 

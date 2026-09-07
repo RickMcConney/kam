@@ -415,6 +415,33 @@ export default function ThreeView() {
 
     controls.addEventListener('change', wake)
 
+    // ─── Coming back from sleep ──────────────────────────────────────────────
+    //
+    // This view renders ON DEMAND, so anything that blanks it without changing
+    // the scene leaves it blank for good: nothing asks for the frame that would
+    // put it back. Two such things, and both happen when the machine sleeps.
+    //
+    // The GPU context can be TAKEN AWAY (`webglcontextlost`), and the browser
+    // will only try to give it back if the default is prevented — otherwise the
+    // loss is permanent and the view is black until the tab is reloaded. three
+    // re-uploads its buffers and textures on the next render after a restore, so
+    // asking for that frame is the whole of the recovery.
+    //
+    // And the canvas's pixels can simply be dropped while the page is hidden,
+    // context intact, which shows as the same black rectangle. A frame on
+    // becoming visible again covers that one, and costs a single render.
+    const canvas = renderer.domElement
+    const onContextLost = (e: Event) => {
+      e.preventDefault()
+      console.warn('[3d] WebGL context lost — waiting for the browser to restore it')
+    }
+    const onContextRestored = () => { wake() }
+    const onVisible = () => { if (document.visibilityState === 'visible') wake() }
+    canvas.addEventListener('webglcontextlost', onContextLost)
+    canvas.addEventListener('webglcontextrestored', onContextRestored)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+
     rebuildWorkpiece(refs)
     rebuildToolpaths(refs)
     rebuildShapes(refs)
@@ -609,6 +636,10 @@ export default function ThreeView() {
       cancelAnimationFrame(refs.rafId)
       refs.running = false
       wakeRef.current = null
+      canvas.removeEventListener('webglcontextlost', onContextLost)
+      canvas.removeEventListener('webglcontextrestored', onContextRestored)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
       ro.disconnect()
       setWoodTextureListener(null)
       unsubWP(); unsubTP(); unsubSim(); unsubPaths()

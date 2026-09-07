@@ -25,6 +25,14 @@ import { OriginLayer } from './layers/OriginLayer'
 import { DesignLayer } from './layers/DesignLayer'
 import { ToolpathLayer } from './layers/ToolpathLayer'
 import { SelectionLayer, SelectionHandleLayer } from './layers/SelectionLayer'
+import { ConstraintLayer } from './layers/ConstraintLayer'
+import { useConstraintsStore } from '../store/constraintsStore'
+import {
+  planConstraints, runPlan, allAnchorCandidates, nearestCandidate, measureBetween, bodyKeyOf,
+  bodyPathsOf, constraintFrameDeg,
+  type ConstraintPlan, type AnchorCandidate,
+} from '../store/constraints'
+import { ConstraintPickLayer } from './layers/ConstraintPickLayer'
 import { SnapGuideLayer, type SnapGuides } from './layers/SnapGuideLayer'
 import { collectSnapTargets, snapAxisDelta, type SnapTargets } from './objectSnap'
 import { ShapePreviewLayer } from './layers/ShapePreviewLayer'
@@ -146,7 +154,13 @@ function screenToCNC(sx: number, sy: number, vp: Viewport): { x: number; y: numb
 type CanvasMode =
   | { type: 'idle' }
   | { type: 'pan' }
-  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox; snapTargets: SnapTargets }
+  // `pick` is the Constrain tool borrowing this mode: the second point of a
+  // half-made constraint is being DRAGGED, and mouseup creates the constraint
+  // holding wherever it landed. Borrowed rather than given a mode of its own so
+  // the drag gets object snap, grid snap, Shift axis-lock and the live preview
+  // of the part's OWN constraints for nothing — and so the two kinds of drag
+  // cannot bake differently.
+  | { type: 'move'; pathIds: string[]; startCNC: { x: number; y: number }; initBbox: BBox; snapTargets: SnapTargets; pick?: { held: AnchorCandidate; hot: AnchorCandidate } }
   | { type: 'resize'; pathIds: string[]; handle: HandleType; anchor: { x: number; y: number }; initHandle: { x: number; y: number }; initBbox: BBox; shiftHeld: boolean; snapTargets: SnapTargets }
   | { type: 'rotate'; pathIds: string[]; center: { x: number; y: number }; initAngle: number }
   | { type: 'dragbox'; startScreen: { x: number; y: number } }
@@ -160,6 +174,8 @@ type CanvasMode =
 
 const MOVE_THRESHOLD_PX = 4  // pixels before a click is treated as a drag
 const OBJECT_SNAP_PX = 8     // screen px within which a dragged bbox edge snaps to another shape's edge
+const PICK_SHOW_PX = 70      // screen px within which a part offers its constraint points
+const PICK_HOT_PX = 16       // screen px within which one of those points would be taken by a click
 
 // One step in the node-edit local undo stack. `globalStep` marks gestures that
 // ALSO wrote one atomic entry to the global paths history (cross-path join,
@@ -303,6 +319,42 @@ export default function CanvasStage() {
   // that lands before React commits the last mousemove's render still bakes the
   // final transform, not the previous frame's (bugs.md B6).
   const [liveTransform, liveTransformRef, setLiveTransform] = useRefState<LiveTransform | null>(null)
+
+  // THE CONSTRAINT SOLVE FOR THE DRAG IN FLIGHT, previewed live.
+  //
+  // Built ONCE on mousedown (`planConstraints` flattens geometry and settles the
+  // walk order) and then run as pure arithmetic on every mousemove — the `d`
+  // strings do not change until mouse-up, and every constrained move is a
+  // translation, so nothing has to be re-resolved. Re-solving from scratch each
+  // frame would flatten every path of every constrained body at pointer rate,
+  // which on a gear is exactly the kind of per-frame cost this canvas avoids
+  // everywhere else. Same code path as the real solve, so what is previewed is
+  // what lands.
+  const constraintPlanRef = useRef<ConstraintPlan | null>(null)
+  const [followTransforms, setFollowTransforms] = useState<LiveTransform[] | null>(null)
+
+  // ── The Constrain tool ─────────────────────────────────────────────────────
+  // Two clicks: a point on one part, a point on another. `pickCandidates` is
+  // what the hovered part offers, `pickHot` the one a click would take, and
+  // `pickHeld` the first point once it has been taken. The tool STAYS ON after
+  // placing one, so a row of holes is one gesture each; Escape drops a half-made
+  // constraint, and Escape again leaves the tool.
+  //
+  // THE SECOND CLICK MAY BE A DRAG, which is the other half of the gesture: a
+  // press on a point of another part moves that part, with the dimension and its
+  // numbers live on screen, and the constraint is created holding wherever it is
+  // let go. Placing by eye and placing by number are the same gesture then —
+  // drag it roughly right, then type the figure into the row that has just taken
+  // the keyboard. It borrows the `move` mode to do it (see `CanvasMode`).
+  const [pickCandidates, setPickCandidates] = useState<AnchorCandidate[]>([])
+  const [pickHot, pickHotRef, setPickHot] = useRefState<AnchorCandidate | null>(null)
+  const [pickHeld, pickHeldRef, setPickHeld] = useRefState<AnchorCandidate | null>(null)
+  // How far the second point has been DRAGGED, while it is being dragged. The
+  // pending dimension is drawn from the hot candidate plus this — every body
+  // moves by a pure translation, so the point the constraint will measure to
+  // moves by exactly the drag, and the numbers on screen are the numbers that
+  // will be stored.
+  const [pickDrag, setPickDrag] = useState<{ dx: number; dy: number } | null>(null)
   const [dragBox, setDragBox] = useState<{ sx: number; sy: number; ex: number; ey: number } | null>(null)
   const [snapGuides, setSnapGuides] = useState<SnapGuides | null>(null)
   // Object-snapped cursor while the pen tool is active — feeds the pen live
@@ -340,6 +392,9 @@ export default function CanvasStage() {
   const widthMM = useWorkpieceStore((s) => s.widthMM)
   const heightMM = useWorkpieceStore((s) => s.heightMM)
   const setCursorMM = useCanvasStore((s) => s.setCursorMM)
+  // Subscribed (not just written) because the Constrain tool draws its live
+  // dimension out to wherever the pointer is.
+  const cursorMM = useCanvasStore((s) => s.cursorMM)
   const setZoomPct = useCanvasStore((s) => s.setZoomPct)
   const setLiveRotationAngle = useCanvasStore((s) => s.setLiveRotationAngle)
   const setLiveBBox = useCanvasStore((s) => s.setLiveBBox)
@@ -646,6 +701,44 @@ export default function CanvasStage() {
     return () => ro.disconnect()
   }, [])
 
+  // ─── Coming back from sleep ────────────────────────────────────────────────
+  //
+  // A CANVAS CAN COME BACK BLANK WITH ITS SCENE GRAPH INTACT. The browser is
+  // free to throw away a canvas element's backing store when the machine sleeps
+  // or memory gets tight — the element and everything Konva holds survive, the
+  // pixels do not — and Konva only paints when something asks it to, so nothing
+  // ever repaints and the drawing is simply gone until the next pan or click.
+  // That is the "my project vanished after the screen went off" report: the
+  // document is still there in full (a reload is what actually loses it, which
+  // is why refreshing then offers the autosave back).
+  //
+  // Repainting from the scene graph is the whole fix, and it is cheap enough to
+  // do on any of the three signals that can mean "you are being looked at
+  // again" — none of them is reliable on its own across browsers, and a
+  // redundant redraw of a canvas that is already correct costs one frame.
+  useEffect(() => {
+    const repaint = () => {
+      if (document.visibilityState !== 'visible') return
+      // Re-measure first: the same purge can leave the stage sized to a window
+      // that has since changed, and a ResizeObserver that fired while hidden may
+      // have been the last word on it.
+      const el = containerRef.current
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+        setSize((cur) => cur.width === el.clientWidth && cur.height === el.clientHeight
+          ? cur : { width: el.clientWidth, height: el.clientHeight })
+      }
+      stageRef.current?.batchDraw()
+    }
+    document.addEventListener('visibilitychange', repaint)
+    window.addEventListener('pageshow', repaint)
+    window.addEventListener('focus', repaint)
+    return () => {
+      document.removeEventListener('visibilitychange', repaint)
+      window.removeEventListener('pageshow', repaint)
+      window.removeEventListener('focus', repaint)
+    }
+  }, [])
+
   const fitRequest = useCanvasStore((s) => s.fitRequest)
   const didFitRef = useRef(false)
   useEffect(() => {
@@ -760,10 +853,28 @@ export default function CanvasStage() {
           setLivePen(null)
           setPenClosing(false)
           setMode2({ type: 'idle' })
+        } else if (activeTool === 'constrain' && pickHeldRef.current) {
+          // A half-made constraint goes first; the tool stays on. Same two-stage
+          // Escape the pen has, and for the same reason — the commonest thing to
+          // want out of is the gesture, not the tool. A drag in flight is part of
+          // that gesture: dropping the preview without dropping the mode would
+          // leave the part hanging at an offset nothing will ever bake.
+          if (modeRef.current.type === 'move' && modeRef.current.pick) {
+            setLiveTransform(null)
+            setFollowTransforms(null)
+            setLiveBBox(null)
+            setSnapGuides(null)
+            constraintPlanRef.current = null
+            setMode2({ type: 'idle' })
+          }
+          setPickDrag(null)
+          setPickHeld(null)
         } else if (activeTool !== 'select') {
           if (activeTool === 'drill') clearDrillPoints()
           setActiveTool('select')
           setLiveShapeD(null)
+          setPickHeld(null)
+          setPickCandidates([])
           setMode2({ type: 'idle' })
         }
       }
@@ -1038,6 +1149,158 @@ export default function CanvasStage() {
 
   const panStartRef = useRef({ mouseX: 0, mouseY: 0, vpX: 0, vpY: 0 })
 
+  // ENTERING THE TOOL CLEARS THE SELECTION, and that is not tidiness: a selected
+  // shape carries resize/rotate handles in the interactive layer ABOVE the
+  // stage, and those swallow the click before the tool ever sees it — so the
+  // points nearest a selected part were exactly the ones that could not be
+  // picked. The handles are suppressed below as well; this is the other half,
+  // and it also leaves the canvas clean to work on.
+  useEffect(() => {
+    const ui = useUIStore.getState()
+    if (activeTool !== 'constrain') {
+      setPickHeld(null)
+      setPickCandidates([])
+      setPickDrag(null)
+      ui.setFocusConstraint(null)
+      ui.setConstrainSubject([])
+      return
+    }
+    // WHAT WAS SELECTED IS REMEMBERED FIRST. Clearing the selection also cleared
+    // the panel's rows, so pressing the button with the part you were about to
+    // work on selected emptied the very list you had just been reading. The
+    // subject outlives the selection; see `constrainSubjectIds`.
+    ui.setConstrainSubject(usePathsStore.getState().selectedIds)
+    usePathsStore.getState().selectPath(null)
+  }, [activeTool, setPickHeld])
+
+  // Hover for the Constrain tool: which part is under the pointer, what points
+  // it offers, and which of them a click would take. Recomputed per frame, which
+  // is affordable because it only ever looks at ONE path — the one the proximity
+  // search already found — rather than at the whole drawing.
+  // Every pickable point in the drawing, built once and reused for the whole
+  // session — one bbox flatten per body, not one per frame.
+  const allCandidates = useMemo(
+    () => (activeTool === 'constrain' ? allAnchorCandidates(paths) : []),
+    [activeTool, paths])
+  // Mirrored into a ref, and the hover handler reads THAT. `handleMouseMove` is
+  // one big memoized dispatcher, so a per-frame handler reached through it is
+  // only as fresh as that dispatcher's dependency list — and a candidate list
+  // captured in a closure goes stale the moment anything moves, which showed as
+  // markers sitting where each part was when it was drawn. The dependency is
+  // listed as well; this is what makes it not matter if the next one is missed.
+  const allCandidatesRef = useRef(allCandidates)
+  allCandidatesRef.current = allCandidates
+
+  // Hover for the Constrain tool.
+  //
+  // SEARCHED AS POINTS, NOT AS PATHS. Finding the path under the cursor first
+  // and then offering its anchors only worked while the cursor was near an
+  // OUTLINE, so the centre of a big circle and the corners of a large rectangle
+  // could not be reached at all — they are nowhere near the geometry they belong
+  // to, and zooming in made it worse. Two radii, both in SCREEN pixels so they
+  // feel the same at every zoom: a generous one decides whose points to show, so
+  // a part lights up as it is approached, and a tight one decides which point a
+  // click would actually take.
+  const onMoveConstrainHover = useCallback((cnc: { x: number; y: number }, vp: Viewport) => {
+    const all = allCandidatesRef.current
+    const near = nearestCandidate(all, cnc.x, cnc.y, PICK_SHOW_PX / vp.scale)
+    // Falling back to the outline keeps a part's points visible while the cursor
+    // is over its edge but not near any one of them.
+    let bodyKey = near?.body ?? null
+    if (!bodyKey) {
+      const { paths: live } = usePathsStore.getState()
+      const hit = closestVisiblePath(cnc.x, cnc.y, live.filter((p) => onCanvas(p)), 12 / vp.scale, (p) => getFlat(p, 0.05))
+      const self = hit ? live.find((p) => p.id === hit.id) : undefined
+      bodyKey = self ? bodyKeyOf(self) : null
+    }
+    const list = bodyKey ? all.filter((c) => c.body === bodyKey) : []
+    setPickCandidates(list)
+    setPickHot(nearestCandidate(list, cnc.x, cnc.y, PICK_HOT_PX / vp.scale))
+  }, [getFlat, setPickHot])
+
+  /**
+   * Make the constraint between two picked points, from where the parts stand
+   * NOW.
+   *
+   * Read off the live store rather than off the candidates' own coordinates:
+   * those were measured when the markers were drawn, and the second point may
+   * since have been dragged and baked. Same reason `measureBetween` exists at
+   * all — what is created is what is already there.
+   */
+  const commitConstraint = useCallback((held: AnchorCandidate, hot: AnchorCandidate) => {
+    const ui = useUIStore.getState()
+    const paths = usePathsStore.getState().paths
+    const { widthMM, heightMM } = useWorkpieceStore.getState()
+    const now = measureBetween(paths, held.ref, hot.ref, { widthMM, heightMM })
+    if (!now) { setPickHeld(null); return }
+    const id = uid('con')
+    // ALIGNMENT COMES WITH IT. A follower that does not turn with the part
+    // holding it is the surprising case — the chain is meant to behave like the
+    // group the user thinks it is — and holding the angle the parts ALREADY
+    // stand at moves nothing, so this is free until something is rotated. Not
+    // against the stock, which does not turn.
+    const align = held.ref.kind === 'stock' || hot.ref.kind === 'stock'
+      ? {} : { alignDeg: now.alignDeg }
+    useConstraintsStore.getState().addConstraint(ui.constrainMode === 'xy'
+      ? { id, mode: 'xy', from: held.ref, to: hot.ref, offsetXMM: now.offsetXMM, offsetYMM: now.offsetYMM, ...align }
+      : { id, from: held.ref, to: hot.ref, distanceMM: now.distanceMM, angleDeg: now.angleDeg, ...align })
+    setPickHeld(null)
+    // Hand the keyboard to the new constraint's first number — two clicks and
+    // then type, without reaching for the sidebar. Deliberately WITHOUT
+    // selecting the two parts: a selection puts handles back over them and the
+    // next pick cannot get through. The panel finds the constraint through
+    // `focusConstraintId` instead, which is what that field is for.
+    ui.setFocusConstraint(id)
+  }, [setPickHeld])
+
+  /** Which body a picked point belongs to, or null for a stock edge. */
+  const bodyOfRef = useCallback((r: AnchorCandidate['ref']): string | null => {
+    if (r.kind === 'stock') return null
+    const p = usePathsStore.getState().paths.find((q) => q.id === r.id)
+    return p ? bodyKeyOf(p) : null
+  }, [])
+
+  /** Take a point. The second one creates the constraint. */
+  const onConstrainClick = useCallback(() => {
+    const hot = pickHotRef.current
+    if (!hot) return
+    const held = pickHeldRef.current
+    if (!held) {
+      // A new pick supersedes the last constraint's row: `focusConstraintId` is
+      // what keeps that row on screen with nothing selected, so it has to go
+      // when the user moves on, or the panel would show a stale one while the
+      // next dimension is being drawn.
+      useUIStore.getState().setFocusConstraint(null)
+      setPickHeld(hot)
+      return
+    }
+    // Two points on the SAME body is a measurement, not a constraint — a part
+    // cannot hold itself at a distance from itself, and the solver ignores it.
+    // Treat the second click as re-picking the first instead of making a dud.
+    const heldBody = bodyOfRef(held.ref)
+    if (heldBody !== null && heldBody === bodyOfRef(hot.ref)) { setPickHeld(hot); return }
+    commitConstraint(held, hot)
+  }, [pickHotRef, pickHeldRef, setPickHeld, commitConstraint, bodyOfRef])
+
+  // THE DIMENSION BEING MADE, in CNC mm, or null when nothing is half-made.
+  //
+  // The far end is the point a mouse-up would take: the hot candidate when one
+  // is under the cursor — so what is drawn is what will be stored, to the digit
+  // — displaced by the drag when the part is being dragged there, and the bare
+  // cursor otherwise, which is what makes the line follow the pointer across
+  // empty canvas the way it always did.
+  const constrainMode = useUIStore((s) => s.constrainMode)
+  const pendingDim = useMemo(() => {
+    if (activeTool !== 'constrain' || !pickHeld) return null
+    const q = pickHot
+      ? { x: pickHot.x + (pickDrag?.dx ?? 0), y: pickHot.y + (pickDrag?.dy ?? 0) }
+      : cursorMM
+    if (!q) return null
+    // Stated in the first part's frame, which is what the constraint will hold.
+    const frameDeg = constraintFrameDeg(paths, pickHeld.ref)
+    return { p: { x: pickHeld.x, y: pickHeld.y }, q, mode: constrainMode, frameDeg }
+  }, [activeTool, pickHeld, pickHot, pickDrag, cursorMM, constrainMode, paths])
+
   const handleStageMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (connectSourceRef.current !== null) {
       if (crossPathWeldTargetRef.current !== null) {
@@ -1062,6 +1325,54 @@ export default function CanvasStage() {
     if (activeTool === 'pen') {
       const stagePointer = stageRef.current?.getPointerPosition()
       if (stagePointer) startPenDraw(stagePointer)
+      return
+    }
+
+    // Constrain tool: a click takes a point. Never a selection change or a drag
+    // box — the tool owns the click while it is on.
+    //
+    // THE SECOND POINT MAY BE DRAGGED THERE. Once the first point is down, a
+    // press on a point of ANOTHER part starts moving that part, and mouseup
+    // creates the constraint holding wherever it was let go — so an offset can
+    // be dialled in by eye, with the numbers live on the dimension, instead of
+    // being placed and then typed. A press that never moves is still a click and
+    // still just takes the point (see `handleMouseUp`), so nothing about the
+    // two-click gesture changes.
+    if (activeTool === 'constrain') {
+      didDragRef.current = false
+      const heldPick = pickHeldRef.current
+      const hotPick = pickHotRef.current
+      const hotRef = hotPick?.ref
+      const heldBody = heldPick ? bodyOfRef(heldPick.ref) : null
+      const hotBody = hotPick ? bodyOfRef(hotPick.ref) : null
+      if (heldPick && hotPick && hotRef && hotRef.kind !== 'stock' && hotBody !== null && hotBody !== heldBody) {
+        const stagePointer = stageRef.current?.getPointerPosition()
+        const vp = viewportRef.current
+        if (stagePointer) {
+          const cnc = screenToCNC(stagePointer.x, stagePointer.y, vp)
+          const { paths: allPaths } = usePathsStore.getState()
+          // The whole BODY, which is the unit a constraint moves — dragging a
+          // gear's rim away from its bore would take the gear apart.
+          const moveIds = bodyPathsOf(allPaths, hotRef.id).map((p) => p.id)
+          if (moveIds.length > 0) {
+            const moveBbox = getMultiBBox(allPaths.filter((p) => moveIds.includes(p.id)).map((p) => p.d))
+            const { widthMM, heightMM } = useWorkpieceStore.getState()
+            const snapTargets = collectSnapTargets(
+              allPaths.filter((p) => onCanvas(p) && !moveIds.includes(p.id)), { widthMM, heightMM })
+            constraintPlanRef.current = planConstraints(
+              allPaths, useConstraintsStore.getState().constraints, { widthMM, heightMM }, moveIds).plan
+            setPickDrag(null)
+            setMode2({
+              type: 'move', pathIds: moveIds, startCNC: cnc, snapTargets,
+              initBbox: moveBbox ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 },
+              pick: { held: heldPick, hot: hotPick },
+            })
+            return
+          }
+        }
+      }
+      onConstrainClick()
+      setMode2({ type: 'idle' })
       return
     }
 
@@ -1112,6 +1423,8 @@ export default function CanvasStage() {
       const moveBbox = getMultiBBox(allPaths.filter(p => moveIds.includes(p.id)).map(p => p.d))
       const { widthMM, heightMM } = useWorkpieceStore.getState()
       const snapTargets = collectSnapTargets(allPaths.filter(p => onCanvas(p) && !moveIds.includes(p.id)), { widthMM, heightMM })
+      constraintPlanRef.current = planConstraints(
+        allPaths, useConstraintsStore.getState().constraints, { widthMM, heightMM }, moveIds).plan
       setMode2({ type: 'move', pathIds: moveIds, startCNC: cnc, initBbox: moveBbox ?? { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, cx: 0, cy: 0 }, snapTargets })
     } else {
       if (neid) { exitNodeEdit(); return }
@@ -1120,7 +1433,8 @@ export default function CanvasStage() {
       setMode2({ type: 'dragbox', startScreen: { x: stagePointer.x, y: stagePointer.y } })
       setDragBox({ sx: stagePointer.x, sy: stagePointer.y, ex: stagePointer.x, ey: stagePointer.y })
     }
-  }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit, getFlat])
+  }, [selectPath, setMode2, startDrawShape, startPenDraw, exitNodeEdit, getFlat,
+      onConstrainClick, bodyOfRef, pickHeldRef, pickHotRef])
 
 
   // ─── per-mode mousemove handlers ──────────────────────────────────────────
@@ -1169,6 +1483,23 @@ export default function CanvasStage() {
       setSnapGuides(ox || oy ? { x: ox?.guide, y: oy?.guide } : null)
       setLiveTransform({ kind: 'translate', pathIds: new Set(m.pathIds), dx: finalDx, dy: finalDy })
       setLiveBBox({ minX: ib.minX + finalDx, minY: ib.minY + finalDy, width: ib.width, height: ib.height })
+      // The Constrain tool's second point riding along: the dimension being made
+      // is redrawn from this, so the numbers on it are the ones mouseup stores.
+      if (m.pick) setPickDrag({ dx: finalDx, dy: finalDy })
+      // Everything the constraints carry along, previewed with the drag. The
+      // dragged bodies are in here too — a part pinned to a stock edge is
+      // CORRECTED by its constraint rather than following the cursor, and the
+      // preview has to show that or the part jumps on mouse-up.
+      // A move-drag turns nothing, so `mv.rotDeg` is absent on every move it can
+      // produce (a follower only turns when the part holding it CHANGES ANGLE,
+      // and a translation cannot) — which is why one transform per body is
+      // enough here, DesignLayer taking the first that matches a path.
+      const plan = constraintPlanRef.current
+      setFollowTransforms(plan
+        ? runPlan(plan, { dx: finalDx, dy: finalDy }).map((mv) => ({
+          kind: 'translate' as const, pathIds: new Set(mv.pathIds), dx: mv.dx, dy: mv.dy,
+        }))
+        : null)
     }
   }, [setCursorMM, setViewport, setLiveRotationAngle, snapCNC, snapPenPoint])
 
@@ -1452,11 +1783,13 @@ export default function CanvasStage() {
     if (m.type !== 'pendraw') onMovePenHover(cncMouse, pointer, vp)
 
     if (m.type === 'idle' && connectSourceRef.current !== null) onMoveConnectPreview(cncMouse, vp)
+    if (useUIStore.getState().activeTool === 'constrain') { onMoveConstrainHover(cncMouse, vp); return }
     if (m.type === 'pendraw') onMovePenDraw(m, cncMouse, pointer, vp)
     if (m.type === 'clocklink-drag') { onMoveClockLink(m, cncMouse, e.evt.shiftKey); return }
     if (m.type === 'nodedit-drag' && editDragInitRef.current) onMoveNodeEditDrag(m, cncMouse, e)
   }, [setCursorMM, onMovePan, onMoveTranslate, onMoveResize, onMoveRotate, onMoveDragbox,
-      onMoveDrawShape, onMovePenHover, onMoveConnectPreview, onMovePenDraw, onMoveNodeEditDrag])
+      onMoveDrawShape, onMovePenHover, onMoveConnectPreview, onMovePenDraw, onMoveNodeEditDrag,
+      onMoveConstrainHover])
 
 
   // Shared commit for the move/resize/skew/rotate bakes: batch-update the
@@ -1516,14 +1849,33 @@ export default function CanvasStage() {
       if (lt && lt.kind === 'translate') {
         const { dx, dy } = lt
         const step: TransformStep = { kind: 'translate', dx, dy }
+        // Only the DRAGGED paths are baked. What the constraints carried along
+        // was a preview of the solve, and the solve itself runs inside
+        // applyPathEdit against the geometry as it will BE — baking the preview
+        // here as well would move those bodies twice.
         bakeTransform(m.pathIds, 'move', (path) => {
           const r = applyTransformStep(path, step)
           return { id: path.id, d: r.d, shapeParams: r.shapeParams, transforms: [step] }
         })
       }
       setLiveTransform(null)
+      setFollowTransforms(null)
+      constraintPlanRef.current = null
       setLiveBBox(null)
       setSnapGuides(null)
+      setPickDrag(null)
+      // AFTER the bake, so the constraint is measured off where the part now IS
+      // — it is created holding what is already there, and what is already there
+      // is the drag that has just landed. Two history entries, the move and the
+      // constraint, which is what they are: the part really did move.
+      if (m.pick) {
+        commitConstraint(m.pick.held, m.pick.hot)
+        // The markers were measured before the part moved, so every one of them
+        // is now in the wrong place. Dropped rather than left to the next
+        // mousemove, which is only "immediately" if the pointer moves at all.
+        setPickCandidates([])
+        setPickHot(null)
+      }
       setMode2({ type: 'idle' })
       return
     }
@@ -1569,7 +1921,12 @@ export default function CanvasStage() {
     }
 
     if (m.type === 'move' && !didDragRef.current) {
-      // Pure click without drag — selection already updated on mousedown
+      // Pure click without drag — selection already updated on mousedown. Under
+      // the Constrain tool there was no selection to update: a press that never
+      // moved is the ordinary second click, and takes the point where it is.
+      constraintPlanRef.current = null
+      setPickDrag(null)
+      if (m.pick) onConstrainClick()
       setMode2({ type: 'idle' })
       return
     }
@@ -1952,7 +2309,7 @@ export default function CanvasStage() {
     }
 
     setMode2({ type: 'idle' })
-  }, [livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo, getFlat, bakeTransform])
+  }, [livePen, dragBox, setMode2, setSelectedIds, setLiveRotationAngle, setLiveBBox, commitEditNodes, pushLocalUndo, getFlat, bakeTransform, commitConstraint, onConstrainClick, setPickHot])
 
   const getCursor = () => {
     if (nodeEditPathId) return 'default'
@@ -2008,6 +2365,7 @@ export default function CanvasStage() {
           <DesignLayer
             viewport={viewport}
             liveTransform={liveTransform}
+            followTransforms={followTransforms}
             excludePathId={nodeEditPathId}
             excludeGroupId={meshAnimGroupId}
             excludeClockId={clockAnimId}
@@ -2046,6 +2404,15 @@ export default function CanvasStage() {
             />
           )}
           <CornerPickLayer viewport={viewport} />
+          {activeTool === 'constrain' && (
+            <ConstraintPickLayer
+              viewport={viewport}
+              candidates={pickCandidates}
+              hot={pickHot}
+              held={pickHeld}
+              drag={pickDrag}
+            />
+          )}
           {activeTool === 'pen' && (
             <PenLayer
               viewport={viewport}
@@ -2079,7 +2446,23 @@ export default function CanvasStage() {
         {/* Layer 2: Screen-space overlay — origin indicator, selection outline, rulers. */}
         <Layer listening={false}>
           <OriginLayer viewport={viewport} />
-          {!nodeEditPathId && !cornerPickPathId && selectionBBox && (
+          {/* COMMITTED DIMENSIONS ARE HIDDEN WHILE ANYTHING IS BEING DRAGGED. One
+              is drawn from the baked `d`, which does not change until mouse-up,
+              so mid-drag it would hang behind at the old positions while the
+              geometry moves out from under it. Re-deriving it every frame is the
+              one thing not to do here: resolving a constraint's ends means
+              re-flattening every path of every body it touches, which is the
+              cost the plan/run split exists to keep out of the pointer path (see
+              store/constraints.ts). The parts are what the user is looking at
+              during a drag; the numbers come back the moment it lands.
+
+              THE ONE BEING MADE IS THE EXCEPTION, and it is exactly the case
+              that pays for itself: its two ends are known points translating
+              rigidly, so it costs two additions a frame and it is the only thing
+              telling the user what the offset they are dragging out actually
+              is. */}
+          <ConstraintLayer viewport={viewport} hideCommitted={!!liveTransform} pending={pendingDim} />
+          {!nodeEditPathId && !cornerPickPathId && activeTool !== 'constrain' && selectionBBox && (
             <SelectionLayer
               viewport={viewport}
               bbox={selectionBBox}
@@ -2093,7 +2476,7 @@ export default function CanvasStage() {
 
         {/* Layer 3: Interactive handles — selection resize/rotate circles. */}
         <Layer>
-          {!nodeEditPathId && !cornerPickPathId && selectionBBox && (
+          {!nodeEditPathId && !cornerPickPathId && activeTool !== 'constrain' && selectionBBox && (
             <SelectionHandleLayer
               viewport={viewport}
               bbox={selectionBBox}
@@ -2160,7 +2543,17 @@ export default function CanvasStage() {
                 : 'Click to add point, Alt for straight segment, click first point to close, Esc to finish'}
         </div>
       )}
-      {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && (
+      {/* The Constrain tool is not a shape, and the catch-all below read as one:
+          it announced "Drawing constrain — click to place, drag to size". It says
+          the gesture instead, and the gesture has two halves. */}
+      {activeTool === 'constrain' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-purple-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
+          {pickHeld
+            ? 'Now a point on another part — or press on it and drag the part into place · Esc to cancel'
+            : 'Constrain — click a corner, edge or centre on one part, then a point on another and drag to set the dimensions of the constraint · Esc to exit'}
+        </div>
+      )}
+      {activeTool !== 'select' && activeTool !== 'drill' && activeTool !== 'pen' && activeTool !== 'constrain' && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white text-body px-3 py-1 rounded-full pointer-events-none">
           Drawing {shapeDisplayName(activeTool as ShapeType)} — {SCALE_LOCKED_SHAPES.has(activeTool as ShapeType)
             ? 'click to place at its designed size, Esc to cancel'

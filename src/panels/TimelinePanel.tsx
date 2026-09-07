@@ -5,10 +5,14 @@ import {
   Star, Heart, Pill, Shield, Orbit, Grid3x3, CookingPot, Cog, Snail, Type, PenTool, Copy, Import, SquaresUnite,
   SquareSquare, LayoutGrid, Target, CircleDot, Layers, Box, RefreshCw, FileCode,
   X, Image as ImageIcon, Anchor, Weight, Clock, RectangleEllipsis, VectorSquare, Group, TrainTrack,
+  RulerDimensionLine,
 } from 'lucide-react'
 import { usePathsStore, clearCorners, outerGroupOf, type ImportedPath } from '../store/pathsStore'
 import { useToolpathStore, pathIdsOf, type AnyOperation } from '../store/toolpathStore'
 import { useTabStore, type Tab } from '../store/tabStore'
+import { useConstraintsStore } from '../store/constraintsStore'
+import { constraintChains, constraintName, bodyKeyOf, type Constraint } from '../store/constraints'
+import { useWorkpieceStore } from '../store/workpieceStore'
 import { shapeDisplayName } from '../shapes/shapeGenerators'
 import { useUIStore } from '../store/uiStore'
 import { OP_TYPE_COLORS } from '../colors'
@@ -79,6 +83,8 @@ interface ObjectChip {
   clockId?: string
   /** Which machine form this chip reopens, for the ones attached to a path. */
   form?: 'tabs' | 'nodeedit'
+  /** The constraints this chip stands for — a whole CHAIN of them. */
+  constraintIds?: string[]
   /** The generated path whose form this chip reopens, if it has one. */
   editPathId?: string
 }
@@ -108,7 +114,13 @@ function pathVisual(p: ImportedPath): { label: string; Icon: ChipIcon; color?: s
 // One chip per object, in document order, then one per operation in PROGRAM
 // order. A group — a multi-part shape, an SVG import — is ONE chip: it is one
 // thing to the user, and its parts are what the paths list is for.
-export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab[] = []): ObjectChip[] {
+export function buildChips(
+  paths: ImportedPath[],
+  ops: AnyOperation[],
+  tabs: Tab[] = [],
+  constraints: Constraint[] = [],
+  units: 'mm' | 'in' = 'mm',
+): ObjectChip[] {
   const out: ObjectChip[] = []
   const seenGroup = new Set<string>()
   const seenClock = new Set<string>()
@@ -173,6 +185,24 @@ export function buildChips(paths: ImportedPath[], ops: AnyOperation[], tabs: Tab
       })
       out.push(...attachedChips(p, tabs))
     }
+  }
+
+  // ONE CHIP PER CHAIN OF CONSTRAINTS, not one per constraint. A chain is what
+  // the user built — a row of holes placed off a plate is one decision, however
+  // many links it took — and one chip per link filled the strip with things that
+  // all looked alike and all opened the same chain. Keyed by the chain's
+  // smallest body key (see constraintChains), so the chip keeps its identity as
+  // links are added to it rather than reading as a new object every time.
+  for (const chain of constraintChains(paths, constraints)) {
+    const live = chain.constraints.filter((c) => bodyOfChip(paths, c).length > 0)
+    if (live.length === 0) continue
+    out.push({
+      key: `chain:${chain.key}`,
+      label: live.length === 1 ? constraintLabel(live[0], units) : `Constraints ×${live.length}`,
+      Icon: RulerDimensionLine, family: 'attached',
+      pathIds: paths.filter((p) => chain.bodies.includes(bodyKeyOf(p))).map((p) => p.id),
+      constraintIds: live.map((c) => c.id),
+    })
   }
 
   // ONE CHIP PER GENERATE CLICK, not per operation. Profiling five selected paths
@@ -270,10 +300,14 @@ export default function TimelinePanel() {
   const selectedIds = usePathsStore((s) => s.selectedIds)
   const operations = useToolpathStore((s) => s.operations)
   const tabs = useTabStore((s) => s.tabs)
+  const constraints = useConstraintsStore((s) => s.constraints)
+  const units = useWorkpieceStore((s) => s.units)
   const timelineOpen = useUIStore((s) => s.timelineOpen)
   const setTimelineOpen = useUIStore((s) => s.setTimelineOpen)
 
-  const chips = useMemo(() => buildChips(paths, operations, tabs), [paths, operations, tabs])
+  const chips = useMemo(
+    () => buildChips(paths, operations, tabs, constraints, units),
+    [paths, operations, tabs, constraints, units])
 
   const stripRef = useRef<HTMLDivElement>(null)
   const [stripW, setStripW] = useState(0)
@@ -357,6 +391,20 @@ export default function TimelinePanel() {
       ui.setClockPanelOpen(true)
       return
     }
+    if (chip.constraintIds) {
+      // A constraint chip opens the CONSTRAIN TOOL, the way an operation chip
+      // opens its form: the chip stands for a chain, and what you want on
+      // reaching it is to see that chain drawn and to add to it or edit it.
+      // The tool clears the selection itself (handles over a part swallow the
+      // clicks it needs) and draws every constraint while it is on, so the whole
+      // chain is on screen without anything being selected.
+      // Which chain, so the panel lists it — the tool leaves the selection
+      // empty, so `focusConstraintId` is how the section is told what to show.
+      ui.setFocusConstraint(chip.constraintIds[0])
+      ui.setActiveTool('constrain')
+      ui.flashProperties()
+      return
+    }
     usePathsStore.getState().setSelectedIds(chip.pathIds)
     if (chip.form) {
       // Tabs and Corners edit the SELECTION, which the line above just set.
@@ -393,6 +441,9 @@ export default function TimelinePanel() {
       clearCorners(chip.pathIds[0])
       regenerateAffected(chip.pathIds[0])
     }
+    // Deleting the chip releases the whole chain and leaves every part exactly
+    // where it stands — nothing is cut differently, so nothing regenerates.
+    if (chip.constraintIds) return () => useConstraintsStore.getState().deleteConstraints(chip.constraintIds!)
     return () => usePathsStore.getState().applyPathEdit({ deleteIds: chip.pathIds, label: `Delete ${chip.label}` })
   }
 
@@ -459,4 +510,32 @@ export default function TimelinePanel() {
       </div>
     </div>
   )
+}
+
+/** The paths a constraint names, for dropping chains whose parts have gone. */
+function bodyOfChip(paths: ImportedPath[], c: Constraint): string[] {
+  return [c.from, c.to].flatMap((r) => r.kind === 'stock' ? [] : (paths.some((p) => p.id === r.id) ? [r.id] : []))
+}
+
+/**
+ * A lone constraint's numbers, for the chip that stands for it.
+ *
+ * The numbers rather than a name, because a strip of chips all reading
+ * "Constraint" is a strip of identical things to click — and the distance is
+ * what the user is looking for anyway. Display units, like every other number
+ * on screen.
+ */
+function constraintLabel(c: Constraint, units: 'mm' | 'in'): string {
+  const len = (mm: number) => units === 'in'
+    ? `${(mm / 25.4).toFixed(3)}"`
+    : `${+mm.toFixed(1)} mm`
+  const bits: string[] = []
+  if (c.mode === 'xy') {
+    if (c.offsetXMM !== undefined) bits.push(`X${+c.offsetXMM.toFixed(1)}`)
+    if (c.offsetYMM !== undefined) bits.push(`Y${+c.offsetYMM.toFixed(1)}`)
+  } else {
+    if (c.distanceMM !== undefined) bits.push(len(c.distanceMM))
+    if (c.angleDeg !== undefined) bits.push(`${+c.angleDeg.toFixed(0)}\u00b0`)
+  }
+  return bits.length > 0 ? bits.join(' ') : constraintName(c)
 }

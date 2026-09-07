@@ -6,7 +6,7 @@ import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
-import { getMultiBBox, applyTransformStep, placementMat, type TransformStep } from '../canvas/selectionUtils'
+import { getMultiBBox, applyTransformStep, placedAngleDeg, type TransformStep } from '../canvas/selectionUtils'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
 import { spirographLoops, SPIRO_RATIO_RANGE, scaleShapeParams, translateShapeParams, type ShapeParams } from '../shapes/shapeGenerators'
 import { loadFont, isFontLoaded, SINGLE_LINE_FONT_FAMILY } from '../shapes/textGenerator'
@@ -21,6 +21,7 @@ import { BOARD_EDGE_LABEL, BOARD_HANDLE_LABELS, BOARD_HANDLE_HAS_INSET, BOARD_HA
 import { NumericInput } from '../components/NumericInput'
 import { UnitLabel, SliderValue } from '../components/UnitColumn'
 import FontSelect from '../components/FontSelect'
+import ConstraintsSection from './ConstraintsSection'
 
 const fieldCls = 'flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-1.5 py-0.5 text-body text-gray-800 dark:text-neutral-200 font-mono w-0 focus:outline-none focus:border-blue-500'
 const labelCls = 'text-gray-600 dark:text-neutral-400 text-label w-5 flex-shrink-0'
@@ -932,11 +933,7 @@ export default function PropertiesPanel() {
   // adds a translate and turns nothing. Two paths at genuinely DIFFERENT angles
   // have no single answer, and 0 is what the field can honestly say.
   const placedAngle = useMemo(() => {
-    const angles = selectedPaths.map((p) => {
-      if (!p.placement?.length) return 0
-      const [a, b] = placementMat(p.placement)
-      return Math.atan2(b, a) * 180 / Math.PI
-    })
+    const angles = selectedPaths.map((p) => placedAngleDeg(p.placement))
     if (angles.length === 0) return 0
     const first = angles[0]
     if (angles.some((d) => Math.abs(d - first) > 1e-6)) return 0
@@ -1202,6 +1199,12 @@ export default function PropertiesPanel() {
           </button>
         )
       })()}
+
+      {/* WHERE IT SITS RELATIVE TO SOMETHING ELSE, after where it sits outright.
+          A constraint is the one thing on this panel whose subject is a PAIR of
+          objects, so it reads last — the fields above answer "where is this",
+          and this answers "and what is holding it there". */}
+      <ConstraintsSection />
 
       {/* Last, matching where the transform-recipe body puts it — a control that
           jumped position when the panel swapped bodies read as a different

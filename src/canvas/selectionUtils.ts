@@ -88,6 +88,58 @@ export function getMultiBBox(ds: string[]): BBox | null {
   return { minX, minY, maxX, maxY, width, height, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 }
 }
 
+/**
+ * The same bounding box, measured in a frame turned `angleDeg` CCW.
+ *
+ * The box comes back IN THAT FRAME — a corner of it is a point in the turned
+ * frame, and `rotatePointAbout(pt, {x:0,y:0}, angleDeg)` is what carries it back
+ * out to the world. An axis-aligned box round a tilted part is not the part's
+ * box: turn a rectangle 45° and the world-axis box grows by √2 with its corners
+ * out in empty space, which is exactly what a constraint hung off a corner has
+ * to avoid. Measured about the ORIGIN so the caller's inverse is the same
+ * rotation about the origin and there is no pivot to agree on.
+ *
+ * Costs one extra parse/stringify per path over `getMultiBBox`, and only when
+ * the part actually stands turned — a square part takes the same road it always
+ * did, to the digit.
+ */
+export function getMultiBBoxAt(ds: string[], angleDeg: number): BBox | null {
+  if (Math.abs(angleDeg) < 1e-9) return getMultiBBox(ds)
+  return getMultiBBox(ds.map((d) => rotateAroundD(d, 0, 0, -angleDeg)))
+}
+
+/** Rotate a point `angleDeg` CCW about `pivot`. CNC Y-up, so CCW is positive. */
+export function rotatePointAbout(
+  p: { x: number; y: number },
+  pivot: { x: number; y: number },
+  angleDeg: number,
+): { x: number; y: number } {
+  if (Math.abs(angleDeg) < 1e-12) return p
+  const r = angleDeg * Math.PI / 180
+  const cos = Math.cos(r), sin = Math.sin(r)
+  const dx = p.x - pivot.x, dy = p.y - pivot.y
+  return { x: pivot.x + dx * cos - dy * sin, y: pivot.y + dx * sin + dy * cos }
+}
+
+/**
+ * HOW FAR A PART STANDS TURNED, in degrees CCW, read off its placement.
+ *
+ * The angle of the transformed x-axis, which is exact over rotates, mirrors and
+ * uniform scales and is the nearest honest single number over a skew or a
+ * stretch. A path with no placement has no way to know and reads 0 — a rotation
+ * baked into a polyline is unrecoverable from the polyline.
+ *
+ * Three callers now (the properties panel's Angle field, the nest's rotation
+ * grid, and the frame a constraint measures in), which is one more than a
+ * copied-out `atan2(b, a)` survives.
+ */
+export function placedAngleDeg(steps: TransformStep[] | undefined): number {
+  if (!steps?.length) return 0
+  const [a, b] = placementMat(steps)
+  const deg = Math.atan2(b, a) * 180 / Math.PI
+  return Math.abs(deg) < 1e-9 ? 0 : deg
+}
+
 function translateMat(dx: number, dy: number): Mat6 {
   return [1, 0, 0, 1, dx, dy]
 }

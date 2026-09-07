@@ -143,6 +143,111 @@ scale, rotate and delete as one thing. The Objects strip shows them as a single 
 
 ---
 
+## Constraints
+
+A group ties parts together rigidly. A **constraint** does something different: it holds
+one part a stated distance from another, and keeps it there as either one is edited. Four
+holes 10 mm in from the corners of a mounting plate stay 10 mm in from the corners when
+the plate is resized — or turned.
+
+### Making one
+
+1. Press **C**, or **Constrain** in the Constraints section of the Properties panel.
+2. Move over a part and its attachment points appear: a **square** at each corner, a
+   **bar** at the middle of each edge, a **ring** at the centre, a **crosshair** at the
+   centre of a round feature. The one a click would take turns amber.
+3. Click a point on one part, then a point on another.
+
+The constraint is created holding the distance the two parts **already** stand at, so
+making one never moves anything — and the keyboard goes straight to its first number, so
+you can type the figure you actually wanted without reaching for the mouse.
+
+**Or drag the second part into place.** Instead of clicking the second point, press on it
+and drag. The part moves with the dimension reading out live on the canvas, and letting go
+creates the constraint holding wherever you dropped it. Grid snap, object snap and
+**Shift** to lock an axis all work exactly as they do for an ordinary drag — so you can
+dial an offset in by eye and then type the round number into the row.
+
+The tool stays on, so a row of holes is two clicks each. **Escape** drops a half-made
+constraint; **Escape** again — or **Finished** — leaves the tool.
+
+![Four holes constrained 20 mm in from the corners of a plate, with the dimensions drawn on the canvas and one row each in the Constraints panel](images/02-constraints.png)
+
+*Four holes held 20 mm in from the corners of a plate. Each dimension draws as an L — the
+X leg and the Y leg, each labelled beside its own leg — and each constraint is one line in
+the panel. Resize the plate and the holes stay 20 in from the corners; the whole chain is
+one chip in the Objects strip.*
+
+<!-- FULL APP · 1600 px wide. Constrain tool active, four X/Y constraints on the plate. -->
+
+### The row
+
+One line per constraint, in the Constraints section:
+
+| | |
+|---|---|
+| **X** and **Y**, or **Dist** and **∠** | The numbers being held. Type one and the second part moves. |
+| the label itself | Click it to stop holding that number. The part is then free in that respect, and the greyed figure beside it goes on reporting what the parts currently stand at. Click again to hold it there. |
+| **↻** | Hold the **angle between** the two parts as well, so the second turns when the first does. On by default. |
+| **✕** | Delete the constraint. The parts stay where they are. |
+
+**X / Y** or **Dist / ∠** is set by the toggle beside the Constrain button and applies to
+the next constraint you make. X and Y is how a hole in the corner of a plate is
+dimensioned; a distance and an angle is how a linkage, a bolt circle or a gear train is.
+
+### Holding a part off the stock
+
+Select a single part and the section offers **Left**, **Right**, **Bottom** and **Top**:
+hold it where it now stands relative to that edge of the stock. The stock is **ground** —
+nothing moves it, and a part pinned to an edge wins even over a drag, which is what makes
+"20 mm in from the left, whatever else happens" mean what it says. An angle against an
+edge means nothing (the point on the edge slides with the part), so a stock constraint
+holds a distance only.
+
+### What moves what
+
+**There is no root.** Drag any part of a chain and the rest follow it — the solve starts
+from whatever you just moved. Typing a number is the one case that has to pick a side: it
+holds the first part and moves the second, and the arrowhead on the dimension line is what
+says which is which.
+
+The panel tells you the reach before you start: *"Dragging this moves 3 other parts with
+it"*, and *"Held to the stock — it will not move."*
+
+### Turned parts
+
+Every number is measured in the **first part's own frame**, and every anchor is a corner
+of that part's box measured the same way. So `X 10, Y 10` from a plate's top-right corner
+means 10 mm in along each of *its* edges — rotate the plate and the holes go round with
+it, still 10 in from the corners. The **↻** toggle carries that the last step: with it on,
+the held part turns as well as moves, which is what a slot or a label needs and a round
+hole does not care about.
+
+Rotation only. Stretch the plate and a typed 10 mm is still 10 mm.
+
+### When it refuses
+
+> *Over-constrained in X: Plate, Hole 3 are held by more constraints than they have room
+> to satisfy. Delete one.*
+
+Two constraints fighting over the same freedom have no answer, so nothing is moved at all
+— the rows involved turn red and the parts stay put. Delete one of them. A part can be
+held off two different stock edges quite happily; what it cannot be is held to another
+part *and* pinned to the stock in the same direction.
+
+### Worth knowing
+
+- **Dimensions are drawn on the canvas only while the Constrain tool is on**, and then
+  exactly the ones the panel lists. Selecting a part to give it a toolpath does not cover
+  the geometry in dimension lines.
+- **Deleting a part deletes the constraints that named it**, in the same step — one undo
+  brings back both.
+- A constraint moves a **whole part**: a gear moves with its bore and spokes, a group
+  moves as the group.
+- Constraints are saved in the `.fkam` file.
+
+---
+
 ## The pen tool
 
 **Pen** in the Draw menu places points; the tool decides what curve runs through them.

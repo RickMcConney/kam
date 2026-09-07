@@ -8,7 +8,7 @@ import { usePathsStore, useSelectedPaths, type ImportedPath } from '../../store/
 import { useWorkpieceStore, fmtLen } from '../../store/workpieceStore'
 import { useUIStore } from '../../store/uiStore'
 import { regenerateAffectedMany } from '../../cam/regenerate'
-import { applyTransformStep, placementMat, type TransformStep } from '../../canvas/selectionUtils'
+import { applyTransformStep, placedAngleDeg, type TransformStep } from '../../canvas/selectionUtils'
 import { groupPathsForNesting, type NestItem } from '../../tools/nestOp'
 import { copyPathsUnderSteps } from '../../tools/pathCopy'
 import { uid } from '../../uid'
@@ -62,9 +62,7 @@ interface NestReport {
  * NestItem.currentAngleDeg.
  */
 function placedAngleOf(path: { placement?: TransformStep[] } | undefined): number {
-  if (!path?.placement?.length) return 0
-  const [a, b] = placementMat(path.placement)
-  return (Math.atan2(b, a) * 180) / Math.PI
+  return placedAngleDeg(path?.placement)
 }
 
 export function NestForm({ onClose }: { onClose: () => void }) {

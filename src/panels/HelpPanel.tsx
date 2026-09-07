@@ -36,6 +36,7 @@ const SHORTCUTS: Section[] = [
       { keys: ['Scroll'], desc: 'Zoom in / out' },
       { keys: ['Middle mouse', 'Space+drag'], desc: 'Pan' },
       { keys: ['S'], desc: 'Toggle snap to grid' },
+      { keys: ['C'], desc: 'Constrain tool — hold one part relative to another' },
     ],
   },
   {
@@ -65,6 +66,10 @@ const FEATURES = [
   {
     title: 'Groups',
     desc: 'Select several paths and press Ctrl+G (or Group in the Properties panel) to tie them together: clicking any member then selects the whole group, so they move, scale, rotate and delete as one thing, and the Objects strip shows them as one chip. Ctrl+Shift+G ungroups. To get at a single path inside a group, Alt-click it on the canvas or click it in the Paths list. Groups nest: group a group with a shape and ungrouping gives back that group and that shape, one level at a time.',
+  },
+  {
+    title: 'Constraints',
+    desc: 'Hold one part a stated distance from another and keep it there as either is edited — four holes 10 mm in from the corners of a plate stay 10 mm in from the corners when the plate is resized. Press C (or Constrain in the Properties panel), then click a point on one part and a point on another: corners, edge midpoints, centres and the centres of round features all offer themselves as you move over a part. It is created holding the distance the parts ALREADY stand at, so nothing moves, and the keyboard goes straight to its first number. Instead of clicking the second point you can DRAG that part into place, with the dimension reading out live, and let go where you want it. Each constraint is one row: the two numbers, a click on a label to stop holding that one, a ↻ to hold the angle between the parts as well (so a slot turns with the plate it sits in), and ✕ to delete. Numbers are measured along the FIRST part’s own axes, so rotating it carries everything held to it round with it. A part can also be held off an edge of the stock, which is ground and wins over a drag. There is no root: drag any part of a chain and the rest follow. Dimensions are drawn on the canvas while the tool is on.',
   },
   {
     title: 'Shape tools',

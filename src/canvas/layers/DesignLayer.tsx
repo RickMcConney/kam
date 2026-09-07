@@ -13,6 +13,12 @@ import { buildHeightMap } from '../../cam/profile3d'
 interface Props {
   viewport: Viewport
   liveTransform: LiveTransform | null
+  /** What the CONSTRAINTS are carrying along with the drag — one transform per
+   *  body, each with its own delta, so they cannot ride on `liveTransform`
+   *  (which is one transform for the whole dragged selection). Consulted FIRST:
+   *  a dragged part that is pinned to a stock edge appears in both, and the
+   *  constraint's answer is the one that will actually land. */
+  followTransforms?: LiveTransform[] | null
   excludePathId?: string | null
   /** Hide a whole shape group — the escapement animation draws its own copy at
    *  the real centre distance, and a static wheel under the turning one is
@@ -33,6 +39,18 @@ interface LiveNodeAttrs {
   offsetX: number; offsetY: number
   rotation: number
   skewX: number; skewY: number
+}
+
+/** The transform previewing this path, constraints taking precedence. */
+function transformFor(
+  id: string,
+  liveTransform: LiveTransform | null,
+  followTransforms: LiveTransform[] | null | undefined,
+): LiveTransform | null {
+  if (followTransforms) {
+    for (const ft of followTransforms) if (ft.pathIds.has(id)) return ft
+  }
+  return liveTransform?.pathIds.has(id) ? liveTransform : null
 }
 
 function liveTransformToNodeAttrs(lt: LiveTransform | null): LiveNodeAttrs {
@@ -82,12 +100,13 @@ interface ImagePathProps {
   p: ImportedPath
   isSelected: boolean
   liveTransform: LiveTransform | null
+  followTransforms?: LiveTransform[] | null
   scale: number
   darkMode: boolean
 }
 
 const ImagePath = memo(function ImagePath({
-  p, isSelected, liveTransform, scale, darkMode,
+  p, isSelected, liveTransform, followTransforms, scale, darkMode,
 }: ImagePathProps) {
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null)
   const C = canvasTheme(darkMode)
@@ -99,7 +118,7 @@ const ImagePath = memo(function ImagePath({
     return () => { img.onload = null }
   }, [p.imageSrc])
 
-  const lt = liveTransform?.pathIds.has(p.id) ? liveTransform : null
+  const lt = transformFor(p.id, liveTransform, followTransforms)
   const attrs = liveTransformToNodeAttrs(lt)
   const strokeWidth = liveStrokeWidth(lt, attrs, isSelected, scale)
 
@@ -140,6 +159,7 @@ interface StlPathProps {
   p: ImportedPath
   isSelected: boolean
   liveTransform: LiveTransform | null
+  followTransforms?: LiveTransform[] | null
   scale: number
   darkMode: boolean
 }
@@ -192,9 +212,9 @@ function buildHeightMapCanvas(p: ImportedPath): HTMLCanvasElement | null {
   return canvas
 }
 
-const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, darkMode }: StlPathProps) {
+const StlPath = memo(function StlPath({ p, isSelected, liveTransform, followTransforms, scale, darkMode }: StlPathProps) {
   const C = canvasTheme(darkMode)
-  const lt = liveTransform?.pathIds.has(p.id) ? liveTransform : null
+  const lt = transformFor(p.id, liveTransform, followTransforms)
   const [hmCanvas, setHmCanvas] = useState<HTMLCanvasElement | null>(null)
 
   // Build height map on a deferred timer so the first render isn't blocked
@@ -258,7 +278,7 @@ const StlPath = memo(function StlPath({ p, isSelected, liveTransform, scale, dar
 })
 
 // ── Main layer ────────────────────────────────────────────────────────────────
-export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGroupId, excludeClockId }: Props) {
+export function DesignLayer({ viewport, liveTransform, followTransforms, excludePathId, excludeGroupId, excludeClockId }: Props) {
   // Individual selectors — whole-store destructuring re-rendered this layer on
   // every store change, including pure undo-stack pushes (tofix.md H3).
   const paths = usePathsStore((s) => s.paths)
@@ -282,6 +302,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGro
               p={p}
               isSelected={isSelected}
               liveTransform={liveTransform}
+              followTransforms={followTransforms}
               scale={scale}
               darkMode={darkMode}
             />
@@ -296,6 +317,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGro
               p={p}
               isSelected={isSelected}
               liveTransform={liveTransform}
+              followTransforms={followTransforms}
               scale={scale}
               darkMode={darkMode}
             />
@@ -303,7 +325,7 @@ export function DesignLayer({ viewport, liveTransform, excludePathId, excludeGro
         }
 
         // Normal vector path
-        const lt = liveTransform && liveTransform.pathIds.has(p.id) ? liveTransform : null
+        const lt = transformFor(p.id, liveTransform, followTransforms)
         const attrs = liveTransformToNodeAttrs(lt)
         const strokeWidth = liveStrokeWidth(lt, attrs, isSelected, scale)
 
