@@ -2,6 +2,7 @@
 import { FormShell, AutoStepField, GenerateBtn, useSessionOps, toolsOfType, pickToolId, LengthInput, FormError, useGenerateError } from './shared'
 import { useState, useEffect } from 'react'
 import { NumericInput } from '../../components/NumericInput'
+import { NUMERIC_HINT } from '../../components/parseNumeric'
 import { ICON } from '../../theme'
 import { AlertCircle } from 'lucide-react'
 import { useToolStore } from '../../store/toolStore'
@@ -264,12 +265,17 @@ export function Profile3dForm({ onClose, editOp }: { onClose: () => void; editOp
                 Roughing Angle
               </label>
               <div className="flex items-center gap-1">
-                <input id="p3d-roughing-angle"
-                  type="number"
-                  value={form.roughingRasterAngleDeg === '' ? '' : form.roughingRasterAngleDeg}
+                {/* Blank means auto, so this is the one numeric field that can legally
+                    be emptied — `onEmpty` is what says so. `value` is the angle auto
+                    resolves to, which is what a stepper nudges off. */}
+                <NumericInput id="p3d-roughing-angle"
+                  value={form.roughingRasterAngleDeg === '' ? form.rasterAngleDeg + 90 : form.roughingRasterAngleDeg}
+                  isEmpty={form.roughingRasterAngleDeg === ''}
+                  onEmpty={() => up('roughingRasterAngleDeg', '')}
                   min={-180} max={180} step={15}
                   placeholder={`auto (${form.rasterAngleDeg + 90}°)`}
-                  onChange={(e) => up('roughingRasterAngleDeg', e.target.value === '' ? '' : Number(e.target.value))}
+                  onChange={(v) => up('roughingRasterAngleDeg', v)}
+                  title={NUMERIC_HINT}
                   className="flex-1 bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-700 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:outline-none focus:border-blue-500 min-w-0"
                 />
                 <span className="text-label text-gray-600 dark:text-neutral-400">°</span>

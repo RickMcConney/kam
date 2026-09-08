@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
-import { parseNumeric, isPartialFraction } from './parseNumeric'
+import { parseNumeric, isPartialFraction, isExpression } from './parseNumeric'
 import { UNIT_COL_W } from './UnitColumn'
 
 interface NumericInputProps {
@@ -23,12 +23,23 @@ interface NumericInputProps {
    *  unit is what the box stops short of. Opt-in: a form whose fields all carry
    *  the same unit has nothing to line up and does not want the empty gutter. */
   unitCol?: boolean
+  /** Shown when the box is empty. For a field whose blank state MEANS something —
+   *  'auto (105°)' — it is the only place that meaning is written. */
+  placeholder?: string
+  /** The field is in its blank state: render empty rather than showing `value`.
+   *  `value` is still what a stepper nudges from and what the parser clamps against,
+   *  so it should be the number the blank state resolves to. */
+  isEmpty?: boolean
+  /** Called when the user clears the box. WITHOUT it a field cannot be emptied at
+   *  all — blanking restores the last value on blur, which is what every ordinary
+   *  field wants; a depth with no number in it is not a state that means anything. */
+  onEmpty?: () => void
 }
 
 
 // Numeric input that holds local text state while focused so intermediate
 // states like "-", "3.", or "" don't reset to the last valid value on every keystroke.
-export function NumericInput({ id, value, min, max, step, integer, onChange, className, title, unit, unitCol }: NumericInputProps) {
+export function NumericInput({ id, value, min, max, step, integer, onChange, className, title, unit, unitCol, placeholder, isEmpty, onEmpty }: NumericInputProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
 
@@ -37,6 +48,9 @@ export function NumericInput({ id, value, min, max, step, integer, onChange, cla
   }
 
   function commit(raw: string) {
+    // A cleared box is a value of its own only where the caller says so; everywhere
+    // else it falls through to the null below and the field keeps what it had.
+    if (raw.trim() === '' && onEmpty) { onEmpty(); return }
     const v = parseNumeric(raw)
     if (v === null) return
     const clamped = min !== undefined
@@ -47,7 +61,9 @@ export function NumericInput({ id, value, min, max, step, integer, onChange, cla
 
   // One nudge, shared by the arrow keys and the stepper buttons. Reads the draft when the
   // user is mid-edit so clicking up after typing steps from what is on screen, not from the
-  // last committed value.
+  // last committed value. On an expression draft that means the nudge RESOLVES it — '=24/2'
+  // stepped up becomes 12.5 — which is the only reading available: a step is arithmetic on
+  // a value, and the value is what the formula says.
   function bump(dir: 1 | -1) {
     if (step === undefined) return
     const current = draft !== null ? (parseNumeric(draft) ?? value) : value
@@ -74,13 +90,17 @@ export function NumericInput({ id, value, min, max, step, integer, onChange, cla
         id={id}
         type="text"
         inputMode="decimal"
-        value={editing ? draft : fmt(value)}
+        value={editing ? draft : (isEmpty ? '' : fmt(value))}
+        placeholder={placeholder}
         onChange={(e) => {
           const raw = e.target.value
           setDraft(raw)
           // Fire live updates for valid intermediate values so sliders/previews stay
           // responsive — but never mid-fraction: '1/' would publish 1 on the way to 1/8.
-          if (isPartialFraction(raw)) return
+          // An expression is held back for its WHOLE length, not just its invalid states:
+          // '=25.4' evaluates cleanly on the way to '=25.4/8', so there is no partial
+          // state to test for. It lands on Enter or blur.
+          if (isPartialFraction(raw) || isExpression(raw)) return
           const v = parseNumeric(raw)
           if (v !== null) {
             const inRange = (min === undefined || v >= min) && (max === undefined || v <= max)
@@ -88,7 +108,10 @@ export function NumericInput({ id, value, min, max, step, integer, onChange, cla
           }
         }}
         onFocus={(e) => {
-          setDraft(fmt(value))
+          // A blank field opens blank, so its placeholder still says what blank means.
+          // Seeding it with `value` would turn 'auto' into a typed number just by
+          // clicking into the box.
+          setDraft(isEmpty ? '' : fmt(value))
           e.target.select()
         }}
         onBlur={() => {

@@ -2,7 +2,7 @@
 // ─── Shared sub-components ───────────────────────────────────────────────────
 import { useMemo, useState, useId } from 'react'
 import { NumericInput } from '../../components/NumericInput'
-import { FRACTION_HINT } from '../../components/parseNumeric'
+import { NUMERIC_HINT } from '../../components/parseNumeric'
 import { ICON } from '../../theme'
 import { AlertCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import type { Tool, ToolType } from '../../store/toolStore'
@@ -238,7 +238,7 @@ export function LengthInput({ id, valueMM, onChangeMM, minMM, maxMM, stepMM = 0.
       unit={units}
       onChange={(v) => onChangeMM(toMM(v, units))}
       className={className ?? FIELD_CLS}
-      title={FRACTION_HINT}
+      title={NUMERIC_HINT}
     />
   )
 }

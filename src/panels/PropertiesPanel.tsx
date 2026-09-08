@@ -5,6 +5,7 @@ import { useUIStore } from '../store/uiStore'
 import { splitCompoundPath } from '../canvas/nodeUtils'
 import { regenerateAffectedMany } from '../cam/regenerate'
 import { useCanvasStore } from '../store/canvasStore'
+import { parseNumeric, NUMERIC_HINT } from '../components/parseNumeric'
 import { useWorkpieceStore, fromMM, toMM } from '../store/workpieceStore'
 import { getMultiBBox, applyTransformStep, placedAngleDeg, type TransformStep } from '../canvas/selectionUtils'
 import { originWorldXY } from '../canvas/layers/WorkpieceLayer'
@@ -138,11 +139,16 @@ function RotationField({ liveAngle, baseAngle, onApply }: { liveAngle: number | 
   // angle rather than whatever was last typed into it.
   useEffect(() => { setText(shown) }, [shown])
 
+  // `parseNumeric`, never `parseFloat` — this field is hand-rolled rather than a
+  // NumericInput (it applies a DELTA and must not fire while a rotation is being typed),
+  // which is exactly how it came to be the one angle box that took neither a fraction nor
+  // an `=` formula. parseFloat also read '1/2' as 1, i.e. a 1° turn where half a degree
+  // was asked for.
   function commit(currentText: string) {
     if (committedRef.current) return
     committedRef.current = true
-    const v = parseFloat(currentText)
-    if (!isNaN(v) && Math.abs(v - baseAngle) > 0.0001) onApply(v - baseAngle)
+    const v = parseNumeric(currentText)
+    if (v !== null && Math.abs(v - baseAngle) > 0.0001) onApply(v - baseAngle)
     setText(shown)
   }
 
@@ -163,10 +169,13 @@ function RotationField({ liveAngle, baseAngle, onApply }: { liveAngle: number | 
         onKeyDown={(e) => {
           if (e.key === 'Enter') { commit(e.currentTarget.value); e.currentTarget.blur() }
           if (e.key === 'Escape') { committedRef.current = true; setText(shown); e.currentTarget.blur() }
-          if (e.key === 'ArrowUp') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) + 1)) }
-          if (e.key === 'ArrowDown') { e.preventDefault(); setText(String((parseFloat(e.currentTarget.value) || 0) - 1)) }
+          // A nudge resolves whatever is in the box first, so stepping from '=45/2' steps
+          // from 22.5 — the same reading NumericInput's stepper takes.
+          if (e.key === 'ArrowUp') { e.preventDefault(); setText(String((parseNumeric(e.currentTarget.value) ?? 0) + 1)) }
+          if (e.key === 'ArrowDown') { e.preventDefault(); setText(String((parseNumeric(e.currentTarget.value) ?? 0) - 1)) }
         }}
         className={fieldCls}
+        title={NUMERIC_HINT}
       />
       <UnitLabel>°</UnitLabel>
     </div>

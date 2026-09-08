@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseNumeric, isPartialFraction } from './parseNumeric'
+import { parseNumeric, isPartialFraction, isExpression } from './parseNumeric'
 
 describe('parseNumeric', () => {
   it('reads plain decimals as before', () => {
@@ -58,6 +58,46 @@ describe('parseNumeric', () => {
     expect(parseNumeric('1/8')).toBe(0.125)
     expect(parseFloat('1-1/2')).toBe(1)
     expect(parseNumeric('1-1/2')).toBe(1.5)
+  })
+})
+
+describe('parseNumeric with a leading =', () => {
+  it('hands an = expression to the arithmetic parser', () => {
+    expect(parseNumeric('=24/2')).toBe(12)
+    expect(parseNumeric('=(18-2)/3')).toBeCloseTo(5.333333, 6)
+    expect(parseNumeric(' = 6 * 4 ')).toBe(24)
+  })
+
+  it('reads the hyphen as MINUS once there is an =, unlike the bare field', () => {
+    // The one place the two notations disagree, and the reason '=' is a switch rather
+    // than a convenience: without it a shop's 1-1/2 is one and a half.
+    expect(parseNumeric('1-1/2')).toBe(1.5)
+    expect(parseNumeric('=1-1/2')).toBe(0.5)
+  })
+
+  it('still strips inch marks before deciding what the text is', () => {
+    expect(parseNumeric('=1/2"')).toBe(0.5)
+  })
+
+  it('rejects a bad expression outright — never falls back to the fraction reading', () => {
+    expect(parseNumeric('=')).toBeNull()
+    expect(parseNumeric('=2+')).toBeNull()
+    expect(parseNumeric('=1/0')).toBeNull()
+    expect(parseNumeric('=1 1/2')).toBeNull()   // a mixed number is not an expression
+  })
+})
+
+describe('isExpression', () => {
+  it('claims anything opening with an =, so it can be held back until Enter', () => {
+    expect(isExpression('=24/2')).toBe(true)
+    expect(isExpression('  =2')).toBe(true)
+    expect(isExpression('=')).toBe(true)        // incomplete, and still an expression
+  })
+
+  it('leaves ordinary entry alone', () => {
+    expect(isExpression('24/2')).toBe(false)
+    expect(isExpression('1-1/2')).toBe(false)
+    expect(isExpression('')).toBe(false)
   })
 })
 

@@ -25,6 +25,8 @@ interface Props {
   connectSourceIdx?: number | null
   connectPreviewTo?: { x: number; y: number } | null
   connectSnapTargetIdx?: number | null
+  /** Live view of the stage's space key — a pan press must not be swallowed here. */
+  spaceHeldRef?: { readonly current: boolean }
   onNodeMouseDown: (nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => void
   onSegmentMouseDown: (segIdx: number, cncX: number, cncY: number) => void
   onHoveredNodeChange: (idx: number | null) => void
@@ -45,11 +47,22 @@ const CENTER_SNAP_THRESHOLD_PX = 12
 
 type HoverInsert = { x: number; y: number; segIdx: number; snapCenter: boolean }
 
+// A press that belongs to the STAGE, not to this layer: middle button, or left
+// button with space held, both of which start a pan (`handleStageMouseDown`
+// owns that rule; this only has to agree with it). Konva children run BEFORE
+// the stage handler and every one of ours cancels the bubble, so swallowing one
+// of these presses kills the pan before it starts — which is why a pan could
+// not be begun anywhere over the path being point-edited.
+function isStagePress(e: Konva.KonvaEventObject<MouseEvent>, spaceHeld?: { readonly current: boolean }) {
+  return e.evt.button !== 0 || spaceHeld?.current === true
+}
+
 export function NodeEditLayer({
   viewport,
   nodes,
   closed,
   hoveredNodeIdx,
+  spaceHeldRef,
   weldTargetIdx,
   crossPathCandidates,
   crossPathWeldTarget,
@@ -105,6 +118,7 @@ export function NodeEditLayer({
   const handleSegmentMouseLeave = () => updateHoverInsert(null)
 
   const handleSegmentMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isStagePress(e, spaceHeldRef)) return
     e.cancelBubble = true
 
     if (hoverInsert?.snapCenter) {
@@ -131,7 +145,12 @@ export function NodeEditLayer({
           data={pathD}
           stroke="transparent"
           strokeWidth={12 / s}
-          fill="transparent"
+          // NOT `fill="transparent"`: a fill Konva can see makes the whole
+          // INTERIOR a hit region, so every press inside a closed path landed
+          // here and had its bubble cancelled — a pan, a drag box or a click
+          // meaning "leave point edit" could never start there. Only the
+          // stroke band is a segment, so only the stroke band is hittable.
+          fillEnabled={false}
           hitStrokeWidth={12 / s}
           listening
           onMouseMove={handleSegmentMouseMove}
@@ -158,6 +177,7 @@ export function NodeEditLayer({
           node={node}
           nodeIdx={i}
           scale={s}
+          spaceHeldRef={spaceHeldRef}
           onMouseDown={onNodeMouseDown}
         />
       ))}
@@ -194,7 +214,11 @@ export function NodeEditLayer({
             listening
             onMouseEnter={() => onHoveredNodeChange(i)}
             onMouseLeave={() => onHoveredNodeChange(null)}
-            onMouseDown={(e) => { e.cancelBubble = true; onNodeMouseDown(i, 'anchor', e) }}
+            onMouseDown={(e) => {
+              if (isStagePress(e, spaceHeldRef)) return
+              e.cancelBubble = true
+              onNodeMouseDown(i, 'anchor', e)
+            }}
           />
         )
       })}
@@ -239,11 +263,13 @@ function NodeHandles({
   node,
   nodeIdx,
   scale: s,
+  spaceHeldRef,
   onMouseDown,
 }: {
   node: PathNode
   nodeIdx: number
   scale: number
+  spaceHeldRef?: { readonly current: boolean }
   onMouseDown: (nodeIdx: number, kind: 'anchor' | 'handle-in' | 'handle-out', e: Konva.KonvaEventObject<MouseEvent>) => void
 }) {
   const [hoveredIn, setHoveredIn] = useState(false)
@@ -267,7 +293,11 @@ function NodeHandles({
             listening
             onMouseEnter={() => setHoveredIn(true)}
             onMouseLeave={() => setHoveredIn(false)}
-            onMouseDown={(e) => { e.cancelBubble = true; onMouseDown(nodeIdx, 'handle-in', e) }}
+            onMouseDown={(e) => {
+              if (isStagePress(e, spaceHeldRef)) return
+              e.cancelBubble = true
+              onMouseDown(nodeIdx, 'handle-in', e)
+            }}
           />
         </>
       )}
@@ -287,7 +317,11 @@ function NodeHandles({
             listening
             onMouseEnter={() => setHoveredOut(true)}
             onMouseLeave={() => setHoveredOut(false)}
-            onMouseDown={(e) => { e.cancelBubble = true; onMouseDown(nodeIdx, 'handle-out', e) }}
+            onMouseDown={(e) => {
+              if (isStagePress(e, spaceHeldRef)) return
+              e.cancelBubble = true
+              onMouseDown(nodeIdx, 'handle-out', e)
+            }}
           />
         </>
       )}

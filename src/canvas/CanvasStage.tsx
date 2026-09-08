@@ -2376,6 +2376,7 @@ export default function CanvasStage() {
               nodes={editNodes}
               closed={editClosed}
               hoveredNodeIdx={hoveredEditNode}
+              spaceHeldRef={spaceHeldRef}
               onNodeMouseDown={handleNodeMouseDown}
               onSegmentMouseDown={handleSegmentMouseDown}
               onHoveredNodeChange={handleHoveredNodeChange}

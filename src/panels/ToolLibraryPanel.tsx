@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { NumericInput } from '../components/NumericInput'
-import { FRACTION_HINT } from '../components/parseNumeric'
+import { NUMERIC_HINT } from '../components/parseNumeric'
 import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react'
 import { ICON } from '../theme'
 import { useToolStore, type Tool, type ToolType, type ToolSortKey } from '../store/toolStore'
@@ -80,7 +80,7 @@ function DimInput({ valueMM, onChangeMM, minMM, stepMM, kind, units, title }: {
       step={step}
       onChange={(v) => onChangeMM(toMM(v, units))}
       className={cellCls + ' text-right'}
-      title={title ? `${title} — ${FRACTION_HINT}` : FRACTION_HINT}
+      title={title ? `${title} — ${NUMERIC_HINT}` : NUMERIC_HINT}
     />
   )
 }
@@ -138,14 +138,14 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
           title={tool.type === 'taper' ? 'Tip diameter — the ball ground on the tip' : undefined} />
       </td>
       <td className="px-2 py-1">
-        <input type="number" value={tool.fluteCount} min={1} step={1}
-          onChange={(e) => up({ fluteCount: Math.max(1, Math.round(parseFloat(e.target.value) || 1)) })}
-          className={cellCls + ' text-right'} />
+        <NumericInput value={tool.fluteCount} min={1} step={1} integer
+          onChange={(fluteCount) => up({ fluteCount })}
+          className={cellCls + ' text-right'} title={NUMERIC_HINT} />
       </td>
       <td className="px-2 py-1">
-        <input type="number" value={tool.rpm} min={100} step={100}
-          onChange={(e) => up({ rpm: parseFloat(e.target.value) || 0 })}
-          className={cellCls + ' text-right'} />
+        <NumericInput value={tool.rpm} min={0} step={100}
+          onChange={(rpm) => up({ rpm })}
+          className={cellCls + ' text-right'} title={NUMERIC_HINT} />
         {dialLabel && (
           <div className="text-label text-gray-600 dark:text-neutral-400 text-right px-1 mt-0.5">{dialLabel}</div>
         )}
@@ -170,14 +170,14 @@ function ToolRow({ tool, units, spindleType, selected }: { tool: Tool; units: Un
                 is what everything downstream reads. A taper's angles are small,
                 so it steps by 1° where a V-bit steps by 5°. */}
             <div className="flex items-baseline gap-1">
-              <input
-                type="number"
+              <NumericInput
                 value={tool.vbitAngleDeg ?? (tool.type === 'taper' ? 5 : 60)}
                 min={tool.type === 'taper' ? 0.5 : 5}
                 max={tool.type === 'taper' ? 60 : 175}
                 step={tool.type === 'taper' ? 1 : 5}
-                onChange={(e) => up({ vbitAngleDeg: parseFloat(e.target.value) || (tool.type === 'taper' ? 5 : 60) })}
+                onChange={(vbitAngleDeg) => up({ vbitAngleDeg })}
                 className={cellCls + ' text-right'}
+                title={NUMERIC_HINT}
               />
               <span className="text-label text-gray-600 dark:text-neutral-400 whitespace-nowrap">
                 {tool.type === 'taper' ? '/side' : 'incl'}

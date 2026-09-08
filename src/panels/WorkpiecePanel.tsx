@@ -13,7 +13,7 @@ import {
 } from '../store/workpieceStore'
 import { SPINDLE_INFO, type SpindleType } from '../store/spindle'
 import { NumericInput } from '../components/NumericInput'
-import { FRACTION_HINT } from '../components/parseNumeric'
+import { NUMERIC_HINT } from '../components/parseNumeric'
 import { rigidityInfo } from '../rigidity'
 
 function DimInput({
@@ -41,7 +41,7 @@ function DimInput({
         value={displayVal}
         min={min}
         step={step}
-        title={FRACTION_HINT}
+        title={NUMERIC_HINT}
         unit={units}
         onChange={(v) => onChange(toMM(v, units))}
         className="w-full bg-gray-50 dark:bg-neutral-900 border border-gray-400 dark:border-neutral-600 rounded px-2 py-1 text-body text-gray-900 dark:text-neutral-100 focus:border-blue-500 focus:outline-none font-mono"
